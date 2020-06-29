@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"os"
 	"strings"
 
 	"go.universe.tf/metallb/internal/config"
+	"go.universe.tf/metallb/internal/netbox"
 
 	"github.com/mikioh/ipaddr"
 )
@@ -239,23 +241,33 @@ func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, p
 		return nil, fmt.Errorf("unknown pool %q", poolName)
 	}
 
-	for _, cidr := range pool.CIDR {
-		if cidrIsIPv6(cidr) != isIPv6 {
-			// Not the right ip-family
-			continue
-		}
-		c := ipaddr.NewCursor([]ipaddr.Prefix{*ipaddr.NewPrefix(cidr)})
-		for pos := c.First(); pos != nil; pos = c.Next() {
-			ip := pos.IP
-			if pool.AvoidBuggyIPs && ipConfusesBuggyFirmwares(ip) {
-				continue
-			}
-			// Somewhat inefficiently brute-force by invoking the
-			// IP-specific allocator.
-			if err := a.Assign(svc, ip, ports, sharingKey, backendKey); err == nil {
-				return ip, nil
-			}
-		}
+
+	// fetch from netbox
+	user_token, is_set := os.LookupEnv("NETBOX_USER_TOKEN")
+	if !is_set {
+		fmt.Println("NETBOX_USER_TOKEN not set, can't connect to Netbox")
+		return nil, fmt.Errorf("NETBOX_USER_TOKEN not set, can't connect to Netbox")
+	}
+	netbox_url, is_set := os.LookupEnv("NETBOX_BASE_URL")
+	if !is_set {
+		fmt.Println("NETBOX_BASE_URL not set, can't connect to Netbox")
+		return nil, fmt.Errorf("NETBOX_BASE_URL not set, can't connect to Netbox")
+	}
+	netbox := *netbox.New(netbox_url, user_token)
+	cidr, err := netbox.Fetch()
+	if err != nil {
+		return nil, fmt.Errorf("no available IPs in pool %q", poolName)
+	}
+	ip, _, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing IP %q", ip)
+	}
+
+
+	// Now that we've got an IP from Netbox, add it to our local
+	// tracking database
+	if err := a.Assign(svc, ip, ports, sharingKey, backendKey); err == nil {
+		return ip, nil
 	}
 
 	// Woops, run out of IPs :( Fail.
@@ -275,6 +287,8 @@ func (a *Allocator) Allocate(svc string, isIPv6 bool, ports []Port, sharingKey, 
 		if !a.pools[poolName].AutoAssign {
 			continue
 		}
+		// FIXME: need to be able to distinguish between "pool has no
+		// addresses" and "something bad happened"
 		if ip, err := a.AllocateFromPool(svc, isIPv6, poolName, ports, sharingKey, backendKey); err == nil {
 			return ip, nil
 		}

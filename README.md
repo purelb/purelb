@@ -1,34 +1,97 @@
-# MetalLB
+# MetalLB NetBox Controller POC
 
-MetalLB is a load-balancer implementation for bare
-metal [Kubernetes](https://kubernetes.io) clusters, using standard
-routing protocols.
+This is a proof of concept of a controller that works with MetalLB and
+allocates IP addresses from NetBox.  It's far from production-ready
+but demonstrates how such a thing might work.
 
-[![Project maturity: beta](https://img.shields.io/badge/maturity-beta-orange.svg)](https://metallb.universe.tf/concepts/maturity/) [![license](https://img.shields.io/github/license/metallb/metallb.svg?maxAge=2592000)](https://github.com/metallb/metallb/blob/main/LICENSE) [![CircleCI](https://img.shields.io/circleci/project/github/metallb/metallb.svg)](https://circleci.com/gh/metallb/metallb) [![Containers](https://img.shields.io/badge/containers-ready-green.svg)](https://hub.docker.com/u/metallb) [![Go report card](https://goreportcard.com/badge/github.com/metallb/metallb)](https://goreportcard.com/report/github.com/metallb/metallb)
+[MetalLB](https://metallb.universe.tf) is a load-balancer
+implementation for bare metal [Kubernetes](https://kubernetes.io)
+clusters, using standard routing protocols.  It's capable of managing
+a pre-allocated pool of IP addresses, but isn't able to request
+addresses from an IPAM system.
 
-Check out [MetalLB's website](https://metallb.universe.tf) for more
-information.
+[NetBox](https://netbox.readthedocs.io/en/stable/) is a popular IPAM
+and DCIM system.
 
-# Contributing
+# HOWTO
 
-We welcome contributions in all forms. Please check out
-the
-[hacking and contributing guide](https://metallb.universe.tf/community/#contributing)
-for more information.
+This POC queries NetBox for IP addresses whose tenant is
+"ipam-metallb-customer-exp" and whose status is "reserved" so you'll
+need to add a few using the NetBox user interface.  When it allocates
+an address it marks it as "active" so it won't re-allocate it.
 
-Participation in this project is subject to
-a [code of conduct](https://metallb.universe.tf/community/code-of-conduct/).
+The easiest way to run this POC is to first [install MetalLB](https://metallb.universe.tf/installation/)
+and configure it to *not* allocate IP addresses.  You can use the
+["auto-assign: false" configuration
+flag](https://metallb.universe.tf/configuration/#controlling-automatic-address-allocation).
 
-One lightweight way you can contribute is
-to
-[tell us that you're using MetalLB](https://github.com/metallb/metallb/issues/5),
-which will give us warm fuzzy feelings :).
+You'll also want to configure the speakers to announce anything without second-guessing, so define a pool whose range is 0.0.0.0-255.255.255.255.  For example:
 
-# Reporting security issues
+```
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: metallb-system
+  name: config
+data:
+  config: |
+    peers:
+    - peer-address: 192.168.1.30
+      peer-asn: 65551
+      my-asn: 65552
+    address-pools:
+    - name: default
+      auto-assign: false
+      protocol: bgp
+      addresses:
+      - 0.0.0.0-255.255.255.255
+```
 
-You can report security issues in the github issue tracker. If you
-prefer private disclosure, please email dave@natulte.net and we'll
-figure out a remediation timeline.
+Create the netbox-client namespace.  This allows the netbox-client controller to run alongside the MetalLB controller.
 
-We aim for initial response to vulnerability reports within 48
-hours. The timeline for fixes depends on the complexity of the issue.
+```
+$ kubectl apply -f ./manifests/namespace.yaml
+```
+
+Configure a k8s secret that contains the NetBox user token (which the
+controller uses to authenticate with NetBox).
+
+```
+$ kubectl create secret generic -n netbox-client netbox-client --from-literal=user-token="your-netbox-user-token"
+```
+If you don't have a token you can create one using the NetBox
+admin user interface.
+
+Edit "manifests/netbox-controller.yaml" so NETBOX_BASE_URL points to
+your installation of NetBox.  Deploy the POC controller to a k8s
+cluster by applying the manifest.
+
+```
+$ kubectl apply -f manifests/netbox-controller.yaml
+```
+
+As an alternative, the controller can run locally and connect to a
+remote cluster if you have a kubeconfig file:
+
+```
+$ NETBOX_USER_TOKEN=your-user-token NETBOX_BASE_URL=http://localhost:8000 go run ./controller/main.go ./controller/service.go -kubeconfig $KUBECONFIG -config-ns netbox-client
+```
+
+## Testing
+
+You can deploy a simple "echo" web application using kubectl:
+
+```
+$ kubectl create deployment source-ip-app --image=k8s.gcr.io/echoserver:1.10
+```
+
+...and then expose the app:
+
+```
+$ kubectl expose deployment source-ip-app --name=source-service --port=80 --target-port=8080 --type=LoadBalancer
+```
+
+You should see the POC controller allocate an address and mark that
+address as "active" in NetBox.  The controller assigns the address to
+the service and the MetalLB speakers advertise it as if it had been
+allocated by the MetalLB controller.
