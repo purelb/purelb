@@ -1,0 +1,17 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: netbox-client
+  name: pocconfig
+data:
+  config: |
+    peers:
+    - peer-address: 192.168.1.30
+      peer-asn: 65551
+      my-asn: 65552
+    address-pools:
+    - name: default
+      protocol: bgp
+      addresses:
+      - 0.0.0.0-255.255.255.255
