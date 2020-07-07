@@ -86,8 +86,9 @@ type Proto string
 
 // MetalLB supported protocols.
 const (
-	BGP    Proto = "bgp"
-	Layer2       = "layer2"
+	BGP     Proto = "bgp"
+	Layer2        = "layer2"
+	Acnodal       = "acnodal"
 )
 
 // Peer is the configuration of a BGP peering session.
@@ -339,6 +340,7 @@ func parseAddressPool(p addressPool, bgpCommunities map[string]uint32) (*Pool, e
 			return nil, fmt.Errorf("parsing BGP communities: %s", err)
 		}
 		ret.BGPAdvertisements = ads
+	case Acnodal:
 	case "":
 		return nil, errors.New("address pool is missing the protocol field")
 	default:

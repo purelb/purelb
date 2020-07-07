@@ -25,6 +25,10 @@ type EGWService struct {
 	Endpoints string `json:"id,omitempty"`
 }
 
+type EGWEndpoint struct {
+	Address string
+}
+
 type EGWServiceCreate struct {
 	Group   EGWGroup
 	Service EGWService
@@ -34,6 +38,13 @@ type EGWServiceResponse struct {
 	Service EGWService
 }
 
+type EGWEndpointCreate struct {
+	Group    EGWGroup
+	Service  EGWService
+	Endpoint EGWEndpoint
+}
+type EGWEndpointResponse struct {
+	Group   EGWGroup
 	Service EGWService
 }
 
@@ -81,10 +92,14 @@ func (n *EGW) AnnounceService(groupId string, name string, address string) (serv
 	return srv.Service, nil
 }
 
-func (n *EGW) AnnounceEndpoint(svcname string, svcid string, svcaddress string, endpoint string) (serviceId string, err error) {
+func (n *EGW) AnnounceEndpoint(url string, groupId string, svcname string, svcid string, svcaddress string, endpoint string) (serviceId string, err error) {
 	response, err := n.http.R().
+		SetBody(EGWEndpointCreate{
+			Group:    EGWGroup{ID: groupId},
+			Service:  EGWService{ID: svcid, Name: svcname, Address: svcaddress},
+			Endpoint: EGWEndpoint{Address: endpoint}}).
 		SetResult(EGWServiceResponse{}).
-		Post("/api/egw/endpoint/")
+		Post(url)
 	if err != nil {
 		return "", err
 	}

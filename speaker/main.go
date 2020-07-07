@@ -236,6 +236,10 @@ func newController(cfg controllerConfig) (*controller, error) {
 			myNode: cfg.MyNode,
 			svcAds: make(map[string][]*bgp.Advertisement),
 		},
+		config.Acnodal: &acnodalController{
+			logger: cfg.Logger,
+			myNode: cfg.MyNode,
+		},
 	}
 
 	if !cfg.DisableLayer2 {
