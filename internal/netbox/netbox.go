@@ -104,7 +104,6 @@ func (n *Netbox) Fetch() (string, error) {
 	}
 
 	first := addrs[0]
-	fmt.Println("allocating ", first.Address)
 	err = n.allocateAddr(addrs[0])
 
 	return first.Address, nil

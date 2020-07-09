@@ -20,6 +20,7 @@ import (
 	"os"
 	"reflect"
 
+	"go.universe.tf/metallb/internal/acnodal"
 	"go.universe.tf/metallb/internal/allocator"
 	"go.universe.tf/metallb/internal/config"
 	"go.universe.tf/metallb/internal/k8s"
@@ -77,6 +78,26 @@ func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _
 	}
 
 	var err error
+
+	// Connect to the EGW
+	egw, err := acnodal.New("", "")
+	if err != nil {
+		l.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
+		c.client.Errorf(svc, "AllocationFailed", "Failed to create EGW service for %s: %s", svc.Name, err)
+		return k8s.SyncStateError
+	}
+
+	// Announce the service to the EGW
+	groupId := c.ips.Pool(name)
+	egwsvc, err := egw.AnnounceService(groupId, name, svc.Status.LoadBalancer.Ingress[0].IP)
+	if svc.Annotations == nil {
+		svc.Annotations = map[string]string{}
+	}
+	svc.Annotations["acnodal.io/groupId"] = groupId
+	svc.Annotations["acnodal.io/serviceId"] = egwsvc.ID
+	svc.Annotations["acnodal.io/serviceURL"] = egwsvc.Self
+	svc.Annotations["acnodal.io/endpointURL"] = egwsvc.Endpoints
+
 	if !(reflect.DeepEqual(svcRo.Annotations, svc.Annotations) && reflect.DeepEqual(svcRo.Spec, svc.Spec)) {
 		svcRo, err = c.client.Update(svc)
 		if err != nil {
