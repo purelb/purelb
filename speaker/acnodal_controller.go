@@ -54,17 +54,20 @@ func (c *acnodalController) ShouldAnnounce(l log.Logger, name string, svc *v1.Se
 		return "cantConnectToEGW"
 	}
 
-	groupId := svc.Annotations["acnodal.io/groupId"]
-	svcId := svc.Annotations["acnodal.io/serviceId"]
-	endpointUrl := svc.Annotations["acnodal.io/endpointURL"]
+	createUrl := svc.Annotations["acnodal.io/endpointcreateURL"]
 
-	// For each endpoint address in each subset, contact the EGW
+	// For each endpoint address in each subset on this node, contact the EGW
 	for _, ep := range eps.Subsets {
+		port := ep.Ports[0].Port
 		for _, address := range ep.Addresses {
-			l.Log("op", "AnnounceEndpoint", "address", address.IP)
-			_, err := egw.AnnounceEndpoint(endpointUrl, groupId, name, svcId, svc.Status.LoadBalancer.Ingress[0].IP, address.IP)
-			if err != nil {
-				l.Log("op", "AnnounceEndpoint", "error", err)
+			if address.NodeName == nil || *address.NodeName != c.myNode {
+				l.Log("op", "DontAnnounceEndpoint", "address", address.IP, "port", port, "node", "not me")
+			} else {
+				l.Log("op", "AnnounceEndpoint", "address", address.IP, "port", port, "node", c.myNode)
+				err := egw.AnnounceEndpoint(createUrl, address.IP, int(port))
+				if err != nil {
+					l.Log("op", "AnnounceEndpoint", "error", err)
+				}
 			}
 		}
 	}

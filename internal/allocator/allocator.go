@@ -243,6 +243,7 @@ func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, p
 
 
 	// fetch from netbox
+	fmt.Println("attempting to allocate from netbox")
 	user_token, is_set := os.LookupEnv("NETBOX_USER_TOKEN")
 	if !is_set {
 		fmt.Println("NETBOX_USER_TOKEN not set, can't connect to Netbox")
@@ -256,10 +257,12 @@ func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, p
 	netbox := *netbox.New(netbox_url, user_token)
 	cidr, err := netbox.Fetch()
 	if err != nil {
+		fmt.Println("no available IPs in pool %q", poolName)
 		return nil, fmt.Errorf("no available IPs in pool %q", poolName)
 	}
 	ip, _, err := net.ParseCIDR(cidr)
 	if err != nil {
+		fmt.Println("error parsing IP", cidr)
 		return nil, fmt.Errorf("error parsing IP %q", ip)
 	}
 

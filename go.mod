@@ -25,6 +25,7 @@ require (
 	github.com/satori/go.uuid v1.2.0 // indirect
 	github.com/spf13/cobra v0.0.5
 	github.com/spf13/pflag v1.0.3
+	github.com/stretchr/testify v1.3.0
 	github.com/vishvananda/netlink v1.0.0 // indirect
 	github.com/vishvananda/netns v0.0.0-20190625233234-7109fa855b0f // indirect
 	go.universe.tf/virtuakube v0.0.0-20190708182722-512c11153571

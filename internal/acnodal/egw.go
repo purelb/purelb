@@ -7,6 +7,9 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
+// FIXME: package these in the EGW so we can reference them here
+type Links map[string]string
+
 type EGW struct {
 	http       resty.Client
 	base       string
@@ -14,37 +17,40 @@ type EGW struct {
 }
 
 type EGWGroup struct {
-	ID string
+	Name      string
+	Links     Links  `json:"link"`
+	Created   string `json:"created,omitempty"`
+	Updated   string `json:"updated,omitempty"`
 }
 
 type EGWService struct {
-	ID        string `json:"id,omitempty"`
 	Name      string
 	Address   string
-	Self      string `json:"id,omitempty"`
 	Endpoints string `json:"id,omitempty"`
+	Links     Links  `json:"link"`
+	Created   string `json:"created,omitempty"`
+	Updated   string `json:"updated,omitempty"`
 }
 
 type EGWEndpoint struct {
 	Address string
+	Port    int
+	Links   Links  `json:"link"`
+	Created string `json:"created,omitempty"`
+	Updated string `json:"updated,omitempty"`
 }
 
 type EGWServiceCreate struct {
-	Group   EGWGroup
 	Service EGWService
 }
 type EGWServiceResponse struct {
-	Group   EGWGroup
 	Service EGWService
 }
 
 type EGWEndpointCreate struct {
-	Group    EGWGroup
-	Service  EGWService
 	Endpoint EGWEndpoint
 }
 type EGWEndpointResponse struct {
-	Group   EGWGroup
 	Service EGWService
 }
 
@@ -70,17 +76,32 @@ func New(base string, auth_token string) (*EGW, error) {
 		SetHeaders(map[string]string{
 			"Content-Type": "application/json",
 			"accept":       "application/json",
-		})
+		}).
+		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 	return &EGW{http: *r, base: base, auth_token: auth_token}, nil
 }
 
-func (n *EGW) AnnounceService(groupId string, name string, address string) (service EGWService, err error) {
+func (n *EGW) GetGroup(url string) (EGWGroup, error) {
+	response, err := n.http.R().
+		SetResult(EGWGroup{}).
+		Get(url)
+	if err != nil {
+		return EGWGroup{}, err
+	}
+	if response.IsError() {
+		return EGWGroup{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+	}
+
+	srv := response.Result().(*EGWGroup)
+	return *srv, nil
+}
+
+func (n *EGW) AnnounceService(url string, name string, address string) (EGWService, error) {
 	response, err := n.http.R().
 		SetBody(EGWServiceCreate{
-			Group:   EGWGroup{ID: groupId},
 			Service: EGWService{Name: name, Address: address}}).
-		SetResult(EGWServiceResponse{}).
-		Post("/api/egw/services/")
+		SetResult(EGWService{}).
+		Post(url)
 	if err != nil {
 		return EGWService{}, err
 	}
@@ -88,25 +109,21 @@ func (n *EGW) AnnounceService(groupId string, name string, address string) (serv
 		return EGWService{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
 	}
 
-	srv := response.Result().(*EGWServiceResponse)
-	return srv.Service, nil
+	srv := response.Result().(*EGWService)
+	return *srv, nil
 }
 
-func (n *EGW) AnnounceEndpoint(url string, groupId string, svcname string, svcid string, svcaddress string, endpoint string) (serviceId string, err error) {
+func (n *EGW) AnnounceEndpoint(url string, endpoint string, port int) error {
 	response, err := n.http.R().
 		SetBody(EGWEndpointCreate{
-			Group:    EGWGroup{ID: groupId},
-			Service:  EGWService{ID: svcid, Name: svcname, Address: svcaddress},
-			Endpoint: EGWEndpoint{Address: endpoint}}).
+			Endpoint: EGWEndpoint{Address: endpoint, Port: port}}).
 		SetResult(EGWServiceResponse{}).
 		Post(url)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if response.IsError() {
-		return "", fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+		return fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
 	}
-
-	srv := response.Result().(*EGWServiceResponse)
-	return srv.Service.ID, nil
+	return nil
 }

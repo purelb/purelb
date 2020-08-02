@@ -31,6 +31,10 @@ import (
 	"k8s.io/api/core/v1"
 )
 
+const (
+	GroupURL = "/api/egw/groups/b321256d-31b7-4209-bd76-28dec3c77c25"  // FIXME: use c.ips.Pool(name) but it's safer to hard-code for now
+)
+
 // Service offers methods to mutate a Kubernetes service object.
 type service interface {
 	Update(svc *v1.Service) (*v1.Service, error)
@@ -87,16 +91,27 @@ func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _
 		return k8s.SyncStateError
 	}
 
+	// Look up the EGW group (which gives us the URL to create services)
+	group, err := egw.GetGroup(GroupURL)
+	if err != nil {
+		l.Log("op", "GetGroup", "group", GroupURL, "error", err)
+		c.client.Errorf(svc, "GetGroupFailed", "Failed to get group %s: %s", GroupURL, err)
+		return k8s.SyncStateError
+	}
+
 	// Announce the service to the EGW
-	groupId := c.ips.Pool(name)
-	egwsvc, err := egw.AnnounceService(groupId, name, svc.Status.LoadBalancer.Ingress[0].IP)
+	egwsvc, err := egw.AnnounceService(group.Links["create-service"], name, svc.Status.LoadBalancer.Ingress[0].IP)
+	if err != nil {
+		l.Log("op", "AnnouncementFailed", "service", svc.Name, "error", err)
+		c.client.Errorf(svc, "AnnouncementFailed", "Failed to announce service for %s: %s", svc.Name, err)
+		return k8s.SyncStateError
+	}
 	if svc.Annotations == nil {
 		svc.Annotations = map[string]string{}
 	}
-	svc.Annotations["acnodal.io/groupId"] = groupId
-	svc.Annotations["acnodal.io/serviceId"] = egwsvc.ID
-	svc.Annotations["acnodal.io/serviceURL"] = egwsvc.Self
-	svc.Annotations["acnodal.io/endpointURL"] = egwsvc.Endpoints
+	svc.Annotations["acnodal.io/groupURL"] = egwsvc.Links["group"]
+	svc.Annotations["acnodal.io/serviceURL"] = egwsvc.Links["self"]
+	svc.Annotations["acnodal.io/endpointcreateURL"] = egwsvc.Links["create-endpoint"]
 
 	if !(reflect.DeepEqual(svcRo.Annotations, svc.Annotations) && reflect.DeepEqual(svcRo.Spec, svc.Spec)) {
 		svcRo, err = c.client.Update(svc)
