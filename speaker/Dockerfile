@@ -1,4 +1,11 @@
-FROM alpine:latest
+FROM ubuntu:20.04
+
+RUN apt-get update \
+    && apt-get install -y libelf-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# copy PFC components from the PFC docker image
+COPY --from=registry.gitlab.com/acnodal/packet-forwarding-component/pfc:demo202008031754 /tmp/.acnodal/bin/* /usr/local/bin/
 
 ADD speaker /speaker
 
