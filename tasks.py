@@ -270,13 +270,6 @@ def release(ctx, version, skip_release_notes=False):
     version = semver.parse_version_info(version)
     is_patch_release = version.patch != 0
 
-    # Check that we have release notes for the desired version.
-    run("git checkout main", echo=True)
-    if not skip_release_notes:
-        with open("website/content/release-notes/_index.md") as release_notes:
-            if "## Version {}".format(version) not in release_notes.read():
-                raise Exit(message="no release notes for v{}".format(version))
-
     # Move HEAD to the correct release branch - either a new one, or
     # an existing one.
     if is_patch_release:
@@ -284,43 +277,13 @@ def release(ctx, version, skip_release_notes=False):
     else:
         run("git checkout -b v{}.{}".format(version.major, version.minor), echo=True)
 
-    # Copy over release notes from main.
-    if not skip_release_notes:
-        run("git checkout main -- website/content/release-notes/_index.md", echo=True)
-
-    # Update links on the website to point to files at the version
-    # we're creating.
-    if is_patch_release:
-        previous_version = "v{}.{}.{}".format(version.major, version.minor, version.patch-1)
-    else:
-        previous_version = "main"
-    def _replace(pattern):
-        oldpat = pattern.format(previous_version)
-        newpat = pattern.format("v{}").format(version)
-        run("perl -pi -e 's#{}#{}#g' website/content/*.md website/content/*/*.md".format(oldpat, newpat),
-            echo=True)
-    _replace("/google/metallb/{}")
-    _replace("/google/metallb/tree/{}")
-    _replace("/google/metallb/blob/{}")
-
-    # Update the version listed on the website sidebar
-    run("perl -pi -e 's/MetalLB .*/MetalLB v{}/g' website/content/_header.md".format(version), echo=True)
-
     # Update the manifests with the new version
     run("perl -pi -e 's,image: metallb/speaker:.*,image: metallb/speaker:v{},g' manifests/metallb.yaml".format(version), echo=True)
     run("perl -pi -e 's,image: metallb/controller:.*,image: metallb/controller:v{},g' manifests/metallb.yaml".format(version), echo=True)
-
-    # Update the version in kustomize instructions
-    #
-    # TODO: Check if kustomize instructions really need the version in the
-    # website or if there is a simpler way. For now, though, we just replace the
-    # only page that mentions the version on release.
-    run("perl -pi -e 's,github.com/metallb/metallb//manifests\?ref=.*,github.com/metallb/metallb//manifests\?ref=v{},g' website/content/installation/_index.md".format(version), echo=True)
 
     # Update the version embedded in the binary
     run("perl -pi -e 's/version\s+=.*/version = \"{}\"/g' internal/version/version.go".format(version), echo=True)
     run("gofmt -w internal/version/version.go", echo=True)
 
     run("git commit -a -m 'Automated update for release v{}'".format(version), echo=True)
-    run("git tag v{} -m 'See the release notes for details:\n\nhttps://metallb.universe.tf/release-notes/#version-{}-{}-{}'".format(version, version.major, version.minor, version.patch), echo=True)
     run("git checkout main", echo=True)
