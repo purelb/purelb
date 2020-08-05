@@ -15,8 +15,7 @@ from invoke.exceptions import Exit
 all_binaries = set(["controller-pool",
                     "controller-acnodal",
                     "speaker-acnodal",
-                    "speaker-local",
-                    "mirror-server"])
+                    "speaker-local"])
 all_architectures = set(["amd64",
                          "arm",
                          "arm64",
@@ -72,7 +71,7 @@ def build(ctx, binaries, architectures, tag="dev", docker_user="metallb"):
     binaries = _check_binaries(binaries)
     architectures = _check_architectures(architectures)
     _make_build_dirs()
-    
+
     commit = run("git describe --dirty --always", hide=True).stdout.strip()
     branch = run("git rev-parse --abbrev-ref HEAD", hide=True).stdout.strip()
 
@@ -137,7 +136,7 @@ def push_multiarch(ctx, binaries, tag="dev", docker_user="metallb"):
     binaries = _check_binaries(binaries)
     architectures = _check_architectures(["all"])
     push(ctx, binaries=binaries, architectures=architectures, tag=tag, docker_user=docker_user)
-    
+
     platforms = ",".join("linux/{}".format(arch) for arch in architectures)
     for bin in binaries:
         run("manifest-tool push from-args "
@@ -154,120 +153,12 @@ def push_multiarch(ctx, binaries, tag="dev", docker_user="metallb"):
     "architecture": "CPU architecture of the local machine. Default 'amd64'.",
     "name": "name of the kind cluster to use.",
 })
-def dev_env(ctx, architecture="amd64", name="kind", cni=None):
-    """Build and run MetalLB in a local Kind cluster.
-
-    If the cluster specified by --name (default "kind") doesn't exist,
-    it is created. Then, build MetalLB docker images from the
-    checkout, push them into kind, and deploy deployments/metallb.yaml
-    to run those images.
-    """
-    clusters = run("kind get clusters", hide=True).stdout.strip().splitlines()
-    mk_cluster = name not in clusters
-    if mk_cluster:
-        config = {
-            "apiVersion": "kind.sigs.k8s.io/v1alpha3",
-            "kind": "Cluster",
-            "nodes": [{"role": "control-plane"},
-                      {"role": "worker"},
-                      {"role": "worker"},
-            ],
-        }
-        if cni:
-            config["networking"] = {
-                "disableDefaultCNI": True,
-            }
-        config = yaml.dump(config).encode("utf-8")
-        with tempfile.NamedTemporaryFile() as tmp:
-            tmp.write(config)
-            tmp.flush()
-            run("kind create cluster --name={} --config={}".format(name, tmp.name), pty=True, echo=True)
-
-    if mk_cluster and cni:
-        run("kubectl apply -f e2etest/manifests/{}.yaml".format(cni), echo=True)
-
-    build(ctx, binaries=["controller", "speaker", "mirror-server"], architectures=[architecture])
-    run("kind load docker-image --name={} metallb/controller:dev-{}".format(name, architecture), echo=True)
-    run("kind load docker-image --name={} metallb/speaker:dev-{}".format(name, architecture), echo=True)
-    run("kind load docker-image --name={} metallb/mirror-server:dev-{}".format(name, architecture), echo=True)
-
-    run("kubectl delete po -nmetallb-system --all", echo=True)
-
-    manifests_dir = os.getcwd() + "/manifests"
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Copy namespace manifest.
-        shutil.copy(manifests_dir + "/namespace.yaml", tmpdir)
-
-        with open(manifests_dir + "/metallb.yaml") as f:
-            manifest = f.read()
-        manifest = manifest.replace(":main", ":dev-{}".format(architecture))
-        manifest = manifest.replace("imagePullPolicy: Always", "imagePullPolicy: Never")
-        with open(tmpdir + "/metallb.yaml", "w") as f:
-            f.write(manifest)
-            f.flush()
-
-        # Create memberlist secret.
-        secret = """---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: memberlist
-  namespace: metallb-system
-stringData:
-  secretkey: verysecurelol"""
-
-        with open(tmpdir + "/secret.yaml", "w") as f:
-            f.write(secret)
-            f.flush()
-
-        run("kubectl apply -f {}/namespace.yaml".format(tmpdir), echo=True)
-        run("kubectl apply -f {}/secret.yaml".format(tmpdir), echo=True)
-        run("kubectl apply -f {}/metallb.yaml".format(tmpdir), echo=True)
-
-    with open("e2etest/manifests/mirror-server.yaml") as f:
-        manifest = f.read()
-    manifest = manifest.replace(":main", ":dev-{}".format(architecture))
-    with tempfile.NamedTemporaryFile() as tmp:
-        tmp.write(manifest.encode("utf-8"))
-        tmp.flush()
-        run("kubectl apply -f {}".format(tmp.name), echo=True)
-
-@task
-def test_cni_manifests(ctx):
-    """Update CNI manifests for e2e tests."""
-    def _fetch(url):
-        bs = urlopen(url).read()
-        return list(m for m in yaml.safe_load_all(bs) if m)
-    def _write(file, manifest):
-        with open(file, "w") as f:
-            f.write(yaml.dump_all(manifest))
-
-    calico = _fetch("https://docs.projectcalico.org/v3.6/getting-started/kubernetes/installation/hosted/kubernetes-datastore/calico-networking/1.7/calico.yaml")
-    for manifest in calico:
-        if manifest["kind"] != "DaemonSet":
-            continue
-        manifest["spec"]["template"]["spec"]["containers"][0]["env"].append({
-            "name": "FELIX_IGNORELOOSERPF",
-            "value": "true",
-        })
-    _write("e2etest/manifests/calico.yaml", calico)
-
-    weave = _fetch("https://cloud.weave.works/k8s/net?k8s-version=1.15&env.NO_MASQ_LOCAL=1")
-    _write("e2etest/manifests/weave.yaml", weave)
-
-    flannel = _fetch("https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml")
-    _write("e2etest/manifests/flannel.yaml", flannel)
-
-@task(help={
-    "version": "version of MetalLB to release.",
-    "skip-release-notes": "make the release even if there are no release notes.",
-})
 def release(ctx, version, skip_release_notes=False):
     """Tag a new release."""
     status = run("git status --porcelain", hide=True).stdout.strip()
     if status != "":
         raise Exit(message="git checkout not clean, cannot release")
-    
+
     version = semver.parse_version_info(version)
     is_patch_release = version.patch != 0
 
