@@ -50,7 +50,7 @@ data:
 Create the netbox-client namespace.  This allows the netbox-client controller to run alongside the MetalLB controller.
 
 ```
-$ kubectl apply -f ./manifests/namespace.yaml
+$ kubectl apply -f deployments/namespace.yaml
 ```
 
 Configure a k8s secret that contains the NetBox user token (which the
@@ -62,12 +62,12 @@ $ kubectl create secret generic -n netbox-client netbox-client --from-literal=us
 If you don't have a token you can create one using the NetBox
 admin user interface.
 
-Edit "manifests/netbox-controller.yaml" so NETBOX_BASE_URL points to
+Edit "deployments/netbox-controller.yaml" so NETBOX_BASE_URL points to
 your installation of NetBox.  Deploy the POC controller to a k8s
 cluster by applying the manifest.
 
 ```
-$ kubectl apply -f manifests/netbox-controller.yaml
+$ kubectl apply -f deployments/netbox-controller.yaml
 ```
 
 As an alternative, the controller can run locally and connect to a

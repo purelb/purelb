@@ -12,8 +12,10 @@ except ImportError:
 from invoke import run, task
 from invoke.exceptions import Exit
 
-all_binaries = set(["controller",
-                    "speaker",
+all_binaries = set(["controller-pool",
+                    "controller-acnodal",
+                    "speaker-acnodal",
+                    "speaker-local",
                     "mirror-server"])
 all_architectures = set(["amd64",
                          "arm",
@@ -48,8 +50,7 @@ def _check_binaries(binaries):
         else:
             out.add(binary)
     if not out:
-        out.add("controller")
-        out.add("speaker")
+        out |= all_binaries
     return list(sorted(out))
 
 def _make_build_dirs():
@@ -87,7 +88,7 @@ def build(ctx, binaries, architectures, tag="dev", docker_user="metallb"):
             run("go build -v -o build/{arch}/{bin}/{bin} -ldflags "
                 "'-X go.universe.tf/metallb/internal/version.gitCommit={commit} "
                 "-X go.universe.tf/metallb/internal/version.gitBranch={branch}' "
-                "go.universe.tf/metallb/{bin}".format(
+                "./cmd/{bin}/".format(
                     arch=arch,
                     bin=bin,
                     commit=commit,
@@ -96,7 +97,7 @@ def build(ctx, binaries, architectures, tag="dev", docker_user="metallb"):
                 echo=True)
             run("docker build "
                 "-t {user}/{bin}:{tag}-{arch} "
-                "-f {bin}/Dockerfile build/{arch}/{bin}".format(
+                "-f build/package/Dockerfile.{bin} build/{arch}/{bin}".format(
                     user=docker_user,
                     bin=bin,
                     tag=tag,
@@ -158,7 +159,7 @@ def dev_env(ctx, architecture="amd64", name="kind", cni=None):
 
     If the cluster specified by --name (default "kind") doesn't exist,
     it is created. Then, build MetalLB docker images from the
-    checkout, push them into kind, and deploy manifests/metallb.yaml
+    checkout, push them into kind, and deploy deployments/metallb.yaml
     to run those images.
     """
     clusters = run("kind get clusters", hide=True).stdout.strip().splitlines()
@@ -278,8 +279,8 @@ def release(ctx, version, skip_release_notes=False):
         run("git checkout -b v{}.{}".format(version.major, version.minor), echo=True)
 
     # Update the manifests with the new version
-    run("perl -pi -e 's,image: metallb/speaker:.*,image: metallb/speaker:v{},g' manifests/metallb.yaml".format(version), echo=True)
-    run("perl -pi -e 's,image: metallb/controller:.*,image: metallb/controller:v{},g' manifests/metallb.yaml".format(version), echo=True)
+    run("perl -pi -e 's,image: metallb/speaker:.*,image: metallb/speaker:v{},g' deployments/metallb.yaml".format(version), echo=True)
+    run("perl -pi -e 's,image: metallb/controller:.*,image: metallb/controller:v{},g' deployments/metallb.yaml".format(version), echo=True)
 
     # Update the version embedded in the binary
     run("perl -pi -e 's/version\s+=.*/version = \"{}\"/g' internal/version/version.go".format(version), echo=True)

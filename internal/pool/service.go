@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package pool
 
 import (
 	"fmt"
@@ -20,8 +20,6 @@ import (
 
 	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
-
-	"go.universe.tf/metallb/internal/allocator/k8salloc"
 )
 
 func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service) bool {
@@ -69,7 +67,7 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 	if lbIP != nil {
 		// This assign is idempotent if the config is consistent,
 		// otherwise it'll fail and tell us why.
-		if err := c.ips.Assign(key, lbIP, k8salloc.Ports(svc), k8salloc.SharingKey(svc), k8salloc.BackendKey(svc)); err != nil {
+		if err := c.ips.Assign(key, lbIP, Ports(svc), SharingKey(svc), BackendKey(svc)); err != nil {
 			l.Log("event", "clearAssignment", "reason", "notAllowedByConfig", "msg", "current IP not allowed by config, clearing")
 			c.clearServiceState(key, svc)
 			lbIP = nil
@@ -160,7 +158,7 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (net.IP, error) {
 		if (ip.To4() == nil) != isIPv6 {
 			return nil, fmt.Errorf("requested spec.loadBalancerIP %q does not match the ipFamily of the service", svc.Spec.LoadBalancerIP)
 		}
-		if err := c.ips.Assign(key, ip, k8salloc.Ports(svc), k8salloc.SharingKey(svc), k8salloc.BackendKey(svc)); err != nil {
+		if err := c.ips.Assign(key, ip, Ports(svc), SharingKey(svc), BackendKey(svc)); err != nil {
 			return nil, err
 		}
 		return ip, nil
@@ -169,7 +167,7 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (net.IP, error) {
 	// Otherwise, did the user ask for a specific pool?
 	desiredPool := svc.Annotations["metallb.universe.tf/address-pool"]
 	if desiredPool != "" {
-		ip, err := c.ips.AllocateFromPool(key, isIPv6, desiredPool, k8salloc.Ports(svc), k8salloc.SharingKey(svc), k8salloc.BackendKey(svc))
+		ip, err := c.ips.AllocateFromPool(key, isIPv6, desiredPool, Ports(svc), SharingKey(svc), BackendKey(svc))
 		if err != nil {
 			return nil, err
 		}
@@ -177,5 +175,5 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (net.IP, error) {
 	}
 
 	// Okay, in that case just bruteforce across all pools.
-	return c.ips.Allocate(key, isIPv6, k8salloc.Ports(svc), k8salloc.SharingKey(svc), k8salloc.BackendKey(svc))
+	return c.ips.Allocate(key, isIPv6, Ports(svc), SharingKey(svc), BackendKey(svc))
 }

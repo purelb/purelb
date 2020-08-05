@@ -11,148 +11,37 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-package main
+package speaker
 
 import (
-	"flag"
 	"fmt"
 	"net"
-	"os"
-	"os/signal"
-	"syscall"
 
 	"go.universe.tf/metallb/internal/config"
 	"go.universe.tf/metallb/internal/k8s"
-	"go.universe.tf/metallb/internal/logging"
-	"go.universe.tf/metallb/internal/version"
 	v1 "k8s.io/api/core/v1"
 
 	gokitlog "github.com/go-kit/kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-	Namespace: "metallb",
-	Subsystem: "speaker",
-	Name:      "announced",
-	Help:      "Services being announced from this node. This is desired state, it does not guarantee that the routing protocols have converged.",
-}, []string{
-	"service",
-	"node",
-	"ip",
-})
-
-// Service offers methods to mutate a Kubernetes service object.
-type service interface {
-	Update(svc *v1.Service) (*v1.Service, error)
-	UpdateStatus(svc *v1.Service) error
-	Infof(svc *v1.Service, desc, msg string, args ...interface{})
-	Errorf(svc *v1.Service, desc, msg string, args ...interface{})
-}
-
-func main() {
-	prometheus.MustRegister(announcing)
-
-	logger, err := logging.Init()
-	if err != nil {
-		fmt.Printf("failed to initialize logging: %s\n", err)
-		os.Exit(1)
-	}
-
-	var (
-		config      = flag.String("config", "config", "Kubernetes ConfigMap containing configuration")
-		configNS    = flag.String("config-ns", "", "config file namespace (only needed when running outside of k8s)")
-		kubeconfig  = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
-		host        = flag.String("host", os.Getenv("METALLB_HOST"), "HTTP host address")
-		myNode      = flag.String("node-name", os.Getenv("METALLB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
-		port        = flag.Int("port", 80, "HTTP listening port")
-	)
-	flag.Parse()
-
-	logger.Log("version", version.Version(), "commit", version.CommitHash(), "branch", version.Branch(), "msg", "Speaker starting "+version.String())
-
-	if *myNode == "" {
-		logger.Log("op", "startup", "error", "must specify --node-name or METALLB_NODE_NAME", "msg", "missing configuration")
-		os.Exit(1)
-	}
-
-	stopCh := make(chan struct{})
-	go func() {
-		c1 := make(chan os.Signal)
-		signal.Notify(c1, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
-		<-c1
-		logger.Log("op", "shutdown", "msg", "starting shutdown")
-		signal.Stop(c1)
-		close(stopCh)
-	}()
-	defer logger.Log("op", "shutdown", "msg", "done")
-
-	// Setup all clients and speakers, config decides what is being done runtime.
-	ctrl, err := newController(controllerConfig{
-		MyNode: *myNode,
-		Logger: logger,
-	})
-	if err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to create controller")
-		os.Exit(1)
-	}
-
-	client, err := k8s.New(&k8s.Config{
-		ProcessName:   "metallb-speaker",
-		ConfigMapName: *config,
-		ConfigMapNS:   *configNS,
-		NodeName:      *myNode,
-		Logger:        logger,
-		Kubeconfig:    *kubeconfig,
-
-		MetricsHost:   *host,
-		MetricsPort:   *port,
-		ReadEndpoints: true,
-
-		ServiceChanged: ctrl.SetBalancer,
-		ConfigChanged:  ctrl.SetConfig,
-		NodeChanged:    ctrl.SetNode,
-	})
-	if err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to create k8s client")
-		os.Exit(1)
-	}
-	ctrl.client = client
-
-	if err := client.Run(stopCh); err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to run k8s client")
-	}
-}
-
 type controller struct {
-	myNode string
-
-	config *config.Config
-	client service
-
-	announcer Announcer
-	svcIP   map[string]net.IP // service name -> assigned IP
+	myNode     string
+	config     *config.Config
+	prometheus *prometheus.GaugeVec
+	announcer  Announcer
+	svcIP      map[string]net.IP // service name -> assigned IP
 }
 
-type controllerConfig struct {
-	MyNode string
-	Logger gokitlog.Logger
-}
-
-func newController(cfg controllerConfig) (*controller, error) {
-	announcer := acnodalController{
-		logger: cfg.Logger,
-		myNode: cfg.MyNode,
+func NewController(myNode string, prometheus *prometheus.GaugeVec, announcer Announcer) (*controller, error) {
+	con := &controller{
+		myNode:     myNode,
+		prometheus: prometheus,
+		announcer:  announcer,
+		svcIP:      map[string]net.IP{},
 	}
 
-	ret := &controller{
-		myNode:  cfg.MyNode,
-		announcer: &announcer,
-		svcIP:   map[string]net.IP{},
-	}
-
-	return ret, nil
+	return con, nil
 }
 
 func (c *controller) SetBalancer(l gokitlog.Logger, name string, svc *v1.Service, eps *v1.Endpoints) k8s.SyncState {
@@ -212,13 +101,12 @@ func (c *controller) SetBalancer(l gokitlog.Logger, name string, svc *v1.Service
 		return k8s.SyncStateError
 	}
 
-	announcing.With(prometheus.Labels{
-		"service":  name,
-		"node":     c.myNode,
-		"ip":       lbIP.String(),
+	c.prometheus.With(prometheus.Labels{
+		"service": name,
+		"node":    c.myNode,
+		"ip":      lbIP.String(),
 	}).Set(1)
-	l.Log("event", "serviceAnnounced", "msg", "service has IP, announcing")
-	c.client.Infof(svc, "nodeAssigned", "announcing from node %q", c.myNode)
+	l.Log("event", "serviceAnnounced", "node", c.myNode, "msg", "service has IP, announcing")
 
 	return k8s.SyncStateSuccess
 }
@@ -229,10 +117,10 @@ func (c *controller) deleteBalancer(l gokitlog.Logger, name, reason string) k8s.
 		return k8s.SyncStateError
 	}
 
-	announcing.Delete(prometheus.Labels{
-		"service":  name,
-		"node":     c.myNode,
-		"ip":       c.svcIP[name].String(),
+	c.prometheus.Delete(prometheus.Labels{
+		"service": name,
+		"node":    c.myNode,
+		"ip":      c.svcIP[name].String(),
 	})
 	delete(c.svcIP, name)
 
@@ -284,13 +172,4 @@ func (c *controller) SetNode(l gokitlog.Logger, node *v1.Node) k8s.SyncState {
 		return k8s.SyncStateError
 	}
 	return k8s.SyncStateSuccess
-}
-
-// An Announcer can announce an IP address
-type Announcer interface {
-	SetConfig(gokitlog.Logger, *config.Config) error
-	ShouldAnnounce(gokitlog.Logger, string, *v1.Service, *v1.Endpoints) string
-	SetBalancer(gokitlog.Logger, string, net.IP, *config.Pool) error
-	DeleteBalancer(gokitlog.Logger, string, string) error
-	SetNode(gokitlog.Logger, *v1.Node) error
 }

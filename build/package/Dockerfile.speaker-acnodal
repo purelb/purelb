@@ -7,11 +7,11 @@ RUN apt-get update \
 # copy PFC components from the PFC docker image
 COPY --from=registry.gitlab.com/acnodal/packet-forwarding-component/pfc:demo202008031754 /tmp/.acnodal/bin/* /usr/local/bin/
 
-ADD speaker /speaker
+ADD speaker-acnodal /
 
 # When running as non root and building in an environment that `umask` masks out
 # '+x' for others, it won't be possible to execute. Make sure all can execute,
 # just in case
-RUN chmod a+x /speaker
+RUN chmod a+x /speaker-acnodal
 
-ENTRYPOINT ["/speaker"]
+ENTRYPOINT ["/speaker-acnodal"]

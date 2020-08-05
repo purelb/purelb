@@ -67,7 +67,7 @@ func testAll(t *testing.T, f func(t *testing.T, u *vk.Universe)) {
 				t.Fatal(err)
 			}
 
-			bs, err := ioutil.ReadFile("../manifests/metallb.yaml")
+			bs, err := ioutil.ReadFile("../deployments/metallb.yaml")
 			if err != nil {
 				t.Fatalf("reading metallb manifest: %v", err)
 			}

@@ -1,4 +1,4 @@
-package allocator
+package pool
 
 import (
 	"math"

@@ -1,16 +1,15 @@
-package k8salloc
+package pool
 
 import (
-	"go.universe.tf/metallb/internal/allocator"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
 // Ports turns a service definition into a set of allocator ports.
-func Ports(svc *v1.Service) []allocator.Port {
-	var ret []allocator.Port
+func Ports(svc *v1.Service) []Port {
+	var ret []Port
 	for _, port := range svc.Spec.Ports {
-		ret = append(ret, allocator.Port{
+		ret = append(ret, Port{
 			Proto: string(port.Protocol),
 			Port:  int(port.Port),
 		})

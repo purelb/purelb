@@ -12,42 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package pool
 
 import (
-	"flag"
-	"fmt"
-	"os"
 	"reflect"
 
-	"go.universe.tf/metallb/internal/acnodal"
-	"go.universe.tf/metallb/internal/allocator"
 	"go.universe.tf/metallb/internal/config"
 	"go.universe.tf/metallb/internal/k8s"
-	"go.universe.tf/metallb/internal/logging"
-	"go.universe.tf/metallb/internal/version"
 
 	"github.com/go-kit/kit/log"
 	"k8s.io/api/core/v1"
 )
 
-const (
-	GroupURL = "/api/egw/groups/b321256d-31b7-4209-bd76-28dec3c77c25"  // FIXME: use c.ips.Pool(name) but it's safer to hard-code for now
-)
-
-// Service offers methods to mutate a Kubernetes service object.
-type service interface {
-	Update(svc *v1.Service) (*v1.Service, error)
-	UpdateStatus(svc *v1.Service) error
-	Infof(svc *v1.Service, desc, msg string, args ...interface{})
-	Errorf(svc *v1.Service, desc, msg string, args ...interface{})
-}
-
 type controller struct {
-	client service
+	client *k8s.Client
 	synced bool
 	config *config.Config
-	ips    *allocator.Allocator
+	ips    *Allocator
+}
+
+func NewController(ips *Allocator) (*controller, error) {
+	con := &controller{
+		ips: ips,
+	}
+
+	return con, nil
+}
+
+func (c *controller) SetClient(client *k8s.Client) {
+	c.client = client
 }
 
 func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _ *v1.Endpoints) k8s.SyncState {
@@ -82,36 +75,6 @@ func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _
 	}
 
 	var err error
-
-	// Connect to the EGW
-	egw, err := acnodal.New("", "")
-	if err != nil {
-		l.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
-		c.client.Errorf(svc, "AllocationFailed", "Failed to create EGW service for %s: %s", svc.Name, err)
-		return k8s.SyncStateError
-	}
-
-	// Look up the EGW group (which gives us the URL to create services)
-	group, err := egw.GetGroup(GroupURL)
-	if err != nil {
-		l.Log("op", "GetGroup", "group", GroupURL, "error", err)
-		c.client.Errorf(svc, "GetGroupFailed", "Failed to get group %s: %s", GroupURL, err)
-		return k8s.SyncStateError
-	}
-
-	// Announce the service to the EGW
-	egwsvc, err := egw.AnnounceService(group.Links["create-service"], name, svc.Status.LoadBalancer.Ingress[0].IP)
-	if err != nil {
-		l.Log("op", "AnnouncementFailed", "service", svc.Name, "error", err)
-		c.client.Errorf(svc, "AnnouncementFailed", "Failed to announce service for %s: %s", svc.Name, err)
-		return k8s.SyncStateError
-	}
-	if svc.Annotations == nil {
-		svc.Annotations = map[string]string{}
-	}
-	svc.Annotations["acnodal.io/groupURL"] = egwsvc.Links["group"]
-	svc.Annotations["acnodal.io/serviceURL"] = egwsvc.Links["self"]
-	svc.Annotations["acnodal.io/endpointcreateURL"] = egwsvc.Links["create-endpoint"]
 
 	if !(reflect.DeepEqual(svcRo.Annotations, svc.Annotations) && reflect.DeepEqual(svcRo.Spec, svc.Spec)) {
 		svcRo, err = c.client.Update(svc)
@@ -160,48 +123,4 @@ func (c *controller) SetConfig(l log.Logger, cfg *config.Config) k8s.SyncState {
 func (c *controller) MarkSynced(l log.Logger) {
 	c.synced = true
 	l.Log("event", "stateSynced", "msg", "controller synced, can allocate IPs now")
-}
-
-func main() {
-	logger, err := logging.Init()
-	if err != nil {
-		fmt.Printf("failed to initialize logging: %s\n", err)
-		os.Exit(1)
-	}
-
-	var (
-		port       = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
-		config     = flag.String("config", "config", "Kubernetes ConfigMap containing MetalLB's configuration")
-		configNS   = flag.String("config-ns", "", "config file namespace (only needed when running outside of k8s)")
-		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
-	)
-	flag.Parse()
-
-	logger.Log("version", version.Version(), "commit", version.CommitHash(), "branch", version.Branch(), "msg", "MetalLB controller starting "+version.String())
-
-	c := &controller{
-		ips: allocator.New(),
-	}
-
-	client, err := k8s.New(&k8s.Config{
-		ProcessName:   "metallb-controller",
-		ConfigMapName: *config,
-		ConfigMapNS:   *configNS,
-		MetricsPort:   *port,
-		Logger:        logger,
-		Kubeconfig:    *kubeconfig,
-
-		ServiceChanged: c.SetBalancer,
-		ConfigChanged:  c.SetConfig,
-		Synced:         c.MarkSynced,
-	})
-	if err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to create k8s client")
-		os.Exit(1)
-	}
-
-	c.client = client
-	if err := client.Run(nil); err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to run k8s client")
-	}
 }

@@ -1,4 +1,4 @@
-package allocator
+package pool
 
 import "github.com/prometheus/client_golang/prometheus"
 
@@ -9,7 +9,7 @@ var stats = struct {
 }{
 	poolCapacity: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "metallb",
-		Subsystem: "allocator",
+		Subsystem: "allocator-pool",
 		Name:      "addresses_total",
 		Help:      "Number of usable IP addresses, per pool",
 	}, []string{
@@ -17,7 +17,7 @@ var stats = struct {
 	}),
 	poolActive: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "metallb",
-		Subsystem: "allocator",
+		Subsystem: "allocator-pool",
 		Name:      "addresses_in_use_total",
 		Help:      "Number of IP addresses in use, per pool",
 	}, []string{
@@ -25,7 +25,7 @@ var stats = struct {
 	}),
 	poolAllocated: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "metallb",
-		Subsystem: "allocator",
+		Subsystem: "allocator-pool",
 		Name:      "services_allocated_total",
 		Help:      "Number of services allocated, per pool",
 	}, []string{

@@ -1,11 +1,10 @@
 // Copyright 2020 Acnodal Inc.  All rights reserved.
 
-package main
+package acnodal
 
 import (
 	"net"
 
-	"go.universe.tf/metallb/internal/acnodal"
 	"go.universe.tf/metallb/internal/config"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -13,19 +12,23 @@ import (
 	"github.com/go-kit/kit/log"
 )
 
-type acnodalController struct {
+type announcer struct {
 	logger     log.Logger
 	myNode     string
 	nodeLabels labels.Set
 }
 
-func (c *acnodalController) SetConfig(l log.Logger, cfg *config.Config) error {
+func NewAnnouncer(l log.Logger, node string) *announcer {
+	return &announcer{logger: l, myNode: node}
+}
+
+func (c *announcer) SetConfig(l log.Logger, cfg *config.Config) error {
 	l.Log("event", "newConfig")
 
 	return nil
 }
 
-func (c *acnodalController) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, eps *v1.Endpoints) string {
+func (c *announcer) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, eps *v1.Endpoints) string {
 	// Should we advertise?
 	// Yes, if externalTrafficPolicy is
 	//  Cluster && any healthy endpoint exists
@@ -48,7 +51,7 @@ func (c *acnodalController) ShouldAnnounce(l log.Logger, name string, svc *v1.Se
 	// and the main loop doesn't provide them to SetBalancer() so we'll
 	// announce here since we've got everything that we need.
 
-	egw, err := acnodal.New("", "")
+	egw, err := New("", "")
 	if err != nil {
 		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
 		return "cantConnectToEGW"
@@ -75,18 +78,18 @@ func (c *acnodalController) ShouldAnnounce(l log.Logger, name string, svc *v1.Se
 	return ""
 }
 
-func (c *acnodalController) SetBalancer(l log.Logger, name string, lbIP net.IP, pool *config.Pool) error {
+func (c *announcer) SetBalancer(l log.Logger, name string, lbIP net.IP, pool *config.Pool) error {
 	// This method is a no-op since we announced the endpoints in ShouldAnnounce()
 	return nil
 }
 
-func (c *acnodalController) DeleteBalancer(l log.Logger, name, reason string) error {
+func (c *announcer) DeleteBalancer(l log.Logger, name, reason string) error {
 	l.Log("event", "updatedNodes", "msg", "Delete balancer", "service", name, "reason", reason)
 
 	return nil
 }
 
-func (c *acnodalController) SetNode(l log.Logger, node *v1.Node) error {
+func (c *announcer) SetNode(l log.Logger, node *v1.Node) error {
 	l.Log("event", "updatedNodes", "msg", "Node announced", "name", node.Name)
 
 	return nil
