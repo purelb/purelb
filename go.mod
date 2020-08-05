@@ -13,14 +13,10 @@ require (
 	github.com/golang/protobuf v1.3.1
 	github.com/google/go-cmp v0.3.0
 	github.com/googleapis/gnostic v0.2.0 // indirect
-	github.com/hashicorp/memberlist v0.1.7
+	github.com/hashicorp/memberlist v0.2.2
 	github.com/imdario/mergo v0.3.6 // indirect
 	github.com/kr/pretty v0.1.0 // indirect
-	github.com/mdlayher/arp v0.0.0-20190313224443-98a83c8a2717
-	github.com/mdlayher/ethernet v0.0.0-20190606142754-0394541c37b7
-	github.com/mdlayher/ndp v0.0.0-20190419144644-012988d57f9a
 	github.com/mikioh/ipaddr v0.0.0-20190404000644-d465c8ab6721
-	github.com/osrg/gobgp v2.0.0+incompatible
 	github.com/prometheus/client_golang v1.0.0
 	github.com/satori/go.uuid v1.2.0 // indirect
 	github.com/spf13/cobra v0.0.5
