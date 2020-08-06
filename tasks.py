@@ -37,7 +37,7 @@ def build(ctx, binaries, tag="dev", docker_user="purelb"):
     """Build PureLB docker images."""
     binaries = _check_binaries(binaries)
 
-    run("go test ./...")  # run the unit tests first
+    run("go test ./... -short")  # run the unit tests first
 
     commit = run("git describe --dirty --always", hide=True).stdout.strip()
     branch = run("git rev-parse --abbrev-ref HEAD", hide=True).stdout.strip()
