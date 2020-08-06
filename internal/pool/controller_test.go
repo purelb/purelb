@@ -6,7 +6,6 @@ import (
 	"net"
 	"testing"
 
-	"go.universe.tf/metallb/internal/allocator"
 	"go.universe.tf/metallb/internal/config"
 	"go.universe.tf/metallb/internal/k8s"
 
@@ -34,14 +33,6 @@ func diffService(a, b *v1.Service) string {
 		b = newB
 	}
 	return cmp.Diff(a, b)
-}
-
-func ipnet(s string) *net.IPNet {
-	_, n, err := net.ParseCIDR(s)
-	if err != nil {
-		panic(err)
-	}
-	return n
 }
 
 func statusAssigned(ip string) v1.ServiceStatus {
@@ -111,28 +102,24 @@ func (s *testK8S) gotService(in *v1.Service) *v1.Service {
 func TestControllerMutation(t *testing.T) {
 	k := &testK8S{t: t}
 	c := &controller{
-		ips:    allocator.New(),
+		ips:    New(),
 		client: k,
 	}
 	cfg := &config.Config{
 		Pools: map[string]*config.Pool{
 			"pool1": {
-				Protocol:   config.BGP,
 				AutoAssign: true,
 				CIDR:       []*net.IPNet{ipnet("1.2.3.0/31")},
 			},
 			"pool2": {
-				Protocol:   config.Layer2,
 				AutoAssign: false,
 				CIDR:       []*net.IPNet{ipnet("3.4.5.6/32")},
 			},
 			"pool3": {
-				Protocol:   config.BGP,
 				AutoAssign: true,
 				CIDR:       []*net.IPNet{ipnet("1000::/127")},
 			},
 			"pool4": {
-				Protocol:   config.Layer2,
 				AutoAssign: false,
 				CIDR:       []*net.IPNet{ipnet("2000::1/128")},
 			},
@@ -541,7 +528,7 @@ func TestControllerMutation(t *testing.T) {
 func TestControllerConfig(t *testing.T) {
 	k := &testK8S{t: t}
 	c := &controller{
-		ips:    allocator.New(),
+		ips:    New(),
 		client: k,
 	}
 
@@ -637,7 +624,7 @@ func TestControllerConfig(t *testing.T) {
 func TestDeleteRecyclesIP(t *testing.T) {
 	k := &testK8S{t: t}
 	c := &controller{
-		ips:    allocator.New(),
+		ips:    New(),
 		client: k,
 	}
 

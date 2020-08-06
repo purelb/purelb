@@ -49,6 +49,14 @@ type Client struct {
 	synced         func(log.Logger)
 }
 
+// Service offers methods to mutate a Kubernetes service object.
+type Service interface {
+	Update(svc *v1.Service) (*v1.Service, error)
+	UpdateStatus(svc *v1.Service) error
+	Infof(svc *v1.Service, desc, msg string, args ...interface{})
+	Errorf(svc *v1.Service, desc, msg string, args ...interface{})
+}
+
 // SyncState is the result of calling synchronization callbacks.
 type SyncState int
 

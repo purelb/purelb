@@ -5,7 +5,6 @@ package logging
 import (
 	"bufio"
 	"flag"
-	"fmt"
 	"os"
 	"regexp"
 	"strconv"
@@ -37,7 +36,7 @@ func Init() log.Logger {
 
 	r, w, err := os.Pipe()
 	if err != nil {
-		fmt.Printf("failed to initialize logging: creating pipe for glog redirection\n", err)
+		l.Log("failed to initialize logging: creating pipe for glog redirection", err)
 		os.Exit(1)
 	}
 	klog.InitFlags(flag.NewFlagSet("klog", flag.ExitOnError))

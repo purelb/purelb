@@ -10,7 +10,6 @@ import (
 )
 
 const (
-	GroupURL        = "/api/egw/groups/b321256d-31b7-4209-bd76-28dec3c77c25"
 	GroupName       = "acnodal-test"
 	ServiceName     = "test-service"
 	ServiceAddress  = "192.168.1.27"

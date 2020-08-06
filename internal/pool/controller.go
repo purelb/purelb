@@ -25,7 +25,7 @@ import (
 )
 
 type controller struct {
-	client *k8s.Client
+	client k8s.Service
 	synced bool
 	config *config.Config
 	ips    *Allocator

@@ -3,7 +3,6 @@ package acnodal
 import (
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"os"
 	"strings"
@@ -11,8 +10,6 @@ import (
 	"go.universe.tf/metallb/internal/config"
 	"go.universe.tf/metallb/internal/netbox"
 	"go.universe.tf/metallb/internal/pool"
-
-	"github.com/mikioh/ipaddr"
 )
 
 // An Allocator tracks IP address pools and allocates addresses from them.
@@ -229,7 +226,7 @@ func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, p
 	netbox := *netbox.New(netbox_url, user_token)
 	cidr, err := netbox.Fetch()
 	if err != nil {
-		fmt.Println("no available IPs in pool %q", poolName)
+		fmt.Println("no available IPs in pool", poolName)
 		return nil, fmt.Errorf("no available IPs in pool %q", poolName)
 	}
 	ip, _, err := net.ParseCIDR(cidr)
@@ -237,7 +234,6 @@ func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, p
 		fmt.Println("error parsing IP", cidr)
 		return nil, fmt.Errorf("error parsing IP %q", ip)
 	}
-
 
 	// Now that we've got an IP from Netbox, add it to our local
 	// tracking database
@@ -304,44 +300,6 @@ func sharingOK(existing, new *key) error {
 		return fmt.Errorf("backend key %q does not match existing sharing key %q", new.backend, existing.backend)
 	}
 	return nil
-}
-
-// poolCount returns the number of addresses in the pool.
-func poolCount(p *config.Pool) int64 {
-	var total int64
-	for _, cidr := range p.CIDR {
-		o, b := cidr.Mask.Size()
-		if b-o >= 62 {
-			// An enormous ipv6 range is allocated which will never run out.
-			// Just return max to avoid any math errors.
-			return math.MaxInt64
-		}
-		sz := int64(math.Pow(2, float64(b-o)))
-
-		cur := ipaddr.NewCursor([]ipaddr.Prefix{*ipaddr.NewPrefix(cidr)})
-		firstIP := cur.First().IP
-		lastIP := cur.Last().IP
-
-		if p.AvoidBuggyIPs {
-			if o <= 24 {
-				// A pair of buggy IPs occur for each /24 present in the range.
-				buggies := int64(math.Pow(2, float64(24-o))) * 2
-				sz -= buggies
-			} else {
-				// Ranges smaller than /24 contain 1 buggy IP if they
-				// start/end on a /24 boundary, otherwise they contain
-				// none.
-				if ipConfusesBuggyFirmwares(firstIP) {
-					sz--
-				}
-				if ipConfusesBuggyFirmwares(lastIP) {
-					sz--
-				}
-			}
-		}
-		total += sz
-	}
-	return total
 }
 
 // poolFor returns the pool that owns the requested IP, or "" if none.

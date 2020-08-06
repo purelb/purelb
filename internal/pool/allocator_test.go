@@ -1187,7 +1187,6 @@ func TestPoolCount(t *testing.T) {
 		{
 			desc: "BGP /24",
 			pool: &config.Pool{
-				Protocol: config.BGP,
 				CIDR:     []*net.IPNet{ipnet("1.2.3.0/24")},
 			},
 			want: 256,
@@ -1195,7 +1194,6 @@ func TestPoolCount(t *testing.T) {
 		{
 			desc: "BGP /24 and /25",
 			pool: &config.Pool{
-				Protocol: config.BGP,
 				CIDR:     []*net.IPNet{ipnet("1.2.3.0/24"), ipnet("2.3.4.128/25")},
 			},
 			want: 384,
@@ -1203,7 +1201,6 @@ func TestPoolCount(t *testing.T) {
 		{
 			desc: "BGP /24 and /25, no buggy IPs",
 			pool: &config.Pool{
-				Protocol:      config.BGP,
 				CIDR:          []*net.IPNet{ipnet("1.2.3.0/24"), ipnet("2.3.4.128/25")},
 				AvoidBuggyIPs: true,
 			},
@@ -1212,7 +1209,6 @@ func TestPoolCount(t *testing.T) {
 		{
 			desc: "BGP a BIG ipv6 range",
 			pool: &config.Pool{
-				Protocol:      config.BGP,
 				CIDR:          []*net.IPNet{ipnet("1.2.3.0/24"), ipnet("2.3.4.128/25"), ipnet("1000::/64")},
 				AvoidBuggyIPs: true,
 			},
