@@ -7,8 +7,6 @@ import (
 	"flag"
 	"os"
 	"regexp"
-	"strconv"
-	"time"
 
 	"github.com/go-kit/kit/log"
 	"k8s.io/klog"
@@ -43,7 +41,7 @@ func Init() log.Logger {
 	klog.SetOutput(w)
 	go collectGlogs(r, l)
 
-	logger := log.With(l, "ts", log.DefaultTimestampUTC, "caller", log.DefaultCaller)
+	logger := log.With(l, "caller", log.DefaultCaller)
 
 	logger.Log("release", release, "commit", commit, "branch", branch, "msg", "Starting")
 
@@ -71,17 +69,16 @@ func collectGlogs(f *os.File, logger log.Logger) {
 			buf = append(buf, l...)
 		}
 
-		level, ts, caller, msg := deformat(buf)
-		logger.Log("ts", ts.Format(time.RFC3339Nano), "level", level, "caller", caller, "msg", msg)
+		level, caller, msg := deformat(buf)
+		logger.Log("level", level, "caller", caller, "msg", msg)
 	}
 }
 
 var logPrefix = regexp.MustCompile(`^(.)(\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2}).(\d{6})\s+\d+ ([^:]+:\d+)] (.*)$`)
 
-func deformat(b []byte) (level string, ts time.Time, caller, msg string) {
+func deformat(b []byte) (level string, caller, msg string) {
 	// Default deconstruction used when anything goes wrong.
 	level = "info"
-	ts = time.Now()
 	caller = ""
 	msg = string(b)
 
@@ -93,32 +90,6 @@ func deformat(b []byte) (level string, ts time.Time, caller, msg string) {
 	if ms == nil {
 		return
 	}
-
-	month, err := strconv.Atoi(string(ms[2]))
-	if err != nil {
-		return
-	}
-	day, err := strconv.Atoi(string(ms[3]))
-	if err != nil {
-		return
-	}
-	hour, err := strconv.Atoi(string(ms[4]))
-	if err != nil {
-		return
-	}
-	minute, err := strconv.Atoi(string(ms[5]))
-	if err != nil {
-		return
-	}
-	second, err := strconv.Atoi(string(ms[6]))
-	if err != nil {
-		return
-	}
-	micros, err := strconv.Atoi(string(ms[7]))
-	if err != nil {
-		return
-	}
-	ts = time.Date(ts.Year(), time.Month(month), day, hour, minute, second, micros*1000, time.Local).UTC()
 
 	switch ms[1][0] {
 	case 'I':
