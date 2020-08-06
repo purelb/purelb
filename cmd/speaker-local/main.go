@@ -32,7 +32,7 @@ import (
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Namespace: "metallb",
-	Subsystem: "speaker-local",
+	Subsystem: "speaker_local",
 	Name:      "announced",
 	Help:      "Services being announced from this node. This is desired state, it does not guarantee that the routing protocols have converged.",
 }, []string{
