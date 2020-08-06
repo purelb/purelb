@@ -31,9 +31,9 @@ def _check_binaries(binaries):
       help={
           "binaries": "binaries to build. One or more of {}, or 'all'".format(", ".join(sorted(all_binaries))),
           "tag": "docker image tag prefix to use. Default 'dev'.",
-          "docker-user": "docker user under which to tag the images. Default 'purelb'.",
+          "prefix": "prefix for the docker image tags. Default 'purelb'.",
       })
-def build(ctx, binaries, tag="dev", docker_user="purelb"):
+def build(ctx, binaries, tag="dev", prefix="purelb"):
     """Build PureLB docker images."""
     binaries = _check_binaries(binaries)
 
@@ -43,10 +43,10 @@ def build(ctx, binaries, tag="dev", docker_user="purelb"):
     branch = run("git rev-parse --abbrev-ref HEAD", hide=True).stdout.strip()
 
     for bin in binaries:
-        run("docker build -t {user}/{bin}:{tag} --build-arg cmd={bin}"
+        run("docker build -t {prefix}/{bin}:{tag} --build-arg cmd={bin}"
             " --build-arg commit={commit} --build-arg branch={branch}"
             " -f build/package/Dockerfile.{bin} .".format(
-                user=docker_user,
+                prefix=prefix,
                 bin=bin,
                 tag=tag,
                 commit=commit,
@@ -58,16 +58,16 @@ def build(ctx, binaries, tag="dev", docker_user="purelb"):
       help={
           "binaries": "binaries to build. One or more of {}, or 'all'".format(", ".join(sorted(all_binaries))),
           "tag": "docker image tag prefix to use. Default 'dev'.",
-          "docker-user": "docker user under which to tag the images. Default 'purelb'.",
+          "prefix": "prefix for the docker image tags. Default 'purelb'.",
       })
-def push(ctx, binaries, tag="dev", docker_user="purelb"):
+def push(ctx, binaries, tag="dev", prefix="purelb"):
     """Build and push docker images to registry."""
     binaries = _check_binaries(binaries)
 
     for bin in binaries:
-        build(ctx, binaries=[bin], tag=tag, docker_user=docker_user)
-        run("docker push {user}/{bin}:{tag}".format(
-            user=docker_user,
+        build(ctx, binaries=[bin], tag=tag, prefix=prefix)
+        run("docker push {prefix}/{bin}:{tag}".format(
+            prefix=prefix,
             bin=bin,
             tag=tag),
             echo=True)
