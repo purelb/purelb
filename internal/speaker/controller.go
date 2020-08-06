@@ -27,7 +27,6 @@ import (
 
 type controller struct {
 	myNode     string
-	config     *config.Config
 	prometheus *prometheus.GaugeVec
 	announcer  Announcer
 	svcIP      map[string]net.IP // service name -> assigned IP
@@ -56,11 +55,6 @@ func (c *controller) SetBalancer(l gokitlog.Logger, name string, svc *v1.Service
 		return c.deleteBalancer(l, name, "notLoadBalancer")
 	}
 
-	if c.config == nil {
-		l.Log("event", "noConfig", "msg", "not processing, still waiting for config")
-		return k8s.SyncStateSuccess
-	}
-
 	if len(svc.Status.LoadBalancer.Ingress) != 1 {
 		return c.deleteBalancer(l, name, "noIPAllocated")
 	}
@@ -73,19 +67,6 @@ func (c *controller) SetBalancer(l gokitlog.Logger, name string, svc *v1.Service
 
 	l = gokitlog.With(l, "ip", lbIP)
 
-	poolName := poolFor(c.config.Pools, lbIP)
-	if poolName == "" {
-		l.Log("op", "setBalancer", "error", "assigned IP not allowed by config", "msg", "IP allocated by controller not allowed by config")
-		return c.deleteBalancer(l, name, "ipNotAllowed")
-	}
-
-	l = gokitlog.With(l, "pool", poolName)
-	pool := c.config.Pools[poolName]
-	if pool == nil {
-		l.Log("bug", "true", "msg", "internal error: allocated IP has no matching address pool")
-		return c.deleteBalancer(l, name, "internalError")
-	}
-
 	if svcIP, ok := c.svcIP[name]; ok && !lbIP.Equal(svcIP) {
 		if st := c.deleteBalancer(l, name, "loadBalancerIPChanged"); st == k8s.SyncStateError {
 			return st
@@ -96,7 +77,7 @@ func (c *controller) SetBalancer(l gokitlog.Logger, name string, svc *v1.Service
 		return c.deleteBalancer(l, name, deleteReason)
 	}
 
-	if err := c.announcer.SetBalancer(l, name, lbIP, pool); err != nil {
+	if err := c.announcer.SetBalancer(l, name, lbIP); err != nil {
 		l.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
 		return k8s.SyncStateError
 	}
@@ -129,39 +110,14 @@ func (c *controller) deleteBalancer(l gokitlog.Logger, name, reason string) k8s.
 	return k8s.SyncStateSuccess
 }
 
-func poolFor(pools map[string]*config.Pool, ip net.IP) string {
-	for pname, p := range pools {
-		for _, cidr := range p.CIDR {
-			if cidr.Contains(ip) {
-				return pname
-			}
-		}
-	}
-	return ""
-}
-
 func (c *controller) SetConfig(l gokitlog.Logger, cfg *config.Config) k8s.SyncState {
 	l.Log("event", "startUpdate", "msg", "start of config update")
 	defer l.Log("event", "endUpdate", "msg", "end of config update")
-
-	if cfg == nil {
-		l.Log("op", "setConfig", "error", "no configuration in cluster", "msg", "configuration is missing, can not function")
-		return k8s.SyncStateError
-	}
-
-	for svc, ip := range c.svcIP {
-		if pool := poolFor(cfg.Pools, ip); pool == "" {
-			l.Log("op", "setConfig", "service", svc, "ip", ip, "error", "service has no configuration under new config", "msg", "new configuration rejected")
-			return k8s.SyncStateError
-		}
-	}
 
 	if err := c.announcer.SetConfig(l, cfg); err != nil {
 		l.Log("op", "setConfig", "error", err, "msg", "applying new configuration to announcer failed")
 		return k8s.SyncStateError
 	}
-
-	c.config = cfg
 
 	return k8s.SyncStateReprocessAll
 }

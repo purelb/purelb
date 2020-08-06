@@ -16,6 +16,7 @@ type announcer struct {
 	logger     log.Logger
 	myNode     string
 	nodeLabels labels.Set
+	config     *config.Config
 }
 
 func NewAnnouncer(l log.Logger, node string) *announcer {
@@ -24,6 +25,8 @@ func NewAnnouncer(l log.Logger, node string) *announcer {
 
 func (c *announcer) SetConfig(l log.Logger, cfg *config.Config) error {
 	l.Log("event", "newConfig")
+
+	c.config = cfg
 
 	return nil
 }
@@ -47,7 +50,7 @@ func (c *announcer) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, e
 	return ""
 }
 
-func (c *announcer) SetBalancer(l log.Logger, name string, lbIP net.IP, pool *config.Pool) error {
+func (c *announcer) SetBalancer(l log.Logger, name string, lbIP net.IP) error {
 	return nil
 }
 

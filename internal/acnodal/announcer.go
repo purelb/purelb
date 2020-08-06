@@ -78,7 +78,7 @@ func (c *announcer) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, e
 	return ""
 }
 
-func (c *announcer) SetBalancer(l log.Logger, name string, lbIP net.IP, pool *config.Pool) error {
+func (c *announcer) SetBalancer(l log.Logger, name string, lbIP net.IP) error {
 	// This method is a no-op since we announced the endpoints in ShouldAnnounce()
 	return nil
 }
