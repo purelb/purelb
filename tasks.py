@@ -40,25 +40,9 @@ def build(ctx, binaries, tag="dev", docker_user="metallb"):
     commit = run("git describe --dirty --always", hide=True).stdout.strip()
     branch = run("git rev-parse --abbrev-ref HEAD", hide=True).stdout.strip()
 
-    env = {
-        "CGO_ENABLED": "0",
-        "GOOS": "linux",
-        "GOARM": "6",
-        "GO111MODULE": "on",
-    }
     for bin in binaries:
-        run("go build -v -o bin/{bin} -ldflags "
-            "'-X go.universe.tf/metallb/internal/version.gitCommit={commit} "
-            "-X go.universe.tf/metallb/internal/version.gitBranch={branch}' "
-            "./cmd/{bin}/".format(
-                bin=bin,
-                commit=commit,
-                branch=branch),
-            env=env,
-            echo=True)
-        run("docker build "
-            "-t {user}/{bin}:{tag} "
-            "-f build/package/Dockerfile.{bin} bin/".format(
+        run("docker build -t {user}/{bin}:{tag} --build-arg cmd={bin} "
+            "-f build/package/Dockerfile.{bin} .".format(
                 user=docker_user,
                 bin=bin,
                 tag=tag),

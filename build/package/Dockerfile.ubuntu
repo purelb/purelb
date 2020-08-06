@@ -1,0 +1,17 @@
+FROM golang:buster as builder
+
+ARG cmd
+ENV bin=/usr/local/bin/$cmd
+ENV GOOS=linux
+
+WORKDIR /usr/src
+COPY . ./
+
+# build the executable
+RUN go build -tags 'osusergo netgo' -o ${bin} ./cmd/${cmd}/
+
+FROM ubuntu:20.04 as runtime
+
+COPY --from=builder ${bin} ${bin}
+
+ENTRYPOINT ["${bin}"]

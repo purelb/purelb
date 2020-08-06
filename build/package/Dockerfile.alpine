@@ -1,0 +1,16 @@
+FROM golang:alpine as builder
+
+ARG cmd
+ENV bin=/usr/local/bin/$cmd
+
+WORKDIR /usr/src
+COPY . ./
+
+# build the executable
+RUN go build -o ${bin} ./cmd/${cmd}/
+
+FROM alpine as runtime
+
+COPY --from=builder ${bin} ${bin}
+
+ENTRYPOINT ["${bin}"]

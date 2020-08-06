@@ -1,15 +1,1 @@
-FROM golang:alpine as builder
-
-ARG binary
-
-WORKDIR /usr/src
-COPY . ./
-
-# build the executable
-RUN go build -o /usr/local/bin ./cmd/$binary/
-
-FROM alpine as runtime
-
-COPY --from=builder /usr/local/bin/$binary /usr/local/bin/
-
-CMD ["/usr/local/bin/$binary"]
+Dockerfile.alpine
