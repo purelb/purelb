@@ -1,19 +1,19 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  namespace: metallb-system
+  namespace: purelb
   name: config
 data:
   config: |
-    # The peers section tells MetalLB what BGP routers to connect too. There
+    # The peers section tells PureLB what BGP routers to connect too. There
     # is one entry for each router you want to peer with.
     peers:
     - # The target IP address for the BGP session.
       peer-address: 10.0.0.1
-      # The BGP AS number that MetalLB expects to see advertised by
+      # The BGP AS number that PureLB expects to see advertised by
       # the router.
       peer-asn: 64512
-      # The BGP AS number that MetalLB should speak as.
+      # The BGP AS number that PureLB should speak as.
       my-asn: 64512
       # (optional) the TCP port to talk to. Defaults to 179, you shouldn't
       # need to set this in production.
@@ -23,7 +23,7 @@ data:
       hold-time: 120s
       # (optional) The router ID to use when connecting to this peer. Defaults
       # to the node IP address. Generally only useful when you need to peer with
-      # another BGP router running on the same machine as MetalLB.
+      # another BGP router running on the same machine as PureLB.
       router-id: 1.2.3.4
       # (optional) Password for TCPMD5 authenticated BGP sessions
       # offered by some peers.
@@ -45,33 +45,33 @@ data:
           operator: In
           values: [amd64, arm]
 
-    # The address-pools section lists the IP addresses that MetalLB is
+    # The address-pools section lists the IP addresses that PureLB is
     # allowed to allocate, along with settings for how to advertise
     # those addresses over BGP once assigned. You can have as many
     # address pools as you want.
     address-pools:
     - # A name for the address pool. Services can request allocation
       # from a specific address pool using this name, by listing this
-      # name under the 'metallb.universe.tf/address-pool' annotation.
+      # name under the 'purelb.io/address-pool' annotation.
       name: my-ip-space
       # Protocol can be used to select how the announcement is done.
       # Supported values are bgp and layer2.
       protocol: bgp
       
-      # A list of IP address ranges over which MetalLB has
+      # A list of IP address ranges over which PureLB has
       # authority. You can list multiple ranges in a single pool, they
       # will all share the same settings. Each range can be either a
       # CIDR prefix, or an explicit start-end range of IPs.
       addresses:
       - 198.51.100.0/24
       - 192.168.0.150-192.168.0.200
-      # (optional) If true, MetalLB will not allocate any address that
+      # (optional) If true, PureLB will not allocate any address that
       # ends in .0 or .255. Some old, buggy consumer devices
       # mistakenly block traffic to such addresses under the guise of
       # smurf protection. Such devices have become fairly rare, but
       # the option is here if you encounter serving issues.
       avoid-buggy-ips: true
-      # (optional, default true) If false, MetalLB will not automatically
+      # (optional, default true) If false, PureLB will not automatically
       # allocate any address in this pool. Addresses can still explicitly
       # be requested via loadBalancerIP or the address-pool annotation.
       auto-assign: false

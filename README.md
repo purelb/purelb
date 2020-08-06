@@ -1,10 +1,10 @@
-# MetalLB NetBox Controller POC
+# PureLB NetBox Controller POC
 
-This is a proof of concept of a controller that works with MetalLB and
+This is a proof of concept of a controller that works with PureLB and
 allocates IP addresses from NetBox.  It's far from production-ready
 but demonstrates how such a thing might work.
 
-[MetalLB](https://metallb.universe.tf) is a load-balancer
+[PureLB](https://purelb.io) is a load-balancer
 implementation for bare metal [Kubernetes](https://kubernetes.io)
 clusters, using standard routing protocols.  It's capable of managing
 a pre-allocated pool of IP addresses, but isn't able to request
@@ -16,14 +16,14 @@ and DCIM system.
 # HOWTO
 
 This POC queries NetBox for IP addresses whose tenant is
-"ipam-metallb-customer-exp" and whose status is "reserved" so you'll
+"ipam-purelb-customer-exp" and whose status is "reserved" so you'll
 need to add a few using the NetBox user interface.  When it allocates
 an address it marks it as "active" so it won't re-allocate it.
 
-The easiest way to run this POC is to first [install MetalLB](https://metallb.universe.tf/installation/)
+The easiest way to run this POC is to first [install PureLB](https://purelb.io/installation/)
 and configure it to *not* allocate IP addresses.  You can use the
 ["auto-assign: false" configuration
-flag](https://metallb.universe.tf/configuration/#controlling-automatic-address-allocation).
+flag](https://purelb.io/configuration/#controlling-automatic-address-allocation).
 
 You'll also want to configure the speakers to announce anything without second-guessing, so define a pool whose range is 0.0.0.0-255.255.255.255.  For example:
 
@@ -31,7 +31,7 @@ You'll also want to configure the speakers to announce anything without second-g
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  namespace: metallb-system
+  namespace: purelb
   name: config
 data:
   config: |
@@ -47,7 +47,7 @@ data:
       - 0.0.0.0-255.255.255.255
 ```
 
-Create the netbox-client namespace.  This allows the netbox-client controller to run alongside the MetalLB controller.
+Create the netbox-client namespace.  This allows the netbox-client controller to run alongside the PureLB controller.
 
 ```
 $ kubectl apply -f deployments/namespace.yaml
@@ -93,5 +93,5 @@ $ kubectl expose deployment source-ip-app --name=source-service --port=80 --targ
 
 You should see the POC controller allocate an address and mark that
 address as "active" in NetBox.  The controller assigns the address to
-the service and the MetalLB speakers advertise it as if it had been
-allocated by the MetalLB controller.
+the service and the PureLB speakers advertise it as if it had been
+allocated by the PureLB controller.

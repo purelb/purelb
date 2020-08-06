@@ -76,7 +76,7 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 		// The user might also have changed the pool annotation, and
 		// requested a different pool than the one that is currently
 		// allocated.
-		desiredPool := svc.Annotations["metallb.universe.tf/address-pool"]
+		desiredPool := svc.Annotations["purelb.io/address-pool"]
 		if lbIP != nil && desiredPool != "" && c.ips.Pool(key) != desiredPool {
 			l.Log("event", "clearAssignment", "reason", "differentPoolRequested", "msg", "user requested a different pool than the one currently assigned")
 			c.clearServiceState(key, svc)
@@ -165,7 +165,7 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (net.IP, error) {
 	}
 
 	// Otherwise, did the user ask for a specific pool?
-	desiredPool := svc.Annotations["metallb.universe.tf/address-pool"]
+	desiredPool := svc.Annotations["purelb.io/address-pool"]
 	if desiredPool != "" {
 		ip, err := c.ips.AllocateFromPool(key, isIPv6, desiredPool, Ports(svc), SharingKey(svc), BackendKey(svc))
 		if err != nil {

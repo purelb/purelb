@@ -93,7 +93,7 @@ func (n *Netbox) allocateAddr(addr Address) error {
 
 func (n *Netbox) Fetch() (string, error) {
 	var (
-		tenant    string = "ipam-metallb-customer-exp"
+		tenant    string = "ipam-purelb-customer-exp"
 		ip_status string = "reserved"
 	)
 

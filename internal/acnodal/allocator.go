@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"go.universe.tf/metallb/internal/config"
-	"go.universe.tf/metallb/internal/netbox"
-	"go.universe.tf/metallb/internal/pool"
+	"purelb.io/internal/config"
+	"purelb.io/internal/netbox"
+	"purelb.io/internal/pool"
 )
 
 // An Allocator tracks IP address pools and allocates addresses from them.

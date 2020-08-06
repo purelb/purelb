@@ -6,8 +6,8 @@ import (
 	"net"
 	"testing"
 
-	"go.universe.tf/metallb/internal/config"
-	"go.universe.tf/metallb/internal/k8s"
+	"purelb.io/internal/config"
+	"purelb.io/internal/k8s"
 
 	"github.com/go-kit/kit/log"
 	"github.com/google/go-cmp/cmp"
@@ -232,7 +232,7 @@ func TestControllerMutation(t *testing.T) {
 			in: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"metallb.universe.tf/address-pool": "pool1",
+						"purelb.io/address-pool": "pool1",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -243,7 +243,7 @@ func TestControllerMutation(t *testing.T) {
 			want: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"metallb.universe.tf/address-pool": "pool1",
+						"purelb.io/address-pool": "pool1",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -259,7 +259,7 @@ func TestControllerMutation(t *testing.T) {
 			in: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"metallb.universe.tf/address-pool": "pool2",
+						"purelb.io/address-pool": "pool2",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -271,7 +271,7 @@ func TestControllerMutation(t *testing.T) {
 			want: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"metallb.universe.tf/address-pool": "pool2",
+						"purelb.io/address-pool": "pool2",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -287,7 +287,7 @@ func TestControllerMutation(t *testing.T) {
 			in: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"metallb.universe.tf/address-pool": "does-not-exist",
+						"purelb.io/address-pool": "does-not-exist",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -615,7 +615,7 @@ func TestControllerConfig(t *testing.T) {
 		t.Fatalf("SetConfig that deletes allocated IPs was accepted")
 	}
 
-	// Deleting the config also makes MetalLB sad.
+	// Deleting the config also makes PureLB sad.
 	if c.SetConfig(l, nil) != k8s.SyncStateError {
 		t.Fatalf("SetConfig that deletes the config was accepted")
 	}

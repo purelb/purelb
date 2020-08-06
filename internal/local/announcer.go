@@ -5,7 +5,7 @@ package local
 import (
 	"net"
 
-	"go.universe.tf/metallb/internal/config"
+	"purelb.io/internal/config"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 

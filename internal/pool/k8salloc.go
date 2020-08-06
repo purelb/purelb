@@ -19,7 +19,7 @@ func Ports(svc *v1.Service) []Port {
 
 // SharingKey extracts the sharing key for a service.
 func SharingKey(svc *v1.Service) string {
-	return svc.Annotations["metallb.universe.tf/allow-shared-ip"]
+	return svc.Annotations["purelb.io/allow-shared-ip"]
 }
 
 // BackendKey extracts the backend key for a service.

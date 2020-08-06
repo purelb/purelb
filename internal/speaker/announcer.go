@@ -3,7 +3,7 @@ package speaker
 import (
 	"net"
 
-	"go.universe.tf/metallb/internal/config"
+	"purelb.io/internal/config"
 
 	v1 "k8s.io/api/core/v1"
 	gokitlog "github.com/go-kit/kit/log"

@@ -7,7 +7,7 @@ import (
 	"net"
 	"strings"
 
-	"go.universe.tf/metallb/internal/config"
+	"purelb.io/internal/config"
 
 	"github.com/mikioh/ipaddr"
 )

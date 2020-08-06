@@ -20,16 +20,16 @@ import (
 	"os/signal"
 	"syscall"
 
-	"go.universe.tf/metallb/internal/acnodal"
-	"go.universe.tf/metallb/internal/k8s"
-	"go.universe.tf/metallb/internal/logging"
-	"go.universe.tf/metallb/internal/speaker"
+	"purelb.io/internal/acnodal"
+	"purelb.io/internal/k8s"
+	"purelb.io/internal/logging"
+	"purelb.io/internal/speaker"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-	Namespace: "metallb",
+	Namespace: "purelb",
 	Subsystem: "speaker_acnodal",
 	Name:      "announced",
 	Help:      "Services being announced from this node. This is desired state, it does not guarantee that the routing protocols have converged.",
@@ -48,14 +48,14 @@ func main() {
 		config      = flag.String("config", "config", "Kubernetes ConfigMap containing configuration")
 		configNS    = flag.String("config-ns", "", "config file namespace (only needed when running outside of k8s)")
 		kubeconfig  = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
-		host        = flag.String("host", os.Getenv("METALLB_HOST"), "HTTP host address")
-		myNode      = flag.String("node-name", os.Getenv("METALLB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
+		host        = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address")
+		myNode      = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
 		port        = flag.Int("port", 80, "HTTP listening port")
 	)
 	flag.Parse()
 
 	if *myNode == "" {
-		logger.Log("op", "startup", "error", "must specify --node-name or METALLB_NODE_NAME", "msg", "missing configuration")
+		logger.Log("op", "startup", "error", "must specify --node-name or PURELB_NODE_NAME", "msg", "missing configuration")
 		os.Exit(1)
 	}
 
@@ -82,7 +82,7 @@ func main() {
 	}
 
 	client, err := k8s.New(&k8s.Config{
-		ProcessName:   "metallb-speaker",
+		ProcessName:   "purelb-speaker",
 		ConfigMapName: *config,
 		ConfigMapNS:   *configNS,
 		NodeName:      *myNode,

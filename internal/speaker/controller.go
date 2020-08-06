@@ -17,8 +17,8 @@ import (
 	"fmt"
 	"net"
 
-	"go.universe.tf/metallb/internal/config"
-	"go.universe.tf/metallb/internal/k8s"
+	"purelb.io/internal/config"
+	"purelb.io/internal/k8s"
 	v1 "k8s.io/api/core/v1"
 
 	gokitlog "github.com/go-kit/kit/log"

@@ -17,8 +17,8 @@ package pool
 import (
 	"reflect"
 
-	"go.universe.tf/metallb/internal/config"
-	"go.universe.tf/metallb/internal/k8s"
+	"purelb.io/internal/config"
+	"purelb.io/internal/k8s"
 
 	"github.com/go-kit/kit/log"
 	"k8s.io/api/core/v1"
@@ -108,7 +108,7 @@ func (c *controller) SetConfig(l log.Logger, cfg *config.Config) k8s.SyncState {
 	defer l.Log("event", "endUpdate", "msg", "end of config update")
 
 	if cfg == nil {
-		l.Log("op", "setConfig", "error", "no MetalLB configuration in cluster", "msg", "configuration is missing, MetalLB will not function")
+		l.Log("op", "setConfig", "error", "no PureLB configuration in cluster", "msg", "configuration is missing, PureLB will not function")
 		return k8s.SyncStateError
 	}
 

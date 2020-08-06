@@ -21,7 +21,7 @@ import (
 	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
-	"go.universe.tf/metallb/internal/pool"
+	"purelb.io/internal/pool"
 )
 
 func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service) bool {
@@ -144,7 +144,7 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (net.IP, error) {
 	}
 
 	// Otherwise, did the user ask for a specific pool?
-	desiredPool := svc.Annotations["metallb.universe.tf/address-pool"]
+	desiredPool := svc.Annotations["purelb.io/address-pool"]
 	if desiredPool != "" {
 		ip, err := c.ips.AllocateFromPool(key, isIPv6, desiredPool, pool.Ports(svc), pool.SharingKey(svc), pool.BackendKey(svc))
 		if err != nil {

@@ -8,7 +8,7 @@ var stats = struct {
 	poolAllocated *prometheus.GaugeVec
 }{
 	poolCapacity: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "metallb",
+		Namespace: "purelb",
 		Subsystem: "allocator_pool",
 		Name:      "addresses_total",
 		Help:      "Number of usable IP addresses, per pool",
@@ -16,7 +16,7 @@ var stats = struct {
 		"pool",
 	}),
 	poolActive: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "metallb",
+		Namespace: "purelb",
 		Subsystem: "allocator_pool",
 		Name:      "addresses_in_use_total",
 		Help:      "Number of IP addresses in use, per pool",
@@ -24,7 +24,7 @@ var stats = struct {
 		"pool",
 	}),
 	poolAllocated: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "metallb",
+		Namespace: "purelb",
 		Subsystem: "allocator_pool",
 		Name:      "services_allocated_total",
 		Help:      "Number of services allocated, per pool",

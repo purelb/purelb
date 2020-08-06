@@ -12,7 +12,7 @@ COPY . ./
 
 # build the executable
 RUN go build -tags 'osusergo netgo' -o ${bin} \
--ldflags "-X go.universe.tf/metallb/internal/logging.release=${release} -X go.universe.tf/metallb/internal/logging.commit=${commit} -X go.universe.tf/metallb/internal/logging.branch=${branch}" \
+-ldflags "-X purelb.io/internal/logging.release=${release} -X purelb.io/internal/logging.commit=${commit} -X purelb.io/internal/logging.branch=${branch}" \
 ./cmd/${cmd}/
 
 FROM ubuntu:20.04 as runtime

@@ -1,33 +1,21 @@
-module go.universe.tf/metallb
+module purelb.io
 
 go 1.12
 
 require (
-	github.com/armon/go-radix v1.0.0 // indirect
-	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2 // indirect
-	github.com/eapache/channels v1.1.0 // indirect
-	github.com/eapache/queue v1.1.0 // indirect
 	github.com/go-kit/kit v0.9.0
 	github.com/go-resty/resty/v2 v2.3.0
-	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b
-	github.com/golang/protobuf v1.3.1
 	github.com/google/go-cmp v0.3.0
 	github.com/googleapis/gnostic v0.2.0 // indirect
-	github.com/hashicorp/memberlist v0.2.2
 	github.com/imdario/mergo v0.3.6 // indirect
 	github.com/kr/pretty v0.1.0 // indirect
 	github.com/mikioh/ipaddr v0.0.0-20190404000644-d465c8ab6721
 	github.com/prometheus/client_golang v1.0.0
-	github.com/satori/go.uuid v1.2.0 // indirect
-	github.com/spf13/cobra v0.0.5
-	github.com/spf13/pflag v1.0.3
+	github.com/spf13/pflag v1.0.3 // indirect
 	github.com/stretchr/testify v1.3.0
-	github.com/vishvananda/netlink v1.0.0 // indirect
-	github.com/vishvananda/netns v0.0.0-20190625233234-7109fa855b0f // indirect
-	go.universe.tf/virtuakube v0.0.0-20190708182722-512c11153571
-	golang.org/x/sys v0.0.0-20200323222414-85ca7c5b95cd
+	golang.org/x/crypto v0.0.0-20190923035154-9ee001bba392 // indirect
+	golang.org/x/text v0.3.2 // indirect
 	golang.org/x/time v0.0.0-20181108054448-85acf8d2951c // indirect
-	google.golang.org/grpc v1.22.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.2.2

@@ -2,9 +2,9 @@ apiVersion: policy/v1beta1
 kind: PodSecurityPolicy
 metadata:
   labels:
-    app: metallb
+    app: purelb
   name: controller
-  namespace: metallb-system
+  namespace: purelb
 spec:
   allowPrivilegeEscalation: false
   allowedCapabilities: []
@@ -44,9 +44,9 @@ apiVersion: policy/v1beta1
 kind: PodSecurityPolicy
 metadata:
   labels:
-    app: metallb
+    app: purelb
   name: speaker
-  namespace: metallb-system
+  namespace: purelb
 spec:
   allowPrivilegeEscalation: false
   allowedCapabilities:
@@ -83,24 +83,24 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   labels:
-    app: metallb
+    app: purelb
   name: controller
-  namespace: metallb-system
+  namespace: purelb
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   labels:
-    app: metallb
+    app: purelb
   name: speaker
-  namespace: metallb-system
+  namespace: purelb
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
-    app: metallb
-  name: metallb-system:controller
+    app: purelb
+  name: purelb-system:controller
 rules:
 - apiGroups:
   - ''
@@ -137,8 +137,8 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
-    app: metallb
-  name: metallb-system:speaker
+    app: purelb
+  name: purelb-system:speaker
 rules:
 - apiGroups:
   - ''
@@ -170,9 +170,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   labels:
-    app: metallb
+    app: purelb
   name: config-watcher
-  namespace: metallb-system
+  namespace: purelb
 rules:
 - apiGroups:
   - ''
@@ -187,9 +187,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   labels:
-    app: metallb
+    app: purelb
   name: pod-lister
-  namespace: metallb-system
+  namespace: purelb
 rules:
 - apiGroups:
   - ''
@@ -202,39 +202,39 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   labels:
-    app: metallb
-  name: metallb-system:controller
+    app: purelb
+  name: purelb-system:controller
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: metallb-system:controller
+  name: purelb-system:controller
 subjects:
 - kind: ServiceAccount
   name: controller
-  namespace: metallb-system
+  namespace: purelb
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   labels:
-    app: metallb
-  name: metallb-system:speaker
+    app: purelb
+  name: purelb-system:speaker
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: metallb-system:speaker
+  name: purelb-system:speaker
 subjects:
 - kind: ServiceAccount
   name: speaker
-  namespace: metallb-system
+  namespace: purelb
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   labels:
-    app: metallb
+    app: purelb
   name: config-watcher
-  namespace: metallb-system
+  namespace: purelb
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -249,9 +249,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   labels:
-    app: metallb
+    app: purelb
   name: pod-lister
-  namespace: metallb-system
+  namespace: purelb
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -264,14 +264,14 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   labels:
-    app: metallb
+    app: purelb
     component: speaker
   name: speaker
-  namespace: metallb-system
+  namespace: purelb
 spec:
   selector:
     matchLabels:
-      app: metallb
+      app: purelb
       component: speaker
   template:
     metadata:
@@ -279,7 +279,7 @@ spec:
         prometheus.io/port: '7472'
         prometheus.io/scrape: 'true'
       labels:
-        app: metallb
+        app: purelb
         component: speaker
     spec:
       containers:
@@ -287,40 +287,15 @@ spec:
         - --port=7472
         - --config=config
         env:
-        - name: NETBOX_USER_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: netbox-client
-              key: user-token
-        - name: NETBOX_BASE_URL
-          value: http://192.168.1.40:30080
-        - name: METALLB_NODE_NAME
+        - name: PURELB_NODE_NAME
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        - name: METALLB_HOST
+        - name: PURELB_HOST
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        - name: METALLB_ML_BIND_ADDR
-          valueFrom:
-            fieldRef:
-              fieldPath: status.podIP
-        # needed when another software is also using memberlist / port 7946
-        #- name: METALLB_ML_BIND_PORT
-        #  value: "7946"
-        - name: METALLB_ML_LABELS
-          value: "app=metallb,component=speaker"
-        - name: METALLB_ML_NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
-        - name: METALLB_ML_SECRET_KEY
-          valueFrom:
-            secretKeyRef:
-              name: memberlist
-              key: secretkey
-        image: registry.gitlab.com/acnodal/ego/speaker:demo202008021716-amd64
+        image: purelb/speaker-local:main
         imagePullPolicy: Always
         name: speaker
         ports:
@@ -353,15 +328,15 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    app: metallb
+    app: purelb
     component: controller
   name: controller
-  namespace: metallb-system
+  namespace: purelb
 spec:
   revisionHistoryLimit: 3
   selector:
     matchLabels:
-      app: metallb
+      app: purelb
       component: controller
   template:
     metadata:
@@ -369,24 +344,16 @@ spec:
         prometheus.io/port: '7472'
         prometheus.io/scrape: 'true'
       labels:
-        app: metallb
+        app: purelb
         component: controller
     spec:
       containers:
       - args:
         - --port=7472
         - --config=config
-        image: registry.gitlab.com/acnodal/ego/controller:demo202008021716-amd64
+        image: purelb/controller-pool:main
         imagePullPolicy: Always
         name: controller
-        env:
-        - name: NETBOX_USER_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: netbox-client
-              key: user-token
-        - name: NETBOX_BASE_URL
-          value: http://192.168.1.40:30080
         ports:
         - containerPort: 7472
           name: monitoring

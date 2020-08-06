@@ -18,9 +18,9 @@ import (
 	"flag"
 	"os"
 
-	"go.universe.tf/metallb/internal/k8s"
-	"go.universe.tf/metallb/internal/logging"
-	"go.universe.tf/metallb/internal/pool"
+	"purelb.io/internal/k8s"
+	"purelb.io/internal/logging"
+	"purelb.io/internal/pool"
 )
 
 func main() {
@@ -28,7 +28,7 @@ func main() {
 
 	var (
 		port       = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
-		config     = flag.String("config", "config", "Kubernetes ConfigMap containing MetalLB's configuration")
+		config     = flag.String("config", "config", "Kubernetes ConfigMap containing PureLB's configuration")
 		configNS   = flag.String("config-ns", "", "config file namespace (only needed when running outside of k8s)")
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
 	)

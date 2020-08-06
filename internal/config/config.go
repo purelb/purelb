@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package config // import "go.universe.tf/metallb/internal/config"
+package config // import "purelb.io/internal/config"
 
 import (
 	"errors"
@@ -51,7 +51,7 @@ type addressPool struct {
 	AutoAssign        *bool              `yaml:"auto-assign"`
 }
 
-// Config is a parsed MetalLB configuration.
+// Config is a parsed PureLB configuration.
 type Config struct {
 	// Address pools from which to allocate load balancer IPs.
 	Pools map[string]*Pool

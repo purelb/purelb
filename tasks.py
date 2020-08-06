@@ -31,10 +31,10 @@ def _check_binaries(binaries):
       help={
           "binaries": "binaries to build. One or more of {}, or 'all'".format(", ".join(sorted(all_binaries))),
           "tag": "docker image tag prefix to use. Default 'dev'.",
-          "docker-user": "docker user under which to tag the images. Default 'metallb'.",
+          "docker-user": "docker user under which to tag the images. Default 'purelb'.",
       })
-def build(ctx, binaries, tag="dev", docker_user="metallb"):
-    """Build MetalLB docker images."""
+def build(ctx, binaries, tag="dev", docker_user="purelb"):
+    """Build PureLB docker images."""
     binaries = _check_binaries(binaries)
 
     run("go test ./...")  # run the unit tests first
@@ -58,9 +58,9 @@ def build(ctx, binaries, tag="dev", docker_user="metallb"):
       help={
           "binaries": "binaries to build. One or more of {}, or 'all'".format(", ".join(sorted(all_binaries))),
           "tag": "docker image tag prefix to use. Default 'dev'.",
-          "docker-user": "docker user under which to tag the images. Default 'metallb'.",
+          "docker-user": "docker user under which to tag the images. Default 'purelb'.",
       })
-def push(ctx, binaries, tag="dev", docker_user="metallb"):
+def push(ctx, binaries, tag="dev", docker_user="purelb"):
     """Build and push docker images to registry."""
     binaries = _check_binaries(binaries)
 
@@ -93,8 +93,8 @@ def release(ctx, version, skip_release_notes=False):
         run("git checkout -b v{}.{}".format(version.major, version.minor), echo=True)
 
     # Update the manifests with the new version
-    run("perl -pi -e 's,image: metallb/speaker:.*,image: metallb/speaker:v{},g' deployments/metallb.yaml".format(version), echo=True)
-    run("perl -pi -e 's,image: metallb/controller:.*,image: metallb/controller:v{},g' deployments/metallb.yaml".format(version), echo=True)
+    run("perl -pi -e 's,image: purelb/speaker:.*,image: purelb/speaker:v{},g' deployments/purelb.yaml".format(version), echo=True)
+    run("perl -pi -e 's,image: purelb/controller:.*,image: purelb/controller:v{},g' deployments/purelb.yaml".format(version), echo=True)
 
     # Update the version embedded in the binary
     run("perl -pi -e 's/version\s+=.*/version = \"{}\"/g' internal/version/version.go".format(version), echo=True)

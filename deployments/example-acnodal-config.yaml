@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  namespace: metallb-system
+  namespace: purelb
   name: config
 data:
   config: |
