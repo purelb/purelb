@@ -16,7 +16,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,7 +24,6 @@ import (
 	"go.universe.tf/metallb/internal/k8s"
 	"go.universe.tf/metallb/internal/logging"
 	"go.universe.tf/metallb/internal/speaker"
-	"go.universe.tf/metallb/internal/version"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -44,11 +42,7 @@ var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 func main() {
 	prometheus.MustRegister(announcing)
 
-	logger, err := logging.Init()
-	if err != nil {
-		fmt.Printf("failed to initialize logging: %s\n", err)
-		os.Exit(1)
-	}
+	logger := logging.Init()
 
 	var (
 		config      = flag.String("config", "config", "Kubernetes ConfigMap containing configuration")
@@ -59,8 +53,6 @@ func main() {
 		port        = flag.Int("port", 80, "HTTP listening port")
 	)
 	flag.Parse()
-
-	logger.Log("version", version.Version(), "commit", version.CommitHash(), "branch", version.Branch(), "msg", "Speaker starting "+version.String())
 
 	if *myNode == "" {
 		logger.Log("op", "startup", "error", "must specify --node-name or METALLB_NODE_NAME", "msg", "missing configuration")

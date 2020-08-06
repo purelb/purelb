@@ -16,21 +16,15 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"os"
 
 	"go.universe.tf/metallb/internal/k8s"
 	"go.universe.tf/metallb/internal/logging"
 	"go.universe.tf/metallb/internal/pool"
-	"go.universe.tf/metallb/internal/version"
 )
 
 func main() {
-	logger, err := logging.Init()
-	if err != nil {
-		fmt.Printf("failed to initialize logging: %s\n", err)
-		os.Exit(1)
-	}
+	logger := logging.Init()
 
 	var (
 		port       = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
@@ -39,8 +33,6 @@ func main() {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
 	)
 	flag.Parse()
-
-	logger.Log("version", version.Version(), "commit", version.CommitHash(), "branch", version.Branch(), "msg", "MetalLB controller starting "+version.String())
 
 	c, _ := pool.NewController(pool.New())
 

@@ -15,6 +15,13 @@ import (
 	"k8s.io/klog"
 )
 
+// Provided by ldflags during build
+var (
+	release string
+	commit  string
+	branch  string
+)
+
 // Init returns a logger configured with common settings like
 // timestamping and source code locations. Both the stdlib logger and
 // glog are reconfigured to push logs into this logger.
@@ -22,18 +29,26 @@ import (
 // Init must be called as early as possible in main(), before any
 // application-specific flag parsing or logging occurs, because it
 // mutates the contents of the flag package as well as os.Stderr.
-func Init() (log.Logger, error) {
+//
+// Logging is fundamental so if something goes wrong this will
+// os.Exit(1).
+func Init() log.Logger {
 	l := log.NewJSONLogger(log.NewSyncWriter(os.Stdout))
 
 	r, w, err := os.Pipe()
 	if err != nil {
-		return nil, fmt.Errorf("creating pipe for glog redirection: %s", err)
+		fmt.Printf("failed to initialize logging: creating pipe for glog redirection\n", err)
+		os.Exit(1)
 	}
 	klog.InitFlags(flag.NewFlagSet("klog", flag.ExitOnError))
 	klog.SetOutput(w)
 	go collectGlogs(r, l)
 
-	return log.With(l, "ts", log.DefaultTimestampUTC, "caller", log.DefaultCaller), nil
+	logger := log.With(l, "ts", log.DefaultTimestampUTC, "caller", log.DefaultCaller)
+
+	logger.Log("release", release, "commit", commit, "branch", branch, "msg", "Starting")
+
+	return logger
 }
 
 func collectGlogs(f *os.File, logger log.Logger) {

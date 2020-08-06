@@ -41,11 +41,14 @@ def build(ctx, binaries, tag="dev", docker_user="metallb"):
     branch = run("git rev-parse --abbrev-ref HEAD", hide=True).stdout.strip()
 
     for bin in binaries:
-        run("docker build -t {user}/{bin}:{tag} --build-arg cmd={bin} "
-            "-f build/package/Dockerfile.{bin} .".format(
+        run("docker build -t {user}/{bin}:{tag} --build-arg cmd={bin}"
+            " --build-arg commit={commit} --build-arg branch={branch}"
+            " -f build/package/Dockerfile.{bin} .".format(
                 user=docker_user,
                 bin=bin,
-                tag=tag),
+                tag=tag,
+                commit=commit,
+                branch=branch),
             echo=True)
 
 
