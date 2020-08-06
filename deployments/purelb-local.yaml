@@ -295,7 +295,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        image: purelb/speaker-local:main
+        image: registry.gitlab.com/acnodal/ego/speaker-local:demo202008061455
         imagePullPolicy: Always
         name: speaker
         ports:
@@ -351,7 +351,7 @@ spec:
       - args:
         - --port=7472
         - --config=config
-        image: purelb/controller-pool:main
+        image: registry.gitlab.com/acnodal/ego/controller-pool:demo202008061455
         imagePullPolicy: Always
         name: controller
         ports:
