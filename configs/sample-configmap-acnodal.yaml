@@ -4,10 +4,13 @@ kind: ConfigMap
 metadata:
   namespace: purelb
   name: config
+  labels:
+    app.kubernetes.io/name: purelb
+    app.kubernetes.io/component: configmap
+    app.kubernetes.io/part-of: purelb
 data:
   config: |
     address-pools:
     - name: my-ip-space
-      protocol: acnodal
       addresses:
       - 0.0.0.0-255.255.255.255

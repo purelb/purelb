@@ -3,4 +3,6 @@ kind: Namespace
 metadata:
   name: purelb
   labels:
-    app: purelb
+    app.kubernetes.io/name: purelb
+    app.kubernetes.io/component: namespace
+    app.kubernetes.io/part-of: purelb

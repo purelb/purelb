@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: purelb
+  name: config
+  labels:
+    app.kubernetes.io/name: purelb
+    app.kubernetes.io/component: configmap
+    app.kubernetes.io/part-of: purelb
+data:
+  config: |
+    # The address-pools section lists the IP addresses that PureLB is
+    # allowed to allocate, along with settings for how to advertise
+    # those addresses over BGP once assigned. You can have as many
+    # address pools as you want.
+    address-pools:
+
+      # A name for the address pool. Services can request allocation
+      # from a specific address pool using this name, by listing this
+      # name under the 'purelb.io/address-pool' annotation.
+    - name: sample-address-pool
+
+      # A list of IP address ranges over which PureLB has
+      # authority. You can list multiple ranges in a single pool, they
+      # will all share the same settings. Each range can be either a
+      # CIDR prefix, or an explicit start-end range of IPs.
+      addresses:
+      - 192.168.42.0/30
+      # - 192.168.42.0-192.168.42.3
+
+      # (optional) If true, PureLB will not allocate any address that
+      # ends in .0 or .255. Some old, buggy consumer devices
+      # mistakenly block traffic to such addresses under the guise of
+      # smurf protection. Such devices have become fairly rare, but
+      # the option is here if you encounter serving issues.
+      avoid-buggy-ips: true
+
+      # (optional, default true) If false, PureLB will not automatically
+      # allocate any address in this pool. Addresses can still explicitly
+      # be requested via loadBalancerIP or the address-pool annotation.
+      auto-assign: true
