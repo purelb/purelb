@@ -148,7 +148,7 @@ subjects:
 - kind: ServiceAccount
   name: controller
 - kind: ServiceAccount
-  name: speaker
+  name: node
 ---
 apiVersion: apps/v1
 kind: Deployment

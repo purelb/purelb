@@ -37,7 +37,7 @@ func main() {
 	c, _ := pool.NewController(pool.New())
 
 	client, err := k8s.New(&k8s.Config{
-		ProcessName:   "controller-pool",
+		ProcessName:   "purelb-allocator",
 		ConfigMapName: *config,
 		ConfigMapNS:   *configNS,
 		MetricsPort:   *port,

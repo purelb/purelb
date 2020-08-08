@@ -3,7 +3,7 @@ kind: PodSecurityPolicy
 metadata:
   labels:
     app: purelb
-  name: controller
+  name: allocator
   namespace: purelb
 spec:
   allowPrivilegeEscalation: false
@@ -45,7 +45,7 @@ kind: PodSecurityPolicy
 metadata:
   labels:
     app: purelb
-  name: speaker
+  name: node
   namespace: purelb
 spec:
   allowPrivilegeEscalation: false
@@ -84,7 +84,7 @@ kind: ServiceAccount
 metadata:
   labels:
     app: purelb
-  name: controller
+  name: allocator
   namespace: purelb
 ---
 apiVersion: v1
@@ -92,7 +92,7 @@ kind: ServiceAccount
 metadata:
   labels:
     app: purelb
-  name: speaker
+  name: node
   namespace: purelb
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -100,7 +100,7 @@ kind: ClusterRole
 metadata:
   labels:
     app: purelb
-  name: purelb-system:controller
+  name: purelb-system:allocator
 rules:
 - apiGroups:
   - ''
@@ -127,7 +127,7 @@ rules:
 - apiGroups:
   - policy
   resourceNames:
-  - controller
+  - allocator
   resources:
   - podsecuritypolicies
   verbs:
@@ -138,7 +138,7 @@ kind: ClusterRole
 metadata:
   labels:
     app: purelb
-  name: purelb-system:speaker
+  name: purelb-system:node
 rules:
 - apiGroups:
   - ''
@@ -160,7 +160,7 @@ rules:
 - apiGroups:
   - policy
   resourceNames:
-  - speaker
+  - node
   resources:
   - podsecuritypolicies
   verbs:
@@ -203,14 +203,14 @@ kind: ClusterRoleBinding
 metadata:
   labels:
     app: purelb
-  name: purelb-system:controller
+  name: purelb-system:allocator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: purelb-system:controller
+  name: purelb-system:allocator
 subjects:
 - kind: ServiceAccount
-  name: controller
+  name: allocator
   namespace: purelb
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -218,14 +218,14 @@ kind: ClusterRoleBinding
 metadata:
   labels:
     app: purelb
-  name: purelb-system:speaker
+  name: purelb-system:node
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: purelb-system:speaker
+  name: purelb-system:node
 subjects:
 - kind: ServiceAccount
-  name: speaker
+  name: node
   namespace: purelb
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -241,9 +241,9 @@ roleRef:
   name: config-watcher
 subjects:
 - kind: ServiceAccount
-  name: controller
+  name: allocator
 - kind: ServiceAccount
-  name: speaker
+  name: node
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -258,21 +258,21 @@ roleRef:
   name: pod-lister
 subjects:
 - kind: ServiceAccount
-  name: speaker
+  name: node
 ---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   labels:
     app: purelb
-    component: speaker
-  name: speaker
+    component: node
+  name: node
   namespace: purelb
 spec:
   selector:
     matchLabels:
       app: purelb
-      component: speaker
+      component: node
   template:
     metadata:
       annotations:
@@ -280,7 +280,7 @@ spec:
         prometheus.io/scrape: 'true'
       labels:
         app: purelb
-        component: speaker
+        component: node
     spec:
       containers:
       - args:
@@ -295,9 +295,9 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        image: registry.gitlab.com/acnodal/ego/speaker-local:demo202008061455
+        image: registry.gitlab.com/acnodal/ego/node-local:demo202008072225
         imagePullPolicy: Always
-        name: speaker
+        name: node
         ports:
         - containerPort: 7472
           name: monitoring
@@ -318,7 +318,7 @@ spec:
       hostNetwork: true
       nodeSelector:
         beta.kubernetes.io/os: linux
-      serviceAccountName: speaker
+      serviceAccountName: node
       terminationGracePeriodSeconds: 2
       tolerations:
       - effect: NoSchedule
@@ -329,15 +329,15 @@ kind: Deployment
 metadata:
   labels:
     app: purelb
-    component: controller
-  name: controller
+    component: allocator
+  name: allocator
   namespace: purelb
 spec:
   revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: purelb
-      component: controller
+      component: allocator
   template:
     metadata:
       annotations:
@@ -345,15 +345,15 @@ spec:
         prometheus.io/scrape: 'true'
       labels:
         app: purelb
-        component: controller
+        component: allocator
     spec:
       containers:
       - args:
         - --port=7472
         - --config=config
-        image: registry.gitlab.com/acnodal/ego/controller-pool:demo202008061455
+        image: registry.gitlab.com/acnodal/ego/allocator-local:demo202008072225
         imagePullPolicy: Always
-        name: controller
+        name: allocator
         ports:
         - containerPort: 7472
           name: monitoring
@@ -372,5 +372,5 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534
-      serviceAccountName: controller
+      serviceAccountName: allocator
       terminationGracePeriodSeconds: 0

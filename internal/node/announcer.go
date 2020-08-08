@@ -1,4 +1,4 @@
-package speaker
+package node
 
 import (
 	"net"

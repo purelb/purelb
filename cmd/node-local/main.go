@@ -23,14 +23,14 @@ import (
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/local"
 	"purelb.io/internal/logging"
-	"purelb.io/internal/speaker"
+	"purelb.io/internal/node"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Namespace: "purelb",
-	Subsystem: "speaker_local",
+	Subsystem: "node_local",
 	Name:      "announced",
 	Help:      "Services being announced from this node. This is desired state, it does not guarantee that the routing protocols have converged.",
 }, []string{
@@ -71,7 +71,7 @@ func main() {
 	defer logger.Log("op", "shutdown", "msg", "done")
 
 	// Set up controller
-	ctrl, err := speaker.NewController(
+	ctrl, err := node.NewController(
 		*myNode,
 		announcing,
 		local.NewAnnouncer(logger, *myNode),
@@ -82,7 +82,7 @@ func main() {
 	}
 
 	client, err := k8s.New(&k8s.Config{
-		ProcessName:   "purelb-speaker",
+		ProcessName:   "purelb-node",
 		ConfigMapName: *config,
 		ConfigMapNS:   *configNS,
 		NodeName:      *myNode,

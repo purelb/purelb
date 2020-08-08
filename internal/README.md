@@ -7,4 +7,4 @@
 * [logging](logging) - logging functionality
 * [netbox](netbox) - works with the Netbox IPAM
 * [pool](pool) - manages pools of IP addresses
-* [speaker](speaker) - code to implement speakers
+* [node](node) - code to implement the node commands

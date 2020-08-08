@@ -33,8 +33,8 @@ kubectl create deployment echoserver --image=k8s.gcr.io/echoserver:1.10
 kubectl expose deployment echoserver --name=echoserver-service --port=80 --target-port=8080 --type=LoadBalancer
 ```
 
-You should see the PureLB controller allocate an address and assign it
-to the service. The PureLB speakers then configure the underlying
+You should see the PureLB allocator allocate an address and assign it
+to the service. The PureLB nodes then configure the underlying
 operating system to advertise the address.
 
 ## Troubleshooting

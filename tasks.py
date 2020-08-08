@@ -5,10 +5,10 @@ import sys
 from invoke import run, task
 from invoke.exceptions import Exit
 
-all_binaries = set(["controller-pool",
-                    "controller-acnodal",
-                    "speaker-acnodal",
-                    "speaker-local"])
+all_binaries = set(["allocator-local",
+                    "allocator-acnodal",
+                    "node-acnodal",
+                    "node-local"])
 
 
 def _check_binaries(binaries):
@@ -93,8 +93,8 @@ def release(ctx, version, skip_release_notes=False):
         run("git checkout -b v{}.{}".format(version.major, version.minor), echo=True)
 
     # Update the manifests with the new version
-    run("perl -pi -e 's,image: purelb/speaker:.*,image: purelb/speaker:v{},g' deployments/purelb.yaml".format(version), echo=True)
-    run("perl -pi -e 's,image: purelb/controller:.*,image: purelb/controller:v{},g' deployments/purelb.yaml".format(version), echo=True)
+    run("perl -pi -e 's,image: purelb/node:.*,image: purelb/node:v{},g' deployments/purelb.yaml".format(version), echo=True)
+    run("perl -pi -e 's,image: purelb/allocator:.*,image: purelb/allocator:v{},g' deployments/purelb.yaml".format(version), echo=True)
 
     # Update the version embedded in the binary
     run("perl -pi -e 's/version\s+=.*/version = \"{}\"/g' internal/version/version.go".format(version), echo=True)
