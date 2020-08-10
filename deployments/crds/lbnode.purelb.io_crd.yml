@@ -1,0 +1,32 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: lbnodes.purelb.io
+spec:
+  group: purelb.io
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                localint:
+                  type: string
+                  default: "default"
+                extlbint:
+                  type: string
+                  default: "kube-lb0"
+  scope: Namespaced
+  names:
+    plural: lbnodes
+    singular: lbnode
+    kind: LBnode
+    shortNames:
+    - lbnode
+    categories:
+    - all

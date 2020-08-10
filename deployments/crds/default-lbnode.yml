@@ -1,0 +1,6 @@
+apiVersion: "purelb.io/v1"
+kind: LBnode
+metadata:
+  name: default
+spec:
+  localint: default
