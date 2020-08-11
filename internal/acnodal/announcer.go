@@ -22,27 +22,27 @@ func NewAnnouncer(l log.Logger, node string) *announcer {
 	return &announcer{logger: l, myNode: node}
 }
 
-func (c *announcer) SetConfig(l log.Logger, cfg *config.Config) error {
-	l.Log("event", "newConfig")
+func (c *announcer) SetConfig(cfg *config.Config) error {
+	c.logger.Log("event", "newConfig")
 
 	return nil
 }
 
-func (c *announcer) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, eps *v1.Endpoints) string {
+func (c *announcer) ShouldAnnounce(name string, svc *v1.Service, eps *v1.Endpoints) string {
 	// Should we advertise?
 	// Yes, if externalTrafficPolicy is
 	//  Cluster && any healthy endpoint exists
 	// or
 	//  Local && there's a ready local endpoint.
 	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(eps, c.myNode) {
-		l.Log("op", "SetBalancer", "msg", "no local endpoints")
+		c.logger.Log("op", "SetBalancer", "msg", "no local endpoints")
 		return "noLocalEndpoints"
 	} else if !healthyEndpointExists(eps) {
-		l.Log("op", "SetBalancer", "msg", "no endpoints at all")
+		c.logger.Log("op", "SetBalancer", "msg", "no endpoints at all")
 		return "noEndpoints"
 	}
 
-	l.Log("op", "SetBalancer", "msg", "endpoints to announce")
+	c.logger.Log("op", "SetBalancer", "msg", "endpoints to announce")
 
 	// We want to announce the endpoints, but the code assumes that this
 	// method returns "" at which point the main loop will call
@@ -53,7 +53,7 @@ func (c *announcer) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, e
 
 	egw, err := New("", "")
 	if err != nil {
-		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
+		c.logger.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
 		return "cantConnectToEGW"
 	}
 
@@ -64,12 +64,12 @@ func (c *announcer) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, e
 		port := ep.Ports[0].Port
 		for _, address := range ep.Addresses {
 			if address.NodeName == nil || *address.NodeName != c.myNode {
-				l.Log("op", "DontAnnounceEndpoint", "address", address.IP, "port", port, "node", "not me")
+				c.logger.Log("op", "DontAnnounceEndpoint", "address", address.IP, "port", port, "node", "not me")
 			} else {
-				l.Log("op", "AnnounceEndpoint", "address", address.IP, "port", port, "node", c.myNode)
+				c.logger.Log("op", "AnnounceEndpoint", "address", address.IP, "port", port, "node", c.myNode)
 				err := egw.AnnounceEndpoint(createUrl, address.IP, int(port))
 				if err != nil {
-					l.Log("op", "AnnounceEndpoint", "error", err)
+					c.logger.Log("op", "AnnounceEndpoint", "error", err)
 				}
 			}
 		}
@@ -78,19 +78,19 @@ func (c *announcer) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, e
 	return ""
 }
 
-func (c *announcer) SetBalancer(l log.Logger, name string, lbIP net.IP) error {
+func (c *announcer) SetBalancer(name string, lbIP net.IP) error {
 	// This method is a no-op since we announced the endpoints in ShouldAnnounce()
 	return nil
 }
 
-func (c *announcer) DeleteBalancer(l log.Logger, name, reason string) error {
-	l.Log("event", "updatedNodes", "msg", "Delete balancer", "service", name, "reason", reason)
+func (c *announcer) DeleteBalancer(name, reason string) error {
+	c.logger.Log("event", "updatedNodes", "msg", "Delete balancer", "service", name, "reason", reason)
 
 	return nil
 }
 
-func (c *announcer) SetNode(l log.Logger, node *v1.Node) error {
-	l.Log("event", "updatedNodes", "msg", "Node announced", "name", node.Name)
+func (c *announcer) SetNode(node *v1.Node) error {
+	c.logger.Log("event", "updatedNodes", "msg", "Node announced", "name", node.Name)
 
 	return nil
 }

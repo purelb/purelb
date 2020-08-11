@@ -1,13 +1,17 @@
 package election
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"log"
+	"sort"
 	"time"
 
 	"purelb.io/internal/k8s"
 
 	gokitlog "github.com/go-kit/kit/log"
 	"github.com/hashicorp/memberlist"
+	"k8s.io/api/core/v1"
 )
 
 type Config struct {
@@ -68,6 +72,24 @@ func (e *Election) Shutdown() error {
 	return err
 }
 
+func (e *Election) Winner(eps *v1.Endpoints, name string) string {
+	nodes := e.usableNodes(eps)
+	// Sort the slice by the hash of node + service name. This
+	// produces an ordering of ready nodes that is unique to this
+	// service.
+	sort.Slice(nodes, func(i, j int) bool {
+		hi := sha256.Sum256([]byte(nodes[i] + "#" + name))
+		hj := sha256.Sum256([]byte(nodes[j] + "#" + name))
+
+		return bytes.Compare(hi[:], hj[:]) < 0
+	})
+
+	if len(nodes) > 0 {
+		return nodes[0]
+	}
+	return ""
+}
+
 func event2String(e memberlist.NodeEventType) string {
 	return [...]string{"NodeJoin", "NodeLeave", "NodeUpdate"}[e]
 }
@@ -86,4 +108,40 @@ func (e *Election) watchEvents(client *k8s.Client) {
 			return
 		}
 	}
+}
+
+// usableNodes returns all nodes that have at least one fully ready
+// endpoint on them.
+func (e *Election) usableNodes(eps *v1.Endpoints) []string {
+	var activeNodes map[string]bool
+	activeNodes = map[string]bool{}
+	for _, n := range e.Memberlist.Members() {
+		activeNodes[n.Name] = true
+	}
+
+	usable := map[string]bool{}
+	for _, subset := range eps.Subsets {
+		for _, ep := range subset.Addresses {
+			if ep.NodeName == nil {
+				continue
+			}
+			if activeNodes != nil {
+				if _, ok := activeNodes[*ep.NodeName]; !ok {
+					continue
+				}
+			}
+			if _, ok := usable[*ep.NodeName]; !ok {
+				usable[*ep.NodeName] = true
+			}
+		}
+	}
+
+	var ret []string
+	for node, ok := range usable {
+		if ok {
+			ret = append(ret, node)
+		}
+	}
+
+	return ret
 }

@@ -93,7 +93,7 @@ func main() {
 		MetricsPort:   *port,
 		ReadEndpoints: true,
 
-		ServiceChanged: ctrl.SetBalancer,
+		ServiceChanged: ctrl.ServiceChanged,
 		ConfigChanged:  ctrl.SetConfig,
 		NodeChanged:    ctrl.SetNode,
 	})

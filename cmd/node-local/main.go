@@ -98,7 +98,7 @@ func main() {
 		MetricsPort:   *port,
 		ReadEndpoints: true,
 
-		ServiceChanged: ctrl.SetBalancer,
+		ServiceChanged: ctrl.ServiceChanged,
 		ConfigChanged:  ctrl.SetConfig,
 		NodeChanged:    ctrl.SetNode,
 	})
@@ -121,6 +121,9 @@ func main() {
 		logger.Log("op", "startup", "error", err, "msg", "failed to create election client")
 		os.Exit(1)
 	}
+
+	ctrl.Election = &election
+
 	iplist, err := client.GetPodsIPs(*configNS, mlLabels)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to get PodsIPs")

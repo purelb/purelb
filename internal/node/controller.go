@@ -14,14 +14,14 @@
 package node
 
 import (
-	"fmt"
 	"net"
 
 	"purelb.io/internal/config"
+	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
-	v1 "k8s.io/api/core/v1"
 
-	gokitlog "github.com/go-kit/kit/log"
+	"k8s.io/api/core/v1"
+	"github.com/go-kit/kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -30,6 +30,7 @@ type controller struct {
 	prometheus *prometheus.GaugeVec
 	announcer  Announcer
 	svcIP      map[string]net.IP // service name -> assigned IP
+	Election   *election.Election
 }
 
 func NewController(myNode string, prometheus *prometheus.GaugeVec, announcer Announcer) (*controller, error) {
@@ -43,13 +44,13 @@ func NewController(myNode string, prometheus *prometheus.GaugeVec, announcer Ann
 	return con, nil
 }
 
-func (c *controller) SetBalancer(l gokitlog.Logger, name string, svc *v1.Service, eps *v1.Endpoints) k8s.SyncState {
+func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, eps *v1.Endpoints) k8s.SyncState {
 	if svc == nil {
 		return c.deleteBalancer(l, name, "serviceDeleted")
 	}
 
-	l.Log("event", "startUpdate", "msg", "start of service update")
-	defer l.Log("event", "endUpdate", "msg", "end of service update")
+	l.Log("event", "startUpdate", "msg", "start of service update", "service", name)
+	defer l.Log("event", "endUpdate", "msg", "end of service update", "service", name)
 
 	if svc.Spec.Type != "LoadBalancer" {
 		return c.deleteBalancer(l, name, "notLoadBalancer")
@@ -61,11 +62,11 @@ func (c *controller) SetBalancer(l gokitlog.Logger, name string, svc *v1.Service
 
 	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
 	if lbIP == nil {
-		l.Log("op", "setBalancer", "error", fmt.Sprintf("invalid LoadBalancer IP %q", svc.Status.LoadBalancer.Ingress[0].IP), "msg", "invalid IP allocated by controller")
+		l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP, "msg", "invalid IP allocated by controller")
 		return c.deleteBalancer(l, name, "invalidIP")
 	}
 
-	l = gokitlog.With(l, "ip", lbIP)
+	l = log.With(l, "ip", lbIP)
 
 	if svcIP, ok := c.svcIP[name]; ok && !lbIP.Equal(svcIP) {
 		if st := c.deleteBalancer(l, name, "loadBalancerIPChanged"); st == k8s.SyncStateError {
@@ -73,11 +74,11 @@ func (c *controller) SetBalancer(l gokitlog.Logger, name string, svc *v1.Service
 		}
 	}
 
-	if deleteReason := c.announcer.ShouldAnnounce(l, name, svc, eps); deleteReason != "" {
+	if deleteReason := c.ShouldAnnounce(l, name, svc, eps); deleteReason != "" {
 		return c.deleteBalancer(l, name, deleteReason)
 	}
 
-	if err := c.announcer.SetBalancer(l, name, lbIP); err != nil {
+	if err := c.announcer.SetBalancer(name, lbIP); err != nil {
 		l.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
 		return k8s.SyncStateError
 	}
@@ -92,8 +93,19 @@ func (c *controller) SetBalancer(l gokitlog.Logger, name string, svc *v1.Service
 	return k8s.SyncStateSuccess
 }
 
-func (c *controller) deleteBalancer(l gokitlog.Logger, name, reason string) k8s.SyncState {
-	if err := c.announcer.DeleteBalancer(l, name, reason); err != nil {
+func (c *controller) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, eps *v1.Endpoints) string {
+	winner := c.Election.Winner(eps, name)
+	if winner == c.myNode {
+		l.Log("msg", "I'm the winner", "node", c.myNode, "service", name)
+		return ""
+	}
+
+	l.Log("msg", "Not the winner", "node", c.myNode, "service", name, "winner", winner)
+	return "notWinner"
+}
+
+func (c *controller) deleteBalancer(l log.Logger, name, reason string) k8s.SyncState {
+	if err := c.announcer.DeleteBalancer(name, reason); err != nil {
 		l.Log("op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
 		return k8s.SyncStateError
 	}
@@ -110,11 +122,11 @@ func (c *controller) deleteBalancer(l gokitlog.Logger, name, reason string) k8s.
 	return k8s.SyncStateSuccess
 }
 
-func (c *controller) SetConfig(l gokitlog.Logger, cfg *config.Config) k8s.SyncState {
+func (c *controller) SetConfig(l log.Logger, cfg *config.Config) k8s.SyncState {
 	l.Log("event", "startUpdate", "msg", "start of config update")
 	defer l.Log("event", "endUpdate", "msg", "end of config update")
 
-	if err := c.announcer.SetConfig(l, cfg); err != nil {
+	if err := c.announcer.SetConfig(cfg); err != nil {
 		l.Log("op", "setConfig", "error", err, "msg", "applying new configuration to announcer failed")
 		return k8s.SyncStateError
 	}
@@ -122,10 +134,64 @@ func (c *controller) SetConfig(l gokitlog.Logger, cfg *config.Config) k8s.SyncSt
 	return k8s.SyncStateReprocessAll
 }
 
-func (c *controller) SetNode(l gokitlog.Logger, node *v1.Node) k8s.SyncState {
-	if err := c.announcer.SetNode(l, node); err != nil {
+func (c *controller) SetNode(l log.Logger, node *v1.Node) k8s.SyncState {
+	if err := c.announcer.SetNode(node); err != nil {
 		l.Log("op", "setNode", "error", err, "msg", "failed to propagate node info to announcer")
 		return k8s.SyncStateError
 	}
 	return k8s.SyncStateSuccess
+}
+
+// nodeHasHealthyEndpoint return true if this node has at least one healthy endpoint.
+func nodeHasHealthyEndpoint(eps *v1.Endpoints, node string) bool {
+	ready := map[string]bool{}
+	for _, subset := range eps.Subsets {
+		for _, ep := range subset.Addresses {
+			if ep.NodeName == nil || *ep.NodeName != node {
+				continue
+			}
+			if _, ok := ready[ep.IP]; !ok {
+				// Only set true if nothing else has expressed an
+				// opinion. This means that false will take precedence
+				// if there's any unready ports for a given endpoint.
+				ready[ep.IP] = true
+			}
+		}
+		for _, ep := range subset.NotReadyAddresses {
+			ready[ep.IP] = false
+		}
+	}
+
+	for _, r := range ready {
+		if r {
+			// At least one fully healthy endpoint on this machine.
+			return true
+		}
+	}
+	return false
+}
+
+func healthyEndpointExists(eps *v1.Endpoints) bool {
+	ready := map[string]bool{}
+	for _, subset := range eps.Subsets {
+		for _, ep := range subset.Addresses {
+			if _, ok := ready[ep.IP]; !ok {
+				// Only set true if nothing else has expressed an
+				// opinion. This means that false will take precedence
+				// if there's any unready ports for a given endpoint.
+				ready[ep.IP] = true
+			}
+		}
+		for _, ep := range subset.NotReadyAddresses {
+			ready[ep.IP] = false
+		}
+	}
+
+	for _, r := range ready {
+		if r {
+			// At least one fully healthy endpoint on this machine.
+			return true
+		}
+	}
+	return false
 }

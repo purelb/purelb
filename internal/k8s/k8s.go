@@ -333,6 +333,7 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 func (c *Client) ForceSync() {
 	if c.svcIndexer != nil {
 		for _, k := range c.svcIndexer.ListKeys() {
+			c.logger.Log("service", svcKey(k))
 			c.queue.AddRateLimited(svcKey(k))
 		}
 	}

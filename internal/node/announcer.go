@@ -5,15 +5,13 @@ import (
 
 	"purelb.io/internal/config"
 
-	v1 "k8s.io/api/core/v1"
-	gokitlog "github.com/go-kit/kit/log"
+	"k8s.io/api/core/v1"
 )
 
-// An Announcer can announce an IP address
+// Announces service IP addresses
 type Announcer interface {
-	SetConfig(gokitlog.Logger, *config.Config) error
-	ShouldAnnounce(gokitlog.Logger, string, *v1.Service, *v1.Endpoints) string
-	SetBalancer(gokitlog.Logger, string, net.IP) error
-	DeleteBalancer(gokitlog.Logger, string, string) error
-	SetNode(gokitlog.Logger, *v1.Node) error
+	SetConfig(*config.Config) error
+	SetBalancer(string, net.IP) error
+	DeleteBalancer(string, string) error
+	SetNode(*v1.Node) error
 }
