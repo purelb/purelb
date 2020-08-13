@@ -1,6 +1,7 @@
 package k8s // import "purelb.io/internal/k8s"
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -259,7 +260,7 @@ func New(cfg *Config) (*Client, error) {
 
 // GetPodsIPs get the IPs from all the pods matched by the labels string
 func (c *Client) GetPodsIPs(namespace, labels string) ([]string, error) {
-	pl, err := c.client.CoreV1().Pods(namespace).List(metav1.ListOptions{LabelSelector: labels})
+	pl, err := c.client.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: labels})
 	if err != nil {
 		return nil, err
 	}
@@ -333,13 +334,13 @@ func (c *Client) ForceSync() {
 // the updated Service is returned. Note that changes to svc.Status
 // are not propagated, for that you need to call UpdateStatus.
 func (c *Client) Update(svc *v1.Service) (*v1.Service, error) {
-	return c.client.CoreV1().Services(svc.Namespace).Update(svc)
+	return c.client.CoreV1().Services(svc.Namespace).Update(context.TODO(), svc, metav1.UpdateOptions{})
 }
 
 // UpdateStatus writes the protected "status" field of svc back into
 // the Kubernetes cluster.
 func (c *Client) UpdateStatus(svc *v1.Service) error {
-	_, err := c.client.CoreV1().Services(svc.Namespace).UpdateStatus(svc)
+	_, err := c.client.CoreV1().Services(svc.Namespace).UpdateStatus(context.TODO(), svc, metav1.UpdateOptions{})
 	return err
 }
 

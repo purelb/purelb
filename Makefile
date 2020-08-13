@@ -44,3 +44,11 @@ install-%:
 .PHONY: run-%
 run-%:  ## Run PureLB command locally (e.g., 'make run-node-local')
 	go run ./cmd/$(subst run-,,$@)
+
+.PHONY: clean-gen
+clean-gen:  ## Delete generated files
+	rm -fr pkg/generated/ pkg/apis/v1/zz_generated.deepcopy.go
+
+.PHONY: generate
+generate:  ## Generate client-side stubs for our custom resources
+	hack/update-codegen.sh
