@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"time"
 
 	"purelb.io/internal/config"
+	"purelb.io/pkg/generated/clientset/versioned"
+	"purelb.io/pkg/generated/informers/externalversions"
 
 	"github.com/go-kit/kit/log"
 	corev1 "k8s.io/api/core/v1"
@@ -39,6 +42,9 @@ type Client struct {
 	cmInformer   cache.Controller
 	nodeIndexer  cache.Indexer
 	nodeInformer cache.Controller
+
+	crInformerFactory externalversions.SharedInformerFactory
+	crController      config.Controller
 
 	syncFuncs []cache.InformerSynced
 
@@ -110,6 +116,10 @@ func New(cfg *Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating Kubernetes client: %s", err)
 	}
+	crClient, err := versioned.NewForConfig(k8sConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating custom resource client: %s", err)
+	}
 
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: typedcorev1.New(clientset.CoreV1().RESTClient()).Events("")})
@@ -123,6 +133,11 @@ func New(cfg *Config) (*Client, error) {
 		events: recorder,
 		queue:  queue,
 	}
+
+	// Custom Resource Watcher
+
+	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Second*30)
+	c.crController = *config.NewCRController(clientset, crClient, c.crInformerFactory.Purelb().V1().ServiceGroups())
 
 	// Service Watcher
 
@@ -270,6 +285,13 @@ func (c *Client) GetPodsIPs(namespace, labels string) ([]string, error) {
 // Run watches for events on the Kubernetes cluster, and dispatches
 // calls to the Controller.
 func (c *Client) Run(stopCh <-chan struct{}) error {
+	c.crInformerFactory.Start(stopCh)
+	go func() {
+		if err := c.crController.Run(1, stopCh); err != nil {
+			c.logger.Log("CR controller init error", err)
+		}
+	}()
+
 	if c.svcInformer != nil {
 		go c.svcInformer.Run(stopCh)
 	}
@@ -363,6 +385,7 @@ func (c *Client) sync(key interface{}) SyncState {
 			return SyncStateError
 		}
 		if !exists {
+			l.Log("op", "getService", "msg", "doesn't exist")
 			return c.serviceChanged(l, string(k), nil, nil)
 		}
 

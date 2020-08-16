@@ -100,8 +100,17 @@ kind: ClusterRole
 metadata:
   labels:
     app: purelb
-  name: purelb-system:allocator
+  name: purelb:allocator
 rules:
+- apiGroups:
+  - purelb.io
+  resources:
+  - servicegroups
+  verbs:
+  - get
+  - list
+  - watch
+  - update
 - apiGroups:
   - ''
   resources:
@@ -138,8 +147,17 @@ kind: ClusterRole
 metadata:
   labels:
     app: purelb
-  name: purelb-system:node
+  name: purelb:node
 rules:
+- apiGroups:
+  - purelb.io
+  resources:
+  - servicegroups
+  verbs:
+  - get
+  - list
+  - watch
+  - update
 - apiGroups:
   - ''
   resources:
@@ -203,11 +221,11 @@ kind: ClusterRoleBinding
 metadata:
   labels:
     app: purelb
-  name: purelb-system:allocator
+  name: purelb:allocator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: purelb-system:allocator
+  name: purelb:allocator
 subjects:
 - kind: ServiceAccount
   name: allocator
@@ -218,11 +236,11 @@ kind: ClusterRoleBinding
 metadata:
   labels:
     app: purelb
-  name: purelb-system:node
+  name: purelb:node
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: purelb-system:node
+  name: purelb:node
 subjects:
 - kind: ServiceAccount
   name: node
@@ -299,7 +317,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        image: registry.gitlab.com/acnodal/ego/node-local:demo202008121708
+        image: registry.gitlab.com/acnodal/ego/node-local:demo202008161437
         imagePullPolicy: Always
         name: node
         ports:
@@ -352,7 +370,7 @@ spec:
         component: allocator
     spec:
       containers:
-      - image: registry.gitlab.com/acnodal/ego/allocator-local:demo202008121708
+      - image: registry.gitlab.com/acnodal/ego/allocator-local:demo202008161437
         imagePullPolicy: Always
         name: allocator
         ports:
