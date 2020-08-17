@@ -30,9 +30,18 @@ type ServiceGroup struct {
 }
 
 type ServiceGroupSpec struct {
-	Name        string `json:"name"`
-	SubnetV4    string `json:"subnetv4"`
-	PoolV4      string `json:"poolv4"`
+	Local *ServiceGroupLocalSpec `json:"local"`
+	EGW   *ServiceGroupEGWSpec   `json:"egw"`
+}
+
+type ServiceGroupLocalSpec struct {
+	Subnet      string `json:"subnet"`
+	Pool        string `json:"pool"`
+	Aggregation string `json:"aggregation"`
+}
+
+type ServiceGroupEGWSpec struct {
+	URL         string `json:"url"`
 	Aggregation string `json:"aggregation"`
 }
 

@@ -15,41 +15,14 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"strings"
-	"time"
 
 	"github.com/mikioh/ipaddr"
-	yaml "gopkg.in/yaml.v2"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
+
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
-
-// configFile is the configuration as parsed out of the ConfigMap,
-// without validation or useful high level types.
-type configFile struct {
-	Pools          []addressPool     `yaml:"address-pools"`
-}
-
-type nodeSelector struct {
-	MatchLabels      map[string]string      `yaml:"match-labels"`
-	MatchExpressions []selectorRequirements `yaml:"match-expressions"`
-}
-
-type selectorRequirements struct {
-	Key      string   `yaml:"key"`
-	Operator string   `yaml:"operator"`
-	Values   []string `yaml:"values"`
-}
-
-type addressPool struct {
-	Name              string
-	Addresses         []string
-	AvoidBuggyIPs     bool               `yaml:"avoid-buggy-ips"`
-	AutoAssign        *bool              `yaml:"auto-assign"`
-}
 
 // Config is a parsed PureLB configuration.
 type Config struct {
@@ -63,116 +36,66 @@ type Pool struct {
 	// prefixes. config.Parse guarantees that these are
 	// non-overlapping, both within and between pools.
 	CIDR []*net.IPNet
+
 	// Some buggy consumer devices mistakenly drop IPv4 traffic for IP
 	// addresses ending in .0 or .255, due to poor implementations of
 	// smurf protection. This setting marks such addresses as
 	// unusable, for maximum compatibility with ancient parts of the
 	// internet.
 	AvoidBuggyIPs bool
+
 	// If false, prevents IP addresses to be automatically assigned
 	// from this pool.
 	AutoAssign bool
+
+	SubnetV4    string
+	Aggregation string
 }
 
-func parseNodeSelector(ns *nodeSelector) (labels.Selector, error) {
-	if len(ns.MatchLabels)+len(ns.MatchExpressions) == 0 {
-		return labels.Everything(), nil
-	}
-
-	// Convert to a metav1.LabelSelector so we can use the fancy
-	// parsing function to create a Selector.
-	//
-	// Why not use metav1.LabelSelector in the raw config object?
-	// Because metav1.LabelSelector doesn't have yaml tag
-	// specifications.
-	sel := &metav1.LabelSelector{
-		MatchLabels: ns.MatchLabels,
-	}
-	for _, req := range ns.MatchExpressions {
-		sel.MatchExpressions = append(sel.MatchExpressions, metav1.LabelSelectorRequirement{
-			Key:      req.Key,
-			Operator: metav1.LabelSelectorOperator(req.Operator),
-			Values:   req.Values,
-		})
-	}
-
-	return metav1.LabelSelectorAsSelector(sel)
-}
-
-func parseHoldTime(ht string) (time.Duration, error) {
-	if ht == "" {
-		return 90 * time.Second, nil
-	}
-	d, err := time.ParseDuration(ht)
-	if err != nil {
-		return 0, fmt.Errorf("invalid hold time %q: %s", ht, err)
-	}
-	rounded := time.Duration(int(d.Seconds())) * time.Second
-	if rounded != 0 && rounded < 3*time.Second {
-		return 0, fmt.Errorf("invalid hold time %q: must be 0 or >=3s", ht)
-	}
-	return rounded, nil
-}
-
-// Parse loads and validates a Config from bs.
-func Parse(bs []byte) (*Config, error) {
-	var raw configFile
-	if err := yaml.UnmarshalStrict(bs, &raw); err != nil {
-		return nil, fmt.Errorf("could not parse config: %s", err)
-	}
-
+func ParseServiceGroups(groups []*purelbv1.ServiceGroup) (*Config, error) {
 	cfg := &Config{Pools: map[string]*Pool{}}
+
 	var allCIDRs []*net.IPNet
-	for i, p := range raw.Pools {
-		pool, err := parseAddressPool(p)
+	for i, group := range groups {
+		pool, err := parseGroup(group.Name, group.Spec)
 		if err != nil {
 			return nil, fmt.Errorf("parsing address pool #%d: %s", i+1, err)
 		}
 
 		// Check that the pool isn't already defined
-		if cfg.Pools[p.Name] != nil {
-			return nil, fmt.Errorf("duplicate definition of pool %q", p.Name)
+		if cfg.Pools[group.Name] != nil {
+			return nil, fmt.Errorf("duplicate definition of pool %q", group.Name)
 		}
 
 		// Check that all specified CIDR ranges are non-overlapping.
 		for _, cidr := range pool.CIDR {
 			for _, m := range allCIDRs {
 				if cidrsOverlap(cidr, m) {
-					return nil, fmt.Errorf("CIDR %q in pool %q overlaps with already defined CIDR %q", cidr, p.Name, m)
+					return nil, fmt.Errorf("CIDR %q in pool %q overlaps with already defined CIDR %q", cidr, group.Name, m)
 				}
 			}
 			allCIDRs = append(allCIDRs, cidr)
 		}
 
-		cfg.Pools[p.Name] = pool
+		cfg.Pools[group.Name] = pool
 	}
 
 	return cfg, nil
 }
 
-func parseAddressPool(p addressPool) (*Pool, error) {
-	if p.Name == "" {
-		return nil, errors.New("missing pool name")
-	}
-
+func parseGroup(name string, group purelbv1.ServiceGroupSpec) (*Pool, error) {
 	ret := &Pool{
-		AvoidBuggyIPs: p.AvoidBuggyIPs,
-		AutoAssign:    true,
+		AutoAssign:  true,
 	}
 
-	if p.AutoAssign != nil {
-		ret.AutoAssign = *p.AutoAssign
-	}
-
-	if len(p.Addresses) == 0 {
-		return nil, errors.New("pool has no prefixes defined")
-	}
-	for _, cidr := range p.Addresses {
-		nets, err := parseCIDR(cidr)
+	if group.Local != nil {
+		nets, err := parseCIDR(group.Local.Pool)
 		if err != nil {
-			return nil, fmt.Errorf("invalid CIDR %q in pool %q: %s", cidr, p.Name, err)
+			return nil, err
 		}
 		ret.CIDR = append(ret.CIDR, nets...)
+		ret.SubnetV4 = group.Local.SubnetV4
+		ret.Aggregation = group.Local.Aggregation
 	}
 
 	return ret, nil

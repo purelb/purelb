@@ -28,8 +28,6 @@ func main() {
 
 	var (
 		port       = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
-		config     = flag.String("config", "config", "Kubernetes ConfigMap containing PureLB's configuration")
-		configNS   = flag.String("config-ns", "", "config file namespace (only needed when running outside of k8s)")
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
 	)
 	flag.Parse()
@@ -38,8 +36,6 @@ func main() {
 
 	client, err := k8s.New(&k8s.Config{
 		ProcessName:   "controller-acnodal",
-		ConfigMapName: *config,
-		ConfigMapNS:   *configNS,
 		Logger:        logger,
 		Kubeconfig:    *kubeconfig,
 

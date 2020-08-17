@@ -13,15 +13,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package config
+package k8s
 
 import (
 	"context"
 	"fmt"
 	"time"
 
+	"github.com/go-kit/kit/log"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/labels"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -31,7 +32,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
-	"k8s.io/klog/v2"
+
+	"purelb.io/internal/config"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
 	clientset "purelb.io/pkg/generated/clientset/versioned"
@@ -58,8 +60,9 @@ type Controller struct {
 	// purelbclientset is a clientset for our own API group
 	purelbclientset clientset.Interface
 
-	serviceGroupsLister        listers.ServiceGroupLister
-	serviceGroupsSynced        cache.InformerSynced
+	serviceGroupsLister listers.ServiceGroupLister
+	serviceGroupsSynced cache.InformerSynced
+	configCB            func(log.Logger, *config.Config) SyncState
 
 	// workqueue is a rate limited work queue. This is used to queue work to be
 	// processed instead of performing it as soon as a change happens. This
@@ -70,10 +73,14 @@ type Controller struct {
 	// recorder is an event recorder for recording Event resources to the
 	// Kubernetes API.
 	recorder record.EventRecorder
+
+	logger log.Logger
 }
 
 // NewController returns a new purelb controller
 func NewCRController(
+	logger log.Logger,
+	configCB func(log.Logger, *config.Config) SyncState,
 	kubeclientset kubernetes.Interface,
 	purelbclientset clientset.Interface,
 	serviceGroupInformer informers.ServiceGroupInformer) *Controller {
@@ -82,21 +89,23 @@ func NewCRController(
 	// Add cr-controller types to the default Kubernetes Scheme so Events can be
 	// logged for cr-controller types.
 	utilruntime.Must(purelbscheme.AddToScheme(scheme.Scheme))
-	klog.V(4).Info("Creating event broadcaster")
+	logger.Log("msg", "Creating event broadcaster")
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kubeclientset.CoreV1().Events("")})
 	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: controllerAgentName})
 
 	controller := &Controller{
-		kubeclientset:     kubeclientset,
-		purelbclientset:   purelbclientset,
-		serviceGroupsLister:        serviceGroupInformer.Lister(),
-		serviceGroupsSynced:        serviceGroupInformer.Informer().HasSynced,
-		workqueue:         workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "ServiceGroups"),
-		recorder:          recorder,
+		logger:              logger,
+		configCB:            configCB,
+		kubeclientset:       kubeclientset,
+		purelbclientset:     purelbclientset,
+		serviceGroupsLister: serviceGroupInformer.Lister(),
+		serviceGroupsSynced: serviceGroupInformer.Informer().HasSynced,
+		workqueue:           workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "ServiceGroups"),
+		recorder:            recorder,
 	}
 
-	klog.Info("Setting up event handlers")
+	logger.Log("msg", "Setting up event handlers")
 	// Set up an event handler for when ServiceGroup resources change
 	serviceGroupInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: controller.enqueueServiceGroup,
@@ -117,23 +126,23 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	defer c.workqueue.ShutDown()
 
 	// Start the informer factories to begin populating the informer caches
-	klog.Info("Starting ServiceGroup controller")
+	c.logger.Log("msg", "Starting ServiceGroup controller")
 
 	// Wait for the caches to be synced before starting workers
-	klog.Info("Waiting for informer caches to sync")
+	c.logger.Log("msg", "Waiting for informer caches to sync")
 	if ok := cache.WaitForCacheSync(stopCh, c.serviceGroupsSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
-	klog.Info("Starting workers")
+	c.logger.Log("msg", "Starting workers")
 	// Launch two workers to process ServiceGroup resources
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(c.runWorker, time.Second, stopCh)
 	}
 
-	klog.Info("Started workers")
+	c.logger.Log("msg", "Started workers")
 	<-stopCh
-	klog.Info("Shutting down workers")
+	c.logger.Log("msg", "Shutting down workers")
 
 	return nil
 }
@@ -189,7 +198,7 @@ func (c *Controller) processNextWorkItem() bool {
 		// Finally, if no error occurs we Forget this item so it does not
 		// get queued again until another change happens.
 		c.workqueue.Forget(obj)
-		klog.Infof("Successfully synced '%s'", key)
+		c.logger.Log("successfully synced", key)
 		return nil
 	}(obj)
 
@@ -205,38 +214,18 @@ func (c *Controller) processNextWorkItem() bool {
 // converge the two. It then updates the Status block of the ServiceGroup resource
 // with the current status of the resource.
 func (c *Controller) syncHandler(key string) error {
-	// Convert the namespace/name string into a distinct namespace and name
-	namespace, name, err := cache.SplitMetaNamespaceKey(key)
-	if err != nil {
-		utilruntime.HandleError(fmt.Errorf("invalid resource key: %s", key))
-		return nil
-	}
+	c.logger.Log("service group change", key)
 
-	// Get the ServiceGroup resource with this namespace/name
-	serviceGroup, err := c.serviceGroupsLister.ServiceGroups(namespace).Get(name)
-	if err != nil {
-		// The ServiceGroup resource may no longer exist, in which case we stop
-		// processing.
-		if errors.IsNotFound(err) {
-			utilruntime.HandleError(fmt.Errorf("serviceGroup '%s' in work queue no longer exists", key))
+	groups, err := c.serviceGroupsLister.ServiceGroups("").List(labels.Everything())
+	if err == nil {
+		cfg, err := config.ParseServiceGroups(groups)
+		if err == nil {
+			c.configCB(c.logger, cfg)
 			return nil
 		}
-
-		return err
 	}
 
-	// FIXME: what do we need to do when the ServiceGroup CR's change?
-	klog.Info("processing ServiceGroup change")
-
-	// Finally, we update the status block of the ServiceGroup resource to reflect the
-	// current state of the world
-	err = c.updateServiceGroupStatus(serviceGroup)
-	if err != nil {
-		return err
-	}
-
-	c.recorder.Event(serviceGroup, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
-	return nil
+	return err
 }
 
 func (c *Controller) updateServiceGroupStatus(serviceGroup *purelbv1.ServiceGroup) error {
@@ -277,9 +266,9 @@ func (c *Controller) handleObject(obj interface{}) {
 			utilruntime.HandleError(fmt.Errorf("error decoding object tombstone, invalid type"))
 			return
 		}
-		klog.V(4).Infof("Recovered deleted object '%s' from tombstone", object.GetName())
+		c.logger.Log("Recovered deleted object from tombstone", object.GetName())
 	}
-	klog.V(4).Infof("Processing object: %s", object.GetName())
+	c.logger.Log("Processing object", object.GetName())
 	if ownerRef := metav1.GetControllerOf(object); ownerRef != nil {
 		// If this object is not owned by a ServiceGroup, we should not do anything more
 		// with it.
@@ -289,7 +278,7 @@ func (c *Controller) handleObject(obj interface{}) {
 
 		serviceGroup, err := c.serviceGroupsLister.ServiceGroups(object.GetNamespace()).Get(ownerRef.Name)
 		if err != nil {
-			klog.V(4).Infof("ignoring orphaned object '%s' of serviceGroup '%s'", object.GetSelfLink(), ownerRef.Name)
+			c.logger.Log("ignoring orphaned object", object.GetSelfLink(), "serviceGroup", ownerRef.Name)
 			return
 		}
 

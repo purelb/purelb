@@ -45,8 +45,6 @@ func main() {
 	logger := logging.Init()
 
 	var (
-		config      = flag.String("config", "config", "Kubernetes ConfigMap containing configuration")
-		configNS    = flag.String("config-ns", "", "config file namespace (only needed when running outside of k8s)")
 		kubeconfig  = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
 		host        = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
 		myNode      = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
@@ -83,8 +81,6 @@ func main() {
 
 	client, err := k8s.New(&k8s.Config{
 		ProcessName:   "purelb-node",
-		ConfigMapName: *config,
-		ConfigMapNS:   *configNS,
 		NodeName:      *myNode,
 		Logger:        logger,
 		Kubeconfig:    *kubeconfig,

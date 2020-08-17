@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"time"
 
 	"purelb.io/internal/config"
@@ -44,7 +43,7 @@ type Client struct {
 	nodeInformer cache.Controller
 
 	crInformerFactory externalversions.SharedInformerFactory
-	crController      config.Controller
+	crController      Controller
 
 	syncFuncs []cache.InformerSynced
 
@@ -80,8 +79,6 @@ const (
 // client/watcher.
 type Config struct {
 	ProcessName   string
-	ConfigMapName string
-	ConfigMapNS   string
 	NodeName      string
 	ReadEndpoints bool
 	Logger        log.Logger
@@ -136,8 +133,8 @@ func New(cfg *Config) (*Client, error) {
 
 	// Custom Resource Watcher
 
-	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Second*30)
-	c.crController = *config.NewCRController(clientset, crClient, c.crInformerFactory.Purelb().V1().ServiceGroups())
+	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Second*0)
+	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, clientset, crClient, c.crInformerFactory.Purelb().V1().ServiceGroups())
 
 	// Service Watcher
 
@@ -195,42 +192,6 @@ func New(cfg *Config) (*Client, error) {
 
 		c.syncFuncs = append(c.syncFuncs, c.epInformer.HasSynced)
 	}
-
-	// ConfigMap Watcher
-
-	cmHandlers := cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			key, err := cache.MetaNamespaceKeyFunc(obj)
-			if err == nil {
-				c.queue.Add(cmKey(key))
-			}
-		},
-		UpdateFunc: func(old interface{}, new interface{}) {
-			key, err := cache.MetaNamespaceKeyFunc(new)
-			if err == nil {
-				c.queue.Add(cmKey(key))
-			}
-		},
-		DeleteFunc: func(obj interface{}) {
-			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-			if err == nil {
-				c.queue.Add(cmKey(key))
-			}
-		},
-	}
-	namespace := cfg.ConfigMapNS
-	if namespace == "" {
-		bs, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-		if err != nil {
-			return nil, fmt.Errorf("getting namespace from pod service account data: %s", err)
-		}
-		namespace = string(bs)
-	}
-	cmWatcher := cache.NewListWatchFromClient(c.client.CoreV1().RESTClient(), "configmaps", namespace, fields.OneTermEqualSelector("metadata.name", cfg.ConfigMapName))
-	c.cmIndexer, c.cmInformer = cache.NewIndexerInformer(cmWatcher, &corev1.ConfigMap{}, 0, cmHandlers, cache.Indexers{})
-
-	c.configChanged = cfg.ConfigChanged
-	c.syncFuncs = append(c.syncFuncs, c.cmInformer.HasSynced)
 
 	// Node Watcher
 
@@ -297,9 +258,6 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 	}
 	if c.epInformer != nil {
 		go c.epInformer.Run(stopCh)
-	}
-	if c.cmInformer != nil {
-		go c.cmInformer.Run(stopCh)
 	}
 	if c.nodeInformer != nil {
 		go c.nodeInformer.Run(stopCh)
@@ -403,43 +361,6 @@ func (c *Client) sync(key interface{}) SyncState {
 		}
 
 		return c.serviceChanged(l, string(k), svc.(*corev1.Service), eps)
-
-	case cmKey:
-		l := log.With(c.logger, "configmap", string(k))
-		cmi, exists, err := c.cmIndexer.GetByKey(string(k))
-		if err != nil {
-			l.Log("op", "getConfigMap", "error", err, "msg", "failed to get configmap")
-			return SyncStateError
-		}
-		if !exists {
-			configStale.Set(1)
-			return c.configChanged(l, nil)
-		}
-
-		// Note that configs that we can read, but that fail parsing
-		// or validation, result in a "synced" state, because the
-		// config is not going to parse any better until the k8s
-		// object changes to fix the issue.
-		cm := cmi.(*corev1.ConfigMap)
-		cfg, err := config.Parse([]byte(cm.Data["config"]))
-		if err != nil {
-			l.Log("event", "configStale", "error", err, "msg", "config (re)load failed, config marked stale")
-			configStale.Set(1)
-			return SyncStateSuccess
-		}
-
-		st := c.configChanged(l, cfg)
-		if st == SyncStateError {
-			l.Log("event", "configStale", "error", err, "msg", "config (re)load failed, config marked stale")
-			configStale.Set(1)
-			return SyncStateSuccess
-		}
-
-		configLoaded.Set(1)
-		configStale.Set(0)
-
-		l.Log("event", "configLoaded", "msg", "config (re)loaded")
-		return st
 
 	case nodeKey:
 		l := log.With(c.logger, "node", string(k))

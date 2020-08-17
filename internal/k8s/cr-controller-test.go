@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package config
+package k8s
 
 import (
-	"fmt"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -31,7 +31,9 @@ import (
 	core "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	"github.com/go-kit/kit/log"
 
+	"purelb.io/internal/config"
 	purelbv1 "purelb.io/pkg/apis/v1"
 	"purelb.io/pkg/generated/clientset/versioned/fake"
 	informers "purelb.io/pkg/generated/informers/externalversions"
@@ -72,9 +74,7 @@ func newServiceGroup(name string, replicas *int32) *purelbv1.ServiceGroup {
 			Name:      name,
 			Namespace: metav1.NamespaceDefault,
 		},
-		Spec: purelbv1.ServiceGroupSpec{
-			Name: fmt.Sprintf("%s-test-group", name),
-		},
+		Spec: purelbv1.ServiceGroupSpec{},
 	}
 }
 
@@ -85,7 +85,12 @@ func (f *fixture) newController() (*Controller, informers.SharedInformerFactory,
 	i := informers.NewSharedInformerFactory(f.client, noResyncPeriodFunc())
 	k8sI := kubeinformers.NewSharedInformerFactory(f.kubeclient, noResyncPeriodFunc())
 
-	c := NewCRController(f.kubeclient, f.client,
+	stubConfigChanged := func(log.Logger, *config.Config) SyncState {
+		return SyncStateSuccess
+	}
+
+	c := NewCRController(log.NewJSONLogger(log.NewSyncWriter(os.Stdout)),
+		stubConfigChanged, f.kubeclient, f.client,
 		i.Purelb().V1().ServiceGroups())
 
 	c.serviceGroupsSynced = alwaysReady

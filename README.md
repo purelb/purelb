@@ -8,14 +8,16 @@ system to announce service addresses.
 ## Quick Start
 
 The easiest way to get started is to use what we call a "local"
-configuration. PureLB will manage a pool of IP addresses and will
-configure the underlying Linux OS to advertise them.  Installation is
-a three-step process:
+configuration where PureLB will manage a pool of IP addresses and will
+configure the underlying Linux OS to advertise them.  Installation
+takes only a few steps:
 
 1. Create the PureLB namespace<br/>
 `kubectl apply -f deployments/namespace.yaml`
+1. Load the PureLB custom resource definitions<br/>
+`kubectl apply -f deployments/crds/servicegroup.purelb.io_crd.yml`
 1. Load a sample PureLB configuration<br/>
-`kubectl apply -f configs/sample-configmap-local.yaml`
+`kubectl apply -f configs/default-servicegroup.yml`
 1. Deploy the PureLB components<br/>
 `kubectl apply -f deployments/purelb-local.yaml`
 

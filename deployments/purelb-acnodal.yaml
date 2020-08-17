@@ -106,6 +106,7 @@ rules:
   - purelb.io
   resources:
   - servicegroups
+  - lbnodeagents
   verbs:
   - get
   - list
@@ -153,6 +154,7 @@ rules:
   - purelb.io
   resources:
   - servicegroups
+  - lbnodeagents
   verbs:
   - get
   - list
@@ -320,7 +322,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        image: registry.gitlab.com/acnodal/ego/node-acnodal:demo202008161437
+        image: registry.gitlab.com/acnodal/ego/node-acnodal:demo202009021405
         imagePullPolicy: Always
         name: node
         ports:
@@ -376,7 +378,7 @@ spec:
       - args:
         - --port=7472
         - --config=config
-        image: registry.gitlab.com/acnodal/ego/allocator-acnodal:demo202008161437
+        image: registry.gitlab.com/acnodal/ego/allocator-acnodal:demo202009021405
         imagePullPolicy: Always
         name: allocator
         env:

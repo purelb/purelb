@@ -106,6 +106,7 @@ rules:
   - purelb.io
   resources:
   - servicegroups
+  - lbnodeagents
   verbs:
   - get
   - list
@@ -153,6 +154,7 @@ rules:
   - purelb.io
   resources:
   - servicegroups
+  - lbnodeagents
   verbs:
   - get
   - list
@@ -301,10 +303,12 @@ spec:
         component: node
     spec:
       containers:
-      - args:
-        - --port=7472
-        - --config=config
-        env:
+      - env:
+        - name: NETBOX_USER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: netbox-client
+              key: user-token
         - name: PURELB_NODE_NAME
           valueFrom:
             fieldRef:
@@ -317,7 +321,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        image: registry.gitlab.com/acnodal/ego/node-local:demo202008161437
+        image: registry.gitlab.com/acnodal/ego/node-local:demo202009021405
         imagePullPolicy: Always
         name: node
         ports:
@@ -370,7 +374,13 @@ spec:
         component: allocator
     spec:
       containers:
-      - image: registry.gitlab.com/acnodal/ego/allocator-local:demo202008161437
+      - image: registry.gitlab.com/acnodal/ego/allocator-local:demo202009021405
+        env:
+        - name: NETBOX_USER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: netbox-client
+              key: user-token
         imagePullPolicy: Always
         name: allocator
         ports:

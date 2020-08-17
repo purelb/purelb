@@ -1,9 +1,9 @@
-apiVersion: "purelb.io/v1"
+apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
-  name: defaultservicegroup
+  name: default
 spec:
-  name: 'default'
-  subnetv4: '192.168.1.0/24'
-  poolv4: '192.168.1.100-192.168.1.200'
-  aggregation: 'default'
+  local:
+    subnet: '192.168.1.0/24'
+    pool: '192.168.1.100-192.168.1.200'
+    aggregation: default

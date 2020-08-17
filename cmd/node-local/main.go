@@ -50,12 +50,11 @@ func main() {
 	logger := logging.Init()
 
 	var (
-		config      = flag.String("config", "config", "Kubernetes ConfigMap containing configuration")
-		configNS    = flag.String("config-ns", os.Getenv("PURELB_ML_NAMESPACE"), "config file namespace (only needed when running outside of k8s)")
-		kubeconfig  = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
-		host        = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
-		myNode      = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
-		port        = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
+		memberlistNS = flag.String("memberlist-ns", os.Getenv("PURELB_ML_NAMESPACE"), "memberlist namespace (only needed when running outside of k8s)")
+		kubeconfig   = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
+		host         = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
+		myNode       = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
+		port         = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
 	)
 	flag.Parse()
 
@@ -88,8 +87,6 @@ func main() {
 
 	client, err := k8s.New(&k8s.Config{
 		ProcessName:   "purelb-node",
-		ConfigMapName: *config,
-		ConfigMapNS:   *configNS,
 		NodeName:      *myNode,
 		Logger:        logger,
 		Kubeconfig:    *kubeconfig,
@@ -105,14 +102,14 @@ func main() {
 	}
 
 	election, err := election.New(&election.Config{
-		Namespace: *configNS,
-		NodeName: *myNode,
-		Labels: mlLabels,
-		BindAddr: "0.0.0.0",
-		BindPort: 7946,
-		Secret: []byte(os.Getenv("ML_SECRET")),
-		Logger: &logger,
-		StopCh: stopCh,
+		Namespace: *memberlistNS,
+		NodeName:  *myNode,
+		Labels:    mlLabels,
+		BindAddr:  "0.0.0.0",
+		BindPort:  7946,
+		Secret:    []byte(os.Getenv("ML_SECRET")),
+		Logger:    &logger,
+		StopCh:    stopCh,
 	})
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to create election client")
@@ -121,7 +118,7 @@ func main() {
 
 	ctrl.Election = &election
 
-	iplist, err := client.GetPodsIPs(*configNS, mlLabels)
+	iplist, err := client.GetPodsIPs(*memberlistNS, mlLabels)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to get PodsIPs")
 		os.Exit(1)
