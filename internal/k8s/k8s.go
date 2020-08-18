@@ -175,10 +175,10 @@ func New(cfg *Config) (*Client, error) {
 				}
 			},
 			UpdateFunc: func(old interface{}, new interface{}) {
-				key, err := cache.MetaNamespaceKeyFunc(new)
-				if err == nil {
-					c.queue.Add(svcKey(key))
-				}
+				// FIXME: we were getting spammed by updates to
+				// kube-system/kube-scheduler and
+				// kube-system/kube-controller-manager so I'm disabling
+				// endpoint updates for the time being
 			},
 			DeleteFunc: func(obj interface{}) {
 				key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
