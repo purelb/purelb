@@ -23,7 +23,6 @@ func TestAssignment(t *testing.T) {
 			},
 		},
 		"test2": {
-			AvoidBuggyIPs: true,
 			AutoAssign:    true,
 			CIDR: []*net.IPNet{
 				ipnet("1.2.4.0/24"),
@@ -84,18 +83,6 @@ func TestAssignment(t *testing.T) {
 			desc: "s1 can now grab s2's former IP",
 			svc:  "s1",
 			ip:   "1.2.3.5",
-		},
-		{
-			desc:    "s3 cannot grab a 0 buggy IP",
-			svc:     "s3",
-			ip:      "1.2.4.0",
-			wantErr: true,
-		},
-		{
-			desc:    "s3 cannot grab a 255 buggy IP",
-			svc:     "s3",
-			ip:      "1.2.4.255",
-			wantErr: true,
 		},
 		{
 			desc: "s3 can grab another IP in that pool",
@@ -228,7 +215,6 @@ func TestAssignment(t *testing.T) {
 			svc:  "s1",
 			ip:   "1000::4:5",
 		},
-		// (buggy-IP N/A for ipv6)
 		{
 			desc: "s3 can grab another IP in that pool",
 			svc:  "s3",
@@ -808,75 +794,6 @@ func TestAllocation(t *testing.T) {
 	}
 }
 
-func TestBuggyIPs(t *testing.T) {
-	alloc := New()
-	if err := alloc.SetPools(map[string]*config.Pool{
-		"test": {
-			AutoAssign: true,
-			CIDR:       []*net.IPNet{ipnet("1.2.3.0/31")},
-		},
-		"test2": {
-			AutoAssign: true,
-			CIDR:       []*net.IPNet{ipnet("1.2.3.254/31")},
-		},
-		"test3": {
-			AvoidBuggyIPs: true,
-			AutoAssign:    true,
-			CIDR:          []*net.IPNet{ipnet("1.2.4.0/31")},
-		},
-		"test4": {
-			AvoidBuggyIPs: true,
-			AutoAssign:    true,
-			CIDR:          []*net.IPNet{ipnet("1.2.4.254/31")},
-		},
-	}); err != nil {
-		t.Fatalf("SetPools: %s", err)
-	}
-
-	validIPs := map[string]bool{
-		"1.2.3.0":   true,
-		"1.2.3.1":   true,
-		"1.2.3.254": true,
-		"1.2.3.255": true,
-		"1.2.4.1":   true,
-		"1.2.4.254": true,
-	}
-
-	tests := []struct {
-		svc     string
-		wantErr bool
-	}{
-		{svc: "s1"},
-		{svc: "s2"},
-		{svc: "s3"},
-		{svc: "s4"},
-		{svc: "s5"},
-		{svc: "s6"},
-		{
-			svc:     "s7",
-			wantErr: true,
-		},
-	}
-
-	for i, test := range tests {
-		ip, err := alloc.Allocate(test.svc, false, nil, "", "")
-		if test.wantErr {
-			if err == nil {
-				t.Errorf("#%d should have caused an error, but did not", i+1)
-
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("#%d Allocate(%q, \"test\"): %s", i+1, test.svc, err)
-		}
-		if !validIPs[ip.String()] {
-			t.Errorf("#%d allocated unexpected IP %q", i+1, ip)
-		}
-	}
-
-}
-
 func TestConfigReload(t *testing.T) {
 	alloc := New()
 	if err := alloc.SetPools(map[string]*config.Pool{
@@ -1021,18 +938,6 @@ func TestConfigReload(t *testing.T) {
 				},
 			},
 			pool: "test2",
-		},
-		{
-			desc: "enable buggy IPs not allowed",
-			pools: map[string]*config.Pool{
-				"test2": {
-					AutoAssign:    true,
-					AvoidBuggyIPs: true,
-					CIDR:          []*net.IPNet{ipnet("1.2.3.0/31"), ipnet("1000::/127")},
-				},
-			},
-			pool:    "test2",
-			wantErr: true,
 		},
 	}
 
@@ -1199,18 +1104,9 @@ func TestPoolCount(t *testing.T) {
 			want: 384,
 		},
 		{
-			desc: "BGP /24 and /25, no buggy IPs",
-			pool: &config.Pool{
-				CIDR:          []*net.IPNet{ipnet("1.2.3.0/24"), ipnet("2.3.4.128/25")},
-				AvoidBuggyIPs: true,
-			},
-			want: 381,
-		},
-		{
 			desc: "BGP a BIG ipv6 range",
 			pool: &config.Pool{
 				CIDR:          []*net.IPNet{ipnet("1.2.3.0/24"), ipnet("2.3.4.128/25"), ipnet("1000::/64")},
-				AvoidBuggyIPs: true,
 			},
 			want: math.MaxInt64,
 		},

@@ -305,9 +305,6 @@ func sharingOK(existing, new *key) error {
 // poolFor returns the pool that owns the requested IP, or "" if none.
 func poolFor(pools map[string]*config.Pool, ip net.IP) string {
 	for pname, p := range pools {
-		if p.AvoidBuggyIPs && ipConfusesBuggyFirmwares(ip) {
-			continue
-		}
 		for _, cidr := range p.CIDR {
 			if cidr.Contains(ip) {
 				return pname
@@ -327,16 +324,4 @@ func portsEqual(a, b []pool.Port) bool {
 		}
 	}
 	return true
-}
-
-// ipConfusesBuggyFirmwares returns true if ip is an IPv4 address ending in 0 or 255.
-//
-// Such addresses can confuse smurf protection on crappy CPE
-// firmwares, leading to packet drops.
-func ipConfusesBuggyFirmwares(ip net.IP) bool {
-	ip = ip.To4()
-	if ip == nil {
-		return false
-	}
-	return ip[3] == 0 || ip[3] == 255
 }

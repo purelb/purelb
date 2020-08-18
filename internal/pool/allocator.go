@@ -247,9 +247,6 @@ func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, p
 		c := ipaddr.NewCursor([]ipaddr.Prefix{*ipaddr.NewPrefix(cidr)})
 		for pos := c.First(); pos != nil; pos = c.Next() {
 			ip := pos.IP
-			if pool.AvoidBuggyIPs && ipConfusesBuggyFirmwares(ip) {
-				continue
-			}
 			// Somewhat inefficiently brute-force by invoking the
 			// IP-specific allocator.
 			if err := a.Assign(svc, ip, ports, sharingKey, backendKey); err == nil {
@@ -328,28 +325,6 @@ func poolCount(p *config.Pool) int64 {
 			return math.MaxInt64
 		}
 		sz := int64(math.Pow(2, float64(b-o)))
-
-		cur := ipaddr.NewCursor([]ipaddr.Prefix{*ipaddr.NewPrefix(cidr)})
-		firstIP := cur.First().IP
-		lastIP := cur.Last().IP
-
-		if p.AvoidBuggyIPs {
-			if o <= 24 {
-				// A pair of buggy IPs occur for each /24 present in the range.
-				buggies := int64(math.Pow(2, float64(24-o))) * 2
-				sz -= buggies
-			} else {
-				// Ranges smaller than /24 contain 1 buggy IP if they
-				// start/end on a /24 boundary, otherwise they contain
-				// none.
-				if ipConfusesBuggyFirmwares(firstIP) {
-					sz--
-				}
-				if ipConfusesBuggyFirmwares(lastIP) {
-					sz--
-				}
-			}
-		}
 		total += sz
 	}
 	return total
@@ -358,9 +333,6 @@ func poolCount(p *config.Pool) int64 {
 // poolFor returns the pool that owns the requested IP, or "" if none.
 func poolFor(pools map[string]*config.Pool, ip net.IP) string {
 	for pname, p := range pools {
-		if p.AvoidBuggyIPs && ipConfusesBuggyFirmwares(ip) {
-			continue
-		}
 		for _, cidr := range p.CIDR {
 			if cidr.Contains(ip) {
 				return pname
@@ -380,16 +352,4 @@ func portsEqual(a, b []Port) bool {
 		}
 	}
 	return true
-}
-
-// ipConfusesBuggyFirmwares returns true if ip is an IPv4 address ending in 0 or 255.
-//
-// Such addresses can confuse smurf protection on crappy CPE
-// firmwares, leading to packet drops.
-func ipConfusesBuggyFirmwares(ip net.IP) bool {
-	ip = ip.To4()
-	if ip == nil {
-		return false
-	}
-	return ip[3] == 0 || ip[3] == 255
 }
