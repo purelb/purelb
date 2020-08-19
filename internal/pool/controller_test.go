@@ -75,6 +75,10 @@ func (s *testK8S) Errorf(_ *v1.Service, evtType string, msg string, args ...inte
 	s.loggedWarning = true
 }
 
+func (s *testK8S) Config() (*config.Config, error) {
+	return &config.Config{Pools: map[string]*config.Pool{}}, nil
+}
+
 func (s *testK8S) reset() {
 	s.updateService = nil
 	s.updateServiceStatus = nil
@@ -168,6 +172,12 @@ func TestControllerMutation(t *testing.T) {
 				},
 			},
 			want: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						brandAnnotation: brand,
+						poolAnnotation: "pool1",
+					},
+				},
 				Spec: v1.ServiceSpec{
 					ClusterIP: "1.2.3.4",
 					Type:      "LoadBalancer",
@@ -186,6 +196,12 @@ func TestControllerMutation(t *testing.T) {
 				},
 			},
 			want: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						brandAnnotation: brand,
+						poolAnnotation: "pool1",
+					},
+				},
 				Spec: v1.ServiceSpec{
 					ClusterIP:      "1.2.3.4",
 					Type:           "LoadBalancer",
@@ -244,6 +260,8 @@ func TestControllerMutation(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"purelb.io/address-pool": "pool1",
+						brandAnnotation: brand,
+						poolAnnotation: "pool1",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -272,6 +290,8 @@ func TestControllerMutation(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"purelb.io/address-pool": "pool2",
+						brandAnnotation: brand,
+						poolAnnotation: "pool2",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -308,6 +328,12 @@ func TestControllerMutation(t *testing.T) {
 				Status: statusAssigned("2.3.4.5"),
 			},
 			want: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						brandAnnotation: brand,
+						poolAnnotation: "pool1",
+					},
+				},
 				Spec: v1.ServiceSpec{
 					Type:      "LoadBalancer",
 					ClusterIP: "1.2.3.4",
@@ -337,6 +363,12 @@ func TestControllerMutation(t *testing.T) {
 				},
 			},
 			want: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						brandAnnotation: brand,
+						poolAnnotation: "pool1",
+					},
+				},
 				Spec: v1.ServiceSpec{
 					Type:      "LoadBalancer",
 					ClusterIP: "1.2.3.4",
@@ -372,6 +404,12 @@ func TestControllerMutation(t *testing.T) {
 				},
 			},
 			want: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						brandAnnotation: brand,
+						poolAnnotation: "pool2",
+					},
+				},
 				Spec: v1.ServiceSpec{
 					Type:           "LoadBalancer",
 					LoadBalancerIP: "3.4.5.6",
@@ -392,6 +430,12 @@ func TestControllerMutation(t *testing.T) {
 				},
 			},
 			want: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						brandAnnotation: brand,
+						poolAnnotation: "pool2",
+					},
+				},
 				Spec: v1.ServiceSpec{
 					Type:                  "LoadBalancer",
 					LoadBalancerIP:        "3.4.5.6",
@@ -446,6 +490,12 @@ func TestControllerMutation(t *testing.T) {
 				Status: statusAssigned("1000::"),
 			},
 			want: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						brandAnnotation: brand,
+						poolAnnotation: "pool1",
+					},
+				},
 				Spec: v1.ServiceSpec{
 					Type:      "LoadBalancer",
 					ClusterIP: "1.2.3.4",
@@ -464,6 +514,12 @@ func TestControllerMutation(t *testing.T) {
 				Status: statusAssigned("1.2.3.0"),
 			},
 			want: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						brandAnnotation: brand,
+						poolAnnotation: "pool3",
+					},
+				},
 				Spec: v1.ServiceSpec{
 					Type:      "LoadBalancer",
 					ClusterIP: "3000::1",
@@ -606,6 +662,12 @@ func TestControllerConfig(t *testing.T) {
 	wantSvc := new(v1.Service)
 	*wantSvc = *svc
 	wantSvc.Status = statusAssigned("1.2.3.0")
+	wantSvc.ObjectMeta = metav1.ObjectMeta{
+		Annotations: map[string]string{
+			brandAnnotation: brand,
+			poolAnnotation: "default",
+		},
+	}
 	if diff := diffService(wantSvc, gotSvc); diff != "" {
 		t.Errorf("SetBalancer produced unexpected mutation (-want +got)\n%s", diff)
 	}

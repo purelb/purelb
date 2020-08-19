@@ -22,6 +22,14 @@ import (
 	"k8s.io/api/core/v1"
 )
 
+const (
+	brand                 string = "PureLB"
+	brandAnnotation       string = "purelb.io/allocated-by"
+	poolAnnotation        string = "purelb.io/allocated-from"
+	sharingAnnotation     string = "purelb.io/allow-shared-ip"
+	desiredPoolAnnotation string = "purelb.io/address-pool"
+)
+
 func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service) bool {
 	var lbIP net.IP
 
@@ -76,7 +84,7 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 		// The user might also have changed the pool annotation, and
 		// requested a different pool than the one that is currently
 		// allocated.
-		desiredPool := svc.Annotations["purelb.io/address-pool"]
+		desiredPool := svc.Annotations[desiredPoolAnnotation]
 		if lbIP != nil && desiredPool != "" && c.ips.Pool(key) != desiredPool {
 			l.Log("event", "clearAssignment", "reason", "differentPoolRequested", "msg", "user requested a different pool than the one currently assigned")
 			c.clearServiceState(key, svc)
@@ -128,9 +136,17 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 		return true
 	}
 
-	// At this point, we have an IP selected somehow, all that remains
-	// is to program the data plane.
+	// we have an IP selected somehow, so program the data plane
 	svc.Status.LoadBalancer.Ingress = []v1.LoadBalancerIngress{{IP: lbIP.String()}}
+
+	// annotate the service as "ours" and annotate the pool from which
+	// the address came
+	if svc.Annotations == nil {
+		svc.Annotations = map[string]string{}
+	}
+	svc.Annotations[brandAnnotation] = brand
+	svc.Annotations[poolAnnotation] = pool
+
 	return true
 }
 
@@ -138,6 +154,10 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 // this controller.
 func (c *controller) clearServiceState(key string, svc *v1.Service) {
 	c.ips.Unassign(key)
+	if svc.Annotations != nil {
+		delete(svc.Annotations, brandAnnotation)
+		delete(svc.Annotations, poolAnnotation)
+	}
 	svc.Status.LoadBalancer = v1.LoadBalancerStatus{}
 }
 
@@ -165,7 +185,7 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (net.IP, error) {
 	}
 
 	// Otherwise, did the user ask for a specific pool?
-	desiredPool := svc.Annotations["purelb.io/address-pool"]
+	desiredPool := svc.Annotations[desiredPoolAnnotation]
 	if desiredPool != "" {
 		ip, err := c.ips.AllocateFromPool(key, isIPv6, desiredPool, Ports(svc), SharingKey(svc), BackendKey(svc))
 		if err != nil {
