@@ -11,6 +11,7 @@ require (
 	github.com/imdario/mergo v0.3.6 // indirect
 	github.com/prometheus/client_golang v1.0.0
 	github.com/stretchr/testify v1.4.0
+	github.com/vishvananda/netlink v1.1.0
 	k8s.io/api v0.18.8
 	k8s.io/apimachinery v0.18.8
 	k8s.io/client-go v0.18.8

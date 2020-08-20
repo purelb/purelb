@@ -3,6 +3,7 @@ package election
 import (
 	"bytes"
 	"crypto/sha256"
+	"fmt"
 	"log"
 	"sort"
 	"time"
@@ -11,25 +12,24 @@ import (
 
 	gokitlog "github.com/go-kit/kit/log"
 	"github.com/hashicorp/memberlist"
-	"k8s.io/api/core/v1"
 )
 
 type Config struct {
 	Namespace string
-	NodeName string
-	Labels string
-	BindAddr string
-	BindPort int
-	Secret []byte
-	StopCh chan struct{}
-	Logger *gokitlog.Logger
+	NodeName  string
+	Labels    string
+	BindAddr  string
+	BindPort  int
+	Secret    []byte
+	StopCh    chan struct{}
+	Logger    *gokitlog.Logger
 }
 
 type Election struct {
 	Memberlist *memberlist.Memberlist
-	logger gokitlog.Logger
-	stopCh chan struct{}
-	eventCh chan memberlist.NodeEvent
+	logger     gokitlog.Logger
+	stopCh     chan struct{}
+	eventCh    chan memberlist.NodeEvent
 }
 
 func New(cfg *Config) (Election, error) {
@@ -72,8 +72,9 @@ func (e *Election) Shutdown() error {
 	return err
 }
 
-func (e *Election) Winner(eps *v1.Endpoints, name string) string {
-	nodes := e.usableNodes(eps)
+func (e *Election) Winner(name string) string {
+	nodes := e.usableNodes()
+	fmt.Println(" election.Winner nodes: ", nodes)
 	// Sort the slice by the hash of node + service name. This
 	// produces an ordering of ready nodes that is unique to this
 	// service.
@@ -112,32 +113,49 @@ func (e *Election) watchEvents(client *k8s.Client) {
 
 // usableNodes returns all nodes that have at least one fully ready
 // endpoint on them.
-func (e *Election) usableNodes(eps *v1.Endpoints) []string {
+//func (e *Election) usableNodes(eps *v1.Endpoints) []string {
+//	var activeNodes map[string]bool
+//	activeNodes = map[string]bool{}
+//	for _, n := range e.Memberlist.Members() {
+//		activeNodes[n.Name] = true
+//	}
+//
+//	usable := map[string]bool{}
+//	for _, subset := range eps.Subsets {
+//		for _, ep := range subset.Addresses {
+//			if ep.NodeName == nil {
+//				continue
+//			}
+//			if activeNodes != nil {
+//				if _, ok := activeNodes[*ep.NodeName]; !ok {
+//					continue
+//				}
+//			}
+//			if _, ok := usable[*ep.NodeName]; !ok {
+//				usable[*ep.NodeName] = true
+//			}
+//		}
+//	}
+//
+//	var ret []string
+//	for node, ok := range usable {
+//		if ok {
+//			ret = append(ret, node)
+//		}
+//	}
+//
+//	return ret
+//}
+
+func (e *Election) usableNodes() []string {
 	var activeNodes map[string]bool
 	activeNodes = map[string]bool{}
 	for _, n := range e.Memberlist.Members() {
 		activeNodes[n.Name] = true
 	}
 
-	usable := map[string]bool{}
-	for _, subset := range eps.Subsets {
-		for _, ep := range subset.Addresses {
-			if ep.NodeName == nil {
-				continue
-			}
-			if activeNodes != nil {
-				if _, ok := activeNodes[*ep.NodeName]; !ok {
-					continue
-				}
-			}
-			if _, ok := usable[*ep.NodeName]; !ok {
-				usable[*ep.NodeName] = true
-			}
-		}
-	}
-
 	var ret []string
-	for node, ok := range usable {
+	for node, ok := range activeNodes {
 		if ok {
 			ret = append(ret, node)
 		}

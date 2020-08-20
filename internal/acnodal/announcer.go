@@ -78,7 +78,7 @@ func (c *announcer) ShouldAnnounce(name string, svc *v1.Service, eps *v1.Endpoin
 	return ""
 }
 
-func (c *announcer) SetBalancer(name string, lbIP net.IP) error {
+func (c *announcer) SetBalancer(name string, lbIP net.IP, _ string) error {
 	// This method is a no-op since we announced the endpoints in ShouldAnnounce()
 	return nil
 }

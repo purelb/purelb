@@ -14,15 +14,16 @@
 package node
 
 import (
+	"fmt"
 	"net"
 
 	"purelb.io/internal/config"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 
-	"k8s.io/api/core/v1"
 	"github.com/go-kit/kit/log"
 	"github.com/prometheus/client_golang/prometheus"
+	v1 "k8s.io/api/core/v1"
 )
 
 type controller struct {
@@ -45,6 +46,9 @@ func NewController(myNode string, prometheus *prometheus.GaugeVec, announcer Ann
 }
 
 func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, eps *v1.Endpoints) k8s.SyncState {
+
+	fmt.Println("****** controller.ServiceChanged", name, "svcIP", c.svcIP)
+
 	if svc == nil {
 		return c.deleteBalancer(l, name, "serviceDeleted")
 	}
@@ -55,6 +59,11 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 	if svc.Spec.Type != "LoadBalancer" {
 		return c.deleteBalancer(l, name, "notLoadBalancer")
 	}
+
+	// Dont see a purpose, stops adding lb because of no endpoint, not consistent with k8s behavior
+	//if healthyEndpointExists(eps) == false {
+	//	return c.deleteBalancer(l, name, "noHealthyEndpoints")
+	//}
 
 	if len(svc.Status.LoadBalancer.Ingress) != 1 {
 		return c.deleteBalancer(l, name, "noIPAllocated")
@@ -74,11 +83,21 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 		}
 	}
 
-	if deleteReason := c.ShouldAnnounce(l, name, svc, eps); deleteReason != "" {
-		return c.deleteBalancer(l, name, deleteReason)
+	// This would be better later in the codepath.  SetBalancer adds to local interfaces
+	// and to a virtual interface.  The virtual interface does not require address
+	// deduplication.  Local Advertize bool added as workaround.
+
+	//if deleteReason := c.ShouldAnnounce(l, name, svc, eps); deleteReason != "" {
+	//	return c.deleteBalancer(l, name, deleteReason)
+	//	}
+
+	localannounce := c.ShouldAnnounce(l, name, svc, eps)
+
+	if localannounce == "notWinner" {
+		return c.deleteBalancer(l, name, localannounce)
 	}
 
-	if err := c.announcer.SetBalancer(name, lbIP); err != nil {
+	if err := c.announcer.SetBalancer(name, lbIP, localannounce); err != nil {
 		l.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
 		return k8s.SyncStateError
 	}
@@ -90,14 +109,17 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 	}).Set(1)
 	l.Log("event", "serviceAnnounced", "node", c.myNode, "msg", "service has IP, announcing")
 
+	c.svcIP[name] = lbIP
+
 	return k8s.SyncStateSuccess
 }
 
 func (c *controller) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, eps *v1.Endpoints) string {
-	winner := c.Election.Winner(eps, name)
+
+	winner := c.Election.Winner(name)
 	if winner == c.myNode {
-		l.Log("msg", "I'm the winner", "node", c.myNode, "service", name)
-		return ""
+		l.Log("msg", "Winner, winner, Chicken dinner", "node", c.myNode, "service", name)
+		return "Winner"
 	}
 
 	l.Log("msg", "Not the winner", "node", c.myNode, "service", name, "winner", winner)
@@ -105,6 +127,8 @@ func (c *controller) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, 
 }
 
 func (c *controller) deleteBalancer(l log.Logger, name, reason string) k8s.SyncState {
+	fmt.Println("****** controller.deleteBalancer", name, "svcIP", c.svcIP)
+
 	if err := c.announcer.DeleteBalancer(name, reason); err != nil {
 		l.Log("op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
 		return k8s.SyncStateError
