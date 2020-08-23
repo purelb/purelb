@@ -3,13 +3,15 @@ package pool
 import (
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+
+	"purelb.io/internal/config"
 )
 
 // Ports turns a service definition into a set of allocator ports.
-func Ports(svc *v1.Service) []Port {
-	var ret []Port
+func Ports(svc *v1.Service) []config.Port {
+	var ret []config.Port
 	for _, port := range svc.Spec.Ports {
-		ret = append(ret, Port{
+		ret = append(ret, config.Port{
 			Proto: string(port.Protocol),
 			Port:  int(port.Port),
 		})

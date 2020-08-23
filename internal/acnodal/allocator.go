@@ -9,16 +9,15 @@ import (
 
 	"purelb.io/internal/config"
 	"purelb.io/internal/netbox"
-	"purelb.io/internal/pool"
 )
 
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
-	pools map[string]*config.Pool
+	pools map[string]config.Pool
 
 	allocated       map[string]*alloc          // svc -> alloc
 	sharingKeyForIP map[string]*key            // ip.String() -> assigned sharing key
-	portsInUse      map[string]map[pool.Port]string // ip.String() -> Port -> svc
+	portsInUse      map[string]map[config.Port]string // ip.String() -> Port -> svc
 	servicesOnIP    map[string]map[string]bool // ip.String() -> svc -> allocated?
 	poolIPsInUse    map[string]map[string]int  // poolName -> ip.String() -> number of users
 }
@@ -31,25 +30,25 @@ type key struct {
 type alloc struct {
 	pool  string
 	ip    net.IP
-	ports []pool.Port
+	ports []config.Port
 	key
 }
 
 // New returns an Allocator managing no pools.
 func NewAllocator() *Allocator {
 	return &Allocator{
-		pools: map[string]*config.Pool{},
+		pools: map[string]config.Pool{},
 
 		allocated:       map[string]*alloc{},
 		sharingKeyForIP: map[string]*key{},
-		portsInUse:      map[string]map[pool.Port]string{},
+		portsInUse:      map[string]map[config.Port]string{},
 		servicesOnIP:    map[string]map[string]bool{},
 		poolIPsInUse:    map[string]map[string]int{},
 	}
 }
 
 // SetPools updates the set of address pools that the allocator owns.
-func (a *Allocator) SetPools(pools map[string]*config.Pool) error {
+func (a *Allocator) SetPools(pools map[string]config.Pool) error {
 	// All the fancy sharing stuff only influences how new allocations
 	// can be created. For changing the underlying configuration, the
 	// only question we have to answer is: can we fit all allocated
@@ -84,7 +83,7 @@ func (a *Allocator) assign(svc string, alloc *alloc) {
 	a.allocated[svc] = alloc
 	a.sharingKeyForIP[alloc.ip.String()] = &alloc.key
 	if a.portsInUse[alloc.ip.String()] == nil {
-		a.portsInUse[alloc.ip.String()] = map[pool.Port]string{}
+		a.portsInUse[alloc.ip.String()] = map[config.Port]string{}
 	}
 	for _, port := range alloc.ports {
 		a.portsInUse[alloc.ip.String()][port] = svc
@@ -101,7 +100,7 @@ func (a *Allocator) assign(svc string, alloc *alloc) {
 
 // Assign assigns the requested ip to svc, if the assignment is
 // permissible by sharingKey and backendKey.
-func (a *Allocator) Assign(svc string, ip net.IP, ports []pool.Port, sharingKey, backendKey string) error {
+func (a *Allocator) Assign(svc string, ip net.IP, ports []config.Port, sharingKey, backendKey string) error {
 	owner := poolFor(a.pools, ip)
 	if owner == "" {
 		return fmt.Errorf("%q is not allowed in config", ip)
@@ -145,7 +144,7 @@ func (a *Allocator) Assign(svc string, ip net.IP, ports []pool.Port, sharingKey,
 	alloc := &alloc{
 		pool:  owner,
 		ip:    ip,
-		ports: make([]pool.Port, len(ports)),
+		ports: make([]config.Port, len(ports)),
 		key:   *sk,
 	}
 	for i, port := range ports {
@@ -184,15 +183,12 @@ func (a *Allocator) Unassign(svc string) bool {
 	return true
 }
 
-func cidrIsIPv6(cidr *net.IPNet) bool {
-	return cidr.IP.To4() == nil
-}
 func ipIsIPv6(ip net.IP) bool {
 	return ip.To4() == nil
 }
 
 // AllocateFromPool assigns an available IP from pool to service.
-func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, ports []pool.Port, sharingKey, backendKey string) (net.IP, error) {
+func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, ports []config.Port, sharingKey, backendKey string) (net.IP, error) {
 	if alloc := a.allocated[svc]; alloc != nil {
 		// Handle the case where the svc has already been assigned an IP but from the wrong family.
 		// This "should-not-happen" since the "ipFamily" is an immutable field in services.
@@ -246,7 +242,7 @@ func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, p
 }
 
 // Allocate assigns any available and assignable IP to service.
-func (a *Allocator) Allocate(svc string, isIPv6 bool, ports []pool.Port, sharingKey, backendKey string) (net.IP, error) {
+func (a *Allocator) Allocate(svc string, isIPv6 bool, ports []config.Port, sharingKey, backendKey string) (net.IP, error) {
 	if alloc := a.allocated[svc]; alloc != nil {
 		if err := a.Assign(svc, alloc.ip, ports, sharingKey, backendKey); err != nil {
 			return nil, err
@@ -255,9 +251,6 @@ func (a *Allocator) Allocate(svc string, isIPv6 bool, ports []pool.Port, sharing
 	}
 
 	for poolName := range a.pools {
-		if !a.pools[poolName].AutoAssign {
-			continue
-		}
 		// FIXME: need to be able to distinguish between "pool has no
 		// addresses" and "something bad happened"
 		if ip, err := a.AllocateFromPool(svc, isIPv6, poolName, ports, sharingKey, backendKey); err == nil {
@@ -303,18 +296,16 @@ func sharingOK(existing, new *key) error {
 }
 
 // poolFor returns the pool that owns the requested IP, or "" if none.
-func poolFor(pools map[string]*config.Pool, ip net.IP) string {
+func poolFor(pools map[string]config.Pool, ip net.IP) string {
 	for pname, p := range pools {
-		for _, cidr := range p.CIDR {
-			if cidr.Contains(ip) {
-				return pname
-			}
+		if p.Contains(ip) {
+			return pname
 		}
 	}
 	return ""
 }
 
-func portsEqual(a, b []pool.Port) bool {
+func portsEqual(a, b []config.Port) bool {
 	if len(a) != len(b) {
 		return false
 	}

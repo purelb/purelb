@@ -1,7 +1,6 @@
 package pool
 
 import (
-	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -14,21 +13,11 @@ import (
 
 func TestAssignment(t *testing.T) {
 	alloc := New()
-	if err := alloc.SetPools(map[string]*config.Pool{
-		"test": {
-			AutoAssign: true,
-			CIDR: []*net.IPNet{
-				ipnet("1.2.3.4/31"),
-				ipnet("1000::4/127"),
-			},
-		},
-		"test2": {
-			AutoAssign:    true,
-			CIDR: []*net.IPNet{
-				ipnet("1.2.4.0/24"),
-				ipnet("1000::4:0/120"),
-			},
-		},
+	if err := alloc.SetPools(map[string]config.Pool{
+		"test0": mustPool("1.2.3.4/31", true),
+		"test1": mustPool("1000::4/127", true),
+		"test2": mustPool("1.2.4.0/24", true),
+		"test3": mustPool("1000::4:0/120", true),
 	}); err != nil {
 		t.Fatalf("SetPools: %s", err)
 	}
@@ -37,7 +26,7 @@ func TestAssignment(t *testing.T) {
 		desc       string
 		svc        string
 		ip         string
-		ports      []Port
+		ports      []config.Port
 		sharingKey string
 		backendKey string
 		wantErr    bool
@@ -336,48 +325,35 @@ func TestAssignment(t *testing.T) {
 
 func TestPoolAllocation(t *testing.T) {
 	alloc := New()
-	// This test only allocates from the "test" pool, so it will run
-	// out of IPs quickly even though there are tons available in
-	// other pools.
-	if err := alloc.SetPools(map[string]*config.Pool{
-		"not_this_one": {
-			AutoAssign: true,
-			CIDR:       []*net.IPNet{ipnet("192.168.0.0/16"), ipnet("fc00::1:0/112")},
-		},
-		"test": {
-			AutoAssign: true,
-			CIDR: []*net.IPNet{
-				ipnet("1.2.3.4/31"),
-				ipnet("1.2.3.10/31"),
-				ipnet("1000::/127"),
-				ipnet("2000::/127"),
-			},
-		},
-		"test2": {
-			AutoAssign: true,
-			CIDR:       []*net.IPNet{ipnet("10.20.30.0/24"), ipnet("fc00::2:0/120")},
-		},
+	// This test only allocates from the "test" and "testV6" pools, so
+	// it will run out of IPs quickly even though there are tons
+	// available in other pools.
+	if err := alloc.SetPools(map[string]config.Pool{
+		"not_this_one": mustPool("192.168.0.0/16", true),
+		"test":         mustPool("1.2.3.4/30", true),
+		"testV6":       mustPool("1000::/126", true),
+		"test2":        mustPool("10.20.30.0/24", true),
 	}); err != nil {
 		t.Fatalf("SetPools: %s", err)
 	}
 
 	validIP4s := map[string]bool{
-		"1.2.3.4":  true,
-		"1.2.3.5":  true,
-		"1.2.3.10": true,
-		"1.2.3.11": true,
+		"1.2.3.4": true,
+		"1.2.3.5": true,
+		"1.2.3.6": true,
+		"1.2.3.7": true,
 	}
 	validIP6s := map[string]bool{
 		"1000::":  true,
 		"1000::1": true,
-		"2000::":  true,
-		"2000::1": true,
+		"1000::2": true,
+		"1000::3": true,
 	}
 
 	tests := []struct {
 		desc       string
 		svc        string
-		ports      []Port
+		ports      []config.Port
 		sharingKey string
 		unassign   bool
 		wantErr    bool
@@ -565,7 +541,11 @@ func TestPoolAllocation(t *testing.T) {
 			alloc.Unassign(test.svc)
 			continue
 		}
-		ip, err := alloc.AllocateFromPool(test.svc, test.isIPv6, "test", test.ports, test.sharingKey, "")
+		pool := "test"
+		if test.isIPv6 {
+			pool = "testV6"
+		}
+		ip, err := alloc.AllocateFromPool(test.svc, test.isIPv6, pool, test.ports, test.sharingKey, "")
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%s: should have caused an error, but did not", test.desc)
@@ -593,15 +573,11 @@ func TestPoolAllocation(t *testing.T) {
 
 func TestAllocation(t *testing.T) {
 	alloc := New()
-	if err := alloc.SetPools(map[string]*config.Pool{
-		"test1": {
-			AutoAssign: true,
-			CIDR:       []*net.IPNet{ipnet("1.2.3.4/31"), ipnet("1000::4/127")},
-		},
-		"test2": {
-			AutoAssign: true,
-			CIDR:       []*net.IPNet{ipnet("1.2.3.10/31"), ipnet("1000::10/127")},
-		},
+	if err := alloc.SetPools(map[string]config.Pool{
+		"test1":   mustPool("1.2.3.4/31", true),
+		"test1V6": mustPool("1000::4/127", true),
+		"test2":   mustPool("1.2.3.10/31", true),
+		"test2V6": mustPool("1000::10/127", true),
 	}); err != nil {
 		t.Fatalf("SetPools: %s", err)
 	}
@@ -622,7 +598,7 @@ func TestAllocation(t *testing.T) {
 	tests := []struct {
 		desc       string
 		svc        string
-		ports      []Port
+		ports      []config.Port
 		sharingKey string
 		unassign   bool
 		wantErr    bool
@@ -796,11 +772,9 @@ func TestAllocation(t *testing.T) {
 
 func TestConfigReload(t *testing.T) {
 	alloc := New()
-	if err := alloc.SetPools(map[string]*config.Pool{
-		"test": {
-			AutoAssign: true,
-			CIDR:       []*net.IPNet{ipnet("1.2.3.0/30"), ipnet("1000::/126")},
-		},
+	if err := alloc.SetPools(map[string]config.Pool{
+		"test":   mustPool("1.2.3.0/30", true),
+		"testV6": mustPool("1000::/126", true),
 	}); err != nil {
 		t.Fatalf("SetPools: %s", err)
 	}
@@ -813,131 +787,111 @@ func TestConfigReload(t *testing.T) {
 
 	tests := []struct {
 		desc    string
-		pools   map[string]*config.Pool
+		pools   map[string]config.Pool
 		wantErr bool
-		pool    string // Pool that 1.2.3.0 and 1000:: should be in
+		pool    string // Pool that 1.2.3.0 should be in
+		pool6   string // Pool that 1000:: should be in
 	}{
 		{
 			desc: "set same config is no-op",
-			pools: map[string]*config.Pool{
-				"test": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.0/30"), ipnet("1000::/126")},
-				},
+			pools: map[string]config.Pool{
+				"test":   mustPool("1.2.3.0/30", true),
+				"testV6": mustPool("1000::/126", true),
 			},
-			pool: "test",
+			pool:  "test",
+			pool6: "testV6",
 		},
 		{
 			desc: "expand pool",
-			pools: map[string]*config.Pool{
-				"test": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.0/24"), ipnet("1000::/120")},
-				},
+			pools: map[string]config.Pool{
+				"test":   mustPool("1.2.3.0/29", true),
+				"testV6": mustPool("1000::/126", true),
 			},
-			pool: "test",
+			pool:  "test",
+			pool6: "testV6",
 		},
 		{
 			desc: "shrink pool",
-			pools: map[string]*config.Pool{
-				"test": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.0/30"), ipnet("1000::/126")},
-				},
+			pools: map[string]config.Pool{
+				"test":   mustPool("1.2.3.0/31", true),
+				"testV6": mustPool("1000::/126", true),
 			},
-			pool: "test",
+			pool:  "test",
+			pool6: "testV6",
 		},
 		{
 			desc: "can't shrink further",
-			pools: map[string]*config.Pool{
-				"test": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.2/31"), ipnet("1000::0/126")},
-				},
+			pools: map[string]config.Pool{
+				"test": mustPool("1.2.3.0/31", true),
 			},
 			pool:    "test",
+			pool6:   "testV6",
 			wantErr: true,
 		},
 		{
 			desc: "can't shrink further ipv6",
-			pools: map[string]*config.Pool{
-				"test": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.0/30"), ipnet("1000::2/127")},
-				},
+			pools: map[string]config.Pool{
+				"test": mustPool("1000::2/127", true),
 			},
 			pool:    "test",
+			pool6:   "testV6",
 			wantErr: true,
 		},
 		{
 			desc: "rename the pool",
-			pools: map[string]*config.Pool{
-				"test2": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.0/30"), ipnet("1000::0/126")},
-				},
+			pools: map[string]config.Pool{
+				"test2":  mustPool("1.2.3.0/30", true),
+				"testV6": mustPool("1000::/126", true),
 			},
-			pool: "test2",
+			pool:  "test2",
+			pool6: "testV6",
 		},
 		{
 			desc: "split pool",
-			pools: map[string]*config.Pool{
-				"test": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.0/31"), ipnet("1000::/127")},
-				},
-				"test2": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.2/31"), ipnet("1000::2/127")},
-				},
+			pools: map[string]config.Pool{
+				"testV4": mustPool("1.2.3.0/30", true),
+				"test":   mustPool("1000::/127", true),
+				"test2":  mustPool("1000::2/127", true),
 			},
-			pool: "test",
+			pool:  "testV4",
+			pool6: "test",
 		},
 		{
 			desc: "swap pool names",
-			pools: map[string]*config.Pool{
-				"test2": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.0/31"), ipnet("1000::/127")},
-				},
-				"test": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.2/31"), ipnet("1000::2/127")},
-				},
+			pools: map[string]config.Pool{
+				"testV4": mustPool("1.2.3.0/30", true),
+				"test2":  mustPool("1000::/127", true),
+				"test":   mustPool("1000::2/127", true),
 			},
-			pool: "test2",
+			pool:  "testV4",
+			pool6: "test2",
 		},
 		{
 			desc: "delete used pool",
-			pools: map[string]*config.Pool{
-				"test": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.2/31"), ipnet("1000::/126")},
-				},
+			pools: map[string]config.Pool{
+				"test": mustPool("1000::/126", true),
 			},
-			pool:    "test2",
+			pool:    "testV4",
+			pool6:   "test2",
 			wantErr: true,
 		},
 		{
 			desc: "delete used pool ipv6",
-			pools: map[string]*config.Pool{
-				"test": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.0/30"), ipnet("1000::2/127")},
-				},
+			pools: map[string]config.Pool{
+				"test": mustPool("1000::2/127", true),
 			},
-			pool:    "test2",
+			pool:    "testV4",
+			pool6:   "test2",
 			wantErr: true,
 		},
 		{
 			desc: "delete unused pool",
-			pools: map[string]*config.Pool{
-				"test2": {
-					AutoAssign: true,
-					CIDR:       []*net.IPNet{ipnet("1.2.3.0/31"), ipnet("1000::/127")},
-				},
+			pools: map[string]config.Pool{
+				"testV4": mustPool("1.2.3.0/30", true),
+				"test2":  mustPool("1000::/127", true),
 			},
-			pool: "test2",
+			pool:  "testV4",
+			pool6: "test2",
 		},
 	}
 
@@ -954,20 +908,20 @@ func TestConfigReload(t *testing.T) {
 		if gotPool != test.pool {
 			t.Errorf("%q: s1 is in wrong pool, want %q, got %q", test.desc, test.pool, gotPool)
 		}
+		gotPool = alloc.Pool("s2")
+		if gotPool != test.pool6 {
+			t.Errorf("%q: s2 is in wrong pool, want %q, got %q", test.desc, test.pool6, gotPool)
+		}
 	}
 }
 
 func TestAutoAssign(t *testing.T) {
 	alloc := New()
-	if err := alloc.SetPools(map[string]*config.Pool{
-		"test1": {
-			AutoAssign: false,
-			CIDR:       []*net.IPNet{ipnet("1.2.3.4/31"), ipnet("1000::4/127")},
-		},
-		"test2": {
-			AutoAssign: true,
-			CIDR:       []*net.IPNet{ipnet("1.2.3.10/31"), ipnet("1000::10/127")},
-		},
+	if err := alloc.SetPools(map[string]config.Pool{
+		"test0": mustPool("1.2.3.4/31", false),
+		"test1": mustPool("1000::4/127", false),
+		"test2": mustPool("1000::10/127", true),
+		"test3": mustPool("1.2.3.10/31", true),
 	}); err != nil {
 		t.Fatalf("SetPools: %s", err)
 	}
@@ -1083,53 +1037,10 @@ func TestAutoAssign(t *testing.T) {
 	}
 }
 
-func TestPoolCount(t *testing.T) {
-	tests := []struct {
-		desc string
-		pool *config.Pool
-		want int64
-	}{
-		{
-			desc: "BGP /24",
-			pool: &config.Pool{
-				CIDR:     []*net.IPNet{ipnet("1.2.3.0/24")},
-			},
-			want: 256,
-		},
-		{
-			desc: "BGP /24 and /25",
-			pool: &config.Pool{
-				CIDR:     []*net.IPNet{ipnet("1.2.3.0/24"), ipnet("2.3.4.128/25")},
-			},
-			want: 384,
-		},
-		{
-			desc: "BGP a BIG ipv6 range",
-			pool: &config.Pool{
-				CIDR:          []*net.IPNet{ipnet("1.2.3.0/24"), ipnet("2.3.4.128/25"), ipnet("1000::/64")},
-			},
-			want: math.MaxInt64,
-		},
-	}
-
-	for _, test := range tests {
-		got := poolCount(test.pool)
-		if test.want != got {
-			t.Errorf("%q: wrong pool count, want %d, got %d", test.desc, test.want, got)
-		}
-	}
-}
-
 func TestPoolMetrics(t *testing.T) {
 	alloc := New()
-	if err := alloc.SetPools(map[string]*config.Pool{
-		"test": {
-			AutoAssign: true,
-			CIDR: []*net.IPNet{
-				ipnet("1.2.3.4/30"),
-				ipnet("1000::4/126"),
-			},
-		},
+	if err := alloc.SetPools(map[string]config.Pool{
+		"test": mustPool("1.2.3.4/30", true),
 	}); err != nil {
 		t.Fatalf("SetPools: %s", err)
 	}
@@ -1138,7 +1049,7 @@ func TestPoolMetrics(t *testing.T) {
 		desc       string
 		svc        string
 		ip         string
-		ports      []Port
+		ports      []config.Port
 		sharingKey string
 		backendKey string
 		ipsInUse   float64
@@ -1209,11 +1120,10 @@ func TestPoolMetrics(t *testing.T) {
 		},
 	}
 
-	// The "test" pool contains two ranges; 1.2.3.4/30, 1000::4/126
-	// All bits can be used for lb-addresses which gives a total capacity of; 4+4=8
+	// The "test" pool contains one range: 1.2.3.4/30
 	value := ptu.ToFloat64(stats.poolCapacity.WithLabelValues("test"))
-	if int(value) != 8 {
-		t.Errorf("stats.poolCapacity invalid %f. Expected 8", value)
+	if int(value) != 4 {
+		t.Errorf("stats.poolCapacity invalid %f. Expected 4", value)
 	}
 
 	for _, test := range tests {
@@ -1255,23 +1165,23 @@ func assigned(a *Allocator, svc string) string {
 	return ip.String()
 }
 
-func ipnet(s string) *net.IPNet {
-	_, n, err := net.ParseCIDR(s)
+func mustPool(r string, aa bool) config.Pool {
+	p, err := config.NewLocalPool(r, aa, "", "")
 	if err != nil {
 		panic(err)
 	}
-	return n
+	return *p
 }
 
-func ports(ports ...string) []Port {
-	var ret []Port
+func ports(ports ...string) []config.Port {
+	var ret []config.Port
 	for _, s := range ports {
 		fs := strings.Split(s, "/")
 		p, err := strconv.Atoi(fs[1])
 		if err != nil {
 			panic("bad port in test")
 		}
-		ret = append(ret, Port{fs[0], p})
+		ret = append(ret, config.Port{Proto: fs[0], Port: p})
 	}
 	return ret
 }

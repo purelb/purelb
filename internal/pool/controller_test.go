@@ -76,7 +76,7 @@ func (s *testK8S) Errorf(_ *v1.Service, evtType string, msg string, args ...inte
 }
 
 func (s *testK8S) Config() (*config.Config, error) {
-	return &config.Config{Pools: map[string]*config.Pool{}}, nil
+	return &config.Config{Pools: map[string]config.Pool{}}, nil
 }
 
 func (s *testK8S) reset() {
@@ -110,23 +110,11 @@ func TestControllerMutation(t *testing.T) {
 		client: k,
 	}
 	cfg := &config.Config{
-		Pools: map[string]*config.Pool{
-			"pool1": {
-				AutoAssign: true,
-				CIDR:       []*net.IPNet{ipnet("1.2.3.0/31")},
-			},
-			"pool2": {
-				AutoAssign: false,
-				CIDR:       []*net.IPNet{ipnet("3.4.5.6/32")},
-			},
-			"pool3": {
-				AutoAssign: true,
-				CIDR:       []*net.IPNet{ipnet("1000::/127")},
-			},
-			"pool4": {
-				AutoAssign: false,
-				CIDR:       []*net.IPNet{ipnet("2000::1/128")},
-			},
+		Pools: map[string]config.Pool{
+			"pool1": mustPool("1.2.3.0/31", true),
+			"pool2": mustPool("3.4.5.6/32", false),
+			"pool3": mustPool("1000::/127", true),
+			"pool4": mustPool("2000::1/128", false),
 		},
 	}
 
@@ -175,7 +163,7 @@ func TestControllerMutation(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						brandAnnotation: brand,
-						poolAnnotation: "pool1",
+						poolAnnotation:  "pool1",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -199,7 +187,7 @@ func TestControllerMutation(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						brandAnnotation: brand,
-						poolAnnotation: "pool1",
+						poolAnnotation:  "pool1",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -248,7 +236,7 @@ func TestControllerMutation(t *testing.T) {
 			in: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"purelb.io/address-pool": "pool1",
+						desiredPoolAnnotation: "pool1",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -259,9 +247,9 @@ func TestControllerMutation(t *testing.T) {
 			want: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"purelb.io/address-pool": "pool1",
-						brandAnnotation: brand,
-						poolAnnotation: "pool1",
+						desiredPoolAnnotation: "pool1",
+						brandAnnotation:       brand,
+						poolAnnotation:        "pool1",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -277,7 +265,7 @@ func TestControllerMutation(t *testing.T) {
 			in: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"purelb.io/address-pool": "pool2",
+						desiredPoolAnnotation: "pool2",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -289,9 +277,9 @@ func TestControllerMutation(t *testing.T) {
 			want: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"purelb.io/address-pool": "pool2",
-						brandAnnotation: brand,
-						poolAnnotation: "pool2",
+						desiredPoolAnnotation: "pool2",
+						brandAnnotation:       brand,
+						poolAnnotation:        "pool2",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -307,7 +295,7 @@ func TestControllerMutation(t *testing.T) {
 			in: &v1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						"purelb.io/address-pool": "does-not-exist",
+						desiredPoolAnnotation: "does-not-exist",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -331,7 +319,7 @@ func TestControllerMutation(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						brandAnnotation: brand,
-						poolAnnotation: "pool1",
+						poolAnnotation:  "pool1",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -366,7 +354,7 @@ func TestControllerMutation(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						brandAnnotation: brand,
-						poolAnnotation: "pool1",
+						poolAnnotation:  "pool1",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -407,7 +395,7 @@ func TestControllerMutation(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						brandAnnotation: brand,
-						poolAnnotation: "pool2",
+						poolAnnotation:  "pool2",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -433,7 +421,7 @@ func TestControllerMutation(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						brandAnnotation: brand,
-						poolAnnotation: "pool2",
+						poolAnnotation:  "pool2",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -493,7 +481,7 @@ func TestControllerMutation(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						brandAnnotation: brand,
-						poolAnnotation: "pool1",
+						poolAnnotation:  "pool1",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -517,7 +505,7 @@ func TestControllerMutation(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						brandAnnotation: brand,
-						poolAnnotation: "pool3",
+						poolAnnotation:  "pool3",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -629,11 +617,8 @@ func TestControllerConfig(t *testing.T) {
 
 	// Set a config with some IPs. Still no allocation, not synced.
 	cfg := &config.Config{
-		Pools: map[string]*config.Pool{
-			"default": {
-				AutoAssign: true,
-				CIDR:       []*net.IPNet{ipnet("1.2.3.0/24")},
-			},
+		Pools: map[string]config.Pool{
+			"default": mustPool("1.2.3.0/24", true),
 		},
 	}
 	if c.SetConfig(l, cfg) == k8s.SyncStateError {
@@ -665,7 +650,7 @@ func TestControllerConfig(t *testing.T) {
 	wantSvc.ObjectMeta = metav1.ObjectMeta{
 		Annotations: map[string]string{
 			brandAnnotation: brand,
-			poolAnnotation: "default",
+			poolAnnotation:  "default",
 		},
 	}
 	if diff := diffService(wantSvc, gotSvc); diff != "" {
@@ -692,11 +677,8 @@ func TestDeleteRecyclesIP(t *testing.T) {
 
 	l := log.NewNopLogger()
 	cfg := &config.Config{
-		Pools: map[string]*config.Pool{
-			"default": {
-				AutoAssign: true,
-				CIDR:       []*net.IPNet{ipnet("1.2.3.0/32")},
-			},
+		Pools: map[string]config.Pool{
+			"default": mustPool("1.2.3.0/32", true),
 		},
 	}
 	if c.SetConfig(l, cfg) == k8s.SyncStateError {

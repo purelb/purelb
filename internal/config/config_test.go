@@ -1,30 +1,21 @@
 package config
 
 import (
-	"net"
+	"reflect"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
-func selector(s string) labels.Selector {
-	ret, err := labels.Parse(s)
+func mustPool(t *testing.T, r string, aa bool) LocalPool {
+	p, err := NewLocalPool(r, aa, "", "")
 	if err != nil {
 		panic(err)
 	}
-	return ret
-}
-
-func ipnet(s string) *net.IPNet {
-	_, n, err := net.ParseCIDR(s)
-	if err != nil {
-		panic(err)
-	}
-	return n
+	return *p
 }
 
 func TestParse(t *testing.T) {
@@ -34,9 +25,9 @@ func TestParse(t *testing.T) {
 		want *Config
 	}{
 		{ desc: "empty config",
-			raw:  []*purelbv1.ServiceGroup{},
+			raw: []*purelbv1.ServiceGroup{},
 			want: &Config{
-				Pools: map[string]*Pool{},
+				Pools: map[string]Pool{},
 			},
 		},
 
@@ -94,25 +85,11 @@ func TestParse(t *testing.T) {
 				},
 			},
 			want: &Config{
-				Pools: map[string]*Pool{
-					"pool1": {
-						CIDR:       []*net.IPNet{ipnet("10.20.0.0/16")},
-						AutoAssign: true,
-					},
-					"pool2": {
-						CIDR:       []*net.IPNet{ipnet("30.0.0.0/8")},
-						AutoAssign: true,
-					},
-					"pool3": {
-						CIDR: []*net.IPNet{
-							ipnet("40.0.0.0/25"),
-						},
-						AutoAssign: true,
-					},
-					"pool4": {
-						CIDR:       []*net.IPNet{ipnet("2001:db8::/64")},
-						AutoAssign: true,
-					},
+				Pools: map[string]Pool{
+					"pool1": mustPool(t, "10.20.0.0/16", true),
+					"pool2": mustPool(t, "30.0.0.0/8", true),
+					"pool3": mustPool(t, "40.0.0.0/25", true),
+					"pool4": mustPool(t, "2001:db8::/126", true),
 				},
 			},
 		},
@@ -132,8 +109,7 @@ func TestParse(t *testing.T) {
 			},
 		},
 
-		{
-			desc: "invalid CIDR prefix length",
+		{ desc: "invalid CIDR prefix length",
 			raw: []*purelbv1.ServiceGroup{
 				&purelbv1.ServiceGroup{
 					ObjectMeta: metav1.ObjectMeta{
@@ -235,25 +211,10 @@ func TestParse(t *testing.T) {
 				t.Errorf("%q: parse succeeded but should have failed", test.desc)
 				return
 			}
-			selectorComparer := cmp.Comparer(func(x, y labels.Selector) bool {
-				if x == nil {
-					return y == nil
-				}
-				if y == nil {
-					return x == nil
-				}
-				// Nothing() and Everything() have the same string
-				// representation, stupidly. So, compare explicitly for
-				// Nothing.
-				if x == labels.Nothing() {
-					return y == labels.Nothing()
-				}
-				if y == labels.Nothing() {
-					return x == labels.Nothing()
-				}
-				return x.String() == y.String()
+			iprangeComparer := cmp.Comparer(func(x, y IPRange) bool {
+				return reflect.DeepEqual(x.from, y.from) && reflect.DeepEqual(x.to, y.to)
 			})
-			if diff := cmp.Diff(test.want, got, selectorComparer); diff != "" {
+			if diff := cmp.Diff(test.want, got, iprangeComparer, cmp.AllowUnexported(LocalPool{})); diff != "" {
 				t.Errorf("%q: parse returned wrong result (-want, +got)\n%s", test.desc, diff)
 			}
 		})
