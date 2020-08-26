@@ -51,7 +51,7 @@ func (c *announcer) ShouldAnnounce(name string, svc *v1.Service, eps *v1.Endpoin
 	// and the main loop doesn't provide them to SetBalancer() so we'll
 	// announce here since we've got everything that we need.
 
-	egw, err := New("", "")
+	egw, err := config.New("", "")
 	if err != nil {
 		c.logger.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
 		return "cantConnectToEGW"

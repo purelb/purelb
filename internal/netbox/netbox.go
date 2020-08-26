@@ -69,7 +69,6 @@ func (n *Netbox) fetchAddrs(tenant string, status string) ([]Address, error) {
 		return nil, err
 	}
 	if body.Count < 1 {
-		fmt.Println("zero addresses available")
 		return nil, fmt.Errorf("No addresses available")
 	}
 

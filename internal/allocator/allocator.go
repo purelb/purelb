@@ -1,4 +1,4 @@
-package pool
+package allocator
 
 import (
 	"errors"
@@ -31,16 +31,6 @@ func New() *Allocator {
 
 // SetPools updates the set of address pools that the allocator owns.
 func (a *Allocator) SetPools(pools map[string]config.Pool) error {
-	// All the fancy sharing stuff only influences how new allocations
-	// can be created. For changing the underlying configuration, the
-	// only question we have to answer is: can we fit all allocated
-	// IPs into address pools under the new configuration?
-	for svc, alloc := range a.allocated {
-		if poolFor(pools, alloc.ip) == "" {
-			return fmt.Errorf("new config not compatible with assigned IPs: service %q cannot own %q under new config", svc, alloc.ip)
-		}
-	}
-
 	for n := range a.pools {
 		if pools[n] == nil {
 			stats.poolCapacity.DeleteLabelValues(n)
@@ -50,18 +40,6 @@ func (a *Allocator) SetPools(pools map[string]config.Pool) error {
 	}
 
 	a.pools = pools
-
-	// Need to rearrange existing pool mappings and counts
-	for svc, alloc := range a.allocated {
-		pool := poolFor(a.pools, alloc.ip)
-		if pool != alloc.pool {
-			a.Unassign(svc)
-			alloc.pool = pool
-			// Use the internal assign, we know for a fact the IP is
-			// still usable.
-			a.assign(svc, alloc)
-		}
-	}
 
 	// Refresh or initiate stats
 	for n, p := range a.pools {
@@ -87,10 +65,10 @@ func (a *Allocator) assign(svc string, alloc *alloc) {
 
 // Assign assigns the requested ip to svc, if the assignment is
 // permissible by sharingKey and backendKey.
-func (a *Allocator) Assign(svc string, ip net.IP, ports []config.Port, sharingKey, backendKey string) error {
+func (a *Allocator) Assign(svc string, ip net.IP, ports []config.Port, sharingKey, backendKey string) (string, error) {
 	pool := poolFor(a.pools, ip)
 	if pool == "" {
-		return fmt.Errorf("%q is not allowed in config", ip)
+		return "", fmt.Errorf("%q is not allowed in config", ip)
 	}
 	sk := &config.Key{
 		Sharing: sharingKey,
@@ -100,9 +78,9 @@ func (a *Allocator) Assign(svc string, ip net.IP, ports []config.Port, sharingKe
 	// Does the IP already have allocs? If so, needs to be the same
 	// sharing key, and have non-overlapping ports. If not, the proposed
 	// IP needs to be allowed by configuration.
-	err := a.pools[pool].Available(ip, ports, svc, sk)
+	err := a.pools[pool].Available(ip, ports, svc, sk)	// FIXME: this should Assign() here, not check Available.  Might need to iterate over pools rather than do poolFor
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Either the IP is entirely unused, or the requested use is
@@ -117,7 +95,7 @@ func (a *Allocator) Assign(svc string, ip net.IP, ports []config.Port, sharingKe
 		alloc.ports[i] = port
 	}
 	a.assign(svc, alloc)
-	return nil
+	return pool, nil
 }
 
 // Unassign frees the IP associated with service, if any.
@@ -156,7 +134,7 @@ func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, p
 		if isIPv6 != ipIsIPv6(alloc.ip) {
 			return nil, fmt.Errorf("IP for wrong family assigned %s", alloc.ip.String())
 		}
-		if err := a.Assign(svc, alloc.ip, ports, sharingKey, backendKey); err != nil {
+		if _, err := a.Assign(svc, alloc.ip, ports, sharingKey, backendKey); err != nil {
 			return nil, err
 		}
 		return alloc.ip, nil
@@ -195,12 +173,12 @@ func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, p
 }
 
 // Allocate assigns any available and assignable IP to service.
-func (a *Allocator) Allocate(svc string, isIPv6 bool, ports []config.Port, sharingKey, backendKey string) (net.IP, error) {
+func (a *Allocator) Allocate(svc string, isIPv6 bool, ports []config.Port, sharingKey, backendKey string) (string, net.IP, error) {
 	if alloc := a.allocated[svc]; alloc != nil {
-		if err := a.Assign(svc, alloc.ip, ports, sharingKey, backendKey); err != nil {
-			return nil, err
+		if _, err := a.Assign(svc, alloc.ip, ports, sharingKey, backendKey); err != nil {
+			return "", nil, err
 		}
-		return alloc.ip, nil
+		return alloc.pool, alloc.ip, nil
 	}
 
 	for poolName := range a.pools {
@@ -208,11 +186,11 @@ func (a *Allocator) Allocate(svc string, isIPv6 bool, ports []config.Port, shari
 			continue
 		}
 		if ip, err := a.AllocateFromPool(svc, isIPv6, poolName, ports, sharingKey, backendKey); err == nil {
-			return ip, nil
+			return poolName, ip, nil
 		}
 	}
 
-	return nil, errors.New("no available IPs")
+	return "", nil, errors.New("no available IPs")
 }
 
 // IP returns the IP address allocated to service, or nil if none are allocated.

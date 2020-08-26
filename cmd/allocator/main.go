@@ -20,7 +20,7 @@ import (
 
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
-	"purelb.io/internal/pool"
+	"purelb.io/internal/allocator"
 )
 
 func main() {
@@ -32,7 +32,7 @@ func main() {
 	)
 	flag.Parse()
 
-	c, _ := pool.NewController(pool.New())
+	c, _ := allocator.NewController(allocator.New())
 
 	client, err := k8s.New(&k8s.Config{
 		ProcessName:   "purelb-allocator",

@@ -62,9 +62,14 @@ func parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 		if err != nil {
 			return nil, err
 		}
-
+		return *ret, nil
+	} else if group.EGW != nil {
+		ret, err := NewEGWPool(true, group.EGW.URL, group.EGW.Aggregation)
+		if err != nil {
+			return nil, err
+		}
 		return *ret, nil
 	}
 
-	return nil, fmt.Errorf("Pool is not local")
+	return nil, fmt.Errorf("Pool is not local or EGW")
 }

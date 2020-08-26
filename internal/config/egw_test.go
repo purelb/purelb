@@ -1,4 +1,4 @@
-package acnodal
+package config
 
 import (
 	"flag"
@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-  "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/assert"
 )
 
 const (
@@ -16,6 +16,7 @@ const (
 	EndpointName    = "test-endpoint"
 	EndpointAddress = "10.42.27.42"
 	EndpointPort    = 80
+	GroupURL        = "/api/egw/groups/b321256d-31b7-4209-bd76-28dec3c77c25" // FIXME: use c.ips.Pool(name) but it's safer to hard-code for now
 )
 
 func TestMain(m *testing.M) {

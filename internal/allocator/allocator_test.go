@@ -1,4 +1,4 @@
-package pool
+package allocator
 
 import (
 	"net"
@@ -14,10 +14,10 @@ import (
 func TestAssignment(t *testing.T) {
 	alloc := New()
 	if err := alloc.SetPools(map[string]config.Pool{
-		"test0": mustPool("1.2.3.4/31", true),
-		"test1": mustPool("1000::4/127", true),
-		"test2": mustPool("1.2.4.0/24", true),
-		"test3": mustPool("1000::4:0/120", true),
+		"test0": mustLocalPool("1.2.3.4/31", true),
+		"test1": mustLocalPool("1000::4/127", true),
+		"test2": mustLocalPool("1.2.4.0/24", true),
+		"test3": mustLocalPool("1000::4:0/120", true),
 	}); err != nil {
 		t.Fatalf("SetPools: %s", err)
 	}
@@ -303,7 +303,7 @@ func TestAssignment(t *testing.T) {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
 		alreadyHasIP := assigned(alloc, test.svc) == test.ip
-		err := alloc.Assign(test.svc, ip, test.ports, test.sharingKey, test.backendKey)
+		_, err := alloc.Assign(test.svc, ip, test.ports, test.sharingKey, test.backendKey)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%q should have caused an error, but did not", test.desc)
@@ -329,10 +329,10 @@ func TestPoolAllocation(t *testing.T) {
 	// it will run out of IPs quickly even though there are tons
 	// available in other pools.
 	if err := alloc.SetPools(map[string]config.Pool{
-		"not_this_one": mustPool("192.168.0.0/16", true),
-		"test":         mustPool("1.2.3.4/30", true),
-		"testV6":       mustPool("1000::/126", true),
-		"test2":        mustPool("10.20.30.0/24", true),
+		"not_this_one": mustLocalPool("192.168.0.0/16", true),
+		"test":         mustLocalPool("1.2.3.4/30", true),
+		"testV6":       mustLocalPool("1000::/126", true),
+		"test2":        mustLocalPool("10.20.30.0/24", true),
 	}); err != nil {
 		t.Fatalf("SetPools: %s", err)
 	}
@@ -574,10 +574,10 @@ func TestPoolAllocation(t *testing.T) {
 func TestAllocation(t *testing.T) {
 	alloc := New()
 	if err := alloc.SetPools(map[string]config.Pool{
-		"test1":   mustPool("1.2.3.4/31", true),
-		"test1V6": mustPool("1000::4/127", true),
-		"test2":   mustPool("1.2.3.10/31", true),
-		"test2V6": mustPool("1000::10/127", true),
+		"test1":   mustLocalPool("1.2.3.4/31", true),
+		"test1V6": mustLocalPool("1000::4/127", true),
+		"test2":   mustLocalPool("1.2.3.10/31", true),
+		"test2V6": mustLocalPool("1000::10/127", true),
 	}); err != nil {
 		t.Fatalf("SetPools: %s", err)
 	}
@@ -750,7 +750,7 @@ func TestAllocation(t *testing.T) {
 			alloc.Unassign(test.svc)
 			continue
 		}
-		ip, err := alloc.Allocate(test.svc, test.isIPv6, test.ports, test.sharingKey, "")
+		_, ip, err := alloc.Allocate(test.svc, test.isIPv6, test.ports, test.sharingKey, "")
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%s: should have caused an error, but did not", test.desc)
@@ -770,158 +770,13 @@ func TestAllocation(t *testing.T) {
 	}
 }
 
-func TestConfigReload(t *testing.T) {
-	alloc := New()
-	if err := alloc.SetPools(map[string]config.Pool{
-		"test":   mustPool("1.2.3.0/30", true),
-		"testV6": mustPool("1000::/126", true),
-	}); err != nil {
-		t.Fatalf("SetPools: %s", err)
-	}
-	if err := alloc.Assign("s1", net.ParseIP("1.2.3.0"), nil, "", ""); err != nil {
-		t.Fatalf("Assign(s1, 1.2.3.0): %s", err)
-	}
-	if err := alloc.Assign("s2", net.ParseIP("1000::"), nil, "", ""); err != nil {
-		t.Fatalf("Assign(s1, 1000::): %s", err)
-	}
-
-	tests := []struct {
-		desc    string
-		pools   map[string]config.Pool
-		wantErr bool
-		pool    string // Pool that 1.2.3.0 should be in
-		pool6   string // Pool that 1000:: should be in
-	}{
-		{
-			desc: "set same config is no-op",
-			pools: map[string]config.Pool{
-				"test":   mustPool("1.2.3.0/30", true),
-				"testV6": mustPool("1000::/126", true),
-			},
-			pool:  "test",
-			pool6: "testV6",
-		},
-		{
-			desc: "expand pool",
-			pools: map[string]config.Pool{
-				"test":   mustPool("1.2.3.0/29", true),
-				"testV6": mustPool("1000::/126", true),
-			},
-			pool:  "test",
-			pool6: "testV6",
-		},
-		{
-			desc: "shrink pool",
-			pools: map[string]config.Pool{
-				"test":   mustPool("1.2.3.0/31", true),
-				"testV6": mustPool("1000::/126", true),
-			},
-			pool:  "test",
-			pool6: "testV6",
-		},
-		{
-			desc: "can't shrink further",
-			pools: map[string]config.Pool{
-				"test": mustPool("1.2.3.0/31", true),
-			},
-			pool:    "test",
-			pool6:   "testV6",
-			wantErr: true,
-		},
-		{
-			desc: "can't shrink further ipv6",
-			pools: map[string]config.Pool{
-				"test": mustPool("1000::2/127", true),
-			},
-			pool:    "test",
-			pool6:   "testV6",
-			wantErr: true,
-		},
-		{
-			desc: "rename the pool",
-			pools: map[string]config.Pool{
-				"test2":  mustPool("1.2.3.0/30", true),
-				"testV6": mustPool("1000::/126", true),
-			},
-			pool:  "test2",
-			pool6: "testV6",
-		},
-		{
-			desc: "split pool",
-			pools: map[string]config.Pool{
-				"testV4": mustPool("1.2.3.0/30", true),
-				"test":   mustPool("1000::/127", true),
-				"test2":  mustPool("1000::2/127", true),
-			},
-			pool:  "testV4",
-			pool6: "test",
-		},
-		{
-			desc: "swap pool names",
-			pools: map[string]config.Pool{
-				"testV4": mustPool("1.2.3.0/30", true),
-				"test2":  mustPool("1000::/127", true),
-				"test":   mustPool("1000::2/127", true),
-			},
-			pool:  "testV4",
-			pool6: "test2",
-		},
-		{
-			desc: "delete used pool",
-			pools: map[string]config.Pool{
-				"test": mustPool("1000::/126", true),
-			},
-			pool:    "testV4",
-			pool6:   "test2",
-			wantErr: true,
-		},
-		{
-			desc: "delete used pool ipv6",
-			pools: map[string]config.Pool{
-				"test": mustPool("1000::2/127", true),
-			},
-			pool:    "testV4",
-			pool6:   "test2",
-			wantErr: true,
-		},
-		{
-			desc: "delete unused pool",
-			pools: map[string]config.Pool{
-				"testV4": mustPool("1.2.3.0/30", true),
-				"test2":  mustPool("1000::/127", true),
-			},
-			pool:  "testV4",
-			pool6: "test2",
-		},
-	}
-
-	for _, test := range tests {
-		err := alloc.SetPools(test.pools)
-		if test.wantErr {
-			if err == nil {
-				t.Errorf("%q should have failed to SetPools, but succeeded", test.desc)
-			}
-		} else if err != nil {
-			t.Errorf("%q failed to SetPools: %s", test.desc, err)
-		}
-		gotPool := alloc.Pool("s1")
-		if gotPool != test.pool {
-			t.Errorf("%q: s1 is in wrong pool, want %q, got %q", test.desc, test.pool, gotPool)
-		}
-		gotPool = alloc.Pool("s2")
-		if gotPool != test.pool6 {
-			t.Errorf("%q: s2 is in wrong pool, want %q, got %q", test.desc, test.pool6, gotPool)
-		}
-	}
-}
-
 func TestAutoAssign(t *testing.T) {
 	alloc := New()
 	if err := alloc.SetPools(map[string]config.Pool{
-		"test0": mustPool("1.2.3.4/31", false),
-		"test1": mustPool("1000::4/127", false),
-		"test2": mustPool("1000::10/127", true),
-		"test3": mustPool("1.2.3.10/31", true),
+		"test0": mustLocalPool("1.2.3.4/31", false),
+		"test1": mustLocalPool("1000::4/127", false),
+		"test2": mustLocalPool("1000::10/127", true),
+		"test3": mustLocalPool("1.2.3.10/31", true),
 	}); err != nil {
 		t.Fatalf("SetPools: %s", err)
 	}
@@ -1017,7 +872,7 @@ func TestAutoAssign(t *testing.T) {
 			alloc.Unassign(test.svc)
 			continue
 		}
-		ip, err := alloc.Allocate(test.svc, test.isIPv6, nil, "", "")
+		_, ip, err := alloc.Allocate(test.svc, test.isIPv6, nil, "", "")
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("#%d should have caused an error, but did not", i+1)
@@ -1040,7 +895,7 @@ func TestAutoAssign(t *testing.T) {
 func TestPoolMetrics(t *testing.T) {
 	alloc := New()
 	if err := alloc.SetPools(map[string]config.Pool{
-		"test": mustPool("1.2.3.4/30", true),
+		"test": mustLocalPool("1.2.3.4/30", true),
 	}); err != nil {
 		t.Fatalf("SetPools: %s", err)
 	}
@@ -1140,7 +995,7 @@ func TestPoolMetrics(t *testing.T) {
 		if ip == nil {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
-		err := alloc.Assign(test.svc, ip, test.ports, test.sharingKey, test.backendKey)
+		_, err := alloc.Assign(test.svc, ip, test.ports, test.sharingKey, test.backendKey)
 
 		if err != nil {
 			t.Errorf("%q: Assign(%q, %q): %v", test.desc, test.svc, test.ip, err)
@@ -1165,7 +1020,7 @@ func assigned(a *Allocator, svc string) string {
 	return ip.String()
 }
 
-func mustPool(r string, aa bool) config.Pool {
+func mustLocalPool(r string, aa bool) config.Pool {
 	p, err := config.NewLocalPool(r, aa, "", "")
 	if err != nil {
 		panic(err)

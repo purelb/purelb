@@ -1,4 +1,4 @@
-package pool
+package allocator
 
 import "github.com/prometheus/client_golang/prometheus"
 

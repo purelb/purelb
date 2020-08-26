@@ -10,8 +10,16 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
-func mustPool(t *testing.T, r string, aa bool) LocalPool {
+func mustLocalPool(t *testing.T, r string, aa bool) LocalPool {
 	p, err := NewLocalPool(r, aa, "", "")
+	if err != nil {
+		panic(err)
+	}
+	return *p
+}
+
+func mustEGWPool(t *testing.T, url string, aa bool) EGWPool {
+	p, err := NewEGWPool(aa, url, "")
 	if err != nil {
 		panic(err)
 	}
@@ -83,13 +91,24 @@ func TestParse(t *testing.T) {
 						},
 					},
 				},
+				&purelbv1.ServiceGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "pool5",
+					},
+					Spec: purelbv1.ServiceGroupSpec{
+						EGW: &purelbv1.ServiceGroupEGWSpec{
+							URL: "url",
+						},
+					},
+				},
 			},
 			want: &Config{
 				Pools: map[string]Pool{
-					"pool1": mustPool(t, "10.20.0.0/16", true),
-					"pool2": mustPool(t, "30.0.0.0/8", true),
-					"pool3": mustPool(t, "40.0.0.0/25", true),
-					"pool4": mustPool(t, "2001:db8::/126", true),
+					"pool1": mustLocalPool(t, "10.20.0.0/16", true),
+					"pool2": mustLocalPool(t, "30.0.0.0/8", true),
+					"pool3": mustLocalPool(t, "40.0.0.0/25", true),
+					"pool4": mustLocalPool(t, "2001:db8::/126", true),
+					"pool5": mustEGWPool(t, "url", true),
 				},
 			},
 		},
@@ -214,7 +233,7 @@ func TestParse(t *testing.T) {
 			iprangeComparer := cmp.Comparer(func(x, y IPRange) bool {
 				return reflect.DeepEqual(x.from, y.from) && reflect.DeepEqual(x.to, y.to)
 			})
-			if diff := cmp.Diff(test.want, got, iprangeComparer, cmp.AllowUnexported(LocalPool{})); diff != "" {
+			if diff := cmp.Diff(test.want, got, iprangeComparer, cmp.AllowUnexported(LocalPool{}), cmp.AllowUnexported(EGWPool{})); diff != "" {
 				t.Errorf("%q: parse returned wrong result (-want, +got)\n%s", test.desc, diff)
 			}
 		})

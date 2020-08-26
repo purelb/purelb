@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package pool
+package allocator
 
 import (
 	"reflect"
@@ -53,6 +53,12 @@ func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _
 		// we delete a balancer we should reprocess all of them to
 		// check for newly feasible balancers.
 		return k8s.SyncStateReprocessAll
+	}
+
+	if svcRo.Spec.Type != "LoadBalancer" {
+		// Not a LoadBalancer, early exit
+		l.Log("event", "clearAssignment", "reason", "notLoadBalancer", "msg", "not a LoadBalancer")
+		return k8s.SyncStateSuccess
 	}
 
 	if c.config == nil {

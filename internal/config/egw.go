@@ -1,4 +1,4 @@
-package acnodal
+package config
 
 import (
 	"fmt"
@@ -59,14 +59,12 @@ func New(base string, auth_token string) (*EGW, error) {
 	if base == "" {
 		base, is_set = os.LookupEnv("NETBOX_BASE_URL")
 		if !is_set {
-			fmt.Println("NETBOX_BASE_URL not set, can't connect to Netbox")
 			return nil, fmt.Errorf("NETBOX_BASE_URL not set, can't connect to Netbox")
 		}
 	}
 	if auth_token == "" {
 		auth_token, is_set = os.LookupEnv("NETBOX_USER_TOKEN")
 		if !is_set {
-			fmt.Println("NETBOX_USER_TOKEN not set, can't connect to Netbox")
 			return nil, fmt.Errorf("NETBOX_USER_TOKEN not set, can't connect to Netbox")
 		}
 	}

@@ -4,17 +4,16 @@ PureLB is built on the idea that each command should do one thing and
 do it well. This simplifies each command but it means that you need to
 decide which commands that you want to run based on your environment.
 
-There are two types of commands: allocators and nodes.  Allocators run
-in a single pod and handle per-cluster activities like managing IP
-addresses. Nodes run in a daemon set, i.e., on each node in the
-cluster, and manage per-node activities like setting up the node
-operating system when a service is created.
+There are two types of commands: allocators and node agents.
+Allocators run in a single pod and handle per-cluster activities like
+managing IP addresses. Node agents run in a daemon set (i.e., on each
+node in the cluster) and manage per-node activities like configuring
+the node network when a service is created.
 
-The allocators are:
+There's only one allocator command. It can allocate addresses from
+local pools and from an Acnodal EGW instance.
 
-* [allocator-local](allocator-local) - allocates addresses from a local pool
-* [allocator-acnodal](allocator-acnodal) - works with Acnodal's Enterprise Gateway
-* allocator-netbox - allocates addresses from a Netbox IPAM system (TBD)
+* [allocator](allocator) - allocates addresses from local and remote pools
 
 The nodes are:
 

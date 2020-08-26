@@ -1,4 +1,4 @@
-package pool
+package allocator
 
 import (
 	"k8s.io/api/core/v1"

@@ -112,6 +112,7 @@ func NewCRController(
 		UpdateFunc: func(old, new interface{}) {
 			controller.enqueueServiceGroup(new)
 		},
+		DeleteFunc: controller.enqueueServiceGroup,
 	})
 
 	return controller
@@ -240,7 +241,7 @@ func (c *Controller) updateServiceGroupStatus(serviceGroup *purelbv1.ServiceGrou
 func (c *Controller) enqueueServiceGroup(obj interface{}) {
 	var key string
 	var err error
-	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
+	if key, err = cache.DeletionHandlingMetaNamespaceKeyFunc(obj); err != nil {
 		utilruntime.HandleError(err)
 		return
 	}
