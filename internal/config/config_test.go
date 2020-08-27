@@ -11,7 +11,7 @@ import (
 )
 
 func mustLocalPool(t *testing.T, r string, aa bool) LocalPool {
-	p, err := NewLocalPool(r, aa, "", "")
+	p, err := NewLocalPool(aa, r, "", "")
 	if err != nil {
 		panic(err)
 	}

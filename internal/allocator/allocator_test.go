@@ -1021,7 +1021,7 @@ func assigned(a *Allocator, svc string) string {
 }
 
 func mustLocalPool(r string, aa bool) config.Pool {
-	p, err := config.NewLocalPool(r, aa, "", "")
+	p, err := config.NewLocalPool(aa, r, "", "")
 	if err != nil {
 		panic(err)
 	}

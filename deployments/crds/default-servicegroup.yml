@@ -3,6 +3,7 @@ kind: ServiceGroup
 metadata:
   name: default
 spec:
+  auto-assign: true
   local:
     subnet: '192.168.1.0/24'
     pool: '192.168.1.100-192.168.1.200'

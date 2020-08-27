@@ -24,12 +24,17 @@ import (
 
 type PurelbV1Interface interface {
 	RESTClient() rest.Interface
+	LBNodeAgentsGetter
 	ServiceGroupsGetter
 }
 
 // PurelbV1Client is used to interact with features provided by the purelb.io group.
 type PurelbV1Client struct {
 	restClient rest.Interface
+}
+
+func (c *PurelbV1Client) LBNodeAgents(namespace string) LBNodeAgentInterface {
+	return newLBNodeAgents(c, namespace)
 }
 
 func (c *PurelbV1Client) ServiceGroups(namespace string) ServiceGroupInterface {

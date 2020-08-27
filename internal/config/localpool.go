@@ -43,7 +43,7 @@ type LocalPool struct {
 	aggregation string
 }
 
-func NewLocalPool(rawrange string, autoassign bool, subnet string, aggregation string) (*LocalPool, error) {
+func NewLocalPool(autoassign bool, rawrange string, subnet string, aggregation string) (*LocalPool, error) {
 	iprange, err := NewIPRange(rawrange)
 	if err != nil {
 		return nil, err

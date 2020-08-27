@@ -30,8 +30,9 @@ type ServiceGroup struct {
 }
 
 type ServiceGroupSpec struct {
-	Local *ServiceGroupLocalSpec `json:"local"`
-	EGW   *ServiceGroupEGWSpec   `json:"egw"`
+	AutoAssign bool                   `json:"auto-assign"`
+	Local      *ServiceGroupLocalSpec `json:"local"`
+	EGW        *ServiceGroupEGWSpec   `json:"egw"`
 }
 
 type ServiceGroupLocalSpec struct {
@@ -48,20 +49,23 @@ type ServiceGroupEGWSpec struct {
 type ServiceGroupStatus struct {
 }
 
-type LBNode struct {
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+type LBNodeAgent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   LBNodeSpec   `json:"spec"`
-	Status LBNodeStatus `json:"status"`
+	Spec   LBNodeAgentSpec   `json:"spec"`
+	Status LBNodeAgentStatus `json:"status"`
 }
 
-type LBNodeSpec struct {
+type LBNodeAgentSpec struct {
 	LocalInterface string `json:"localinterface"`
 	ExtLBInterface string `json:"extlbinterface"`
 }
 
-type LBNodeStatus struct {
+type LBNodeAgentStatus struct {
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -73,9 +77,11 @@ type ServiceGroupList struct {
 	Items []ServiceGroup `json:"items"`
 }
 
-type LBNodeList struct {
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+type LBNodeAgentList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata"`
 
-	Items []LBNode `json:"items"`
+	Items []LBNodeAgent `json:"items"`
 }

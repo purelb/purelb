@@ -16,4 +16,6 @@
 
 package v1
 
+type LBNodeAgentExpansion interface{}
+
 type ServiceGroupExpansion interface{}

@@ -58,13 +58,13 @@ func ParseServiceGroups(groups []*purelbv1.ServiceGroup) (*Config, error) {
 
 func parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
-		nets, err := parseCIDR(group.Local.Pool)
+		ret, err := NewLocalPool(group.AutoAssign, group.Local.Pool, group.Local.Subnet, group.Local.Aggregation)
 		if err != nil {
 			return nil, err
 		}
 		return *ret, nil
 	} else if group.EGW != nil {
-		ret, err := NewEGWPool(true, group.EGW.URL, group.EGW.Aggregation)
+		ret, err := NewEGWPool(group.AutoAssign, group.EGW.URL, group.EGW.Aggregation)
 		if err != nil {
 			return nil, err
 		}

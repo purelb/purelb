@@ -16,6 +16,14 @@
 
 package v1
 
+// LBNodeAgentListerExpansion allows custom methods to be added to
+// LBNodeAgentLister.
+type LBNodeAgentListerExpansion interface{}
+
+// LBNodeAgentNamespaceListerExpansion allows custom methods to be added to
+// LBNodeAgentNamespaceLister.
+type LBNodeAgentNamespaceListerExpansion interface{}
+
 // ServiceGroupListerExpansion allows custom methods to be added to
 // ServiceGroupLister.
 type ServiceGroupListerExpansion interface{}

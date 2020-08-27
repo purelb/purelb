@@ -26,6 +26,10 @@ type FakePurelbV1 struct {
 	*testing.Fake
 }
 
+func (c *FakePurelbV1) LBNodeAgents(namespace string) v1.LBNodeAgentInterface {
+	return &FakeLBNodeAgents{c, namespace}
+}
+
 func (c *FakePurelbV1) ServiceGroups(namespace string) v1.ServiceGroupInterface {
 	return &FakeServiceGroups{c, namespace}
 }
