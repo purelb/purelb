@@ -28,7 +28,7 @@ func main() {
 
 	var (
 		port       = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
-		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
+		kubeconfig = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file (only needed when running outside of k8s)")
 	)
 	flag.Parse()
 

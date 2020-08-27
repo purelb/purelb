@@ -45,7 +45,7 @@ func main() {
 	logger := logging.Init()
 
 	var (
-		kubeconfig  = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
+		kubeconfig  = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file (only needed when running outside of k8s)")
 		host        = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
 		myNode      = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
 		port        = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
