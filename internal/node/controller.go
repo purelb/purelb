@@ -91,13 +91,19 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 	//	return c.deleteBalancer(l, name, deleteReason)
 	//	}
 
-	localannounce := c.ShouldAnnounce(l, name, svc, eps)
+	_, _, err := c.announcer.CheckLocal(lbIP)
+
+	var localannounce string
+
+	if err == nil {
+		localannounce = c.ShouldAnnounce(l, name, svc, eps)
+	}
 
 	if localannounce == "notWinner" {
 		return c.deleteBalancer(l, name, localannounce)
 	}
 
-	if err := c.announcer.SetBalancer(name, lbIP, localannounce); err != nil {
+	if err := c.announcer.SetBalancer(name, lbIP, ""); err != nil {
 		l.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
 		return k8s.SyncStateError
 	}

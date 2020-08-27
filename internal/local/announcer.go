@@ -32,12 +32,14 @@ func (c *announcer) SetConfig(cfg *config.Config) error {
 
 	c.config = cfg
 
+	fmt.Println("*****c.announcer SetConfig : ", cfg)
+
 	// Call to should announce memberlist function
 
 	return nil
 }
 
-func (c *announcer) SetBalancer(name string, lbIP net.IP, localannounce string) error {
+func (c *announcer) SetBalancer(name string, lbIP net.IP, _ string) error {
 	fmt.Println("******announcer.SetBalancer", name, "svcAdvs:", c.svcAdvs)
 	c.logger.Log("event", "updatedNodes", "msg", "Announce balancer", "service", name)
 
@@ -46,11 +48,21 @@ func (c *announcer) SetBalancer(name string, lbIP net.IP, localannounce string) 
 		return nil
 	}
 
-	if localannounce == "Winner" {
-		lbIPNet, defaultifindex, _ := c.checkLocal(lbIP)
+	if lbIPNet, defaultifindex, err := c.CheckLocal(lbIP); err == nil {
+		fmt.Println(err)
 		c.addLocalInt(lbIPNet, defaultifindex)
 		c.svcAdvs[name] = lbIP
 	}
+
+	if _, _, err := c.CheckLocal(lbIP); err != nil {
+
+		fmt.Println(err)
+
+		fmt.Println("***** nonlocal lbIP: ", lbIP)
+		fmt.Println("***** c.config: ", c.config.Pools)
+
+	}
+
 	return nil
 }
 
@@ -71,45 +83,112 @@ func (c *announcer) DeleteBalancer(name, reason string) error {
 }
 
 func (c *announcer) SetNode(node *v1.Node) error {
+	fmt.Println("***** c.announcer SetNode: ", node)
+
 	c.logger.Log("event", "updatedNodes", "msg", "Node announced", "name", node.Name)
 	return nil
 }
 
-func (c *announcer) checkLocal(lbIP net.IP) (net.IPNet, int, error) {
+func (c *announcer) CheckLocal(lbIP net.IP) (net.IPNet, int, error) {
 
 	var defaultifindex int = 0
 	var lbIPNet net.IPNet
 	lbIPNet.IP = lbIP
+	var lbIPFamily int
 
-	rt, _ := netlink.RouteList(nil, (nl.FAMILY_V4))
-	for _, r := range rt {
-		if r.Dst == nil && defaultifindex == 0 {
-			defaultifindex = r.LinkIndex
-		} else if r.Dst == nil && defaultifindex != 0 {
-			fmt.Println("error, cannot determine default in, multiple default routes")
-			return lbIPNet, defaultifindex, fmt.Errorf("error, cannot determine default in, multiple default routes")
-		}
+	if nil != lbIP.To16() {
+		lbIPFamily = (nl.FAMILY_V6)
 	}
 
-	if defaultifindex != 0 {
-		defaultint, _ := net.InterfaceByIndex(defaultifindex)
+	if nil != lbIP.To4() {
+		lbIPFamily = (nl.FAMILY_V4)
+	}
 
-		defaddrs, _ := defaultint.Addrs()
-		for _, addrs := range defaddrs {
+	switch lbIPFamily {
+	case (nl.FAMILY_V4):
 
-			localnetaddr := addrs.String()
+		rt, _ := netlink.RouteList(nil, (nl.FAMILY_V4))
+		for _, r := range rt {
+			if r.Dst == nil && defaultifindex == 0 {
+				defaultifindex = r.LinkIndex
+			} else if r.Dst == nil && defaultifindex != 0 {
+				fmt.Println("error, cannot determine default in, multiple default routes")
+				return lbIPNet, defaultifindex, fmt.Errorf("error, cannot determine default in, multiple default routes")
+			}
+		}
 
-			_, ipnet, _ := net.ParseCIDR(localnetaddr)
+		if defaultifindex != 0 {
+			defaultint, _ := netlink.LinkByIndex(defaultifindex)
+			defaddrs, _ := netlink.AddrList(defaultint, lbIPFamily)
 
-			if ipnet.Contains(lbIPNet.IP) == true {
+			for _, addrs := range defaddrs {
+				localnet := addrs.IPNet
 
-				lbIPNet.Mask = ipnet.Mask
+				if localnet.Contains(lbIPNet.IP) == true {
+
+					lbIPNet.Mask = localnet.Mask
+					fmt.Println("local", lbIPNet)
+
+				} else {
+					fmt.Println("checklocal nonlocal")
+				}
+			}
+		}
+	case (nl.FAMILY_V6):
+
+		rt, _ := netlink.RouteList(nil, (nl.FAMILY_V6))
+		for _, r := range rt {
+			if r.Dst == nil && defaultifindex == 0 {
+				defaultifindex = r.LinkIndex
+			} else if r.Dst == nil && defaultifindex != 0 {
+				fmt.Println("error, cannot determine default in, multiple default routes")
+				return lbIPNet, defaultifindex, fmt.Errorf("error, cannot determine default in, multiple default routes")
+			}
+		}
+
+		if defaultifindex != 0 {
+			defaultint, _ := netlink.LinkByIndex(defaultifindex)
+			defaddrs, _ := netlink.AddrList(defaultint, lbIPFamily)
+
+			for _, addrs := range defaddrs {
+
+				/*  ifa_flags from linux source if_addr.h
+
+				#define IFA_F_SECONDARY		0x01
+				#define IFA_F_TEMPORARY		IFA_F_SECONDARY
+
+				#define	IFA_F_NODAD		0x02
+				#define IFA_F_OPTIMISTIC	0x04
+				#define IFA_F_DADFAILED		0x08
+				#define	IFA_F_HOMEADDRESS	0x10
+				#define IFA_F_DEPRECATED	0x20
+				#define IFA_F_TENTATIVE		0x40
+				#define IFA_F_PERMANENT		0x80
+				#define IFA_F_MANAGETEMPADDR	0x100
+				#define IFA_F_NOPREFIXROUTE	0x200
+				#define IFA_F_MCAUTOJOIN	0x400
+				#define IFA_F_STABLE_PRIVACY	0x800
+
+				*/
+
+				localnet := addrs.IPNet
+
+				if localnet.Contains(lbIPNet.IP) == true && addrs.Flags < 256 {
+
+					lbIPNet.Mask = localnet.Mask
+					fmt.Println("local", lbIPNet)
+
+				} else {
+					fmt.Println("checklocal nonlocal", lbIP)
+				}
 
 			}
 		}
 
-	} else {
-		return lbIPNet, defaultifindex, fmt.Errorf("unable to match addr to interface")
+	}
+
+	if lbIPNet.Mask == nil {
+		return lbIPNet, defaultifindex, fmt.Errorf("non-local address")
 	}
 
 	return lbIPNet, defaultifindex, nil
@@ -156,6 +235,25 @@ func (c *announcer) deletesvcAdv(name string) error {
 			}
 
 		}
+	}
+
+	return nil
+
+}
+
+func CreateDummyInt(dummyint string) error {
+
+	_, err := netlink.LinkByName(dummyint)
+	if err != nil {
+
+		dumint := netlink.NewLinkAttrs()
+		dumint.Name = dummyint
+		targetint := &netlink.Dummy{LinkAttrs: dumint}
+		if err == netlink.LinkAdd(targetint) {
+			fmt.Println("failed adding dummy int", dummyint)
+			return fmt.Errorf("failed adding dummy int %s: ", dummyint)
+		}
+
 	}
 
 	return nil

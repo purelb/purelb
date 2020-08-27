@@ -13,4 +13,5 @@ type Announcer interface {
 	SetBalancer(string, net.IP, string) error
 	DeleteBalancer(string, string) error
 	SetNode(*v1.Node) error
+	CheckLocal(net.IP) (net.IPNet, int, error)
 }

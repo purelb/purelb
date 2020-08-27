@@ -3,6 +3,7 @@
 package acnodal
 
 import (
+	"fmt"
 	"net"
 
 	"purelb.io/internal/config"
@@ -93,6 +94,10 @@ func (c *announcer) SetNode(node *v1.Node) error {
 	c.logger.Log("event", "updatedNodes", "msg", "Node announced", "name", node.Name)
 
 	return nil
+}
+
+func (c *announcer) CheckLocal(lbIP net.IP) (net.IPNet, int, error) {
+	return net.IPNet{}, -1, fmt.Errorf("unimplemented")
 }
 
 // nodeHasHealthyEndpoint return true if this node has at least one healthy endpoint.
