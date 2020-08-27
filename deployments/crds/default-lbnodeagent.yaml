@@ -1,5 +1,5 @@
 apiVersion: "purelb.io/v1"
-kind: LBnode
+kind: LBNodeAgent
 metadata:
   name: default
 spec:

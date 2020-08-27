@@ -26,10 +26,12 @@ import (
 type Config struct {
 	// Address pools from which to allocate load balancer IP addresses.
 	Pools map[string]Pool
+	// Node agent configuration
+	Agents map[string]purelbv1.LBNodeAgent
 }
 
-func ParseServiceGroups(groups []*purelbv1.ServiceGroup) (*Config, error) {
-	cfg := &Config{Pools: map[string]Pool{}}
+func ParseConfig(groups []*purelbv1.ServiceGroup, agents []*purelbv1.LBNodeAgent) (*Config, error) {
+	cfg := &Config{Pools: map[string]Pool{}, Agents: map[string]purelbv1.LBNodeAgent{}}
 
 	for i, group := range groups {
 		pool, err := parseGroup(group.Name, group.Spec)
@@ -51,6 +53,10 @@ func ParseServiceGroups(groups []*purelbv1.ServiceGroup) (*Config, error) {
 		}
 
 		cfg.Pools[group.Name] = pool
+	}
+
+	for _, agent := range agents {
+		cfg.Agents[agent.Name] = *agent
 	}
 
 	return cfg, nil

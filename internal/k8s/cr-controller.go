@@ -16,14 +16,12 @@
 package k8s
 
 import (
-	"context"
 	"fmt"
 	"time"
 
 	"github.com/go-kit/kit/log"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -34,114 +32,121 @@ import (
 	"k8s.io/client-go/util/workqueue"
 
 	"purelb.io/internal/config"
-
-	purelbv1 "purelb.io/pkg/apis/v1"
 	clientset "purelb.io/pkg/generated/clientset/versioned"
 	purelbscheme "purelb.io/pkg/generated/clientset/versioned/scheme"
-	informers "purelb.io/pkg/generated/informers/externalversions/apis/v1"
+	"purelb.io/pkg/generated/informers/externalversions"
 	listers "purelb.io/pkg/generated/listers/apis/v1"
 )
 
 const controllerAgentName = "cr-controller"
 
-const (
-	// SuccessSynced is used as part of the Event 'reason' when a ServiceGroup is synced
-	SuccessSynced = "Synced"
-
-	// MessageResourceSynced is the message used for an Event fired when a ServiceGroup
-	// is synced successfully
-	MessageResourceSynced = "ServiceGroup synced successfully"
-)
-
-// Controller is the controller implementation for ServiceGroup resources
+// Controller is the controller implementation for ServiceGroup
+// resources.
 type Controller struct {
 	// kubeclientset is a standard kubernetes clientset
 	kubeclientset kubernetes.Interface
 	// purelbclientset is a clientset for our own API group
 	purelbclientset clientset.Interface
 
-	serviceGroupsLister listers.ServiceGroupLister
-	serviceGroupsSynced cache.InformerSynced
-	configCB            func(log.Logger, *config.Config) SyncState
+	sgsSynced   cache.InformerSynced
+	configCB    func(log.Logger, *config.Config) SyncState
+	sgLister    listers.ServiceGroupLister
+	lbnasSynced cache.InformerSynced
+	lbnaLister  listers.LBNodeAgentLister
 
-	// workqueue is a rate limited work queue. This is used to queue work to be
-	// processed instead of performing it as soon as a change happens. This
-	// means we can ensure we only process a fixed amount of resources at a
-	// time, and makes it easy to ensure we are never processing the same item
-	// simultaneously in two different workers.
+	// workqueue is a rate limited work queue. This is used to queue
+	// work to be processed instead of performing it as soon as a change
+	// happens. This means we can ensure we only process a fixed amount
+	// of resources at a time, and makes it easy to ensure we are never
+	// processing the same item simultaneously in two different workers.
 	workqueue workqueue.RateLimitingInterface
-	// recorder is an event recorder for recording Event resources to the
-	// Kubernetes API.
+	// recorder is an event recorder for recording Event resources to
+	// the Kubernetes API.
 	recorder record.EventRecorder
 
 	logger log.Logger
 }
 
-// NewController returns a new purelb controller
+// NewCRController returns a new controller that watches for changes
+// to PureLB custom resources.
 func NewCRController(
 	logger log.Logger,
 	configCB func(log.Logger, *config.Config) SyncState,
 	kubeclientset kubernetes.Interface,
 	purelbclientset clientset.Interface,
-	serviceGroupInformer informers.ServiceGroupInformer) *Controller {
+	informerFactory externalversions.SharedInformerFactory) *Controller {
+
+	sgInformer := informerFactory.Purelb().V1().ServiceGroups()
+	lbnaInformer := informerFactory.Purelb().V1().LBNodeAgents()
 
 	// Create event broadcaster
 	// Add cr-controller types to the default Kubernetes Scheme so Events can be
 	// logged for cr-controller types.
 	utilruntime.Must(purelbscheme.AddToScheme(scheme.Scheme))
-	logger.Log("msg", "Creating event broadcaster")
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kubeclientset.CoreV1().Events("")})
 	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: controllerAgentName})
 
 	controller := &Controller{
-		logger:              logger,
-		configCB:            configCB,
-		kubeclientset:       kubeclientset,
-		purelbclientset:     purelbclientset,
-		serviceGroupsLister: serviceGroupInformer.Lister(),
-		serviceGroupsSynced: serviceGroupInformer.Informer().HasSynced,
-		workqueue:           workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "ServiceGroups"),
-		recorder:            recorder,
+		logger:          logger,
+		configCB:        configCB,
+		kubeclientset:   kubeclientset,
+		purelbclientset: purelbclientset,
+		lbnaLister:      lbnaInformer.Lister(),
+		lbnasSynced:     lbnaInformer.Informer().HasSynced,
+		sgLister:        sgInformer.Lister(),
+		sgsSynced:       sgInformer.Informer().HasSynced,
+		workqueue:       workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "ServiceGroups"),
+		recorder:        recorder,
 	}
 
-	logger.Log("msg", "Setting up event handlers")
-	// Set up an event handler for when ServiceGroup resources change
-	serviceGroupInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: controller.enqueueServiceGroup,
-		UpdateFunc: func(old, new interface{}) {
-			controller.enqueueServiceGroup(new)
+	// Set up event handlers for when resources change
+	sgInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(added interface{}) {
+			controller.enqueueResource("sg", added)
 		},
-		DeleteFunc: controller.enqueueServiceGroup,
+		UpdateFunc: func(old, new interface{}) {
+			controller.enqueueResource("sg", new)
+		},
+		DeleteFunc: func(deleted interface{}) {
+			controller.enqueueResource("sg", deleted)
+		},
+	})
+	lbnaInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(added interface{}) {
+			controller.enqueueResource("lbna", added)
+		},
+		UpdateFunc: func(old, new interface{}) {
+			controller.enqueueResource("lbna", new)
+		},
+		DeleteFunc: func(deleted interface{}) {
+			controller.enqueueResource("lbna", deleted)
+		},
 	})
 
 	return controller
 }
 
-// Run will set up the event handlers for types we are interested in, as well
-// as syncing informer caches and starting workers. It will block until stopCh
-// is closed, at which point it will shutdown the workqueue and wait for
-// workers to finish processing their current work items.
+// Run will set up the event handlers for types we are interested in,
+// as well as syncing informer caches and starting workers. It will
+// block until stopCh is closed, at which point it will shutdown the
+// workqueue and wait for workers to finish processing their current
+// work items.
 func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	defer utilruntime.HandleCrash()
 	defer c.workqueue.ShutDown()
 
-	// Start the informer factories to begin populating the informer caches
-	c.logger.Log("msg", "Starting ServiceGroup controller")
-
 	// Wait for the caches to be synced before starting workers
-	c.logger.Log("msg", "Waiting for informer caches to sync")
-	if ok := cache.WaitForCacheSync(stopCh, c.serviceGroupsSynced); !ok {
+	if ok := cache.WaitForCacheSync(stopCh, c.sgsSynced, c.lbnasSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
-	c.logger.Log("msg", "Starting workers")
-	// Launch two workers to process ServiceGroup resources
+	// Launch workers to process ServiceGroup resources
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(c.runWorker, time.Second, stopCh)
 	}
 
-	c.logger.Log("msg", "Started workers")
+	c.logger.Log("msg", "workers started")
 	<-stopCh
 	c.logger.Log("msg", "Shutting down workers")
 
@@ -149,15 +154,15 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 }
 
 // runWorker is a long-running function that will continually call the
-// processNextWorkItem function in order to read and process a message on the
-// workqueue.
+// processNextWorkItem function in order to read and process a message
+// on the workqueue.
 func (c *Controller) runWorker() {
 	for c.processNextWorkItem() {
 	}
 }
 
-// processNextWorkItem will read a single work item off the workqueue and
-// attempt to process it, by calling the syncHandler.
+// processNextWorkItem will read a single work item off the workqueue
+// and attempt to process it, by calling the syncHandler.
 func (c *Controller) processNextWorkItem() bool {
 	obj, shutdown := c.workqueue.Get()
 
@@ -168,11 +173,11 @@ func (c *Controller) processNextWorkItem() bool {
 	// We wrap this block in a func so we can defer c.workqueue.Done.
 	err := func(obj interface{}) error {
 		// We call Done here so the workqueue knows we have finished
-		// processing this item. We also must remember to call Forget if we
-		// do not want this work item being re-queued. For example, we do
-		// not call Forget if a transient error occurs, instead the item is
-		// put back on the workqueue and attempted again after a back-off
-		// period.
+		// processing this item. We also must remember to call Forget if
+		// we do not want this work item being re-queued. For example, we
+		// do not call Forget if a transient error occurs, instead the
+		// item is put back on the workqueue and attempted again after a
+		// back-off period.
 		defer c.workqueue.Done(obj)
 		var key string
 		var ok bool
@@ -189,10 +194,11 @@ func (c *Controller) processNextWorkItem() bool {
 			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
 			return nil
 		}
-		// Run the syncHandler, passing it the namespace/name string of the
-		// ServiceGroup resource to be synced.
+		// Run the syncHandler, passing it the namespace/name string of
+		// the ServiceGroup resource to be synced.
 		if err := c.syncHandler(key); err != nil {
-			// Put the item back on the workqueue to handle any transient errors.
+			// Put the item back on the workqueue to handle any transient
+			// errors.
 			c.workqueue.AddRateLimited(key)
 			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
 		}
@@ -211,79 +217,37 @@ func (c *Controller) processNextWorkItem() bool {
 	return true
 }
 
-// syncHandler compares the actual state with the desired, and attempts to
-// converge the two. It then updates the Status block of the ServiceGroup resource
-// with the current status of the resource.
+// syncHandler notifies the callback that the config has changed.
 func (c *Controller) syncHandler(key string) error {
-	c.logger.Log("service group change", key)
-
-	groups, err := c.serviceGroupsLister.ServiceGroups("").List(labels.Everything())
+	groups, err := c.sgLister.ServiceGroups("").List(labels.Everything())
+	if err != nil {
+		c.logger.Log("error listing service groups", key)
+		return err
+	}
+	nodeagents, err := c.lbnaLister.LBNodeAgents("").List(labels.Everything())
+	if err != nil {
+		c.logger.Log("error listing node agents", key)
+		return err
+	}
+	cfg, err := config.ParseConfig(groups, nodeagents)
 	if err == nil {
-		cfg, err := config.ParseServiceGroups(groups)
-		if err == nil {
-			c.configCB(c.logger, cfg)
-			return nil
-		}
+		c.configCB(c.logger, cfg)
+		return nil
 	}
 
 	return err
 }
 
-func (c *Controller) updateServiceGroupStatus(serviceGroup *purelbv1.ServiceGroup) error {
-	copy := serviceGroup.DeepCopy()
-	_, err := c.purelbclientset.PurelbV1().ServiceGroups(serviceGroup.Namespace).Update(context.TODO(), copy, metav1.UpdateOptions{})
-	return err
-}
-
-// enqueueServiceGroup takes a ServiceGroup resource and converts it into a namespace/name
-// string which is then put onto the work queue. This method should *not* be
-// passed resources of any type other than ServiceGroup.
-func (c *Controller) enqueueServiceGroup(obj interface{}) {
+// enqueueResource takes a resource and converts it into a
+// thing/namespace/name string which is then put onto the work
+// queue. This method should *not* be passed resources of any type
+// other than ServiceGroup or LBNodeAgent.
+func (c *Controller) enqueueResource(thing string, obj interface{}) {
 	var key string
 	var err error
 	if key, err = cache.DeletionHandlingMetaNamespaceKeyFunc(obj); err != nil {
 		utilruntime.HandleError(err)
 		return
 	}
-	c.workqueue.Add(key)
-}
-
-// handleObject will take any resource implementing metav1.Object and attempt
-// to find the ServiceGroup resource that 'owns' it. It does this by looking at the
-// objects metadata.ownerReferences field for an appropriate OwnerReference.
-// It then enqueues that ServiceGroup resource to be processed. If the object does not
-// have an appropriate OwnerReference, it will simply be skipped.
-func (c *Controller) handleObject(obj interface{}) {
-	var object metav1.Object
-	var ok bool
-	if object, ok = obj.(metav1.Object); !ok {
-		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-		if !ok {
-			utilruntime.HandleError(fmt.Errorf("error decoding object, invalid type"))
-			return
-		}
-		object, ok = tombstone.Obj.(metav1.Object)
-		if !ok {
-			utilruntime.HandleError(fmt.Errorf("error decoding object tombstone, invalid type"))
-			return
-		}
-		c.logger.Log("Recovered deleted object from tombstone", object.GetName())
-	}
-	c.logger.Log("Processing object", object.GetName())
-	if ownerRef := metav1.GetControllerOf(object); ownerRef != nil {
-		// If this object is not owned by a ServiceGroup, we should not do anything more
-		// with it.
-		if ownerRef.Kind != "ServiceGroup" {
-			return
-		}
-
-		serviceGroup, err := c.serviceGroupsLister.ServiceGroups(object.GetNamespace()).Get(ownerRef.Name)
-		if err != nil {
-			c.logger.Log("ignoring orphaned object", object.GetSelfLink(), "serviceGroup", ownerRef.Name)
-			return
-		}
-
-		c.enqueueServiceGroup(serviceGroup)
-		return
-	}
+	c.workqueue.Add(thing + "/" + key)
 }

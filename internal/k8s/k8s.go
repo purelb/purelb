@@ -134,7 +134,7 @@ func New(cfg *Config) (*Client, error) {
 	// Custom Resource Watcher
 
 	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Second*0)
-	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, clientset, crClient, c.crInformerFactory.Purelb().V1().ServiceGroups())
+	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, clientset, crClient, c.crInformerFactory)
 
 	// Service Watcher
 

@@ -217,8 +217,8 @@ func (p LocalPool) Size() uint64 {
 // (i.e., has any addresses in common).  It returns true if there are
 // any common addresses and false if there aren't.
 func (p LocalPool) Overlaps(other Pool) bool {
-	lpool := other.(LocalPool)
-	if p.addresses == nil || lpool.addresses == nil {
+	lpool, ok := other.(LocalPool)
+	if !ok {
 		return false
 	}
 	return p.addresses.Overlaps(*lpool.addresses)

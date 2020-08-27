@@ -91,9 +91,9 @@ func (f *fixture) newController() (*Controller, informers.SharedInformerFactory,
 
 	c := NewCRController(log.NewJSONLogger(log.NewSyncWriter(os.Stdout)),
 		stubConfigChanged, f.kubeclient, f.client,
-		i.Purelb().V1().ServiceGroups())
+		i)
 
-	c.serviceGroupsSynced = alwaysReady
+	c.sgsSynced = alwaysReady
 	c.recorder = &record.FakeRecorder{}
 
 	for _, f := range f.serviceGroupLister {
