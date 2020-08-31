@@ -1,6 +1,12 @@
 package k8s
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
 
 var (
 	updates = prometheus.NewCounter(prometheus.CounterOpts{
@@ -37,4 +43,9 @@ func init() {
 	prometheus.MustRegister(updateErrors)
 	prometheus.MustRegister(configLoaded)
 	prometheus.MustRegister(configStale)
+}
+
+func RunMetrics(metricsHost string, metricsPort int) {
+	http.Handle("/metrics", promhttp.Handler())
+	http.ListenAndServe(fmt.Sprintf("%s:%d", metricsHost, metricsPort), nil)
 }

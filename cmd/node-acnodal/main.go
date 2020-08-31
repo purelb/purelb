@@ -48,9 +48,9 @@ func main() {
 		config      = flag.String("config", "config", "Kubernetes ConfigMap containing configuration")
 		configNS    = flag.String("config-ns", "", "config file namespace (only needed when running outside of k8s)")
 		kubeconfig  = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
-		host        = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address")
+		host        = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
 		myNode      = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
-		port        = flag.Int("port", 80, "HTTP listening port")
+		port        = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
 	)
 	flag.Parse()
 
@@ -88,9 +88,6 @@ func main() {
 		NodeName:      *myNode,
 		Logger:        logger,
 		Kubeconfig:    *kubeconfig,
-
-		MetricsHost:   *host,
-		MetricsPort:   *port,
 		ReadEndpoints: true,
 
 		ServiceChanged: ctrl.ServiceChanged,
@@ -101,6 +98,9 @@ func main() {
 		logger.Log("op", "startup", "error", err, "msg", "failed to create k8s client")
 		os.Exit(1)
 	}
+
+	go k8s.RunMetrics(*host, *port)
+
 	if err := client.Run(stopCh); err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to run k8s client")
 	}

@@ -4,12 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"net/http"
 
 	"purelb.io/internal/config"
 
 	"github.com/go-kit/kit/log"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -78,8 +76,6 @@ type Config struct {
 	ConfigMapName string
 	ConfigMapNS   string
 	NodeName      string
-	MetricsHost   string
-	MetricsPort   int
 	ReadEndpoints bool
 	Logger        log.Logger
 	Kubeconfig    string
@@ -258,12 +254,6 @@ func New(cfg *Config) (*Client, error) {
 	if cfg.Synced != nil {
 		c.synced = cfg.Synced
 	}
-
-	http.Handle("/metrics", promhttp.Handler())
-	go func() {
-		http.ListenAndServe(fmt.Sprintf("%s:%d", cfg.MetricsHost, cfg.MetricsPort), nil)
-	}()
-
 	return c, nil
 }
 

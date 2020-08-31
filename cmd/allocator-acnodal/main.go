@@ -40,7 +40,6 @@ func main() {
 		ProcessName:   "controller-acnodal",
 		ConfigMapName: *config,
 		ConfigMapNS:   *configNS,
-		MetricsPort:   *port,
 		Logger:        logger,
 		Kubeconfig:    *kubeconfig,
 
@@ -54,6 +53,8 @@ func main() {
 	}
 
 	c.SetClient(client)
+
+	go k8s.RunMetrics("", *port)
 
 	if err := client.Run(nil); err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to run k8s client")
