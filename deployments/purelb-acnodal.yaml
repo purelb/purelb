@@ -45,7 +45,7 @@ kind: PodSecurityPolicy
 metadata:
   labels:
     app: purelb
-  name: node
+  name: lbnodeagent
   namespace: purelb
 spec:
   allowPrivilegeEscalation: false
@@ -92,7 +92,7 @@ kind: ServiceAccount
 metadata:
   labels:
     app: purelb
-  name: node
+  name: lbnodeagent
   namespace: purelb
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -148,7 +148,7 @@ kind: ClusterRole
 metadata:
   labels:
     app: purelb
-  name: purelb:node
+  name: purelb:lbnodeagent
 rules:
 - apiGroups:
   - purelb.io
@@ -180,7 +180,7 @@ rules:
 - apiGroups:
   - policy
   resourceNames:
-  - node
+  - lbnodeagent
   resources:
   - podsecuritypolicies
   verbs:
@@ -238,14 +238,14 @@ kind: ClusterRoleBinding
 metadata:
   labels:
     app: purelb
-  name: purelb:node
+  name: purelb:lbnodeagent
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: purelb:node
+  name: purelb:lbnodeagent
 subjects:
 - kind: ServiceAccount
-  name: node
+  name: lbnodeagent
   namespace: purelb
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -263,7 +263,7 @@ subjects:
 - kind: ServiceAccount
   name: allocator
 - kind: ServiceAccount
-  name: node
+  name: lbnodeagent
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -278,21 +278,21 @@ roleRef:
   name: pod-lister
 subjects:
 - kind: ServiceAccount
-  name: node
+  name: lbnodeagent
 ---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   labels:
     app: purelb
-    component: node
-  name: node
+    component: lbnodeagent
+  name: lbnodeagent
   namespace: purelb
 spec:
   selector:
     matchLabels:
       app: purelb
-      component: node
+      component: lbnodeagent
   template:
     metadata:
       annotations:
@@ -300,7 +300,7 @@ spec:
         prometheus.io/scrape: 'true'
       labels:
         app: purelb
-        component: node
+        component: lbnodeagent
     spec:
       containers:
       - args:
@@ -322,9 +322,9 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        image: registry.gitlab.com/acnodal/ego/node-acnodal:demo202009021405
+        image: registry.gitlab.com/acnodal/ego/lbnodeagent-acnodal:demo202009021656
         imagePullPolicy: Always
-        name: node
+        name: lbnodeagent
         ports:
         - containerPort: 7472
           name: monitoring
@@ -345,7 +345,7 @@ spec:
       hostNetwork: true
       nodeSelector:
         beta.kubernetes.io/os: linux
-      serviceAccountName: node
+      serviceAccountName: lbnodeagent
       terminationGracePeriodSeconds: 2
       tolerations:
       - effect: NoSchedule
@@ -378,7 +378,7 @@ spec:
       - args:
         - --port=7472
         - --config=config
-        image: registry.gitlab.com/acnodal/ego/allocator-acnodal:demo202009021405
+        image: registry.gitlab.com/acnodal/ego/allocator:demo202009021656
         imagePullPolicy: Always
         name: allocator
         env:

@@ -20,17 +20,22 @@ import (
 	"os/signal"
 	"syscall"
 
-	"purelb.io/internal/acnodal"
+	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
+	"purelb.io/internal/local"
 	"purelb.io/internal/logging"
-	"purelb.io/internal/node"
+	"purelb.io/internal/lbnodeagent"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+const (
+	mlLabels = "app=purelb,component=lbnodeagent"
+)
+
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Namespace: "purelb",
-	Subsystem: "node_acnodal",
+	Subsystem: "lbnodeagent_local",
 	Name:      "announced",
 	Help:      "Services being announced from this node. This is desired state, it does not guarantee that the routing protocols have converged.",
 }, []string{
@@ -45,10 +50,11 @@ func main() {
 	logger := logging.Init()
 
 	var (
-		kubeconfig  = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file (only needed when running outside of k8s)")
-		host        = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
-		myNode      = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
-		port        = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
+		memberlistNS = flag.String("memberlist-ns", os.Getenv("PURELB_ML_NAMESPACE"), "memberlist namespace (only needed when running outside of k8s)")
+		kubeconfig   = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file (only needed when running outside of k8s)")
+		host         = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
+		myNode       = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
+		port         = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
 	)
 	flag.Parse()
 
@@ -69,10 +75,10 @@ func main() {
 	defer logger.Log("op", "shutdown", "msg", "done")
 
 	// Set up controller
-	ctrl, err := node.NewController(
+	ctrl, err := lbnodeagent.NewController(
 		*myNode,
 		announcing,
-		acnodal.NewAnnouncer(logger, *myNode),
+		local.NewAnnouncer(logger, *myNode),
 	)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to create controller")
@@ -80,7 +86,7 @@ func main() {
 	}
 
 	client, err := k8s.New(&k8s.Config{
-		ProcessName:   "purelb-node",
+		ProcessName:   "purelb-lbnodeagent",
 		NodeName:      *myNode,
 		Logger:        logger,
 		Kubeconfig:    *kubeconfig,
@@ -95,8 +101,37 @@ func main() {
 		os.Exit(1)
 	}
 
+	election, err := election.New(&election.Config{
+		Namespace: *memberlistNS,
+		NodeName:  *myNode,
+		Labels:    mlLabels,
+		BindAddr:  "0.0.0.0",
+		BindPort:  7946,
+		Secret:    []byte(os.Getenv("ML_SECRET")),
+		Logger:    &logger,
+		StopCh:    stopCh,
+	})
+	if err != nil {
+		logger.Log("op", "startup", "error", err, "msg", "failed to create election client")
+		os.Exit(1)
+	}
+
+	ctrl.Election = &election
+
+	iplist, err := client.GetPodsIPs(*memberlistNS, mlLabels)
+	if err != nil {
+		logger.Log("op", "startup", "error", err, "msg", "failed to get PodsIPs")
+		os.Exit(1)
+	}
+	err = election.Join(iplist, client)
+	if err != nil {
+		logger.Log("op", "startup", "error", err, "msg", "failed to join election")
+		os.Exit(1)
+	}
+
 	go k8s.RunMetrics(*host, *port)
 
+	// the k8s client doesn't return until it's time to shut down
 	if err := client.Run(stopCh); err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to run k8s client")
 	}

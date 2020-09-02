@@ -15,10 +15,10 @@ local pools and from an Acnodal EGW instance.
 
 * [allocator](allocator) - allocates addresses from local and remote pools
 
-The nodes are:
+The node agents are:
 
-* [node-local](node-local) - configures the local operating system
-* [node-acnodal](node-acnodal) - works with Acnodal's Enterprise Gateway
+* [lbnodeagent-local](lbnodeagent-local) - configures the local operating system
+* [lbnodeagent-acnodal](lbnodeagent-acnodal) - works with Acnodal's Enterprise Gateway
 
 Commands are typically a small ```main()``` method that uses [internal
 packages](../internal) to do most of the work.
