@@ -55,12 +55,6 @@ func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _
 		return k8s.SyncStateReprocessAll
 	}
 
-	if svcRo.Spec.Type != "LoadBalancer" {
-		// Not a LoadBalancer, early exit
-		l.Log("event", "clearAssignment", "reason", "notLoadBalancer", "msg", "not a LoadBalancer")
-		return k8s.SyncStateSuccess
-	}
-
 	if c.config == nil {
 		// Config hasn't been read, nothing we can do just yet.
 		l.Log("event", "noConfig", "msg", "not processing, still waiting for config")

@@ -45,7 +45,7 @@ func NewController(myNode string, prometheus *prometheus.GaugeVec, announcer Ann
 	return con, nil
 }
 
-func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, eps *v1.Endpoints) k8s.SyncState {
+func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
 
 	fmt.Println("****** controller.ServiceChanged", name, "svcIP", c.svcIP)
 
@@ -55,10 +55,6 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 
 	l.Log("event", "startUpdate", "msg", "start of service update", "service", name)
 	defer l.Log("event", "endUpdate", "msg", "end of service update", "service", name)
-
-	if svc.Spec.Type != "LoadBalancer" {
-		return c.deleteBalancer(l, name, "notLoadBalancer")
-	}
 
 	// Dont see a purpose, stops adding lb because of no endpoint, not consistent with k8s behavior
 	//if healthyEndpointExists(eps) == false {
@@ -96,7 +92,7 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 	var localannounce string
 
 	if err == nil {
-		localannounce = c.ShouldAnnounce(l, name, svc, eps)
+		localannounce = c.ShouldAnnounce(l, name, svc)
 	}
 
 	if localannounce == "notWinner" {
@@ -120,7 +116,7 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 	return k8s.SyncStateSuccess
 }
 
-func (c *controller) ShouldAnnounce(l log.Logger, name string, svc *v1.Service, eps *v1.Endpoints) string {
+func (c *controller) ShouldAnnounce(l log.Logger, name string, svc *v1.Service) string {
 
 	winner := c.Election.Winner(name)
 	if winner == c.myNode {

@@ -347,6 +347,11 @@ func (c *Client) sync(key interface{}) SyncState {
 			return c.serviceChanged(l, string(k), nil, nil)
 		}
 
+		// Not a LoadBalancer: no need to do anything
+		if svc.(*corev1.Service).Spec.Type != "LoadBalancer" {
+			return SyncStateSuccess
+		}
+
 		var eps *corev1.Endpoints
 		if c.epIndexer != nil {
 			epsIntf, exists, err := c.epIndexer.GetByKey(string(k))
