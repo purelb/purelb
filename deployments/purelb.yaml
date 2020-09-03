@@ -303,17 +303,12 @@ spec:
         component: lbnodeagent
     spec:
       containers:
-      - args:
-        - --port=7472
-        - --config=config
-        env:
+      - env:
         - name: NETBOX_USER_TOKEN
           valueFrom:
             secretKeyRef:
               name: netbox-client
               key: user-token
-        - name: NETBOX_BASE_URL
-          value: http://192.168.1.40:30080
         - name: PURELB_NODE_NAME
           valueFrom:
             fieldRef:
@@ -322,7 +317,11 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        image: registry.gitlab.com/acnodal/ego/lbnodeagent-acnodal:demo202009021656
+        - name: PURELB_ML_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        image: registry.gitlab.com/acnodal/ego/lbnodeagent:demo202009031616
         imagePullPolicy: Always
         name: lbnodeagent
         ports:
@@ -375,20 +374,15 @@ spec:
         component: allocator
     spec:
       containers:
-      - args:
-        - --port=7472
-        - --config=config
-        image: registry.gitlab.com/acnodal/ego/allocator:demo202009021656
-        imagePullPolicy: Always
-        name: allocator
+      - image: registry.gitlab.com/acnodal/ego/allocator:demo202009031616
         env:
         - name: NETBOX_USER_TOKEN
           valueFrom:
             secretKeyRef:
               name: netbox-client
               key: user-token
-        - name: NETBOX_BASE_URL
-          value: http://192.168.1.40:30080
+        imagePullPolicy: Always
+        name: allocator
         ports:
         - containerPort: 7472
           name: monitoring

@@ -17,9 +17,11 @@ package lbnodeagent
 import (
 	"net"
 
+	"purelb.io/internal/acnodal"
 	"purelb.io/internal/config"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
+	"purelb.io/internal/local"
 
 	"github.com/go-kit/kit/log"
 	"github.com/prometheus/client_golang/prometheus"
@@ -27,18 +29,22 @@ import (
 )
 
 type controller struct {
+	logger     log.Logger
 	myNode     string
 	prometheus *prometheus.GaugeVec
-	announcer  Announcer
+	announcers []Announcer
 	svcIP      map[string]net.IP // service name -> assigned IP
-	Election   *election.Election
 }
 
-func NewController(myNode string, prometheus *prometheus.GaugeVec, announcer Announcer) (*controller, error) {
+func NewController(l log.Logger, myNode string, prometheus *prometheus.GaugeVec) (*controller, error) {
 	con := &controller{
+		logger:     l,
 		myNode:     myNode,
 		prometheus: prometheus,
-		announcer:  announcer,
+		announcers:  []Announcer{
+			local.NewAnnouncer(l, myNode),
+			acnodal.NewAnnouncer(l, myNode),
+		},
 		svcIP:      map[string]net.IP{},
 	}
 
@@ -66,33 +72,7 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 
 	l = log.With(l, "ip", lbIP)
 
-	if svcIP, ok := c.svcIP[name]; ok && !lbIP.Equal(svcIP) {
-		if st := c.deleteBalancer(l, name, "loadBalancerIPChanged"); st == k8s.SyncStateError {
-			return st
-		}
-	}
-
-	// This would be better later in the codepath.  SetBalancer adds to local interfaces
-	// and to a virtual interface.  The virtual interface does not require address
-	// deduplication.  Local Advertize bool added as workaround.
-
-	//if deleteReason := c.ShouldAnnounce(l, name, svc, eps); deleteReason != "" {
-	//	return c.deleteBalancer(l, name, deleteReason)
-	//	}
-
-	_, _, err := c.announcer.CheckLocal(lbIP)
-
-	var localannounce string
-
-	if err == nil {
-		localannounce = c.ShouldAnnounce(l, name, svc)
-	}
-
-	if localannounce == "notWinner" {
-		return c.deleteBalancer(l, name, localannounce)
-	}
-
-	if err := c.announcer.SetBalancer(name, lbIP, ""); err != nil {
+	if err := c.announcers[0].SetBalancer(name, lbIP, ""); err != nil {
 		l.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
 		return k8s.SyncStateError
 	}
@@ -109,22 +89,14 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 	return k8s.SyncStateSuccess
 }
 
-func (c *controller) ShouldAnnounce(l log.Logger, name string, svc *v1.Service) string {
-
-	winner := c.Election.Winner(name)
-	if winner == c.myNode {
-		l.Log("msg", "Winner, winner, Chicken dinner", "node", c.myNode, "service", name)
-		return "Winner"
-	}
-
-	l.Log("msg", "Not the winner", "node", c.myNode, "service", name, "winner", winner)
-	return "notWinner"
-}
-
 func (c *controller) deleteBalancer(l log.Logger, name, reason string) k8s.SyncState {
-	if err := c.announcer.DeleteBalancer(name, reason); err != nil {
-		l.Log("op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
-		return k8s.SyncStateError
+	retval := k8s.SyncStateSuccess
+
+	for _, announcer := range c.announcers {
+		if err := announcer.DeleteBalancer(name, reason); err != nil {
+			l.Log("op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
+			retval = k8s.SyncStateError
+		}
 	}
 
 	c.prometheus.Delete(prometheus.Labels{
@@ -136,25 +108,38 @@ func (c *controller) deleteBalancer(l log.Logger, name, reason string) k8s.SyncS
 
 	l.Log("event", "serviceWithdrawn", "ip", c.svcIP[name], "reason", reason, "msg", "withdrawing service announcement")
 
-	return k8s.SyncStateSuccess
+	return retval
 }
 
 func (c *controller) SetConfig(l log.Logger, cfg *config.Config) k8s.SyncState {
 	l.Log("event", "startUpdate", "msg", "start of config update")
 	defer l.Log("event", "endUpdate", "msg", "end of config update")
 
-	if err := c.announcer.SetConfig(cfg); err != nil {
-		l.Log("op", "setConfig", "error", err, "msg", "applying new configuration to announcer failed")
-		return k8s.SyncStateError
+	retval := k8s.SyncStateReprocessAll
+
+	for _, announcer := range c.announcers {
+		if err := announcer.SetConfig(cfg); err != nil {
+			l.Log("op", "setConfig", "error", err)
+			retval = k8s.SyncStateError
+		}
 	}
 
-	return k8s.SyncStateReprocessAll
+	return retval
 }
 
 func (c *controller) SetNode(l log.Logger, node *v1.Node) k8s.SyncState {
-	if err := c.announcer.SetNode(node); err != nil {
-		l.Log("op", "setNode", "error", err, "msg", "failed to propagate node info to announcer")
-		return k8s.SyncStateError
+	retval := k8s.SyncStateSuccess
+	for _, announcer := range c.announcers {
+		if err := announcer.SetNode(node); err != nil {
+			l.Log("op", "setNode", "error", err)
+			retval = k8s.SyncStateError
+		}
 	}
-	return k8s.SyncStateSuccess
+	return retval
+}
+
+func (c *controller) SetElection(election *election.Election) {
+	for _, announcer := range c.announcers {
+		announcer.SetElection(election)
+	}
 }

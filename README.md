@@ -19,7 +19,7 @@ takes only a few steps:
 1. Load a sample PureLB configuration<br/>
 `kubectl apply -f configs/default-servicegroup.yml`
 1. Deploy the PureLB components<br/>
-`kubectl apply -f deployments/purelb-local.yaml`
+`kubectl apply -f deployments/purelb.yaml`
 
 ## Testing
 

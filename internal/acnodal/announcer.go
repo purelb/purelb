@@ -14,10 +14,10 @@
 package acnodal
 
 import (
-	"fmt"
 	"net"
 
 	"purelb.io/internal/config"
+	"purelb.io/internal/election"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
@@ -107,10 +107,6 @@ func (c *announcer) SetNode(node *v1.Node) error {
 	return nil
 }
 
-func (c *announcer) CheckLocal(lbIP net.IP) (net.IPNet, int, error) {
-	return net.IPNet{}, -1, fmt.Errorf("unimplemented")
-}
-
 // nodeHasHealthyEndpoint return true if this node has at least one healthy endpoint.
 func nodeHasHealthyEndpoint(eps *v1.Endpoints, node string) bool {
 	ready := map[string]bool{}
@@ -163,4 +159,8 @@ func healthyEndpointExists(eps *v1.Endpoints) bool {
 		}
 	}
 	return false
+}
+
+func (c *announcer) SetElection(election *election.Election) {
+	// this is a no-op, we don't care about elections
 }

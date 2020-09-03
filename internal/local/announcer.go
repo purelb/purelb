@@ -20,6 +20,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"purelb.io/internal/config"
+	"purelb.io/internal/election"
 
 	"github.com/go-kit/kit/log"
 	"github.com/vishvananda/netlink"
@@ -32,6 +33,7 @@ type announcer struct {
 	nodeLabels labels.Set
 	config     *config.Config
 	svcAdvs    map[string]net.IP //svcName -> IP
+	election   *election.Election
 }
 
 func NewAnnouncer(l log.Logger, node string) *announcer {
@@ -56,9 +58,13 @@ func (c *announcer) SetBalancer(name string, lbIP net.IP, _ string) error {
 		return nil
 	}
 
-	if lbIPNet, defaultifindex, err := c.CheckLocal(lbIP); err == nil {
-		c.addLocalInt(lbIPNet, defaultifindex)
-		c.svcAdvs[name] = lbIP
+	if lbIPNet, defaultifindex, err := c.checkLocal(lbIP); err == nil {
+		if winner := c.election.Winner(name); winner == c.myNode {
+			c.logger.Log("msg", "Winner, winner, Chicken dinner", "node", c.myNode, "service", name)
+
+			c.addLocalInt(lbIPNet, defaultifindex)
+			c.svcAdvs[name] = lbIP
+		}
 	}
 
 	return nil
@@ -82,47 +88,42 @@ func (c *announcer) SetNode(node *v1.Node) error {
 	return nil
 }
 
-// CheckLocal determines whether the provided net.IP is on the same
+// checkLocal determines whether the provided net.IP is on the same
 // network as the machine on which this code is running.  If the
 // interface is local then the int return value will be the default
 // interface index and error will be nil.  If error is non-nil then
 // the address is non-local.
-func (c *announcer) CheckLocal(lbIP net.IP) (net.IPNet, int, error) {
+func (c *announcer) checkLocal(lbIP net.IP) (net.IPNet, int, error) {
 
-	var defaultifindex int = 0
-	var lbIPNet net.IPNet
-	lbIPNet.IP = lbIP
+	var err error
+	var defaultifindex int
+	var lbIPNet net.IPNet = net.IPNet{IP: lbIP}
+	var family int = nl.FAMILY_V6
+	if lbIP.To4() != nil {
+		family = nl.FAMILY_V4
+	}
 
-	if nil != lbIP.To4() {
+	defaultifindex, err = defaultInterface(family)
+	if err != nil {
+		return lbIPNet, defaultifindex, err
+	}
 
-		// The IP address belongs to the IPV4 family
+	defaultint, _ := netlink.LinkByIndex(defaultifindex)
+	defaddrs, _ := netlink.AddrList(defaultint, family)
 
-		defaultifindex, err := defaultInterfaceIndex(nl.FAMILY_V4)
-		if err != nil {
-			defaultint, _ := netlink.LinkByIndex(defaultifindex)
-			defaddrs, _ := netlink.AddrList(defaultint, nl.FAMILY_V4)
+	if family == nl.FAMILY_V4 {
+		for _, addrs := range defaddrs {
+			localnet := addrs.IPNet
 
-			for _, addrs := range defaddrs {
-				localnet := addrs.IPNet
-
-				if localnet.Contains(lbIPNet.IP) {
-					lbIPNet.Mask = localnet.Mask
-				}
+			if localnet.Contains(lbIPNet.IP) {
+				lbIPNet.Mask = localnet.Mask
 			}
 		}
 
 	} else {
+		for _, addrs := range defaddrs {
 
-		// The IP address belongs to the IPV6 family
-
-		defaultifindex, err := defaultInterfaceIndex(nl.FAMILY_V6)
-		if err != nil {
-			defaultint, _ := netlink.LinkByIndex(defaultifindex)
-			defaddrs, _ := netlink.AddrList(defaultint, nl.FAMILY_V6)
-
-			for _, addrs := range defaddrs {
-
-				/*  ifa_flags from linux source if_addr.h
+			/*  ifa_flags from linux source if_addr.h
 
 				#define IFA_F_SECONDARY		0x01
 				#define IFA_F_TEMPORARY		IFA_F_SECONDARY
@@ -141,11 +142,10 @@ func (c *announcer) CheckLocal(lbIP net.IP) (net.IPNet, int, error) {
 
 				*/
 
-				localnet := addrs.IPNet
+			localnet := addrs.IPNet
 
-				if localnet.Contains(lbIPNet.IP) == true && addrs.Flags < 256 {
-					lbIPNet.Mask = localnet.Mask
-				}
+			if localnet.Contains(lbIPNet.IP) == true && addrs.Flags < 256 {
+				lbIPNet.Mask = localnet.Mask
 			}
 		}
 	}
@@ -210,9 +210,9 @@ func CreateDummyInt(dummyint string) error {
 	return nil
 }
 
-// defaultInterfaceIndex finds the default interface (i.e., the one
-// with the default route) for the given IP family.
-func defaultInterfaceIndex(family int) (int, error) {
+// defaultInterface finds the default interface (i.e., the one with
+// the default route) for the given IP family.
+func defaultInterface(family int) (int, error) {
 	var defaultifindex int = 0
 
 	rt, _ := netlink.RouteList(nil, family)
@@ -229,4 +229,8 @@ func defaultInterfaceIndex(family int) (int, error) {
 
 	// there's only one default route
 	return defaultifindex, nil
+}
+
+func (c *announcer) SetElection(election *election.Election) {
+	c.election = election
 }
