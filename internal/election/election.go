@@ -3,7 +3,6 @@ package election
 import (
 	"bytes"
 	"crypto/sha256"
-	"fmt"
 	"log"
 	"sort"
 	"time"
@@ -74,7 +73,7 @@ func (e *Election) Shutdown() error {
 
 func (e *Election) Winner(name string) string {
 	nodes := e.usableNodes()
-	fmt.Println(" election.Winner nodes: ", nodes)
+
 	// Sort the slice by the hash of node + service name. This
 	// produces an ordering of ready nodes that is unique to this
 	// service.

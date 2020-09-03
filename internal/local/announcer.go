@@ -1,5 +1,16 @@
-// Copyright 2020 Acnodal Inc.  All rights reserved.
-
+// Copyright 2020 Acnodal Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 package local
 
 import (
@@ -32,16 +43,13 @@ func (c *announcer) SetConfig(cfg *config.Config) error {
 
 	c.config = cfg
 
-	fmt.Println("*****c.announcer SetConfig : ", cfg)
-
 	// Call to should announce memberlist function
 
 	return nil
 }
 
 func (c *announcer) SetBalancer(name string, lbIP net.IP, _ string) error {
-	fmt.Println("******announcer.SetBalancer", name, "svcAdvs:", c.svcAdvs)
-	c.logger.Log("event", "updatedNodes", "msg", "Announce balancer", "service", name)
+	c.logger.Log("event", "announceService", "service", name)
 
 	// k8s may send us multiple events to advertize same address
 	if _, ok := c.svcAdvs[name]; ok {
@@ -49,28 +57,15 @@ func (c *announcer) SetBalancer(name string, lbIP net.IP, _ string) error {
 	}
 
 	if lbIPNet, defaultifindex, err := c.CheckLocal(lbIP); err == nil {
-		fmt.Println(err)
 		c.addLocalInt(lbIPNet, defaultifindex)
 		c.svcAdvs[name] = lbIP
-	}
-
-	if _, _, err := c.CheckLocal(lbIP); err != nil {
-
-		fmt.Println(err)
-
-		fmt.Println("***** nonlocal lbIP: ", lbIP)
-		fmt.Println("***** c.config: ", c.config.Pools)
-
 	}
 
 	return nil
 }
 
 func (c *announcer) DeleteBalancer(name, reason string) error {
-	fmt.Println("****** announcer.DeleteBalancer", name, "svcAdvs:", c.svcAdvs)
-
 	if _, ok := c.svcAdvs[name]; !ok {
-		fmt.Print("****** announcer.DeleteBalancer svc not in map, ignore: ", name)
 		return nil
 	}
 
@@ -78,77 +73,52 @@ func (c *announcer) DeleteBalancer(name, reason string) error {
 
 	delete(c.svcAdvs, name)
 
-	c.logger.Log("event", "updatedNodes", "msg", "Delete balancer", "service", name, "reason", reason)
+	c.logger.Log("event", "updateService", "msg", "Delete balancer", "service", name, "reason", reason)
 	return nil
 }
 
 func (c *announcer) SetNode(node *v1.Node) error {
-	fmt.Println("***** c.announcer SetNode: ", node)
-
 	c.logger.Log("event", "updatedNodes", "msg", "Node announced", "name", node.Name)
 	return nil
 }
 
+// CheckLocal determines whether the provided net.IP is on the same
+// network as the machine on which this code is running.  If the
+// interface is local then the int return value will be the default
+// interface index and error will be nil.  If error is non-nil then
+// the address is non-local.
 func (c *announcer) CheckLocal(lbIP net.IP) (net.IPNet, int, error) {
 
 	var defaultifindex int = 0
 	var lbIPNet net.IPNet
 	lbIPNet.IP = lbIP
-	var lbIPFamily int
-
-	if nil != lbIP.To16() {
-		lbIPFamily = (nl.FAMILY_V6)
-	}
 
 	if nil != lbIP.To4() {
-		lbIPFamily = (nl.FAMILY_V4)
-	}
 
-	switch lbIPFamily {
-	case (nl.FAMILY_V4):
+		// The IP address belongs to the IPV4 family
 
-		rt, _ := netlink.RouteList(nil, (nl.FAMILY_V4))
-		for _, r := range rt {
-			if r.Dst == nil && defaultifindex == 0 {
-				defaultifindex = r.LinkIndex
-			} else if r.Dst == nil && defaultifindex != 0 {
-				fmt.Println("error, cannot determine default in, multiple default routes")
-				return lbIPNet, defaultifindex, fmt.Errorf("error, cannot determine default in, multiple default routes")
-			}
-		}
-
-		if defaultifindex != 0 {
+		defaultifindex, err := defaultInterfaceIndex(nl.FAMILY_V4)
+		if err != nil {
 			defaultint, _ := netlink.LinkByIndex(defaultifindex)
-			defaddrs, _ := netlink.AddrList(defaultint, lbIPFamily)
+			defaddrs, _ := netlink.AddrList(defaultint, nl.FAMILY_V4)
 
 			for _, addrs := range defaddrs {
 				localnet := addrs.IPNet
 
-				if localnet.Contains(lbIPNet.IP) == true {
-
+				if localnet.Contains(lbIPNet.IP) {
 					lbIPNet.Mask = localnet.Mask
-					fmt.Println("local", lbIPNet)
-
-				} else {
-					fmt.Println("checklocal nonlocal")
 				}
 			}
 		}
-	case (nl.FAMILY_V6):
 
-		rt, _ := netlink.RouteList(nil, (nl.FAMILY_V6))
-		for _, r := range rt {
-			if r.Dst == nil && defaultifindex == 0 {
-				defaultifindex = r.LinkIndex
-			} else if r.Dst == nil && defaultifindex != 0 {
-				fmt.Println("error, cannot determine default in, multiple default routes")
-				return lbIPNet, defaultifindex, fmt.Errorf("error, cannot determine default in, multiple default routes")
-			}
-		}
+	} else {
 
-		if defaultifindex != 0 {
+		// The IP address belongs to the IPV6 family
+
+		defaultifindex, err := defaultInterfaceIndex(nl.FAMILY_V6)
+		if err != nil {
 			defaultint, _ := netlink.LinkByIndex(defaultifindex)
-			defaddrs, _ := netlink.AddrList(defaultint, lbIPFamily)
+			defaddrs, _ := netlink.AddrList(defaultint, nl.FAMILY_V6)
 
 			for _, addrs := range defaddrs {
 
@@ -174,17 +144,10 @@ func (c *announcer) CheckLocal(lbIP net.IP) (net.IPNet, int, error) {
 				localnet := addrs.IPNet
 
 				if localnet.Contains(lbIPNet.IP) == true && addrs.Flags < 256 {
-
 					lbIPNet.Mask = localnet.Mask
-					fmt.Println("local", lbIPNet)
-
-				} else {
-					fmt.Println("checklocal nonlocal", lbIP)
 				}
-
 			}
 		}
-
 	}
 
 	if lbIPNet.Mask == nil {
@@ -192,18 +155,15 @@ func (c *announcer) CheckLocal(lbIP net.IP) (net.IPNet, int, error) {
 	}
 
 	return lbIPNet, defaultifindex, nil
-
 }
 
 func (c *announcer) addLocalInt(lbIPNet net.IPNet, defaultifindex int) error {
-
-	fmt.Println("adding", lbIPNet, "to ifindex", defaultifindex)
+	c.logger.Log("event", "addLocalInt", "ip-address", lbIPNet.String(), "index", defaultifindex)
 
 	addr, _ := netlink.ParseAddr(lbIPNet.String())
 	ifindex, _ := netlink.LinkByIndex(defaultifindex)
 	err := netlink.AddrReplace(ifindex, addr)
 	if err != nil {
-		fmt.Printf("could not add %v: to %v %v", addr, ifindex, err)
 		return fmt.Errorf("could not add %v: to %v %v", addr, ifindex, err)
 	}
 	return nil
@@ -221,24 +181,17 @@ func (c *announcer) deletesvcAdv(name string) error {
 			ipaddr, _, _ := net.ParseCIDR(ipnet.String())
 
 			if lbIP.Equal(ipaddr) {
-
-				fmt.Println("****** announcer.delete", ipaddr)
-
 				ifindex, _ := netlink.LinkByIndex(hostint.Index)
 				deladdr, _ := netlink.ParseAddr(ipnet.String())
 				err := netlink.AddrDel(ifindex, deladdr)
 				if err != nil {
-					fmt.Printf("could not delete %v: to %v %v", deladdr, ifindex, err)
 					return fmt.Errorf("could not add %v: to %v %v", deladdr, ifindex, err)
 				}
-
 			}
-
 		}
 	}
 
 	return nil
-
 }
 
 func CreateDummyInt(dummyint string) error {
@@ -250,12 +203,30 @@ func CreateDummyInt(dummyint string) error {
 		dumint.Name = dummyint
 		targetint := &netlink.Dummy{LinkAttrs: dumint}
 		if err == netlink.LinkAdd(targetint) {
-			fmt.Println("failed adding dummy int", dummyint)
 			return fmt.Errorf("failed adding dummy int %s: ", dummyint)
 		}
-
 	}
 
 	return nil
+}
 
+// defaultInterfaceIndex finds the default interface (i.e., the one
+// with the default route) for the given IP family.
+func defaultInterfaceIndex(family int) (int, error) {
+	var defaultifindex int = 0
+
+	rt, _ := netlink.RouteList(nil, family)
+	for _, r := range rt {
+		// check each route to see if it's the default (i.e., no destination)
+		if r.Dst == nil && defaultifindex == 0 {
+			// this is the first default route we've seen
+			defaultifindex = r.LinkIndex
+		} else if r.Dst == nil && defaultifindex != 0 {
+			// if there's a *second* default route then we're in trouble
+			return -1, fmt.Errorf("error, cannot determine default in, multiple default routes")
+		}
+	}
+
+	// there's only one default route
+	return defaultifindex, nil
 }

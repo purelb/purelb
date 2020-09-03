@@ -1,3 +1,4 @@
+// Copyright 2020 Acnodal Inc.
 // Copyright 2017 Google Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +15,6 @@
 package lbnodeagent
 
 import (
-	"fmt"
 	"net"
 
 	"purelb.io/internal/config"
@@ -47,19 +47,12 @@ func NewController(myNode string, prometheus *prometheus.GaugeVec, announcer Ann
 
 func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
 
-	fmt.Println("****** controller.ServiceChanged", name, "svcIP", c.svcIP)
+	l.Log("event", "startUpdate", "msg", "start of service update", "service", name)
+	defer l.Log("event", "endUpdate", "msg", "end of service update", "service", name)
 
 	if svc == nil {
 		return c.deleteBalancer(l, name, "serviceDeleted")
 	}
-
-	l.Log("event", "startUpdate", "msg", "start of service update", "service", name)
-	defer l.Log("event", "endUpdate", "msg", "end of service update", "service", name)
-
-	// Dont see a purpose, stops adding lb because of no endpoint, not consistent with k8s behavior
-	//if healthyEndpointExists(eps) == false {
-	//	return c.deleteBalancer(l, name, "noHealthyEndpoints")
-	//}
 
 	if len(svc.Status.LoadBalancer.Ingress) != 1 {
 		return c.deleteBalancer(l, name, "noIPAllocated")
@@ -67,7 +60,7 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 
 	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
 	if lbIP == nil {
-		l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP, "msg", "invalid IP allocated by controller")
+		l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP)
 		return c.deleteBalancer(l, name, "invalidIP")
 	}
 
@@ -129,8 +122,6 @@ func (c *controller) ShouldAnnounce(l log.Logger, name string, svc *v1.Service) 
 }
 
 func (c *controller) deleteBalancer(l log.Logger, name, reason string) k8s.SyncState {
-	fmt.Println("****** controller.deleteBalancer", name, "svcIP", c.svcIP)
-
 	if err := c.announcer.DeleteBalancer(name, reason); err != nil {
 		l.Log("op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
 		return k8s.SyncStateError
