@@ -14,17 +14,15 @@
 package lbnodeagent
 
 import (
-	"net"
-
 	v1 "k8s.io/api/core/v1"
-	"purelb.io/internal/config"
 	"purelb.io/internal/election"
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 // Announces service IP addresses
 type Announcer interface {
-	SetConfig(*config.Config) error
-	SetBalancer(string, net.IP, string) error
+	SetConfig(*purelbv1.Config) error
+	SetBalancer(string, *v1.Service, *v1.Endpoints) error
 	DeleteBalancer(string, string) error
 	SetNode(*v1.Node) error
 	SetElection(*election.Election)

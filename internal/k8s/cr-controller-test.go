@@ -33,7 +33,6 @@ import (
 	"k8s.io/client-go/tools/record"
 	"github.com/go-kit/kit/log"
 
-	"purelb.io/internal/config"
 	purelbv1 "purelb.io/pkg/apis/v1"
 	"purelb.io/pkg/generated/clientset/versioned/fake"
 	informers "purelb.io/pkg/generated/informers/externalversions"
@@ -85,7 +84,7 @@ func (f *fixture) newController() (*Controller, informers.SharedInformerFactory,
 	i := informers.NewSharedInformerFactory(f.client, noResyncPeriodFunc())
 	k8sI := kubeinformers.NewSharedInformerFactory(f.kubeclient, noResyncPeriodFunc())
 
-	stubConfigChanged := func(log.Logger, *config.Config) SyncState {
+	stubConfigChanged := func(log.Logger, *purelbv1.Config) SyncState {
 		return SyncStateSuccess
 	}
 

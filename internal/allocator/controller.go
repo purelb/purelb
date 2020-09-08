@@ -1,3 +1,4 @@
+// Copyright 2020 Acnodal Inc.
 // Copyright 2017 Google Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,20 +16,22 @@
 package allocator
 
 import (
+	"net/url"
 	"reflect"
 
-	"purelb.io/internal/config"
 	"purelb.io/internal/k8s"
+	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
 	"k8s.io/api/core/v1"
 )
 
 type controller struct {
-	client k8s.Service
-	synced bool
-	config *config.Config
-	ips    *Allocator
+	client   k8s.Service
+	synced   bool
+	ips      *Allocator
+	baseURL  *url.URL
+	groupURL *string
 }
 
 func NewController(ips *Allocator) (*controller, error) {
@@ -53,12 +56,6 @@ func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _
 		// we delete a balancer we should reprocess all of them to
 		// check for newly feasible balancers.
 		return k8s.SyncStateReprocessAll
-	}
-
-	if c.config == nil {
-		// Config hasn't been read, nothing we can do just yet.
-		l.Log("event", "noConfig", "msg", "not processing, still waiting for config")
-		return k8s.SyncStateSuccess
 	}
 
 	// Making a copy unconditionally is a bit wasteful, since we don't
@@ -103,7 +100,7 @@ func (c *controller) deleteBalancer(l log.Logger, name string) {
 	}
 }
 
-func (c *controller) SetConfig(l log.Logger, cfg *config.Config) k8s.SyncState {
+func (c *controller) SetConfig(l log.Logger, cfg *purelbv1.Config) k8s.SyncState {
 	l.Log("event", "startUpdate", "msg", "start of config update")
 	defer l.Log("event", "endUpdate", "msg", "end of config update")
 
@@ -112,11 +109,31 @@ func (c *controller) SetConfig(l log.Logger, cfg *config.Config) k8s.SyncState {
 		return k8s.SyncStateError
 	}
 
-	if err := c.ips.SetPools(cfg.Pools); err != nil {
-		l.Log("op", "setConfig", "error", err, "msg", "applying new configuration failed")
+	if err := c.ips.SetPools(cfg.Groups); err != nil {
+		l.Log("op", "setConfig", "error", err)
 		return k8s.SyncStateError
 	}
-	c.config = cfg
+
+	// see if there's an EGW config. if so then we'll announce new
+	// services to the EGW
+	c.groupURL = nil
+	c.baseURL = nil
+	for _, group := range cfg.Groups {
+		if group.Spec.EGW != nil {
+			c.groupURL = &group.Spec.EGW.URL
+			// Use the hostname from the service group, but reset the path.  EGW
+			// and Netbox each have their own API URL schemes so we only need
+			// the protocol, host, port, credentials, etc.
+			url, err := url.Parse(*c.groupURL)
+			if err != nil {
+				l.Log("op", "setConfig", "error", err)
+				return k8s.SyncStateError
+			}
+			url.Path = ""
+			c.baseURL = url
+		}
+	}
+
 	return k8s.SyncStateReprocessAll
 }
 

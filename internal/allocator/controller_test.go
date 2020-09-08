@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"purelb.io/internal/config"
 	"purelb.io/internal/k8s"
+	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
 	"github.com/google/go-cmp/cmp"
@@ -73,10 +73,6 @@ func (s *testK8S) Errorf(_ *v1.Service, evtType string, msg string, args ...inte
 	s.loggedWarning = true
 }
 
-func (s *testK8S) Config() (*config.Config, error) {
-	return &config.Config{Pools: map[string]config.Pool{}}, nil
-}
-
 func (s *testK8S) reset() {
 	s.updateService = nil
 	s.updateServiceStatus = nil
@@ -117,8 +113,8 @@ func TestControllerConfig(t *testing.T) {
 			ClusterIP: "1.2.3.4",
 		},
 	}
-	if c.SetBalancer(l, "test", svc, nil) == k8s.SyncStateError {
-		t.Fatalf("SetBalancer failed")
+	if c.SetBalancer(l, "test", svc, nil) != k8s.SyncStateError {
+		t.Fatalf("SetBalancer should have failed")
 	}
 
 	gotSvc := k.gotService(svc)
@@ -132,7 +128,7 @@ func TestControllerConfig(t *testing.T) {
 	// Set an empty config. Balancer should still not do anything to
 	// our unallocated service, and return an error to force a
 	// retry after sync is complete.
-	if c.SetConfig(l, &config.Config{}) == k8s.SyncStateError {
+	if c.SetConfig(l, &purelbv1.Config{}) == k8s.SyncStateError {
 		t.Fatalf("SetConfig with empty config failed")
 	}
 	if c.SetBalancer(l, "test", svc, nil) != k8s.SyncStateError {
@@ -148,9 +144,17 @@ func TestControllerConfig(t *testing.T) {
 	}
 
 	// Set a config with some IPs. Still no allocation, not synced.
-	cfg := &config.Config{
-		Pools: map[string]config.Pool{
-			"default": mustLocalPool("1.2.3.0/24", true),
+	cfg := &purelbv1.Config{
+		Groups: []*purelbv1.ServiceGroup{
+			&purelbv1.ServiceGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "default"},
+				Spec: purelbv1.ServiceGroupSpec{
+					AutoAssign: true,
+					Local: &purelbv1.ServiceGroupLocalSpec{
+						Pool: "1.2.3.0/24",
+					},
+				},
+			},
 		},
 	}
 	if c.SetConfig(l, cfg) == k8s.SyncStateError {
@@ -203,9 +207,16 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	}
 
 	l := log.NewNopLogger()
-	cfg := &config.Config{
-		Pools: map[string]config.Pool{
-			"default": mustLocalPool("1.2.3.0/32", true),
+	cfg := &purelbv1.Config{
+		Groups: []*purelbv1.ServiceGroup{
+			&purelbv1.ServiceGroup{
+				Spec: purelbv1.ServiceGroupSpec{
+					AutoAssign: true,
+					Local: &purelbv1.ServiceGroupLocalSpec{
+						Pool: "1.2.3.0/32",
+					},
+				},
+			},
 		},
 	}
 	if c.SetConfig(l, cfg) == k8s.SyncStateError {

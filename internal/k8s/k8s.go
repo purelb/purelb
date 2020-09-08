@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"purelb.io/internal/config"
+	purelbv1 "purelb.io/pkg/apis/v1"
 	"purelb.io/pkg/generated/clientset/versioned"
 	"purelb.io/pkg/generated/informers/externalversions"
 
@@ -48,7 +48,7 @@ type Client struct {
 	syncFuncs []cache.InformerSynced
 
 	serviceChanged func(log.Logger, string, *corev1.Service, *corev1.Endpoints) SyncState
-	configChanged  func(log.Logger, *config.Config) SyncState
+	configChanged  func(log.Logger, *purelbv1.Config) SyncState
 	nodeChanged    func(log.Logger, *corev1.Node) SyncState
 	synced         func(log.Logger)
 }
@@ -85,7 +85,7 @@ type Config struct {
 	Kubeconfig    string
 
 	ServiceChanged func(log.Logger, string, *corev1.Service, *corev1.Endpoints) SyncState
-	ConfigChanged  func(log.Logger, *config.Config) SyncState
+	ConfigChanged  func(log.Logger, *purelbv1.Config) SyncState
 	NodeChanged    func(log.Logger, *corev1.Node) SyncState
 	Synced         func(log.Logger)
 }

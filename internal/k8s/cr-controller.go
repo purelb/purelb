@@ -31,7 +31,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 
-	"purelb.io/internal/config"
+	purelbv1 "purelb.io/pkg/apis/v1"
 	clientset "purelb.io/pkg/generated/clientset/versioned"
 	purelbscheme "purelb.io/pkg/generated/clientset/versioned/scheme"
 	"purelb.io/pkg/generated/informers/externalversions"
@@ -49,7 +49,7 @@ type Controller struct {
 	purelbclientset clientset.Interface
 
 	sgsSynced   cache.InformerSynced
-	configCB    func(log.Logger, *config.Config) SyncState
+	configCB    func(log.Logger, *purelbv1.Config) SyncState
 	sgLister    listers.ServiceGroupLister
 	lbnasSynced cache.InformerSynced
 	lbnaLister  listers.LBNodeAgentLister
@@ -71,7 +71,7 @@ type Controller struct {
 // to PureLB custom resources.
 func NewCRController(
 	logger log.Logger,
-	configCB func(log.Logger, *config.Config) SyncState,
+	configCB func(log.Logger, *purelbv1.Config) SyncState,
 	kubeclientset kubernetes.Interface,
 	purelbclientset clientset.Interface,
 	informerFactory externalversions.SharedInformerFactory) *Controller {
@@ -229,7 +229,7 @@ func (c *Controller) syncHandler(key string) error {
 		c.logger.Log("error listing node agents", key)
 		return err
 	}
-	cfg, err := config.ParseConfig(groups, nodeagents)
+	cfg, err := purelbv1.ParseConfig(groups, nodeagents)
 	if err == nil {
 		c.configCB(c.logger, cfg)
 		return nil

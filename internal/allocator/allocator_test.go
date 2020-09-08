@@ -6,27 +6,26 @@ import (
 	"strings"
 	"testing"
 
-	"purelb.io/internal/config"
-
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"purelb.io/pkg/apis/v1"
 )
 
 func TestAssignment(t *testing.T) {
 	alloc := New()
-	if err := alloc.SetPools(map[string]config.Pool{
-		"test0": mustLocalPool("1.2.3.4/31", true),
-		"test1": mustLocalPool("1000::4/127", true),
-		"test2": mustLocalPool("1.2.4.0/24", true),
-		"test3": mustLocalPool("1000::4:0/120", true),
-	}); err != nil {
-		t.Fatalf("SetPools: %s", err)
+	alloc.pools = map[string]Pool{
+		"test0": mustLocalPool(t, "1.2.3.4/31", true),
+		"test1": mustLocalPool(t, "1000::4/127", true),
+		"test2": mustLocalPool(t, "1.2.4.0/24", true),
+		"test3": mustLocalPool(t, "1000::4:0/120", true),
 	}
 
 	tests := []struct {
 		desc       string
 		svc        string
 		ip         string
-		ports      []config.Port
+		ports      []Port
 		sharingKey string
 		backendKey string
 		wantErr    bool
@@ -328,13 +327,11 @@ func TestPoolAllocation(t *testing.T) {
 	// This test only allocates from the "test" and "testV6" pools, so
 	// it will run out of IPs quickly even though there are tons
 	// available in other pools.
-	if err := alloc.SetPools(map[string]config.Pool{
-		"not_this_one": mustLocalPool("192.168.0.0/16", true),
-		"test":         mustLocalPool("1.2.3.4/30", true),
-		"testV6":       mustLocalPool("1000::/126", true),
-		"test2":        mustLocalPool("10.20.30.0/24", true),
-	}); err != nil {
-		t.Fatalf("SetPools: %s", err)
+	alloc.pools = map[string]Pool{
+		"not_this_one": mustLocalPool(t, "192.168.0.0/16", true),
+		"test":         mustLocalPool(t, "1.2.3.4/30", true),
+		"testV6":       mustLocalPool(t, "1000::/126", true),
+		"test2":        mustLocalPool(t, "10.20.30.0/24", true),
 	}
 
 	validIP4s := map[string]bool{
@@ -353,7 +350,7 @@ func TestPoolAllocation(t *testing.T) {
 	tests := []struct {
 		desc       string
 		svc        string
-		ports      []config.Port
+		ports      []Port
 		sharingKey string
 		unassign   bool
 		wantErr    bool
@@ -573,13 +570,11 @@ func TestPoolAllocation(t *testing.T) {
 
 func TestAllocation(t *testing.T) {
 	alloc := New()
-	if err := alloc.SetPools(map[string]config.Pool{
-		"test1":   mustLocalPool("1.2.3.4/31", true),
-		"test1V6": mustLocalPool("1000::4/127", true),
-		"test2":   mustLocalPool("1.2.3.10/31", true),
-		"test2V6": mustLocalPool("1000::10/127", true),
-	}); err != nil {
-		t.Fatalf("SetPools: %s", err)
+	alloc.pools = map[string]Pool{
+		"test1":   mustLocalPool(t, "1.2.3.4/31", true),
+		"test1V6": mustLocalPool(t, "1000::4/127", true),
+		"test2":   mustLocalPool(t, "1.2.3.10/31", true),
+		"test2V6": mustLocalPool(t, "1000::10/127", true),
 	}
 
 	validIP4s := map[string]bool{
@@ -598,7 +593,7 @@ func TestAllocation(t *testing.T) {
 	tests := []struct {
 		desc       string
 		svc        string
-		ports      []config.Port
+		ports      []Port
 		sharingKey string
 		unassign   bool
 		wantErr    bool
@@ -772,13 +767,11 @@ func TestAllocation(t *testing.T) {
 
 func TestAutoAssign(t *testing.T) {
 	alloc := New()
-	if err := alloc.SetPools(map[string]config.Pool{
-		"test0": mustLocalPool("1.2.3.4/31", false),
-		"test1": mustLocalPool("1000::4/127", false),
-		"test2": mustLocalPool("1000::10/127", true),
-		"test3": mustLocalPool("1.2.3.10/31", true),
-	}); err != nil {
-		t.Fatalf("SetPools: %s", err)
+	alloc.pools = map[string]Pool{
+		"test0": mustLocalPool(t, "1.2.3.4/31", false),
+		"test1": mustLocalPool(t, "1000::4/127", false),
+		"test2": mustLocalPool(t, "1000::10/127", true),
+		"test3": mustLocalPool(t, "1.2.3.10/31", true),
 	}
 
 	validIP4s := map[string]bool{
@@ -894,17 +887,15 @@ func TestAutoAssign(t *testing.T) {
 
 func TestPoolMetrics(t *testing.T) {
 	alloc := New()
-	if err := alloc.SetPools(map[string]config.Pool{
-		"test": mustLocalPool("1.2.3.4/30", true),
-	}); err != nil {
-		t.Fatalf("SetPools: %s", err)
+	alloc.pools = map[string]Pool{
+		"test": mustLocalPool(t, "1.2.3.4/30", true),
 	}
 
 	tests := []struct {
 		desc       string
 		svc        string
 		ip         string
-		ports      []config.Port
+		ports      []Port
 		sharingKey string
 		backendKey string
 		ipsInUse   float64
@@ -1020,23 +1011,55 @@ func assigned(a *Allocator, svc string) string {
 	return ip.String()
 }
 
-func mustLocalPool(r string, aa bool) config.Pool {
-	p, err := config.NewLocalPool(aa, r, "", "")
+func mustLocalPool(t *testing.T, r string, aa bool) LocalPool {
+	p, err := NewLocalPool(aa, r, "", "")
 	if err != nil {
 		panic(err)
 	}
 	return *p
 }
 
-func ports(ports ...string) []config.Port {
-	var ret []config.Port
+func mustEGWPool(t *testing.T, url string, aa bool) EGWPool {
+	p, err := NewEGWPool(aa, url, "")
+	if err != nil {
+		panic(err)
+	}
+	return *p
+}
+
+func ports(ports ...string) []Port {
+	var ret []Port
 	for _, s := range ports {
 		fs := strings.Split(s, "/")
 		p, err := strconv.Atoi(fs[1])
 		if err != nil {
 			panic("bad port in test")
 		}
-		ret = append(ret, config.Port{Proto: fs[0], Port: p})
+		ret = append(ret, Port{Proto: fs[0], Port: p})
 	}
 	return ret
+}
+
+
+func localServiceGroup(name string, pool string) *v1.ServiceGroup {
+	return serviceGroup(name, v1.ServiceGroupSpec{
+		AutoAssign: true,
+		Local: &v1.ServiceGroupLocalSpec{Pool: pool},
+	})
+}
+
+func egwServiceGroup(name string, url string) *v1.ServiceGroup {
+	return serviceGroup(name, v1.ServiceGroupSpec{
+		AutoAssign: true,
+		EGW: &v1.ServiceGroupEGWSpec{URL: url},
+	})
+}
+
+func serviceGroup(name string, spec v1.ServiceGroupSpec) *v1.ServiceGroup {
+	return &v1.ServiceGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: spec,
+	}
 }

@@ -21,6 +21,8 @@ import (
 
 	"github.com/go-kit/kit/log"
 	"k8s.io/api/core/v1"
+
+	"purelb.io/internal/acnodal"
 )
 
 const (
@@ -71,8 +73,37 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 	if svc.Annotations == nil {
 		svc.Annotations = map[string]string{}
 	}
-	svc.Annotations[brandAnnotation] = brand
+ 	svc.Annotations[brandAnnotation] = brand
 	svc.Annotations[poolAnnotation] = pool
+
+	if c.baseURL != nil {
+		// Connect to the EGW
+		egw, err := acnodal.New(c.baseURL.String(), "")
+		if err != nil {
+			l.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
+			c.client.Errorf(svc, "AllocationFailed", "Failed to create EGW service for %s: %s", svc.Name, err)
+			return false
+		}
+
+		// Look up the EGW group (which gives us the URL to create services)
+		group, err := egw.GetGroup(*c.groupURL)
+		if err != nil {
+			l.Log("op", "GetGroup", "group", c.groupURL, "error", err)
+			c.client.Errorf(svc, "GetGroupFailed", "Failed to get group %s: %s", c.groupURL, err)
+			return false
+		}
+
+		// Announce the service to the EGW
+		egwsvc, err := egw.AnnounceService(group.Links["create-service"], svc.Name, svc.Status.LoadBalancer.Ingress[0].IP)
+		if err != nil {
+			l.Log("op", "AnnouncementFailed", "service", svc.Name, "error", err)
+			c.client.Errorf(svc, "AnnouncementFailed", "Failed to announce service for %s: %s", svc.Name, err)
+			return false
+		}
+		svc.Annotations["acnodal.io/groupURL"] = egwsvc.Links["group"]
+		svc.Annotations["acnodal.io/serviceURL"] = egwsvc.Links["self"]
+		svc.Annotations["acnodal.io/endpointcreateURL"] = egwsvc.Links["create-endpoint"]
+	}
 
 	return true
 }

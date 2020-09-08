@@ -3,4 +3,5 @@ kind: LBNodeAgent
 metadata:
   name: default
 spec:
-  localint: default
+  local:
+    localint: default

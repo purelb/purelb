@@ -1,6 +1,8 @@
 PREFIX = purelb
 SUFFIX = dev
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
+NETBOX_USER_TOKEN = no-op
+NETBOX_BASE_URL = http://192.168.1.40:30080/
 
 ##@ Default Goal
 .PHONY: help
@@ -21,7 +23,7 @@ all: check $(shell echo ${COMMANDS} | sed s,cmd/,image-,g)  ## Build all docker 
 .PHONY: check
 check:	## Run "short" tests
 	go vet ./...
-	go test -short ./...
+	NETBOX_BASE_URL=${NETBOX_BASE_URL} NETBOX_USER_TOKEN=${NETBOX_USER_TOKEN} go test -short ./...
 
 .PHONY: image-%
 image-%: CMD=$(subst image-,,$@)

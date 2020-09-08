@@ -18,10 +18,10 @@ import (
 	"net"
 
 	"purelb.io/internal/acnodal"
-	"purelb.io/internal/config"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/local"
+	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
 	"github.com/prometheus/client_golang/prometheus"
@@ -51,7 +51,7 @@ func NewController(l log.Logger, myNode string, prometheus *prometheus.GaugeVec)
 	return con, nil
 }
 
-func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
+func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {
 
 	l.Log("event", "startUpdate", "msg", "start of service update", "service", name)
 	defer l.Log("event", "endUpdate", "msg", "end of service update", "service", name)
@@ -72,9 +72,13 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 
 	l = log.With(l, "ip", lbIP)
 
-	if err := c.announcers[0].SetBalancer(name, lbIP, ""); err != nil {
-		l.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
-		return k8s.SyncStateError
+	// give each announcer a chance to announce
+	announceError := k8s.SyncStateSuccess
+	for _, announcer := range c.announcers {
+		if err := announcer.SetBalancer(name, svc, endpoints); err != nil {
+			l.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
+			announceError = k8s.SyncStateError
+		}
 	}
 
 	c.prometheus.With(prometheus.Labels{
@@ -86,7 +90,7 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 
 	c.svcIP[name] = lbIP
 
-	return k8s.SyncStateSuccess
+	return announceError
 }
 
 func (c *controller) deleteBalancer(l log.Logger, name, reason string) k8s.SyncState {
@@ -111,7 +115,7 @@ func (c *controller) deleteBalancer(l log.Logger, name, reason string) k8s.SyncS
 	return retval
 }
 
-func (c *controller) SetConfig(l log.Logger, cfg *config.Config) k8s.SyncState {
+func (c *controller) SetConfig(l log.Logger, cfg *purelbv1.Config) k8s.SyncState {
 	l.Log("event", "startUpdate", "msg", "start of config update")
 	defer l.Log("event", "endUpdate", "msg", "end of config update")
 

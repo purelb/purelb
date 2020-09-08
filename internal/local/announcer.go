@@ -17,10 +17,10 @@ import (
 	"fmt"
 	"net"
 
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"purelb.io/internal/config"
 	"purelb.io/internal/election"
+	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
 	"github.com/vishvananda/netlink"
@@ -31,7 +31,7 @@ type announcer struct {
 	logger     log.Logger
 	myNode     string
 	nodeLabels labels.Set
-	config     *config.Config
+	config     *purelbv1.LBNodeAgentLocalSpec
 	svcAdvs    map[string]net.IP //svcName -> IP
 	election   *election.Election
 }
@@ -40,21 +40,40 @@ func NewAnnouncer(l log.Logger, node string) *announcer {
 	return &announcer{logger: l, myNode: node, svcAdvs: map[string]net.IP{}}
 }
 
-func (c *announcer) SetConfig(cfg *config.Config) error {
+func (c *announcer) SetConfig(cfg *purelbv1.Config) error {
 	c.logger.Log("event", "newConfig")
 
-	c.config = cfg
+	// the default is nil which means that we don't announce
+	c.config = nil
 
-	// Call to should announce memberlist function
+	// if there's a "Local" config then we'll announce
+	for _, agent := range cfg.Agents {
+		if spec := agent.Spec.Local; spec != nil {
+			c.config = spec
+		}
+	}
 
 	return nil
 }
 
-func (c *announcer) SetBalancer(name string, lbIP net.IP, _ string) error {
+func (c *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) error {
 	c.logger.Log("event", "announceService", "service", name)
+
+	// if we haven't been configured then we won't announce
+	if c.config == nil {
+		c.logger.Log("event", "noConfig")
+		return nil
+	}
 
 	// k8s may send us multiple events to advertize same address
 	if _, ok := c.svcAdvs[name]; ok {
+		c.logger.Log("event", "duplicateAnnouncement")
+		return nil
+	}
+
+	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
+	if lbIP == nil {
+		c.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP)
 		return nil
 	}
 

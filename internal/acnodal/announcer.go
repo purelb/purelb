@@ -14,10 +14,11 @@
 package acnodal
 
 import (
-	"net"
+	"fmt"
+	"net/url"
 
-	"purelb.io/internal/config"
 	"purelb.io/internal/election"
+	purelbv1 "purelb.io/pkg/apis/v1"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
@@ -28,51 +29,59 @@ type announcer struct {
 	logger     log.Logger
 	myNode     string
 	nodeLabels labels.Set
+	config     *purelbv1.ServiceGroupEGWSpec
+	baseURL    *url.URL
 }
 
 func NewAnnouncer(l log.Logger, node string) *announcer {
 	return &announcer{logger: l, myNode: node}
 }
 
-func (c *announcer) SetConfig(cfg *config.Config) error {
+func (c *announcer) SetConfig(cfg *purelbv1.Config) error {
 	c.logger.Log("event", "newConfig")
+
+	// the default is nil which means that we don't announce
+	c.config = nil
+
+	// if there's an "EGW" service group then we'll announce
+	for _, group := range cfg.Groups {
+		if spec := group.Spec.EGW; spec != nil {
+			c.config = spec
+			// Use the hostname from the service group, but reset the path.  EGW
+			// and Netbox each have their own API URL schemes so we only need
+			// the protocol, host, port, credentials, etc.
+			url, err := url.Parse(group.Spec.EGW.URL)
+			if err != nil {
+				c.logger.Log("op", "setConfig", "error", err)
+				return fmt.Errorf("cannot parse EGW URL %v", err)
+			}
+			url.Path = ""
+			c.baseURL = url
+		}
+	}
 
 	return nil
 }
 
-func (c *announcer) ShouldAnnounce(name string, svc *v1.Service, eps *v1.Endpoints) string {
-	// Should we advertise?
-	// Yes, if externalTrafficPolicy is
-	//  Cluster && any healthy endpoint exists
-	// or
-	//  Local && there's a ready local endpoint.
-	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(eps, c.myNode) {
-		c.logger.Log("op", "SetBalancer", "msg", "no local endpoints")
-		return "noLocalEndpoints"
-	} else if !healthyEndpointExists(eps) {
-		c.logger.Log("op", "SetBalancer", "msg", "no endpoints at all")
-		return "noEndpoints"
+func (c *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endpoints) error {
+	c.logger.Log("event", "announceService", "service", name)
+
+	// if we haven't been configured then we won't announce
+	if c.config == nil {
+		return nil
 	}
 
-	c.logger.Log("op", "SetBalancer", "msg", "endpoints to announce")
-
-	// We want to announce the endpoints, but the code assumes that this
-	// method returns "" at which point the main loop will call
-	// SetBalancer() which does the service announcement.  This won't
-	// work for us because we want to announce *all* of the endpoints,
-	// and the main loop doesn't provide them to SetBalancer() so we'll
-	// announce here since we've got everything that we need.
-
-	egw, err := config.New("", "")
+	// connect to the EGW
+	egw, err := New(c.baseURL.String(), "")
 	if err != nil {
 		c.logger.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
-		return "cantConnectToEGW"
+		return fmt.Errorf("Connection init to EGW failed")
 	}
 
 	createUrl := svc.Annotations["acnodal.io/endpointcreateURL"]
 
 	// For each endpoint address in each subset on this node, contact the EGW
-	for _, ep := range eps.Subsets {
+	for _, ep := range endpoints.Subsets {
 		port := ep.Ports[0].Port
 		for _, address := range ep.Addresses {
 			if address.NodeName == nil || *address.NodeName != c.myNode {
@@ -87,11 +96,6 @@ func (c *announcer) ShouldAnnounce(name string, svc *v1.Service, eps *v1.Endpoin
 		}
 	}
 
-	return ""
-}
-
-func (c *announcer) SetBalancer(name string, lbIP net.IP, _ string) error {
-	// This method is a no-op since we announced the endpoints in ShouldAnnounce()
 	return nil
 }
 
@@ -105,60 +109,6 @@ func (c *announcer) SetNode(node *v1.Node) error {
 	c.logger.Log("event", "updatedNodes", "msg", "Node announced", "name", node.Name)
 
 	return nil
-}
-
-// nodeHasHealthyEndpoint return true if this node has at least one healthy endpoint.
-func nodeHasHealthyEndpoint(eps *v1.Endpoints, node string) bool {
-	ready := map[string]bool{}
-	for _, subset := range eps.Subsets {
-		for _, ep := range subset.Addresses {
-			if ep.NodeName == nil || *ep.NodeName != node {
-				continue
-			}
-			if _, ok := ready[ep.IP]; !ok {
-				// Only set true if nothing else has expressed an
-				// opinion. This means that false will take precedence
-				// if there's any unready ports for a given endpoint.
-				ready[ep.IP] = true
-			}
-		}
-		for _, ep := range subset.NotReadyAddresses {
-			ready[ep.IP] = false
-		}
-	}
-
-	for _, r := range ready {
-		if r {
-			// At least one fully healthy endpoint on this machine.
-			return true
-		}
-	}
-	return false
-}
-
-func healthyEndpointExists(eps *v1.Endpoints) bool {
-	ready := map[string]bool{}
-	for _, subset := range eps.Subsets {
-		for _, ep := range subset.Addresses {
-			if _, ok := ready[ep.IP]; !ok {
-				// Only set true if nothing else has expressed an
-				// opinion. This means that false will take precedence
-				// if there's any unready ports for a given endpoint.
-				ready[ep.IP] = true
-			}
-		}
-		for _, ep := range subset.NotReadyAddresses {
-			ready[ep.IP] = false
-		}
-	}
-
-	for _, r := range ready {
-		if r {
-			// At least one fully healthy endpoint on this machine.
-			return true
-		}
-	}
-	return false
 }
 
 func (c *announcer) SetElection(election *election.Election) {
