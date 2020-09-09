@@ -51,32 +51,30 @@ func NewController(l log.Logger, myNode string, prometheus *prometheus.GaugeVec)
 	return con, nil
 }
 
-func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {
+func (c *controller) ServiceChanged(name string, svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {
 
-	l.Log("event", "startUpdate", "msg", "start of service update", "service", name)
-	defer l.Log("event", "endUpdate", "msg", "end of service update", "service", name)
+	c.logger.Log("event", "startUpdate", "msg", "start of service update", "service", name)
+	defer c.logger.Log("event", "endUpdate", "msg", "end of service update", "service", name)
 
 	if svc == nil {
-		return c.deleteBalancer(l, name, "serviceDeleted")
+		return c.deleteBalancer(name, "serviceDeleted")
 	}
 
 	if len(svc.Status.LoadBalancer.Ingress) != 1 {
-		return c.deleteBalancer(l, name, "noIPAllocated")
+		return c.deleteBalancer(name, "noIPAllocated")
 	}
 
 	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
 	if lbIP == nil {
-		l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP)
-		return c.deleteBalancer(l, name, "invalidIP")
+		c.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP)
+		return c.deleteBalancer(name, "invalidIP")
 	}
-
-	l = log.With(l, "ip", lbIP)
 
 	// give each announcer a chance to announce
 	announceError := k8s.SyncStateSuccess
 	for _, announcer := range c.announcers {
 		if err := announcer.SetBalancer(name, svc, endpoints); err != nil {
-			l.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
+			c.logger.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
 			announceError = k8s.SyncStateError
 		}
 	}
@@ -86,19 +84,19 @@ func (c *controller) ServiceChanged(l log.Logger, name string, svc *v1.Service, 
 		"node":    c.myNode,
 		"ip":      lbIP.String(),
 	}).Set(1)
-	l.Log("event", "serviceAnnounced", "node", c.myNode, "msg", "service has IP, announcing")
+	c.logger.Log("event", "serviceAnnounced", "node", c.myNode, "msg", "service has IP, announcing")
 
 	c.svcIP[name] = lbIP
 
 	return announceError
 }
 
-func (c *controller) deleteBalancer(l log.Logger, name, reason string) k8s.SyncState {
+func (c *controller) deleteBalancer(name, reason string) k8s.SyncState {
 	retval := k8s.SyncStateSuccess
 
 	for _, announcer := range c.announcers {
 		if err := announcer.DeleteBalancer(name, reason); err != nil {
-			l.Log("op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
+			c.logger.Log("op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
 			retval = k8s.SyncStateError
 		}
 	}
@@ -110,20 +108,20 @@ func (c *controller) deleteBalancer(l log.Logger, name, reason string) k8s.SyncS
 	})
 	delete(c.svcIP, name)
 
-	l.Log("event", "serviceWithdrawn", "ip", c.svcIP[name], "reason", reason, "msg", "withdrawing service announcement")
+	c.logger.Log("event", "serviceWithdrawn", "ip", c.svcIP[name], "reason", reason, "msg", "withdrawing service announcement")
 
 	return retval
 }
 
-func (c *controller) SetConfig(l log.Logger, cfg *purelbv1.Config) k8s.SyncState {
-	l.Log("event", "startUpdate", "msg", "start of config update")
-	defer l.Log("event", "endUpdate", "msg", "end of config update")
+func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
+	c.logger.Log("event", "startUpdate", "msg", "start of config update")
+	defer c.logger.Log("event", "endUpdate", "msg", "end of config update")
 
 	retval := k8s.SyncStateReprocessAll
 
 	for _, announcer := range c.announcers {
 		if err := announcer.SetConfig(cfg); err != nil {
-			l.Log("op", "setConfig", "error", err)
+			c.logger.Log("op", "setConfig", "error", err)
 			retval = k8s.SyncStateError
 		}
 	}
@@ -131,11 +129,11 @@ func (c *controller) SetConfig(l log.Logger, cfg *purelbv1.Config) k8s.SyncState
 	return retval
 }
 
-func (c *controller) SetNode(l log.Logger, node *v1.Node) k8s.SyncState {
+func (c *controller) SetNode(node *v1.Node) k8s.SyncState {
 	retval := k8s.SyncStateSuccess
 	for _, announcer := range c.announcers {
 		if err := announcer.SetNode(node); err != nil {
-			l.Log("op", "setNode", "error", err)
+			c.logger.Log("op", "setNode", "error", err)
 			retval = k8s.SyncStateError
 		}
 	}

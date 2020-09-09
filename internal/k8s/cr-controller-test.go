@@ -84,7 +84,7 @@ func (f *fixture) newController() (*Controller, informers.SharedInformerFactory,
 	i := informers.NewSharedInformerFactory(f.client, noResyncPeriodFunc())
 	k8sI := kubeinformers.NewSharedInformerFactory(f.kubeclient, noResyncPeriodFunc())
 
-	stubConfigChanged := func(log.Logger, *purelbv1.Config) SyncState {
+	stubConfigChanged := func(*purelbv1.Config) SyncState {
 		return SyncStateSuccess
 	}
 

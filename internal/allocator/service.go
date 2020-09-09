@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/go-kit/kit/log"
 	"k8s.io/api/core/v1"
 
 	"purelb.io/internal/acnodal"
@@ -33,9 +32,9 @@ const (
 	desiredPoolAnnotation string = "purelb.io/address-pool"
 )
 
-func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service) bool {
+func (c *controller) convergeBalancer(key string, svc *v1.Service) bool {
 	if !c.synced {
-		l.Log("op", "allocateIP", "error", "controller not synced")
+		c.logger.Log("op", "allocateIP", "error", "controller not synced")
 		return false
 	}
 
@@ -43,7 +42,7 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 	// ipFamily to use.
 	clusterIP := net.ParseIP(svc.Spec.ClusterIP)
 	if clusterIP == nil {
-		l.Log("event", "clearAssignment", "reason", "noClusterIP")
+		c.logger.Log("event", "clearAssignment", "reason", "noClusterIP")
 		return true
 	}
 
@@ -51,18 +50,18 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 	// allocate one.
 	if len(svc.Status.LoadBalancer.Ingress) == 1 {
 		if existingIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP); existingIP != nil {
-			l.Log("event", "ipAlreadySet")
+			c.logger.Log("event", "ipAlreadySet")
 			return true
 		}
 	}
 
 	pool, lbIP, err := c.allocateIP(key, svc, clusterIP.To4() == nil)
 	if err != nil {
-		l.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
+		c.logger.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", key, err)
 		return true
 	}
-	l.Log("event", "ipAllocated", "ip", lbIP, "pool", pool, "msg", "IP address assigned by controller")
+	c.logger.Log("event", "ipAllocated", "ip", lbIP, "pool", pool, "msg", "IP address assigned by controller")
 	c.client.Infof(svc, "IPAllocated", "Assigned IP %q", lbIP)
 
 	// we have an IP selected somehow, so program the data plane
@@ -80,7 +79,7 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 		// Connect to the EGW
 		egw, err := acnodal.New(c.baseURL.String(), "")
 		if err != nil {
-			l.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
+			c.logger.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
 			c.client.Errorf(svc, "AllocationFailed", "Failed to create EGW service for %s: %s", svc.Name, err)
 			return false
 		}
@@ -88,7 +87,7 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 		// Look up the EGW group (which gives us the URL to create services)
 		group, err := egw.GetGroup(*c.groupURL)
 		if err != nil {
-			l.Log("op", "GetGroup", "group", c.groupURL, "error", err)
+			c.logger.Log("op", "GetGroup", "group", c.groupURL, "error", err)
 			c.client.Errorf(svc, "GetGroupFailed", "Failed to get group %s: %s", c.groupURL, err)
 			return false
 		}
@@ -96,7 +95,7 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 		// Announce the service to the EGW
 		egwsvc, err := egw.AnnounceService(group.Links["create-service"], svc.Name, svc.Status.LoadBalancer.Ingress[0].IP)
 		if err != nil {
-			l.Log("op", "AnnouncementFailed", "service", svc.Name, "error", err)
+			c.logger.Log("op", "AnnouncementFailed", "service", svc.Name, "error", err)
 			c.client.Errorf(svc, "AnnouncementFailed", "Failed to announce service for %s: %s", svc.Name, err)
 			return false
 		}

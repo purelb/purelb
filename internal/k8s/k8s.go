@@ -47,10 +47,10 @@ type Client struct {
 
 	syncFuncs []cache.InformerSynced
 
-	serviceChanged func(log.Logger, string, *corev1.Service, *corev1.Endpoints) SyncState
-	configChanged  func(log.Logger, *purelbv1.Config) SyncState
-	nodeChanged    func(log.Logger, *corev1.Node) SyncState
-	synced         func(log.Logger)
+	serviceChanged func(string, *corev1.Service, *corev1.Endpoints) SyncState
+	configChanged  func(*purelbv1.Config) SyncState
+	nodeChanged    func(*corev1.Node) SyncState
+	synced         func()
 }
 
 // Service offers methods to mutate a Kubernetes service object.
@@ -84,10 +84,10 @@ type Config struct {
 	Logger        log.Logger
 	Kubeconfig    string
 
-	ServiceChanged func(log.Logger, string, *corev1.Service, *corev1.Endpoints) SyncState
-	ConfigChanged  func(log.Logger, *purelbv1.Config) SyncState
-	NodeChanged    func(log.Logger, *corev1.Node) SyncState
-	Synced         func(log.Logger)
+	ServiceChanged func(string, *corev1.Service, *corev1.Endpoints) SyncState
+	ConfigChanged  func(*purelbv1.Config) SyncState
+	NodeChanged    func(*corev1.Node) SyncState
+	Synced         func()
 }
 
 type svcKey string
@@ -344,7 +344,7 @@ func (c *Client) sync(key interface{}) SyncState {
 		}
 		if !exists {
 			l.Log("op", "getService", "msg", "doesn't exist")
-			return c.serviceChanged(l, string(k), nil, nil)
+			return c.serviceChanged(string(k), nil, nil)
 		}
 
 		// Not a LoadBalancer: no need to do anything
@@ -360,12 +360,12 @@ func (c *Client) sync(key interface{}) SyncState {
 				return SyncStateError
 			}
 			if !exists {
-				return c.serviceChanged(l, string(k), nil, nil)
+				return c.serviceChanged(string(k), nil, nil)
 			}
 			eps = epsIntf.(*corev1.Endpoints)
 		}
 
-		return c.serviceChanged(l, string(k), svc.(*corev1.Service), eps)
+		return c.serviceChanged(string(k), svc.(*corev1.Service), eps)
 
 	case nodeKey:
 		l := log.With(c.logger, "node", string(k))
@@ -379,11 +379,11 @@ func (c *Client) sync(key interface{}) SyncState {
 			return SyncStateError
 		}
 		node := n.(*corev1.Node)
-		return c.nodeChanged(c.logger, node)
+		return c.nodeChanged(node)
 
 	case synced:
 		if c.synced != nil {
-			c.synced(c.logger)
+			c.synced()
 		}
 		return SyncStateSuccess
 

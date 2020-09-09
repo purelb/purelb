@@ -100,20 +100,20 @@ func (s *testK8S) gotService(in *v1.Service) *v1.Service {
 func TestControllerConfig(t *testing.T) {
 	k := &testK8S{t: t}
 	c := &controller{
+		logger: log.NewNopLogger(),
 		ips:    New(),
 		client: k,
 	}
 
 	// Create service that would need an IP allocation
 
-	l := log.NewNopLogger()
 	svc := &v1.Service{
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
 		},
 	}
-	if c.SetBalancer(l, "test", svc, nil) != k8s.SyncStateError {
+	if c.SetBalancer("test", svc, nil) != k8s.SyncStateError {
 		t.Fatalf("SetBalancer should have failed")
 	}
 
@@ -128,10 +128,10 @@ func TestControllerConfig(t *testing.T) {
 	// Set an empty config. Balancer should still not do anything to
 	// our unallocated service, and return an error to force a
 	// retry after sync is complete.
-	if c.SetConfig(l, &purelbv1.Config{}) == k8s.SyncStateError {
+	if c.SetConfig(&purelbv1.Config{}) == k8s.SyncStateError {
 		t.Fatalf("SetConfig with empty config failed")
 	}
-	if c.SetBalancer(l, "test", svc, nil) != k8s.SyncStateError {
+	if c.SetBalancer("test", svc, nil) != k8s.SyncStateError {
 		t.Fatal("SetBalancer did not fail")
 	}
 
@@ -157,10 +157,10 @@ func TestControllerConfig(t *testing.T) {
 			},
 		},
 	}
-	if c.SetConfig(l, cfg) == k8s.SyncStateError {
+	if c.SetConfig(cfg) == k8s.SyncStateError {
 		t.Fatalf("SetConfig failed")
 	}
-	if c.SetBalancer(l, "test", svc, nil) != k8s.SyncStateError {
+	if c.SetBalancer("test", svc, nil) != k8s.SyncStateError {
 		t.Fatal("SetBalancer did not fail")
 	}
 
@@ -173,9 +173,9 @@ func TestControllerConfig(t *testing.T) {
 	}
 
 	// Mark synced. Finally, we can allocate.
-	c.MarkSynced(l)
+	c.MarkSynced()
 
-	if c.SetBalancer(l, "test", svc, nil) == k8s.SyncStateError {
+	if c.SetBalancer("test", svc, nil) == k8s.SyncStateError {
 		t.Fatalf("SetBalancer failed")
 	}
 
@@ -194,7 +194,7 @@ func TestControllerConfig(t *testing.T) {
 	}
 
 	// Deleting the config also makes PureLB sad.
-	if c.SetConfig(l, nil) != k8s.SyncStateError {
+	if c.SetConfig(nil) != k8s.SyncStateError {
 		t.Fatalf("SetConfig that deletes the config was accepted")
 	}
 }
@@ -202,11 +202,11 @@ func TestControllerConfig(t *testing.T) {
 func TestDeleteRecyclesIP(t *testing.T) {
 	k := &testK8S{t: t}
 	c := &controller{
+		logger: log.NewNopLogger(),
 		ips:    New(),
 		client: k,
 	}
 
-	l := log.NewNopLogger()
 	cfg := &purelbv1.Config{
 		Groups: []*purelbv1.ServiceGroup{
 			&purelbv1.ServiceGroup{
@@ -219,10 +219,10 @@ func TestDeleteRecyclesIP(t *testing.T) {
 			},
 		},
 	}
-	if c.SetConfig(l, cfg) == k8s.SyncStateError {
+	if c.SetConfig(cfg) == k8s.SyncStateError {
 		t.Fatal("SetConfig failed")
 	}
-	c.MarkSynced(l)
+	c.MarkSynced()
 
 	svc1 := &v1.Service{
 		Spec: v1.ServiceSpec{
@@ -230,7 +230,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 			ClusterIP: "1.2.3.4",
 		},
 	}
-	if c.SetBalancer(l, "test", svc1, nil) == k8s.SyncStateError {
+	if c.SetBalancer("test", svc1, nil) == k8s.SyncStateError {
 		t.Fatal("SetBalancer svc1 failed")
 	}
 	gotSvc := k.gotService(svc1)
@@ -250,7 +250,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 			ClusterIP: "1.2.3.4",
 		},
 	}
-	if c.SetBalancer(l, "test2", svc2, nil) == k8s.SyncStateError {
+	if c.SetBalancer("test2", svc2, nil) == k8s.SyncStateError {
 		t.Fatal("SetBalancer svc2 failed")
 	}
 	if k.gotService(svc2) != nil {
@@ -259,12 +259,12 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	k.reset()
 
 	// Deleting the first LB should tell us to reprocess all services.
-	if c.SetBalancer(l, "test", nil, nil) != k8s.SyncStateReprocessAll {
+	if c.SetBalancer("test", nil, nil) != k8s.SyncStateReprocessAll {
 		t.Fatal("SetBalancer with nil LB didn't tell us to reprocess all balancers")
 	}
 
 	// Setting svc2 should now allocate correctly.
-	if c.SetBalancer(l, "test2", svc2, nil) == k8s.SyncStateError {
+	if c.SetBalancer("test2", svc2, nil) == k8s.SyncStateError {
 		t.Fatal("SetBalancer svc2 failed")
 	}
 	gotSvc = k.gotService(svc2)

@@ -32,7 +32,7 @@ func main() {
 	)
 	flag.Parse()
 
-	c, _ := allocator.NewController(allocator.New())
+	c, _ := allocator.NewController(logger, allocator.New())
 
 	client, err := k8s.New(&k8s.Config{
 		ProcessName:   "purelb-allocator",
