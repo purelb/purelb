@@ -1,3 +1,4 @@
+// Copyright 2020 Acnodal Inc.
 // Copyright 2017 Google Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,29 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package "config" provides code for parsing and validating
-// configuration data.
 package v1
 
-// Config is a parsed and validated PureLB configuration.
+// Config is a container for our CRDs
 type Config struct {
 	// Service Groups from which to allocate load balancer IP addresses
 	Groups []*ServiceGroup
-	// Node agent configuration
-	Agents map[string]LBNodeAgent
-}
-
-func ParseConfig(groups []*ServiceGroup, agents []*LBNodeAgent) (*Config, error) {
-	cfg := &Config{
-		Groups: []*ServiceGroup{},
-		Agents: map[string]LBNodeAgent{},
-	}
-
-	cfg.Groups = groups
-
-	for _, agent := range agents {
-		cfg.Agents[agent.Name] = *agent
-	}
-
-	return cfg, nil
+	// Node agent configurations
+	Agents []*LBNodeAgent
 }

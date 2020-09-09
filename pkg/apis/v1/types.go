@@ -66,8 +66,8 @@ type LBNodeAgentSpec struct {
 }
 
 type LBNodeAgentLocalSpec struct {
-	LocalInterface string `json:"localinterface"`
-	ExtLBInterface string `json:"extlbinterface"`
+	LocalInterface string `json:"localint"`
+	ExtLBInterface string `json:"extlbint"`
 }
 
 type LBNodeAgentEGWSpec struct {

@@ -50,6 +50,9 @@ func (c *announcer) SetConfig(cfg *purelbv1.Config) error {
 	for _, agent := range cfg.Agents {
 		if spec := agent.Spec.Local; spec != nil {
 			c.config = spec
+
+			// now that we've got a config we can create the dummy interface
+			c.createDummyInterface(spec.ExtLBInterface)
 		}
 	}
 
@@ -81,7 +84,7 @@ func (c *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) e
 		if winner := c.election.Winner(name); winner == c.myNode {
 			c.logger.Log("msg", "Winner, winner, Chicken dinner", "node", c.myNode, "service", name)
 
-			c.addLocalInt(lbIPNet, defaultifindex)
+			c.addLocalInterface(lbIPNet, defaultifindex)
 			c.svcAdvs[name] = lbIP
 		}
 	}
@@ -176,7 +179,7 @@ func (c *announcer) checkLocal(lbIP net.IP) (net.IPNet, int, error) {
 	return lbIPNet, defaultifindex, nil
 }
 
-func (c *announcer) addLocalInt(lbIPNet net.IPNet, defaultifindex int) error {
+func (c *announcer) addLocalInterface(lbIPNet net.IPNet, defaultifindex int) error {
 	c.logger.Log("event", "addLocalInt", "ip-address", lbIPNet.String(), "index", defaultifindex)
 
 	addr, _ := netlink.ParseAddr(lbIPNet.String())
@@ -213,7 +216,9 @@ func (c *announcer) deletesvcAdv(name string) error {
 	return nil
 }
 
-func CreateDummyInt(dummyint string) error {
+func (c *announcer) createDummyInterface(dummyint string) error {
+
+	c.logger.Log("setting up dummy interface", dummyint)
 
 	_, err := netlink.LinkByName(dummyint)
 	if err != nil {

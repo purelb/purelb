@@ -119,7 +119,7 @@ func (f *fixture) runController(serviceGroupName string, startInformers bool, ex
 		k8sI.Start(stopCh)
 	}
 
-	err := c.syncHandler(serviceGroupName)
+	err := c.syncHandler()
 	if !expectError && err != nil {
 		f.t.Errorf("error syncing serviceGroup: %v", err)
 	} else if expectError && err == nil {

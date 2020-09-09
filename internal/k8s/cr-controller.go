@@ -196,7 +196,7 @@ func (c *Controller) processNextWorkItem() bool {
 		}
 		// Run the syncHandler, passing it the namespace/name string of
 		// the ServiceGroup resource to be synced.
-		if err := c.syncHandler(key); err != nil {
+		if err := c.syncHandler(); err != nil {
 			// Put the item back on the workqueue to handle any transient
 			// errors.
 			c.workqueue.AddRateLimited(key)
@@ -217,25 +217,28 @@ func (c *Controller) processNextWorkItem() bool {
 	return true
 }
 
-// syncHandler notifies the callback that the config has changed.
-func (c *Controller) syncHandler(key string) error {
-	groups, err := c.sgLister.ServiceGroups("").List(labels.Everything())
+// syncHandler notifies the callback that there's a new config.  We
+// process the config as a single unit so anytime we get a
+// notification that something changed we read everything.
+func (c *Controller) syncHandler() error {
+	var (
+		err error
+		cfg purelbv1.Config = purelbv1.Config{}
+	)
+
+	cfg.Groups, err = c.sgLister.ServiceGroups("").List(labels.Everything())
 	if err != nil {
-		c.logger.Log("error listing service groups", key)
+		c.logger.Log("error listing service groups", err)
 		return err
 	}
-	nodeagents, err := c.lbnaLister.LBNodeAgents("").List(labels.Everything())
+	cfg.Agents, err = c.lbnaLister.LBNodeAgents("").List(labels.Everything())
 	if err != nil {
-		c.logger.Log("error listing node agents", key)
+		c.logger.Log("error listing node agents", err)
 		return err
-	}
-	cfg, err := purelbv1.ParseConfig(groups, nodeagents)
-	if err == nil {
-		c.configCB(cfg)
-		return nil
 	}
 
-	return err
+	c.configCB(&cfg)
+	return nil
 }
 
 // enqueueResource takes a resource and converts it into a
