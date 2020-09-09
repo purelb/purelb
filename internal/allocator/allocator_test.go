@@ -328,10 +328,10 @@ func TestPoolAllocation(t *testing.T) {
 	// it will run out of IPs quickly even though there are tons
 	// available in other pools.
 	alloc.pools = map[string]Pool{
-		"not_this_one": mustLocalPool(t, "192.168.0.0/16", true),
-		"test":         mustLocalPool(t, "1.2.3.4/30", true),
-		"testV6":       mustLocalPool(t, "1000::/126", true),
-		"test2":        mustLocalPool(t, "10.20.30.0/24", true),
+		"not_this_one": mustLocalPool(t, "192.168.0.0/16", false),
+		"test":         mustLocalPool(t, "1.2.3.4/30", false),
+		"testV6":       mustLocalPool(t, "1000::/126", false),
+		"test2":        mustLocalPool(t, "10.20.30.0/24", false),
 	}
 
 	validIP4s := map[string]bool{
@@ -542,7 +542,7 @@ func TestPoolAllocation(t *testing.T) {
 		if test.isIPv6 {
 			pool = "testV6"
 		}
-		ip, err := alloc.AllocateFromPool(test.svc, test.isIPv6, pool, test.ports, test.sharingKey, "")
+		ip, err := alloc.AllocateFromPool(test.svc, pool, test.ports, test.sharingKey, "")
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%s: should have caused an error, but did not", test.desc)
@@ -563,7 +563,7 @@ func TestPoolAllocation(t *testing.T) {
 	}
 
 	alloc.Unassign("s5")
-	if _, err := alloc.AllocateFromPool("s5", false, "nonexistentpool", nil, "", ""); err == nil {
+	if _, err := alloc.AllocateFromPool("s5", "nonexistentpool", nil, "", ""); err == nil {
 		t.Error("Allocating from non-existent pool succeeded")
 	}
 }
@@ -573,21 +573,13 @@ func TestAllocation(t *testing.T) {
 	alloc.pools = map[string]Pool{
 		"test1":   mustLocalPool(t, "1.2.3.4/31", true),
 		"test1V6": mustLocalPool(t, "1000::4/127", true),
-		"test2":   mustLocalPool(t, "1.2.3.10/31", true),
-		"test2V6": mustLocalPool(t, "1000::10/127", true),
 	}
 
-	validIP4s := map[string]bool{
+	validIPs := map[string]bool{
 		"1.2.3.4":  true,
 		"1.2.3.5":  true,
-		"1.2.3.10": true,
-		"1.2.3.11": true,
-	}
-	validIP6s := map[string]bool{
 		"1000::4":  true,
 		"1000::5":  true,
-		"1000::10": true,
-		"1000::11": true,
 	}
 
 	tests := []struct {
@@ -597,7 +589,6 @@ func TestAllocation(t *testing.T) {
 		sharingKey string
 		unassign   bool
 		wantErr    bool
-		isIPv6     bool
 	}{
 		{
 			desc: "s1 gets an IP",
@@ -648,7 +639,7 @@ func TestAllocation(t *testing.T) {
 			sharingKey: "share",
 		},
 
-		// Clear old ipv4 addresses
+		// Clear addresses
 		{
 			desc:     "s1 clear old ipv4 address",
 			svc:      "s1",
@@ -680,37 +671,30 @@ func TestAllocation(t *testing.T) {
 			unassign: true,
 		},
 
-		// IPv6 tests
 		{
 			desc:   "s1 gets an IP",
 			svc:    "s1",
-			isIPv6: true,
 		},
 		{
 			desc:   "s2 gets an IP",
 			svc:    "s2",
-			isIPv6: true,
 		},
 		{
 			desc:   "s3 gets an IP",
 			svc:    "s3",
-			isIPv6: true,
 		},
 		{
 			desc:   "s4 gets an IP",
 			svc:    "s4",
-			isIPv6: true,
 		},
 		{
 			desc:    "s5 can't get an IP",
 			svc:     "s5",
-			isIPv6:  true,
 			wantErr: true,
 		},
 		{
 			desc:    "s6 can't get an IP",
 			svc:     "s6",
-			isIPv6:  true,
 			wantErr: true,
 		},
 		{
@@ -723,12 +707,10 @@ func TestAllocation(t *testing.T) {
 			svc:        "s5",
 			ports:      ports("tcp/80"),
 			sharingKey: "share",
-			isIPv6:     true,
 		},
 		{
 			desc:    "s6 still can't get an IP",
 			svc:     "s6",
-			isIPv6:  true,
 			wantErr: true,
 		},
 		{
@@ -736,7 +718,6 @@ func TestAllocation(t *testing.T) {
 			svc:        "s6",
 			ports:      ports("tcp/443"),
 			sharingKey: "share",
-			isIPv6:     true,
 		},
 	}
 
@@ -745,7 +726,7 @@ func TestAllocation(t *testing.T) {
 			alloc.Unassign(test.svc)
 			continue
 		}
-		_, ip, err := alloc.Allocate(test.svc, test.isIPv6, test.ports, test.sharingKey, "")
+		_, ip, err := alloc.Allocate(test.svc, test.ports, test.sharingKey, "")
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%s: should have caused an error, but did not", test.desc)
@@ -754,10 +735,6 @@ func TestAllocation(t *testing.T) {
 		}
 		if err != nil {
 			t.Errorf("%s: Allocate(%q, \"test\"): %s", test.desc, test.svc, err)
-		}
-		validIPs := validIP4s
-		if test.isIPv6 {
-			validIPs = validIP6s
 		}
 		if !validIPs[ip.String()] {
 			t.Errorf("%s allocated unexpected IP %q", test.desc, ip)
@@ -774,13 +751,11 @@ func TestAutoAssign(t *testing.T) {
 		"test3": mustLocalPool(t, "1.2.3.10/31", true),
 	}
 
-	validIP4s := map[string]bool{
+	validIPs := map[string]bool{
 		"1.2.3.4":  false,
 		"1.2.3.5":  false,
 		"1.2.3.10": true,
 		"1.2.3.11": true,
-	}
-	validIP6s := map[string]bool{
 		"1000::4":  false,
 		"1000::5":  false,
 		"1000::10": true,
@@ -790,25 +765,22 @@ func TestAutoAssign(t *testing.T) {
 	tests := []struct {
 		svc      string
 		wantErr  bool
-		isIPv6   bool
 		unassign bool
 	}{
 		{svc: "s1"},
 		{svc: "s2"},
 		{
 			svc:     "s3",
-			wantErr: true,
 		},
 		{
 			svc:     "s4",
-			wantErr: true,
 		},
 		{
 			svc:     "s5",
 			wantErr: true,
 		},
 
-		// Clear old ipv4 addresses
+		// Clear addresses
 		{
 			svc:      "s1",
 			unassign: true,
@@ -825,39 +797,6 @@ func TestAutoAssign(t *testing.T) {
 			svc:      "s4",
 			unassign: true,
 		},
-		{
-			svc:      "s5",
-			unassign: true,
-		},
-		{
-			svc:      "s6",
-			unassign: true,
-		},
-
-		// IPv6 tests;
-		{
-			svc:    "s1",
-			isIPv6: true,
-		},
-		{
-			svc:    "s2",
-			isIPv6: true,
-		},
-		{
-			svc:     "s3",
-			isIPv6:  true,
-			wantErr: true,
-		},
-		{
-			svc:     "s4",
-			isIPv6:  true,
-			wantErr: true,
-		},
-		{
-			svc:     "s5",
-			isIPv6:  true,
-			wantErr: true,
-		},
 	}
 
 	for i, test := range tests {
@@ -865,7 +804,7 @@ func TestAutoAssign(t *testing.T) {
 			alloc.Unassign(test.svc)
 			continue
 		}
-		_, ip, err := alloc.Allocate(test.svc, test.isIPv6, nil, "", "")
+		_, ip, err := alloc.Allocate(test.svc, nil, "", "")
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("#%d should have caused an error, but did not", i+1)
@@ -874,10 +813,6 @@ func TestAutoAssign(t *testing.T) {
 		}
 		if err != nil {
 			t.Errorf("#%d Allocate(%q, \"test\"): %s", i+1, test.svc, err)
-		}
-		validIPs := validIP4s
-		if test.isIPv6 {
-			validIPs = validIP6s
 		}
 		if !validIPs[ip.String()] {
 			t.Errorf("#%d allocated unexpected IP %q", i+1, ip)
@@ -1039,7 +974,6 @@ func ports(ports ...string) []Port {
 	}
 	return ret
 }
-
 
 func localServiceGroup(name string, pool string) *v1.ServiceGroup {
 	return serviceGroup(name, v1.ServiceGroupSpec{

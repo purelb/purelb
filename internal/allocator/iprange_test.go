@@ -44,11 +44,6 @@ func TestNewIPRange(t *testing.T) {
 	assertIPRange(t, mustIPRange(t, "2001:db8::0 - 2001:db8::ffff"), "2001:db8::", "2001:db8::ffff")
 }
 
-func TestIsIPV6(t *testing.T) {
-  assert.True(t, mustIPRange(t, "2001:db8::/112").IsIPV6())
-  assert.False(t, mustIPRange(t, "1.1.1.1/32").IsIPV6())
-}
-
 func TestOverlaps(t *testing.T) {
 	ipr1 := mustIPRange(t, "1.1.1.1/32")
 	ipr2 := mustIPRange(t, "1.1.1.2/32")

@@ -196,14 +196,6 @@ func (p LocalPool) Next(ip net.IP) net.IP {
 	return nil
 }
 
-// IsIPV6 returns true if this Pool is a range of IPV6 addresses.
-func (p LocalPool) IsIPV6() bool {
-	if p.addresses != nil {
-		return p.addresses.IsIPV6()
-	}
-	return false
-}
-
 // Size returns the total number of addresses in this pool if it's a
 // local pool, or 0 if it's a remote pool.
 func (p LocalPool) Size() uint64 {

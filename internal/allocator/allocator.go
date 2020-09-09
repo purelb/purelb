@@ -125,32 +125,13 @@ func (a *Allocator) Unassign(svc string) bool {
 	return true
 }
 
-func ipIsIPv6(ip net.IP) bool {
-	return ip.To4() == nil
-}
-
 // AllocateFromPool assigns an available IP from pool to service.
-func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, ports []Port, sharingKey, backendKey string) (net.IP, error) {
+func (a *Allocator) AllocateFromPool(svc string, poolName string, ports []Port, sharingKey, backendKey string) (net.IP, error) {
 	var ip net.IP
-
-	if alloc := a.allocated[svc]; alloc != nil {
-		// Handle the case where the svc has already been assigned an IP but from the wrong family.
-		// This "should-not-happen" since the "ipFamily" is an immutable field in services.
-		if isIPv6 != ipIsIPv6(alloc.ip) {
-			return nil, fmt.Errorf("IP for wrong family assigned %s", alloc.ip.String())
-		}
-		if _, err := a.Assign(svc, alloc.ip, ports, sharingKey, backendKey); err != nil {
-			return nil, err
-		}
-		return alloc.ip, nil
-	}
 
 	pool := a.pools[poolName]
 	if pool == nil {
 		return nil, fmt.Errorf("unknown pool %q", poolName)
-	}
-	if pool.IsIPV6() != isIPv6 {
-		return nil, fmt.Errorf("pool %q is the wrong IP family", poolName)
 	}
 
 	sk := &Key{
@@ -178,7 +159,7 @@ func (a *Allocator) AllocateFromPool(svc string, isIPv6 bool, poolName string, p
 }
 
 // Allocate assigns any available and assignable IP to service.
-func (a *Allocator) Allocate(svc string, isIPv6 bool, ports []Port, sharingKey, backendKey string) (string, net.IP, error) {
+func (a *Allocator) Allocate(svc string, ports []Port, sharingKey, backendKey string) (string, net.IP, error) {
 	if alloc := a.allocated[svc]; alloc != nil {
 		if _, err := a.Assign(svc, alloc.ip, ports, sharingKey, backendKey); err != nil {
 			return "", nil, err
@@ -190,7 +171,7 @@ func (a *Allocator) Allocate(svc string, isIPv6 bool, ports []Port, sharingKey, 
 		if !a.pools[poolName].AutoAssign() {
 			continue
 		}
-		if ip, err := a.AllocateFromPool(svc, isIPv6, poolName, ports, sharingKey, backendKey); err == nil {
+		if ip, err := a.AllocateFromPool(svc, poolName, ports, sharingKey, backendKey); err == nil {
 			return poolName, ip, nil
 		}
 	}

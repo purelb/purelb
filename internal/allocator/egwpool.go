@@ -177,11 +177,6 @@ func (p EGWPool) Next(ip net.IP) net.IP {
 	return nil
 }
 
-// IsIPV6 returns true if this Pool is a range of IPV6 addresses.
-func (p EGWPool) IsIPV6() bool {
-	return false
-}
-
 // Size returns the total number of addresses in this pool if it's a
 // local pool, or 0 if it's a remote pool.
 func (p EGWPool) Size() uint64 {

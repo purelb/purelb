@@ -55,7 +55,7 @@ func (c *controller) convergeBalancer(key string, svc *v1.Service) bool {
 		}
 	}
 
-	pool, lbIP, err := c.allocateIP(key, svc, clusterIP.To4() == nil)
+	pool, lbIP, err := c.allocateIP(key, svc)
 	if err != nil {
 		c.logger.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", key, err)
@@ -107,15 +107,12 @@ func (c *controller) convergeBalancer(key string, svc *v1.Service) bool {
 	return true
 }
 
-func (c *controller) allocateIP(key string, svc *v1.Service, isIPv6 bool) (string, net.IP, error) {
+func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, error) {
 	// If the user asked for a specific IP, try that.
 	if svc.Spec.LoadBalancerIP != "" {
 		ip := net.ParseIP(svc.Spec.LoadBalancerIP)
 		if ip == nil {
 			return "", nil, fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
-		}
-		if (ip.To4() == nil) != isIPv6 {
-			return "", nil, fmt.Errorf("requested spec.loadBalancerIP %q does not match the ipFamily of the service", svc.Spec.LoadBalancerIP)
 		}
 		pool, err := c.ips.Assign(key, ip, Ports(svc), SharingKey(svc), BackendKey(svc))
 		if err != nil {
@@ -127,7 +124,7 @@ func (c *controller) allocateIP(key string, svc *v1.Service, isIPv6 bool) (strin
 	// Otherwise, did the user ask for a specific pool?
 	desiredPool := svc.Annotations[desiredPoolAnnotation]
 	if desiredPool != "" {
-		ip, err := c.ips.AllocateFromPool(key, isIPv6, desiredPool, Ports(svc), SharingKey(svc), BackendKey(svc))
+		ip, err := c.ips.AllocateFromPool(key, desiredPool, Ports(svc), SharingKey(svc), BackendKey(svc))
 		if err != nil {
 			return "", nil, err
 		}
@@ -135,5 +132,5 @@ func (c *controller) allocateIP(key string, svc *v1.Service, isIPv6 bool) (strin
 	}
 
 	// Okay, in that case just bruteforce across all pools.
-	return c.ips.Allocate(key, isIPv6, Ports(svc), SharingKey(svc), BackendKey(svc))
+	return c.ips.Allocate(key, Ports(svc), SharingKey(svc), BackendKey(svc))
 }

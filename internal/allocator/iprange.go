@@ -30,11 +30,6 @@ func NewIPRange(raw string) (IPRange, error) {
 	return parseCIDR(raw)
 }
 
-// IsIPV6 returns true if this IPRange is a range of IPV6 addresses.
-func (r IPRange) IsIPV6() bool {
-  return r.to.To4() == nil
-}
-
 // Overlaps indicates whether the other IPRange overlaps with this one
 // (i.e., has any addresses in common).  It returns true if there are
 // any common addresses and false if there aren't.

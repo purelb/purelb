@@ -43,7 +43,6 @@ type Pool interface {
 	Assign(net.IP, []Port, string, *Key) error
 	Release(net.IP, string)
 	InUse() int
-	IsIPV6() bool
 	SharingKey(net.IP) *Key
 	Overlaps(Pool) bool
 	Contains(net.IP) bool
