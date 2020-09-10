@@ -41,11 +41,11 @@ func NewController(l log.Logger, myNode string, prometheus *prometheus.GaugeVec)
 		logger:     l,
 		myNode:     myNode,
 		prometheus: prometheus,
-		announcers:  []Announcer{
+		announcers: []Announcer{
 			local.NewAnnouncer(l, myNode),
 			acnodal.NewAnnouncer(l, myNode),
 		},
-		svcIP:      map[string]net.IP{},
+		svcIP: map[string]net.IP{},
 	}
 
 	return con, nil
@@ -141,5 +141,11 @@ func (c *controller) SetNode(node *v1.Node) k8s.SyncState {
 func (c *controller) SetElection(election *election.Election) {
 	for _, announcer := range c.announcers {
 		announcer.SetElection(election)
+	}
+}
+
+func (c *controller) Shutdown() {
+	for _, announcer := range c.announcers {
+		announcer.Shutdown()
 	}
 }

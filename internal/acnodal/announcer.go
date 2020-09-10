@@ -17,10 +17,10 @@ import (
 	"fmt"
 	"net/url"
 
-	"purelb.io/internal/election"
-	purelbv1 "purelb.io/pkg/apis/v1"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"purelb.io/internal/election"
+	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
 )
@@ -113,4 +113,7 @@ func (c *announcer) SetNode(node *v1.Node) error {
 
 func (c *announcer) SetElection(election *election.Election) {
 	// this is a no-op, we don't care about elections
+}
+
+func (c *announcer) Shutdown() {
 }

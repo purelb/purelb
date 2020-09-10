@@ -68,6 +68,7 @@ type Client struct {
 	configChanged  func(*purelbv1.Config) SyncState
 	nodeChanged    func(*corev1.Node) SyncState
 	synced         func()
+	shutdown       func()
 }
 
 // Service offers methods to add events to services.
@@ -104,6 +105,7 @@ type Config struct {
 	ConfigChanged  func(*purelbv1.Config) SyncState
 	NodeChanged    func(*corev1.Node) SyncState
 	Synced         func()
+	Shutdown       func()
 }
 
 type svcKey string
@@ -244,6 +246,10 @@ func New(cfg *Config) (*Client, error) {
 
 	c.synced = cfg.Synced
 
+	// Shutdown hook
+
+	c.shutdown = cfg.Shutdown
+
 	return c, nil
 }
 
@@ -296,6 +302,7 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 	for {
 		key, quit := c.queue.Get()
 		if quit {
+			c.shutdown()
 			return nil
 		}
 		updates.Inc()
@@ -329,7 +336,7 @@ func (c *Client) ForceSync() {
 func (c *Client) maybeUpdateService(was, is *corev1.Service) error {
 	var (
 		svcUpdated *corev1.Service
-		err error
+		err        error
 	)
 
 	if !(reflect.DeepEqual(was.Annotations, is.Annotations) && reflect.DeepEqual(was.Spec, is.Spec)) {

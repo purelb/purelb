@@ -29,8 +29,8 @@ import (
 )
 
 const (
-	nodeAnnotation       string = "purelb.io/announcing-node"
-	intAnnotation       string = "purelb.io/announcing-interface"
+	nodeAnnotation string = "purelb.io/announcing-node"
+	intAnnotation  string = "purelb.io/announcing-interface"
 )
 
 type announcer struct {
@@ -122,6 +122,9 @@ func (c *announcer) SetNode(node *v1.Node) error {
 	return nil
 }
 
+func (c *announcer) Shutdown() {
+}
+
 // checkLocal determines whether the provided net.IP is on the same
 // network as the machine on which this code is running.  If the
 // interface is local then the int return value will be the default
@@ -159,22 +162,22 @@ func (c *announcer) checkLocal(lbIP net.IP) (net.IPNet, int, error) {
 
 			/*  ifa_flags from linux source if_addr.h
 
-				#define IFA_F_SECONDARY		0x01
-				#define IFA_F_TEMPORARY		IFA_F_SECONDARY
+			#define IFA_F_SECONDARY		0x01
+			#define IFA_F_TEMPORARY		IFA_F_SECONDARY
 
-				#define	IFA_F_NODAD		0x02
-				#define IFA_F_OPTIMISTIC	0x04
-				#define IFA_F_DADFAILED		0x08
-				#define	IFA_F_HOMEADDRESS	0x10
-				#define IFA_F_DEPRECATED	0x20
-				#define IFA_F_TENTATIVE		0x40
-				#define IFA_F_PERMANENT		0x80
-				#define IFA_F_MANAGETEMPADDR	0x100
-				#define IFA_F_NOPREFIXROUTE	0x200
-				#define IFA_F_MCAUTOJOIN	0x400
-				#define IFA_F_STABLE_PRIVACY	0x800
+			#define	IFA_F_NODAD		0x02
+			#define IFA_F_OPTIMISTIC	0x04
+			#define IFA_F_DADFAILED		0x08
+			#define	IFA_F_HOMEADDRESS	0x10
+			#define IFA_F_DEPRECATED	0x20
+			#define IFA_F_TENTATIVE		0x40
+			#define IFA_F_PERMANENT		0x80
+			#define IFA_F_MANAGETEMPADDR	0x100
+			#define IFA_F_NOPREFIXROUTE	0x200
+			#define IFA_F_MCAUTOJOIN	0x400
+			#define IFA_F_STABLE_PRIVACY	0x800
 
-				*/
+			*/
 
 			localnet := addrs.IPNet
 
@@ -243,6 +246,10 @@ func (c *announcer) createDummyInterface(dummyint string) error {
 		}
 	}
 
+	return nil
+}
+
+func (c *announcer) removeDummyInterface() error {
 	return nil
 }
 

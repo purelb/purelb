@@ -36,7 +36,7 @@ type controller struct {
 func NewController(l log.Logger, ips *Allocator) (*controller, error) {
 	con := &controller{
 		logger: l,
-		ips: ips,
+		ips:    ips,
 	}
 
 	return con, nil
@@ -92,4 +92,8 @@ func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
 func (c *controller) MarkSynced() {
 	c.synced = true
 	c.logger.Log("event", "stateSynced", "msg", "controller synced, can allocate IPs now")
+}
+
+func (c *controller) Shutdown() {
+	c.logger.Log("event", "shutdown")
 }

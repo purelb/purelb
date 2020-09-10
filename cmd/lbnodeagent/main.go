@@ -22,8 +22,8 @@ import (
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
-	"purelb.io/internal/logging"
 	"purelb.io/internal/lbnodeagent"
+	"purelb.io/internal/logging"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -95,6 +95,7 @@ func main() {
 		ServiceDeleted: ctrl.DeleteBalancer,
 		ConfigChanged:  ctrl.SetConfig,
 		NodeChanged:    ctrl.SetNode,
+		Shutdown:       ctrl.Shutdown,
 	})
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to create k8s client")
