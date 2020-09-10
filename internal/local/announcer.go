@@ -122,7 +122,16 @@ func (c *announcer) SetNode(node *v1.Node) error {
 	return nil
 }
 
+// Shutdown cleans up changes that we've made to the local networking
+// configuration.
 func (c *announcer) Shutdown() {
+	// withdraw any announcements that we have made
+	for name, _ := range c.svcAdvs {
+		c.deletesvcAdv(name)
+	}
+
+	// remove the "dummy" interface
+	c.removeInterface(c.config.ExtLBInterface)
 }
 
 // checkLocal determines whether the provided net.IP is on the same
@@ -249,8 +258,18 @@ func (c *announcer) createDummyInterface(dummyint string) error {
 	return nil
 }
 
-func (c *announcer) removeDummyInterface() error {
-	return nil
+// removeInterface removes the interface with the provided name. It
+// returns nil if everything goes fine, an error otherwise.
+func (c *announcer) removeInterface(name string) error {
+	link, err := netlink.LinkByName(name)
+	if err == nil {
+		if err = netlink.LinkDel(link); err == nil {
+			return nil
+		}
+	}
+
+	c.logger.Log("error", err)
+	return err
 }
 
 // defaultInterface finds the default interface (i.e., the one with
