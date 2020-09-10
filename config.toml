@@ -18,8 +18,8 @@ home = [ "HTML", "RSS", "JSON"]
 # Site params
 [params]
 ordersectionsby = "weight" # ordersectionsby = "title"
-color_main = "#737373"
-color_second = "#b30000"
+color_main = "#3366ff"
+color_second = "#b3c6ff"
 disableSearch = false # default is false
 disableNavChevron = false # set true to hide next/prev chevron, default is false
 menushortcutsnewtab = false # set true to open shortcuts links to a new tab/window
@@ -47,8 +47,7 @@ tabWidth = 2
 #
 [[menu.shortcuts]]
 name = "Gitlab"
-identifier = "ds"
-url = "https://github.com/vjeantet/hugo-theme-docport"
+url = "https://purelb.gitlab.io"
 weight = 10
 
 #[[menu.shortcuts]]
@@ -64,5 +63,5 @@ weight = 10
 
 [[menu.shortcuts]]
 name = "Acnodal"
-url = "/docport-theme/credits/"
+url = "http://www.acnodal.io"
 weight = 30
