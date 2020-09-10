@@ -5,23 +5,24 @@ metal [Kubernetes](https://kubernetes.io) clusters. It uses standard
 routing protocols, runs on Linux systems, and works with the operating
 system to announce service addresses.
 
+## Documentation
+
+https://purelb.gitlab.io/docs
+
 ## Quick Start
 
-The easiest way to get started is to use what we call a "local"
-configuration where PureLB will manage a pool of IP addresses and will
-configure the underlying Linux OS to advertise them.  Installation
-takes only a few steps:
+The easiest way to get started is with a "local" configuration. PureLB
+manages a pool of IP addresses and configures the Linux OS to
+advertise them.  Installation takes only a few steps:
 
 1. Create the PureLB namespace<br/>
 `kubectl apply -f deployments/namespace.yaml`
-1. Load the PureLB custom resource definitions<br/>
-`kubectl apply -f deployments/crds/servicegroup.purelb.io_crd.yml`
+1. Create the PureLB custom resource definitions<br/>
+`kubectl apply -f deployments/crds/lbnodeagent.purelb.io_crd.yaml -f deployments/crds/servicegroup.purelb.io_crd.yml`
 1. Load a sample PureLB configuration<br/>
-`kubectl apply -f configs/default-servicegroup.yml`
+`kubectl apply -f configs/default-lbnodeagent.yml -f configs/default-servicegroup.yml`
 1. Deploy the PureLB components<br/>
 `kubectl apply -f deployments/purelb.yaml`
-
-## Testing
 
 You can deploy a simple "echo" web application with a single command:
 
@@ -29,19 +30,15 @@ You can deploy a simple "echo" web application with a single command:
 kubectl create deployment echoserver --image=k8s.gcr.io/echoserver:1.10
 ```
 
-...and then expose the deployment using a service:
+...and then expose the deployment using a LoadBalancer service:
 
 ```shell
 kubectl expose deployment echoserver --name=echoserver-service --port=80 --target-port=8080 --type=LoadBalancer
 ```
 
-You should see the PureLB allocator allocate an address and assign it
-to the service. The PureLB nodes then configure the underlying
+The PureLB allocator will allocate an address and assign it to the
+service. The PureLB node agents then configure the underlying
 operating system to advertise the address.
-
-## Troubleshooting
-
-FIXME how to find logs
 
 ## Building
 
