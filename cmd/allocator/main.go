@@ -40,6 +40,7 @@ func main() {
 		Kubeconfig:    *kubeconfig,
 
 		ServiceChanged: c.SetBalancer,
+		ServiceDeleted: c.DeleteBalancer,
 		ConfigChanged:  c.SetConfig,
 		Synced:         c.MarkSynced,
 	})

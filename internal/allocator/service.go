@@ -22,6 +22,7 @@ import (
 	"k8s.io/api/core/v1"
 
 	"purelb.io/internal/acnodal"
+	"purelb.io/internal/k8s"
 )
 
 const (
@@ -30,12 +31,15 @@ const (
 	poolAnnotation        string = "purelb.io/allocated-from"
 	sharingAnnotation     string = "purelb.io/allow-shared-ip"
 	desiredPoolAnnotation string = "purelb.io/address-pool"
+	groupAnnotation       string = "acnodal.io/groupURL"
+	serviceAnnotation     string = "acnodal.io/serviceURL"
+	endpointAnnotation    string = "acnodal.io/endpointcreateURL"
 )
 
-func (c *controller) convergeBalancer(key string, svc *v1.Service) bool {
+func (c *controller) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
 	if !c.synced {
 		c.logger.Log("op", "allocateIP", "error", "controller not synced")
-		return false
+		return k8s.SyncStateError
 	}
 
 	// If the ClusterIP is malformed or not set we can't determine the
@@ -43,7 +47,7 @@ func (c *controller) convergeBalancer(key string, svc *v1.Service) bool {
 	clusterIP := net.ParseIP(svc.Spec.ClusterIP)
 	if clusterIP == nil {
 		c.logger.Log("event", "clearAssignment", "reason", "noClusterIP")
-		return true
+		return k8s.SyncStateSuccess
 	}
 
 	// If the service already has an address then we don't need to
@@ -51,15 +55,15 @@ func (c *controller) convergeBalancer(key string, svc *v1.Service) bool {
 	if len(svc.Status.LoadBalancer.Ingress) == 1 {
 		if existingIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP); existingIP != nil {
 			c.logger.Log("event", "ipAlreadySet")
-			return true
+			return k8s.SyncStateSuccess
 		}
 	}
 
-	pool, lbIP, err := c.allocateIP(key, svc)
+	pool, lbIP, err := c.allocateIP(name, svc)
 	if err != nil {
 		c.logger.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
-		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", key, err)
-		return true
+		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", name, err)
+		return k8s.SyncStateSuccess
 	}
 	c.logger.Log("event", "ipAllocated", "ip", lbIP, "pool", pool, "msg", "IP address assigned by controller")
 	c.client.Infof(svc, "IPAllocated", "Assigned IP %q", lbIP)
@@ -72,7 +76,7 @@ func (c *controller) convergeBalancer(key string, svc *v1.Service) bool {
 	if svc.Annotations == nil {
 		svc.Annotations = map[string]string{}
 	}
- 	svc.Annotations[brandAnnotation] = brand
+	svc.Annotations[brandAnnotation] = brand
 	svc.Annotations[poolAnnotation] = pool
 
 	if c.baseURL != nil {
@@ -81,7 +85,7 @@ func (c *controller) convergeBalancer(key string, svc *v1.Service) bool {
 		if err != nil {
 			c.logger.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
 			c.client.Errorf(svc, "AllocationFailed", "Failed to create EGW service for %s: %s", svc.Name, err)
-			return false
+			return k8s.SyncStateError
 		}
 
 		// Look up the EGW group (which gives us the URL to create services)
@@ -89,7 +93,7 @@ func (c *controller) convergeBalancer(key string, svc *v1.Service) bool {
 		if err != nil {
 			c.logger.Log("op", "GetGroup", "group", c.groupURL, "error", err)
 			c.client.Errorf(svc, "GetGroupFailed", "Failed to get group %s: %s", c.groupURL, err)
-			return false
+			return k8s.SyncStateError
 		}
 
 		// Announce the service to the EGW
@@ -97,14 +101,14 @@ func (c *controller) convergeBalancer(key string, svc *v1.Service) bool {
 		if err != nil {
 			c.logger.Log("op", "AnnouncementFailed", "service", svc.Name, "error", err)
 			c.client.Errorf(svc, "AnnouncementFailed", "Failed to announce service for %s: %s", svc.Name, err)
-			return false
+			return k8s.SyncStateError
 		}
-		svc.Annotations["acnodal.io/groupURL"] = egwsvc.Links["group"]
-		svc.Annotations["acnodal.io/serviceURL"] = egwsvc.Links["self"]
-		svc.Annotations["acnodal.io/endpointcreateURL"] = egwsvc.Links["create-endpoint"]
+		svc.Annotations[groupAnnotation] = egwsvc.Links["group"]
+		svc.Annotations[serviceAnnotation] = egwsvc.Links["self"]
+		svc.Annotations[endpointAnnotation] = egwsvc.Links["create-endpoint"]
 	}
 
-	return true
+	return k8s.SyncStateSuccess
 }
 
 func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, error) {

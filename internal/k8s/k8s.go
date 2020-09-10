@@ -1,9 +1,25 @@
+// Copyright 2020 Acnodal Inc.
+// Copyright 2017 Google Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package k8s
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
@@ -48,15 +64,14 @@ type Client struct {
 	syncFuncs []cache.InformerSynced
 
 	serviceChanged func(string, *corev1.Service, *corev1.Endpoints) SyncState
+	serviceDeleted func(string) SyncState
 	configChanged  func(*purelbv1.Config) SyncState
 	nodeChanged    func(*corev1.Node) SyncState
 	synced         func()
 }
 
-// Service offers methods to mutate a Kubernetes service object.
-type Service interface {
-	Update(svc *corev1.Service) (*corev1.Service, error)
-	UpdateStatus(svc *corev1.Service) error
+// Service offers methods to add events to services.
+type ServiceEvent interface {
 	Infof(svc *corev1.Service, desc, msg string, args ...interface{})
 	Errorf(svc *corev1.Service, desc, msg string, args ...interface{})
 }
@@ -85,6 +100,7 @@ type Config struct {
 	Kubeconfig    string
 
 	ServiceChanged func(string, *corev1.Service, *corev1.Endpoints) SyncState
+	ServiceDeleted func(string) SyncState
 	ConfigChanged  func(*purelbv1.Config) SyncState
 	NodeChanged    func(*corev1.Node) SyncState
 	Synced         func()
@@ -162,6 +178,7 @@ func New(cfg *Config) (*Client, error) {
 	c.svcIndexer, c.svcInformer = cache.NewIndexerInformer(svcWatcher, &corev1.Service{}, 0, svcHandlers, cache.Indexers{})
 
 	c.serviceChanged = cfg.ServiceChanged
+	c.serviceDeleted = cfg.ServiceDeleted
 	c.syncFuncs = append(c.syncFuncs, c.svcInformer.HasSynced)
 
 	// Endpoint Watcher (only used by Nodes, not Allocators)
@@ -301,24 +318,37 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 func (c *Client) ForceSync() {
 	if c.svcIndexer != nil {
 		for _, k := range c.svcIndexer.ListKeys() {
-			c.logger.Log("service", svcKey(k))
+			c.logger.Log("forceSync", svcKey(k))
 			c.queue.AddRateLimited(svcKey(k))
 		}
 	}
 }
 
-// Update writes svc back into the Kubernetes cluster. If successful,
-// the updated Service is returned. Note that changes to svc.Status
-// are not propagated, for that you need to call UpdateStatus.
-func (c *Client) Update(svc *corev1.Service) (*corev1.Service, error) {
-	return c.client.CoreV1().Services(svc.Namespace).Update(context.TODO(), svc, metav1.UpdateOptions{})
-}
+// maybeUpdateService writes the "is" service back to the cluster, but
+// only if it's different than the "was" service.
+func (c *Client) maybeUpdateService(was, is *corev1.Service) error {
+	var (
+		svcUpdated *corev1.Service
+		err error
+	)
 
-// UpdateStatus writes the protected "status" field of svc back into
-// the Kubernetes cluster.
-func (c *Client) UpdateStatus(svc *corev1.Service) error {
-	_, err := c.client.CoreV1().Services(svc.Namespace).UpdateStatus(context.TODO(), svc, metav1.UpdateOptions{})
-	return err
+	if !(reflect.DeepEqual(was.Annotations, is.Annotations) && reflect.DeepEqual(was.Spec, is.Spec)) {
+		svcUpdated, err = c.client.CoreV1().Services(is.Namespace).Update(context.TODO(), is, metav1.UpdateOptions{})
+		if err != nil {
+			c.logger.Log("op", "updateService", "error", err, "msg", "failed to update service")
+			return err
+		}
+	}
+	if !reflect.DeepEqual(was.Status, is.Status) {
+		st, is := is.Status, svcUpdated.DeepCopy()
+		is.Status = st
+		if _, err = c.client.CoreV1().Services(is.Namespace).UpdateStatus(context.TODO(), is, metav1.UpdateOptions{}); err != nil {
+			c.logger.Log("op", "updateServiceStatus", "error", err, "msg", "failed to update service status")
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Infof logs an informational event about svc to the Kubernetes cluster.
@@ -337,18 +367,19 @@ func (c *Client) sync(key interface{}) SyncState {
 	switch k := key.(type) {
 	case svcKey:
 		l := log.With(c.logger, "service", string(k))
-		svc, exists, err := c.svcIndexer.GetByKey(string(k))
+		svcMaybe, exists, err := c.svcIndexer.GetByKey(string(k))
 		if err != nil {
 			l.Log("op", "getService", "error", err, "msg", "failed to get service")
 			return SyncStateError
 		}
 		if !exists {
 			l.Log("op", "getService", "msg", "doesn't exist")
-			return c.serviceChanged(string(k), nil, nil)
+			return c.serviceDeleted(string(k))
 		}
+		svc := svcMaybe.(*corev1.Service)
 
 		// Not a LoadBalancer: no need to do anything
-		if svc.(*corev1.Service).Spec.Type != "LoadBalancer" {
+		if svc.Spec.Type != "LoadBalancer" {
 			return SyncStateSuccess
 		}
 
@@ -359,13 +390,28 @@ func (c *Client) sync(key interface{}) SyncState {
 				l.Log("op", "getEndpoints", "error", err, "msg", "failed to get endpoints")
 				return SyncStateError
 			}
-			if !exists {
-				return c.serviceChanged(string(k), nil, nil)
+			if exists {
+				eps = epsIntf.(*corev1.Endpoints)
 			}
-			eps = epsIntf.(*corev1.Endpoints)
 		}
 
-		return c.serviceChanged(string(k), svc.(*corev1.Service), eps)
+		// stash a copy of the service so we'll be able to tell if the app
+		// changes it
+		svcOriginal := svc.DeepCopy()
+
+		// tell the app about the service change
+		status := c.serviceChanged(string(k), svc, eps)
+
+		// write any changes to the service back to the cluster
+		if status == SyncStateSuccess {
+			err = c.maybeUpdateService(svcOriginal, svc)
+			if err != nil {
+				l.Log("op", "updateService", "error", err)
+				status = SyncStateError
+			}
+		}
+
+		return status
 
 	case nodeKey:
 		l := log.With(c.logger, "node", string(k))

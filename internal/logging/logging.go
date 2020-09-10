@@ -43,7 +43,7 @@ func Init() log.Logger {
 
 	logger := log.With(l, "caller", log.DefaultCaller)
 
-	logger.Log("release", release, "commit", commit, "branch", branch, "msg", "Starting")
+	logger.Log("release", release, "commit", commit, "git-branch", branch, "msg", "Starting")
 
 	return logger
 }

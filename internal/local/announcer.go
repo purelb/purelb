@@ -16,6 +16,7 @@ package local
 import (
 	"fmt"
 	"net"
+	"strconv"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -25,6 +26,11 @@ import (
 	"github.com/go-kit/kit/log"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
+)
+
+const (
+	nodeAnnotation       string = "purelb.io/announcing-node"
+	intAnnotation       string = "purelb.io/announcing-interface"
 )
 
 type announcer struct {
@@ -60,7 +66,7 @@ func (c *announcer) SetConfig(cfg *purelbv1.Config) error {
 }
 
 func (c *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) error {
-	c.logger.Log("event", "announceService", "service", name)
+	c.logger.Log("event", "announceService", "announcer", "local", "service", name)
 
 	// if we haven't been configured then we won't announce
 	if c.config == nil {
@@ -86,7 +92,13 @@ func (c *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) e
 
 			c.addLocalInterface(lbIPNet, defaultifindex)
 			c.svcAdvs[name] = lbIP
+			svc.Annotations[nodeAnnotation] = c.myNode
+			svc.Annotations[intAnnotation] = strconv.Itoa(defaultifindex)
+		} else {
+			c.logger.Log("msg", "notWinner", "node", c.myNode, "winner", winner, "service", name)
 		}
+	} else {
+		c.logger.Log("msg", "notAnnouncing", "node", c.myNode, "service", name, "reason", err)
 	}
 
 	return nil

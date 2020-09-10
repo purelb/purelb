@@ -92,6 +92,7 @@ func main() {
 		ReadEndpoints: true,
 
 		ServiceChanged: ctrl.ServiceChanged,
+		ServiceDeleted: ctrl.DeleteBalancer,
 		ConfigChanged:  ctrl.SetConfig,
 		NodeChanged:    ctrl.SetNode,
 	})

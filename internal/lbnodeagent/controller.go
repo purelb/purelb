@@ -52,13 +52,7 @@ func NewController(l log.Logger, myNode string, prometheus *prometheus.GaugeVec)
 }
 
 func (c *controller) ServiceChanged(name string, svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {
-
-	c.logger.Log("event", "startUpdate", "msg", "start of service update", "service", name)
-	defer c.logger.Log("event", "endUpdate", "msg", "end of service update", "service", name)
-
-	if svc == nil {
-		return c.deleteBalancer(name, "serviceDeleted")
-	}
+	defer c.logger.Log("event", "serviceUpdated", "service", name)
 
 	if len(svc.Status.LoadBalancer.Ingress) != 1 {
 		return c.deleteBalancer(name, "noIPAllocated")
@@ -89,6 +83,10 @@ func (c *controller) ServiceChanged(name string, svc *v1.Service, endpoints *v1.
 	c.svcIP[name] = lbIP
 
 	return announceError
+}
+
+func (c *controller) DeleteBalancer(name string) k8s.SyncState {
+	return c.deleteBalancer(name, "cluster event")
 }
 
 func (c *controller) deleteBalancer(name, reason string) k8s.SyncState {
