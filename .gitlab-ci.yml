@@ -1,0 +1,19 @@
+image: golang:latest
+
+variables:
+  REPO_NAME: gitlab.com/purelb/purelb
+  NETBOX_USER_TOKEN: no-op
+
+before_script:
+  - mkdir -p $GOPATH/src/$(dirname $REPO_NAME)
+  - ln -svf $CI_PROJECT_DIR $GOPATH/src/$REPO_NAME
+  - cd $GOPATH/src/$REPO_NAME
+
+stages:
+  - test
+
+format:
+  stage: test
+  script:
+    - go vet ./...
+    - go test -short ./...
