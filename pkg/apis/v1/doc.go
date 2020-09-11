@@ -15,5 +15,6 @@
 // +k8s:deepcopy-gen=package
 // +groupName=purelb.io
 
-// The v1 version of the API
+// The v1 version of the API, which is basically just custom resources
+// for our configuration.
 package v1 // import "purelb.io/pkg/apis/v1"

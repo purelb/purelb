@@ -29,12 +29,24 @@ type ServiceGroup struct {
 	Status ServiceGroupStatus `json:"status"`
 }
 
+// ServiceGroupSpec configures the allocator.  It will have one of
+// either a Local configuration (to allocate service addresses from a
+// local pool) or an EGW configuration (to get addresses from
+// Acnodal's EGW). For examples, see the "config/" directory in the
+// PureLB source tree.
 type ServiceGroupSpec struct {
 	AutoAssign bool                   `json:"auto-assign"`
 	Local      *ServiceGroupLocalSpec `json:"local"`
 	EGW        *ServiceGroupEGWSpec   `json:"egw"`
 }
 
+// ServiceGroupLocalSpec configures the allocator to manage a pool of
+// IP addresses locally. The Pool can be specified as a CIDR or as a
+// from-to range of addresses,
+// e.g. 'fd53:9ef0:8683::-fd53:9ef0:8683::3'. The subnet is specified
+// with CIDR notation, e.g., 'fd53:9ef0:8683::/120'. All of the
+// addresses in the Pool must be contained within the
+// Subnet. Aggregation is currently unused.
 type ServiceGroupLocalSpec struct {
 	Subnet      string `json:"subnet"`
 	Pool        string `json:"pool"`
@@ -60,11 +72,22 @@ type LBNodeAgent struct {
 	Status LBNodeAgentStatus `json:"status"`
 }
 
+// LBNodeAgentSpec configures the node agents.  It will have one of
+// either a Local configuration (to announce service addresses
+// locally) or an EGW configuration (to announce service addresses to
+// Acnodal's EGW). For examples, see the "config/" directory in the
+// PureLB source tree.
 type LBNodeAgentSpec struct {
 	Local *LBNodeAgentLocalSpec `json:"local"`
 	EGW   *LBNodeAgentEGWSpec   `json:"egw"`
 }
 
+// LBNodeAgentLocalSpec configures the announcers to announce service
+// addresses by configuring the underlying operating
+// system. LocalInterface is unimplemented but will be optional. If it
+// is not provided then the agents will add the service address to
+// whichever interface carries the default route. ExtLBInterface is
+// also unimplemented.
 type LBNodeAgentLocalSpec struct {
 	LocalInterface string `json:"localint"`
 	ExtLBInterface string `json:"extlbint"`

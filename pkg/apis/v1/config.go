@@ -15,7 +15,10 @@
 
 package v1
 
-// Config is a container for our CRDs
+// Config is a container for our CRDs.  It's used to notify the app
+// when any configuration changes.  When we're notified that any
+// custom resource has changed, we read all of our resources, load
+// them into a Config struct, and pass it to the controllers.
 type Config struct {
 	// Service Groups from which to allocate load balancer IP addresses
 	Groups []*ServiceGroup
