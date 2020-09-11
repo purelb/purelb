@@ -26,4 +26,5 @@ type Announcer interface {
 	DeleteBalancer(string, string) error
 	SetNode(*v1.Node) error
 	SetElection(*election.Election)
+	Shutdown()
 }

@@ -17,10 +17,12 @@ package main
 import (
 	"flag"
 	"os"
+	"os/signal"
+	"syscall"
 
+	"purelb.io/internal/allocator"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
-	"purelb.io/internal/allocator"
 )
 
 func main() {
@@ -32,17 +34,30 @@ func main() {
 	)
 	flag.Parse()
 
+	stopCh := make(chan struct{})
+	go func() {
+		c1 := make(chan os.Signal)
+		signal.Notify(c1, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
+		<-c1
+		logger.Log("op", "shutdown", "msg", "starting shutdown")
+		signal.Stop(c1)
+		close(stopCh)
+	}()
+	defer logger.Log("op", "shutdown", "msg", "done")
+
+	// Set up controller
 	c, _ := allocator.NewController(logger, allocator.New())
 
 	client, err := k8s.New(&k8s.Config{
-		ProcessName:   "purelb-allocator",
-		Logger:        logger,
-		Kubeconfig:    *kubeconfig,
+		ProcessName: "purelb-allocator",
+		Logger:      logger,
+		Kubeconfig:  *kubeconfig,
 
 		ServiceChanged: c.SetBalancer,
 		ServiceDeleted: c.DeleteBalancer,
 		ConfigChanged:  c.SetConfig,
 		Synced:         c.MarkSynced,
+		Shutdown:       c.Shutdown,
 	})
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to create k8s client")
@@ -53,7 +68,8 @@ func main() {
 
 	go k8s.RunMetrics("", *port)
 
-	if err := client.Run(nil); err != nil {
+	// the k8s client doesn't return until it's time to shut down
+	if err := client.Run(stopCh); err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to run k8s client")
 	}
 }
