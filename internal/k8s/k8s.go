@@ -53,8 +53,6 @@ type Client struct {
 	svcInformer  cache.Controller
 	epIndexer    cache.Indexer
 	epInformer   cache.Controller
-	cmIndexer    cache.Indexer
-	cmInformer   cache.Controller
 	nodeIndexer  cache.Indexer
 	nodeInformer cache.Controller
 
