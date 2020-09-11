@@ -1,8 +1,7 @@
-# PureLB - a bare-metal load balancer for Kubernetes
+# PureLB - is a Service Load Balancer for Kubernetes
 
-[PureLB](https://purelb.io) is a load-balancer implementation for bare
-metal [Kubernetes](https://kubernetes.io) clusters. It uses standard
-routing protocols, runs on Linux systems, and works with the operating
+[PureLB](https://purelb.io) is a load-balancer orchestor for  [Kubernetes](https://kubernetes.io) clusters. It uses standard
+Linux networking and routing protocols,  and works with the operating
 system to announce service addresses.
 
 ## Documentation
@@ -11,9 +10,9 @@ https://purelb.gitlab.io/docs
 
 ## Quick Start
 
-The easiest way to get started is with a "local" configuration. PureLB
-manages a pool of IP addresses and configures the Linux OS to
-advertise them.  Installation takes only a few steps:
+PureLB manages Service Group containing pools of IP addresses and their associated network configuration.  It configures the Linux OS to
+advertise them.  The easiest way to get started is to create a Service Group that uses the same IPNET as the host interface, PureLB will add
+the allocated addresses to the same network interface.  Installation takes only a few steps:
 
 1. Create the PureLB namespace<br/>
 `kubectl apply -f deployments/namespace.yaml`

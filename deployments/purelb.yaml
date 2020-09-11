@@ -281,6 +281,7 @@ spec:
             secretKeyRef:
               name: netbox-client
               key: user-token
+              optional: true
         - name: PURELB_NODE_NAME
           valueFrom:
             fieldRef:
@@ -301,7 +302,7 @@ spec:
           name: monitoring
         resources:
           limits:
-            cpu: 100m
+            cpu: 500m
             memory: 100Mi
         securityContext:
           allowPrivilegeEscalation: false
@@ -313,6 +314,8 @@ spec:
             drop:
             - ALL
           readOnlyRootFilesystem: true
+      imagePullSecrets:
+      - name: gitlab
       hostNetwork: true
       nodeSelector:
         beta.kubernetes.io/os: linux
@@ -353,6 +356,7 @@ spec:
             secretKeyRef:
               name: netbox-client
               key: user-token
+              optional: true
         imagePullPolicy: Always
         name: allocator
         ports:
@@ -360,7 +364,7 @@ spec:
           name: monitoring
         resources:
           limits:
-            cpu: 100m
+            cpu: 500m
             memory: 100Mi
         securityContext:
           allowPrivilegeEscalation: false
@@ -368,6 +372,8 @@ spec:
             drop:
             - all
           readOnlyRootFilesystem: true
+      imagePullSecrets:
+      - name: gitlab
       nodeSelector:
         beta.kubernetes.io/os: linux
       securityContext:

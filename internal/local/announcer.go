@@ -16,9 +16,8 @@ package local
 import (
 	"fmt"
 	"net"
-	"strconv"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"purelb.io/internal/election"
 	purelbv1 "purelb.io/pkg/apis/v1"
@@ -93,7 +92,8 @@ func (c *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) e
 			c.addLocalInterface(lbIPNet, defaultifindex)
 			c.svcAdvs[name] = lbIP
 			svc.Annotations[nodeAnnotation] = c.myNode
-			svc.Annotations[intAnnotation] = strconv.Itoa(defaultifindex)
+			ifa, _ := net.InterfaceByIndex(defaultifindex)
+			svc.Annotations[intAnnotation] = ifa.Name
 		} else {
 			c.logger.Log("msg", "notWinner", "node", c.myNode, "winner", winner, "service", name)
 		}
@@ -253,6 +253,7 @@ func (c *announcer) createDummyInterface(dummyint string) error {
 		if err == netlink.LinkAdd(targetint) {
 			return fmt.Errorf("failed adding dummy int %s: ", dummyint)
 		}
+		netlink.LinkSetUp(targetint)
 	}
 
 	return nil
