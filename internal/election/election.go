@@ -72,7 +72,10 @@ func (e *Election) Shutdown() error {
 }
 
 func (e *Election) Winner(name string) string {
-	nodes := e.usableNodes()
+	nodes := []string{}
+	for _, node := range e.Memberlist.Members() {
+		nodes = append(nodes, node.Name)
+	}
 
 	// Sort the slice by the hash of node + service name. This
 	// produces an ordering of ready nodes that is unique to this
@@ -84,10 +87,7 @@ func (e *Election) Winner(name string) string {
 		return bytes.Compare(hi[:], hj[:]) < 0
 	})
 
-	if len(nodes) > 0 {
-		return nodes[0]
-	}
-	return ""
+	return nodes[0]
 }
 
 func event2String(e memberlist.NodeEventType) string {
@@ -99,66 +99,10 @@ func (e *Election) watchEvents(client *k8s.Client) {
 		select {
 		case event := <-e.eventCh:
 			e.logger.Log("msg", "Node event", "node addr", event.Node.Addr, "node name", event.Node.Name, "node event", event2String(event.Event))
-			for _, member := range e.Memberlist.Members() {
-				e.logger.Log("member name", member.Name, "member addr", member.Addr)
-			}
 			client.ForceSync()
 		case <-e.stopCh:
 			e.Shutdown()
 			return
 		}
 	}
-}
-
-// usableNodes returns all nodes that have at least one fully ready
-// endpoint on them.
-//func (e *Election) usableNodes(eps *v1.Endpoints) []string {
-//	var activeNodes map[string]bool
-//	activeNodes = map[string]bool{}
-//	for _, n := range e.Memberlist.Members() {
-//		activeNodes[n.Name] = true
-//	}
-//
-//	usable := map[string]bool{}
-//	for _, subset := range eps.Subsets {
-//		for _, ep := range subset.Addresses {
-//			if ep.NodeName == nil {
-//				continue
-//			}
-//			if activeNodes != nil {
-//				if _, ok := activeNodes[*ep.NodeName]; !ok {
-//					continue
-//				}
-//			}
-//			if _, ok := usable[*ep.NodeName]; !ok {
-//				usable[*ep.NodeName] = true
-//			}
-//		}
-//	}
-//
-//	var ret []string
-//	for node, ok := range usable {
-//		if ok {
-//			ret = append(ret, node)
-//		}
-//	}
-//
-//	return ret
-//}
-
-func (e *Election) usableNodes() []string {
-	var activeNodes map[string]bool
-	activeNodes = map[string]bool{}
-	for _, n := range e.Memberlist.Members() {
-		activeNodes[n.Name] = true
-	}
-
-	var ret []string
-	for node, ok := range activeNodes {
-		if ok {
-			ret = append(ret, node)
-		}
-	}
-
-	return ret
 }
