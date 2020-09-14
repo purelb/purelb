@@ -105,15 +105,29 @@ func (c *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) e
 }
 
 func (c *announcer) DeleteBalancer(name, reason string) error {
-	if _, ok := c.svcAdvs[name]; !ok {
+	svcAddr, ok := c.svcAdvs[name]
+
+	// if the service isn't in our database then we can't withdraw the address
+	if !ok {
+		c.logger.Log("event", "withdrawAnnouncement", "service", name, "reason", reason, "msg", "service unknown")
 		return nil
 	}
 
-	c.deletesvcAdv(name)
-
+	// delete this service from our announcement database
 	delete(c.svcAdvs, name)
 
-	c.logger.Log("event", "updateService", "msg", "Delete balancer", "service", name, "reason", reason)
+	// if any other service is still using that address then we don't
+	// want to withdraw it
+	for _, addr := range c.svcAdvs {
+		if addr.Equal(svcAddr) {
+			c.logger.Log("event", "withdrawAnnouncement", "service", name, "reason", reason, "msg", "ip in use by other service")
+			return nil
+		}
+	}
+
+	c.logger.Log("event", "withdrawAnnouncement", "msg", "Delete balancer", "service", name, "reason", reason)
+	c.deletesvcAdv(svcAddr)
+
 	return nil
 }
 
@@ -126,8 +140,8 @@ func (c *announcer) SetNode(node *v1.Node) error {
 // configuration.
 func (c *announcer) Shutdown() {
 	// withdraw any announcements that we have made
-	for name, _ := range c.svcAdvs {
-		c.deletesvcAdv(name)
+	for _, ip := range c.svcAdvs {
+		c.deletesvcAdv(ip)
 	}
 
 	// remove the "dummy" interface
@@ -215,10 +229,7 @@ func (c *announcer) addLocalInterface(lbIPNet net.IPNet, defaultifindex int) err
 	return nil
 }
 
-func (c *announcer) deletesvcAdv(name string) error {
-
-	lbIP := c.svcAdvs[name]
-
+func (c *announcer) deletesvcAdv(lbIP net.IP) error {
 	hostints, _ := net.Interfaces()
 	for _, hostint := range hostints {
 		addrs, _ := hostint.Addrs()
