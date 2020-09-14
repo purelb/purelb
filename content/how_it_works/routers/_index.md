@@ -17,14 +17,14 @@ The Routing software enables the distribution of LoadBalancer addresses to other
     A(Router/Switch);
     A---C4;
     A---D4;
-    C3-.-|Advertizes ipnet|A;
-    D3-.-|Advertizes ipnet|A;
+    C3-.-|Advertizes IPNET|A;
+    D3-.-|Advertizes IPNET|A;
     subgraph k8s-Node-1
       C1-->|add ipnet|C2;
       C2-->|imports to kube-lb0|C3;
       C1(PureLB-Node);  
       C3(Bird);
-      subgraph net
+      subgraph linux-networking
          C4[eth0];
          C2[kube-lb0];
          C5[ipvs0];
@@ -38,7 +38,7 @@ The Routing software enables the distribution of LoadBalancer addresses to other
       
       D3(Bird);
      
-      subgraph net
+      subgraph linux-networking
          D4[eth0];
          D2[kube-lb0];
          D5[ipvs0];
@@ -90,4 +90,5 @@ route-map k8slb permit 10
 route-map k8slb deny 20
 ```
 
+### What is Anycast?
 

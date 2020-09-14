@@ -1,0 +1,49 @@
+---
+title: "How am I Loadbalancing?"
+description: "Describe Operation"
+weight: 40
+hide: toc, nextpage
+---
+
+
+A Load Balancer accepts traffic and distributes it among endpoints. PureLB is not strictly a Load Balancer, it is a controller of LoadBalancing that interacts with the v1.Service API.
+
+More simply, PureLB either uses the LoadBalancing functionality provided natively by k8s or combines the k8s LoadBalancing with the routers Equal Cost Multipath loadbalancing.
+
+## k8s Load Balancing
+
+k8s includes functionality that enables traffic destined to addresses used by v1.services.  A load balancer is one type of service, however other such as nodeport exist (add k8s link).  This functionality is provided by kubeproxy or in some cases other networking components such as OVS in OVN CNI (used by Openshift).  In each case, kube-api informs the network of the services required networking is configured to ensure traffic presented at a node for that address/port combination reaches the correct POD.  In the default case of kubeProxy, this is undertaken using IP tables filters.  KubeProxy is watching for v1.service events just like the Purelb lbnodeagent.  When kubeProxy recieves a service message, and its using iptables, it adds rules that allow the forwarding of an IP address that is not on the host (iptables pre routing), chained to rules that distribute traffic equally to each of the nodes where the associated endpoint exists.   IPVS does the same thing, however the address is added to the host interface kube-ipvs0, operating is a similar manner to purelb kube-lb0, and distributing to endpoints.  This operation is similar for Nodeports.  
+
+Therefore when PureLB "attracts" traffic to nodes by advertizing routes, once the traffic reaches the node it is loadbalanced by k8s among POD.  This is the level of loadbalancing that is provided for Local Addresses.  As the address is on the local network, and the upstream routers do not partipate, the address can only be allocated to a single node on the subnet.
+
+However, by adding routers to the cluster, peering to the networks router (upstream) and allocating addresses from a new IPNET, the router can advertise the same address from each node with an equal cost therefore enabling Equal Cost Multipath loadbalancing in the router.
+
+{{<mermaid align="center">}}
+graph BT;
+
+    subgraph Router
+        A(a.a.a.a.1 via x.x.x.1 <br/> via x.x.x.2 <br/> a.a.a.2 via x.x.x.1 <br/> via x.x.x.2)
+    end
+    subgraph k8s-node-2
+        B[eth0 x.x.x.2]
+        C[kubeproxy]
+        D[POD a.a.a.2]
+    end
+    subgraph k8s-node-1
+        E[eth0 x.x.x.1]
+        F[kubeproxy]
+        G[POD a.a.a.1]
+    end
+    E---F
+    F---G
+    B---C
+    C---D
+    C-.-F
+    D-->|advertise a.a.a.1 & a.a.a.2 next-hop x.x.x.1|A
+    E-->|advertise a.a.a.1 & a.a.a.2 next-hop x.x.x.2|A
+  
+{{</mermaid>}}
+
+
+As shown in the diagram, the routing table shows that each POD has multiple next-hops that can
+reach the destination. The router will load balance between those two destinations equally usually hashing on SRCIP/PORT & DESTIP/PORT.  ECMP load balancing is a forwarding function of the router and often the implementations are more complex to ensure invariance and stability of forwarding in steady state and single link failure.  However even a Linux host with routing software can be configured to provide ECMP forwarding.

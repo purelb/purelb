@@ -6,7 +6,7 @@ hide: toc, nextpage
 ---
 The Local Interface Process uses standard Linux capabilies to add Loadbalancer addresses that match the configured subnet as secondary address on the hosts interface.  Using this mechanism a cluster can use the same local address allocation for LoadBalancer services.  When added to an existing physical interface, the Linux Networking stack will respond to ARP/ND messages for that address and the address will be visable on the appropriate physical interface.  
 
-To use a Local Address, a Service Group is created that uses the same subnet as the host interface and allocates a number of addresses from that CIDR block.
+To use a Local Address, a Service Group is created that uses the same subnet as the host interface and allocates a number of addresses from that IPNET.
 
 PureLB-Node uses the following mechanism to identify and add local addresses.
 
