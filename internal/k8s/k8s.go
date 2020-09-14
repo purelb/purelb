@@ -345,8 +345,13 @@ func (c *Client) maybeUpdateService(was, is *corev1.Service) error {
 		}
 	}
 	if !reflect.DeepEqual(was.Status, is.Status) {
-		st, is := is.Status, svcUpdated.DeepCopy()
-		is.Status = st
+		st := is.Status.DeepCopy()
+		if svcUpdated != nil {
+			svcUpdated.DeepCopyInto(is)
+		} else {
+			c.logger.Log("msg", "svcUpdated is nil")
+		}
+		st.DeepCopyInto(&is.Status)
 		if _, err = c.client.CoreV1().Services(is.Namespace).UpdateStatus(context.TODO(), is, metav1.UpdateOptions{}); err != nil {
 			c.logger.Log("op", "updateServiceStatus", "error", err, "msg", "failed to update service status")
 			return err
