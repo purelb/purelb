@@ -27,7 +27,6 @@ func TestAssignment(t *testing.T) {
 		ip         string
 		ports      []Port
 		sharingKey string
-		backendKey string
 		wantErr    bool
 	}{
 		{
@@ -83,7 +82,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1.2.4.3",
 			ports:      ports("tcp/80"),
 			sharingKey: "sharing",
-			backendKey: "backend",
 		},
 		{
 			desc:       "s4 changes its sharing key in place",
@@ -91,7 +89,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1.2.4.3",
 			ports:      ports("tcp/80"),
 			sharingKey: "share",
-			backendKey: "backend",
 		},
 		{
 			desc:       "s3 can't share with s4 (port conflict)",
@@ -99,7 +96,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1.2.4.3",
 			ports:      ports("tcp/80"),
 			sharingKey: "share",
-			backendKey: "backend",
 			wantErr:    true,
 		},
 		{
@@ -108,16 +104,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1.2.4.3",
 			ports:      ports("tcp/443"),
 			sharingKey: "othershare",
-			backendKey: "backend",
-			wantErr:    true,
-		},
-		{
-			desc:       "s3 can't share with s4 (wrong backend key)",
-			svc:        "s3",
-			ip:         "1.2.4.3",
-			ports:      ports("tcp/443"),
-			sharingKey: "share",
-			backendKey: "otherbackend",
 			wantErr:    true,
 		},
 		{
@@ -126,7 +112,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1.2.4.3",
 			ports:      ports("tcp/443"),
 			sharingKey: "share",
-			backendKey: "backend",
 		},
 		{
 			desc:       "s3 can change its ports while keeping the same IP",
@@ -134,25 +119,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1.2.4.3",
 			ports:      ports("udp/53"),
 			sharingKey: "share",
-			backendKey: "backend",
-		},
-		{
-			desc:       "s3 can't change its sharing key while keeping the same IP",
-			svc:        "s3",
-			ip:         "1.2.4.3",
-			ports:      ports("tcp/443"),
-			sharingKey: "othershare",
-			backendKey: "backend",
-			wantErr:    true,
-		},
-		{
-			desc:       "s3 can't change its backend key while keeping the same IP",
-			svc:        "s3",
-			ip:         "1.2.4.3",
-			ports:      ports("tcp/443"),
-			sharingKey: "share",
-			backendKey: "otherbackend",
-			wantErr:    true,
 		},
 		{
 			desc: "s4 takes s3's former IP",
@@ -214,7 +180,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1000::4:3",
 			ports:      ports("tcp/80"),
 			sharingKey: "sharing",
-			backendKey: "backend",
 		},
 		{
 			desc:       "s4 changes its sharing key in place",
@@ -222,7 +187,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1000::4:3",
 			ports:      ports("tcp/80"),
 			sharingKey: "share",
-			backendKey: "backend",
 		},
 		{
 			desc:       "s3 can't share with s4 (port conflict)",
@@ -230,7 +194,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1000::4:3",
 			ports:      ports("tcp/80"),
 			sharingKey: "share",
-			backendKey: "backend",
 			wantErr:    true,
 		},
 		{
@@ -239,16 +202,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1000::4:3",
 			ports:      ports("tcp/443"),
 			sharingKey: "othershare",
-			backendKey: "backend",
-			wantErr:    true,
-		},
-		{
-			desc:       "s3 can't share with s4 (wrong backend key)",
-			svc:        "s3",
-			ip:         "1000::4:3",
-			ports:      ports("tcp/443"),
-			sharingKey: "share",
-			backendKey: "otherbackend",
 			wantErr:    true,
 		},
 		{
@@ -257,7 +210,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1000::4:3",
 			ports:      ports("tcp/443"),
 			sharingKey: "share",
-			backendKey: "backend",
 		},
 		{
 			desc:       "s3 can change its ports while keeping the same IP",
@@ -265,7 +217,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1000::4:3",
 			ports:      ports("udp/53"),
 			sharingKey: "share",
-			backendKey: "backend",
 		},
 		{
 			desc:       "s3 can't change its sharing key while keeping the same IP",
@@ -273,16 +224,6 @@ func TestAssignment(t *testing.T) {
 			ip:         "1000::4:3",
 			ports:      ports("tcp/443"),
 			sharingKey: "othershare",
-			backendKey: "backend",
-			wantErr:    true,
-		},
-		{
-			desc:       "s3 can't change its backend key while keeping the same IP",
-			svc:        "s3",
-			ip:         "1000::4:3",
-			ports:      ports("tcp/443"),
-			sharingKey: "share",
-			backendKey: "otherbackend",
 			wantErr:    true,
 		},
 		{
@@ -302,7 +243,7 @@ func TestAssignment(t *testing.T) {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
 		alreadyHasIP := assigned(alloc, test.svc) == test.ip
-		_, err := alloc.Assign(test.svc, ip, test.ports, test.sharingKey, test.backendKey)
+		_, err := alloc.Assign(test.svc, ip, test.ports, test.sharingKey)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%q should have caused an error, but did not", test.desc)
@@ -542,7 +483,7 @@ func TestPoolAllocation(t *testing.T) {
 		if test.isIPv6 {
 			pool = "testV6"
 		}
-		ip, err := alloc.AllocateFromPool(test.svc, pool, test.ports, test.sharingKey, "")
+		ip, err := alloc.AllocateFromPool(test.svc, pool, test.ports, test.sharingKey)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%s: should have caused an error, but did not", test.desc)
@@ -563,7 +504,7 @@ func TestPoolAllocation(t *testing.T) {
 	}
 
 	alloc.Unassign("s5")
-	if _, err := alloc.AllocateFromPool("s5", "nonexistentpool", nil, "", ""); err == nil {
+	if _, err := alloc.AllocateFromPool("s5", "nonexistentpool", nil, ""); err == nil {
 		t.Error("Allocating from non-existent pool succeeded")
 	}
 }
@@ -726,7 +667,7 @@ func TestAllocation(t *testing.T) {
 			alloc.Unassign(test.svc)
 			continue
 		}
-		_, ip, err := alloc.Allocate(test.svc, test.ports, test.sharingKey, "")
+		_, ip, err := alloc.Allocate(test.svc, test.ports, test.sharingKey)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%s: should have caused an error, but did not", test.desc)
@@ -804,7 +745,7 @@ func TestAutoAssign(t *testing.T) {
 			alloc.Unassign(test.svc)
 			continue
 		}
-		_, ip, err := alloc.Allocate(test.svc, nil, "", "")
+		_, ip, err := alloc.Allocate(test.svc, nil, "")
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("#%d should have caused an error, but did not", i+1)
@@ -832,7 +773,6 @@ func TestPoolMetrics(t *testing.T) {
 		ip         string
 		ports      []Port
 		sharingKey string
-		backendKey string
 		ipsInUse   float64
 	}{
 		{
@@ -921,7 +861,7 @@ func TestPoolMetrics(t *testing.T) {
 		if ip == nil {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
-		_, err := alloc.Assign(test.svc, ip, test.ports, test.sharingKey, test.backendKey)
+		_, err := alloc.Assign(test.svc, ip, test.ports, test.sharingKey)
 
 		if err != nil {
 			t.Errorf("%q: Assign(%q, %q): %v", test.desc, test.svc, test.ip, err)

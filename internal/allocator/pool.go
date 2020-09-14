@@ -34,7 +34,6 @@ func (p Port) String() string {
 
 type Key struct {
 	Sharing string
-	Backend string
 }
 
 type Pool interface {
@@ -59,9 +58,6 @@ func sharingOK(existing, new *Key) error {
 	}
 	if existing.Sharing != new.Sharing {
 		return fmt.Errorf("sharing key %q does not match existing sharing key %q", new.Sharing, existing.Sharing)
-	}
-	if existing.Backend != new.Backend {
-		return fmt.Errorf("backend key %q does not match existing sharing key %q", new.Backend, existing.Backend)
 	}
 	return nil
 }
