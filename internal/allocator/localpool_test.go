@@ -9,8 +9,8 @@ import (
 )
 
 var(
-	key1 = Key{Sharing: "sharing1", Backend: "backend"}
-	key2 = Key{Sharing: "sharing2", Backend: "backend"}
+	key1 = Key{Sharing: "sharing1"}
+	key2 = Key{Sharing: "sharing2"}
 	http = Port{Proto: "tcp", Port: 80}
 	smtp = Port{Proto: "tcp", Port: 25}
 )

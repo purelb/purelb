@@ -69,15 +69,14 @@ func (a *Allocator) assign(svc string, alloc *alloc) {
 }
 
 // Assign assigns the requested ip to svc, if the assignment is
-// permissible by sharingKey and backendKey.
-func (a *Allocator) Assign(svc string, ip net.IP, ports []Port, sharingKey, backendKey string) (string, error) {
+// permissible by sharingKey.
+func (a *Allocator) Assign(svc string, ip net.IP, ports []Port, sharingKey string) (string, error) {
 	pool := poolFor(a.pools, ip)
 	if pool == "" {
 		return "", fmt.Errorf("%q is not allowed in config", ip)
 	}
 	sk := &Key{
 		Sharing: sharingKey,
-		Backend: backendKey,
 	}
 
 	// Does the IP already have allocs? If so, needs to be the same
@@ -126,7 +125,7 @@ func (a *Allocator) Unassign(svc string) bool {
 }
 
 // AllocateFromPool assigns an available IP from pool to service.
-func (a *Allocator) AllocateFromPool(svc string, poolName string, ports []Port, sharingKey, backendKey string) (net.IP, error) {
+func (a *Allocator) AllocateFromPool(svc string, poolName string, ports []Port, sharingKey string) (net.IP, error) {
 	var ip net.IP
 
 	pool := a.pools[poolName]
@@ -136,7 +135,6 @@ func (a *Allocator) AllocateFromPool(svc string, poolName string, ports []Port, 
 
 	sk := &Key{
 		Sharing: sharingKey,
-		Backend: backendKey,
 	}
 	ip, err := pool.AssignNext(svc, ports, sk)
 	if err != nil {
@@ -159,9 +157,9 @@ func (a *Allocator) AllocateFromPool(svc string, poolName string, ports []Port, 
 }
 
 // Allocate assigns any available and assignable IP to service.
-func (a *Allocator) Allocate(svc string, ports []Port, sharingKey, backendKey string) (string, net.IP, error) {
+func (a *Allocator) Allocate(svc string, ports []Port, sharingKey string) (string, net.IP, error) {
 	if alloc := a.allocated[svc]; alloc != nil {
-		if _, err := a.Assign(svc, alloc.ip, ports, sharingKey, backendKey); err != nil {
+		if _, err := a.Assign(svc, alloc.ip, ports, sharingKey); err != nil {
 			return "", nil, err
 		}
 		return alloc.pool, alloc.ip, nil
@@ -171,7 +169,7 @@ func (a *Allocator) Allocate(svc string, ports []Port, sharingKey, backendKey st
 		if !a.pools[poolName].AutoAssign() {
 			continue
 		}
-		if ip, err := a.AllocateFromPool(svc, poolName, ports, sharingKey, backendKey); err == nil {
+		if ip, err := a.AllocateFromPool(svc, poolName, ports, sharingKey); err == nil {
 			return poolName, ip, nil
 		}
 	}
