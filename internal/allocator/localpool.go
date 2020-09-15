@@ -35,21 +35,16 @@ type LocalPool struct {
 
 	portsInUse map[string]map[Port]string // ip.String() -> Port -> svc
 
-	// If false, prevents IP addresses from being automatically assigned
-	// from this pool.
-	autoAssign bool
-
 	subnetV4    string
 	aggregation string
 }
 
-func NewLocalPool(autoassign bool, rawrange string, subnet string, aggregation string) (*LocalPool, error) {
+func NewLocalPool(rawrange string, subnet string, aggregation string) (*LocalPool, error) {
 	iprange, err := NewIPRange(rawrange)
 	if err != nil {
 		return nil, err
 	}
 	return &LocalPool{
-		autoAssign:     autoassign,
 		addresses:      &iprange,
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
@@ -223,9 +218,4 @@ func (p LocalPool) Contains(ip net.IP) bool {
 		return p.addresses.Contains(ip)
 	}
 	return false
-}
-
-// AutoAssign indicates whether this pool is available for autoassign.
-func (p LocalPool) AutoAssign() bool {
-  return p.autoAssign
 }

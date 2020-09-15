@@ -65,7 +65,7 @@ func (c *controller) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) 
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", name, err)
 		return k8s.SyncStateSuccess
 	}
-	c.logger.Log("event", "ipAllocated", "ip", lbIP, "pool", pool, "msg", "IP address assigned by controller")
+	c.logger.Log("event", "ipAllocated", "ip", lbIP, "pool", pool, "service", name)
 	c.client.Infof(svc, "IPAllocated", "Assigned IP %q", lbIP)
 
 	// we have an IP selected somehow, so program the data plane

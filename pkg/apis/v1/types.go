@@ -35,7 +35,6 @@ type ServiceGroup struct {
 // Acnodal's EGW). For examples, see the "config/" directory in the
 // PureLB source tree.
 type ServiceGroupSpec struct {
-	AutoAssign bool                   `json:"auto-assign"`
 	Local      *ServiceGroupLocalSpec `json:"local"`
 	EGW        *ServiceGroupEGWSpec   `json:"egw"`
 }

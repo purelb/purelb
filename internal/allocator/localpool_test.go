@@ -18,7 +18,7 @@ var(
 func TestInUse(t *testing.T) {
 	ip := net.ParseIP("192.168.1.1")
 	ip2 := net.ParseIP("192.168.1.2")
-	p := mustLocalPool(t, "192.168.1.1/32", true)
+	p := mustLocalPool(t, "192.168.1.1/32")
 	p.Assign(ip2, []Port{}, "svc1", nil)
 	assert.Equal(t, 1, p.InUse())
 	p.Assign(ip, []Port{}, "svc2", nil)
@@ -33,7 +33,7 @@ func TestInUse(t *testing.T) {
 
 func TestServicesOn(t *testing.T) {
 	ip2 := net.ParseIP("192.168.1.2")
-	p := mustLocalPool(t, "192.168.1.1/32", true)
+	p := mustLocalPool(t, "192.168.1.1/32")
 	p.Assign(ip2, []Port{http}, "svc1", &key1)
 	assert.Equal(t, []string{"svc1"}, p.servicesOnIP(ip2))
 	p.Assign(ip2, []Port{smtp}, "svc2", &key1)
@@ -44,7 +44,7 @@ func TestServicesOn(t *testing.T) {
 
 func TestSharingKeys(t *testing.T) {
 	ip := net.ParseIP("192.168.1.1")
-	p := mustLocalPool(t, "192.168.1.1/32", true)
+	p := mustLocalPool(t, "192.168.1.1/32")
 	p.Assign(ip, []Port{}, "svc1", &key1)
 	assert.Equal(t, &key1, p.SharingKey(ip))
 	p.Release(ip, "svc1")
@@ -52,7 +52,7 @@ func TestSharingKeys(t *testing.T) {
 }
 
 func TestAvailable(t *testing.T) {
-	p := mustLocalPool(t, "192.168.1.1/32", true)
+	p := mustLocalPool(t, "192.168.1.1/32")
 	ip := net.ParseIP("192.168.1.1")
 
 	// no assignment, should be available
@@ -72,7 +72,7 @@ func TestAvailable(t *testing.T) {
 }
 
 func TestAssignNext(t *testing.T) {
-	p := mustLocalPool(t, "192.168.1.0/31", true)
+	p := mustLocalPool(t, "192.168.1.0/31")
 
 	// The pool has two addresses; allocate both of them
 	ip, err := p.AssignNext("svc1", []Port{http}, &key1)

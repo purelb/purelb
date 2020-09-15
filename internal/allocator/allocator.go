@@ -158,20 +158,16 @@ func (a *Allocator) AllocateFromPool(svc string, poolName string, ports []Port, 
 
 // Allocate assigns any available and assignable IP to service.
 func (a *Allocator) Allocate(svc string, ports []Port, sharingKey string) (string, net.IP, error) {
+	// if we have already allocated an address for this service then
+	// return it
 	if alloc := a.allocated[svc]; alloc != nil {
-		if _, err := a.Assign(svc, alloc.ip, ports, sharingKey); err != nil {
-			return "", nil, err
-		}
 		return alloc.pool, alloc.ip, nil
 	}
 
-	for poolName := range a.pools {
-		if !a.pools[poolName].AutoAssign() {
-			continue
-		}
-		if ip, err := a.AllocateFromPool(svc, poolName, ports, sharingKey); err == nil {
-			return poolName, ip, nil
-		}
+	// we need an address but no pool was specified so it's either the
+	// "default" pool or nothing
+	if ip, err := a.AllocateFromPool(svc, "default", ports, sharingKey); err == nil {
+		return "default", ip, nil
 	}
 
 	return "", nil, errors.New("no available IPs")
@@ -235,13 +231,13 @@ func parseConfig(groups []*v1.ServiceGroup) (map[string]Pool, error) {
 
 func parseGroup(name string, group v1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
-		ret, err := NewLocalPool(group.AutoAssign, group.Local.Pool, group.Local.Subnet, group.Local.Aggregation)
+		ret, err := NewLocalPool(group.Local.Pool, group.Local.Subnet, group.Local.Aggregation)
 		if err != nil {
 			return nil, err
 		}
 		return *ret, nil
 	} else if group.EGW != nil {
-		ret, err := NewEGWPool(group.AutoAssign, group.EGW.URL, group.EGW.Aggregation)
+		ret, err := NewEGWPool(group.EGW.URL, group.EGW.Aggregation)
 		if err != nil {
 			return nil, err
 		}

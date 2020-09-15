@@ -112,7 +112,6 @@ func TestControllerConfig(t *testing.T) {
 			&purelbv1.ServiceGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: "default"},
 				Spec: purelbv1.ServiceGroupSpec{
-					AutoAssign: true,
 					Local: &purelbv1.ServiceGroupLocalSpec{
 						Pool: "1.2.3.0/24",
 					},
@@ -172,8 +171,8 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	cfg := &purelbv1.Config{
 		Groups: []*purelbv1.ServiceGroup{
 			&purelbv1.ServiceGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "default"},
 				Spec: purelbv1.ServiceGroupSpec{
-					AutoAssign: true,
 					Local: &purelbv1.ServiceGroupLocalSpec{
 						Pool: "1.2.3.0/32",
 					},

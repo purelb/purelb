@@ -46,7 +46,6 @@ type Pool interface {
 	Overlaps(Pool) bool
 	Contains(net.IP) bool
 	Size() uint64
-	AutoAssign() bool
 }
 
 func sharingOK(existing, new *Key) error {

@@ -15,10 +15,10 @@ import (
 func TestAssignment(t *testing.T) {
 	alloc := New()
 	alloc.pools = map[string]Pool{
-		"test0": mustLocalPool(t, "1.2.3.4/31", true),
-		"test1": mustLocalPool(t, "1000::4/127", true),
-		"test2": mustLocalPool(t, "1.2.4.0/24", true),
-		"test3": mustLocalPool(t, "1000::4:0/120", true),
+		"test0": mustLocalPool(t, "1.2.3.4/31"),
+		"test1": mustLocalPool(t, "1000::4/127"),
+		"test2": mustLocalPool(t, "1.2.4.0/24"),
+		"test3": mustLocalPool(t, "1000::4:0/120"),
 	}
 
 	tests := []struct {
@@ -269,10 +269,10 @@ func TestPoolAllocation(t *testing.T) {
 	// it will run out of IPs quickly even though there are tons
 	// available in other pools.
 	alloc.pools = map[string]Pool{
-		"not_this_one": mustLocalPool(t, "192.168.0.0/16", false),
-		"test":         mustLocalPool(t, "1.2.3.4/30", false),
-		"testV6":       mustLocalPool(t, "1000::/126", false),
-		"test2":        mustLocalPool(t, "10.20.30.0/24", false),
+		"not_this_one": mustLocalPool(t, "192.168.0.0/16"),
+		"test":         mustLocalPool(t, "1.2.3.4/30"),
+		"testV6":       mustLocalPool(t, "1000::/126"),
+		"test2":        mustLocalPool(t, "10.20.30.0/24"),
 	}
 
 	validIP4s := map[string]bool{
@@ -512,15 +512,17 @@ func TestPoolAllocation(t *testing.T) {
 func TestAllocation(t *testing.T) {
 	alloc := New()
 	alloc.pools = map[string]Pool{
-		"test1":   mustLocalPool(t, "1.2.3.4/31", true),
-		"test1V6": mustLocalPool(t, "1000::4/127", true),
+		"default": mustLocalPool(t, "1.2.3.4/30"),
+		"test1V6": mustLocalPool(t, "1000::4/127"),
 	}
 
 	validIPs := map[string]bool{
-		"1.2.3.4":  true,
-		"1.2.3.5":  true,
-		"1000::4":  true,
-		"1000::5":  true,
+		"1.2.3.4": true,
+		"1.2.3.5": true,
+		"1.2.3.6": true,
+		"1.2.3.7": true,
+		"1000::4": true,
+		"1000::5": true,
 	}
 
 	tests := []struct {
@@ -613,20 +615,20 @@ func TestAllocation(t *testing.T) {
 		},
 
 		{
-			desc:   "s1 gets an IP",
-			svc:    "s1",
+			desc: "s1 gets an IP",
+			svc:  "s1",
 		},
 		{
-			desc:   "s2 gets an IP",
-			svc:    "s2",
+			desc: "s2 gets an IP",
+			svc:  "s2",
 		},
 		{
-			desc:   "s3 gets an IP",
-			svc:    "s3",
+			desc: "s3 gets an IP",
+			svc:  "s3",
 		},
 		{
-			desc:   "s4 gets an IP",
-			svc:    "s4",
+			desc: "s4 gets an IP",
+			svc:  "s4",
 		},
 		{
 			desc:    "s5 can't get an IP",
@@ -683,88 +685,10 @@ func TestAllocation(t *testing.T) {
 	}
 }
 
-func TestAutoAssign(t *testing.T) {
-	alloc := New()
-	alloc.pools = map[string]Pool{
-		"test0": mustLocalPool(t, "1.2.3.4/31", false),
-		"test1": mustLocalPool(t, "1000::4/127", false),
-		"test2": mustLocalPool(t, "1000::10/127", true),
-		"test3": mustLocalPool(t, "1.2.3.10/31", true),
-	}
-
-	validIPs := map[string]bool{
-		"1.2.3.4":  false,
-		"1.2.3.5":  false,
-		"1.2.3.10": true,
-		"1.2.3.11": true,
-		"1000::4":  false,
-		"1000::5":  false,
-		"1000::10": true,
-		"1000::11": true,
-	}
-
-	tests := []struct {
-		svc      string
-		wantErr  bool
-		unassign bool
-	}{
-		{svc: "s1"},
-		{svc: "s2"},
-		{
-			svc:     "s3",
-		},
-		{
-			svc:     "s4",
-		},
-		{
-			svc:     "s5",
-			wantErr: true,
-		},
-
-		// Clear addresses
-		{
-			svc:      "s1",
-			unassign: true,
-		},
-		{
-			svc:      "s2",
-			unassign: true,
-		},
-		{
-			svc:      "s3",
-			unassign: true,
-		},
-		{
-			svc:      "s4",
-			unassign: true,
-		},
-	}
-
-	for i, test := range tests {
-		if test.unassign {
-			alloc.Unassign(test.svc)
-			continue
-		}
-		_, ip, err := alloc.Allocate(test.svc, nil, "")
-		if test.wantErr {
-			if err == nil {
-				t.Errorf("#%d should have caused an error, but did not", i+1)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("#%d Allocate(%q, \"test\"): %s", i+1, test.svc, err)
-		}
-		if !validIPs[ip.String()] {
-			t.Errorf("#%d allocated unexpected IP %q", i+1, ip)
-		}
-	}
-}
-
 func TestPoolMetrics(t *testing.T) {
 	alloc := New()
 	alloc.pools = map[string]Pool{
-		"test": mustLocalPool(t, "1.2.3.4/30", true),
+		"test": mustLocalPool(t, "1.2.3.4/30"),
 	}
 
 	tests := []struct {
@@ -886,16 +810,16 @@ func assigned(a *Allocator, svc string) string {
 	return ip.String()
 }
 
-func mustLocalPool(t *testing.T, r string, aa bool) LocalPool {
-	p, err := NewLocalPool(aa, r, "", "")
+func mustLocalPool(t *testing.T, r string) LocalPool {
+	p, err := NewLocalPool(r, "", "")
 	if err != nil {
 		panic(err)
 	}
 	return *p
 }
 
-func mustEGWPool(t *testing.T, url string, aa bool) EGWPool {
-	p, err := NewEGWPool(aa, url, "")
+func mustEGWPool(t *testing.T, url string) EGWPool {
+	p, err := NewEGWPool(url, "")
 	if err != nil {
 		panic(err)
 	}
@@ -917,15 +841,13 @@ func ports(ports ...string) []Port {
 
 func localServiceGroup(name string, pool string) *v1.ServiceGroup {
 	return serviceGroup(name, v1.ServiceGroupSpec{
-		AutoAssign: true,
-		Local: &v1.ServiceGroupLocalSpec{Pool: pool},
+		Local:      &v1.ServiceGroupLocalSpec{Pool: pool},
 	})
 }
 
 func egwServiceGroup(name string, url string) *v1.ServiceGroup {
 	return serviceGroup(name, v1.ServiceGroupSpec{
-		AutoAssign: true,
-		EGW: &v1.ServiceGroupEGWSpec{URL: url},
+		EGW:        &v1.ServiceGroupEGWSpec{URL: url},
 	})
 }
 
