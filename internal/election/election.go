@@ -35,8 +35,6 @@ func New(cfg *Config) (Election, error) {
 	election := Election{stopCh: cfg.StopCh, logger: *cfg.Logger}
 
 	mconfig := memberlist.DefaultLANConfig()
-	// mconfig.Name MUST be spec.nodeName, as we will match it against
-	// Endpoints nodeName in usableNodes()
 	mconfig.Name = cfg.NodeName
 	mconfig.BindAddr = cfg.BindAddr
 	mconfig.BindPort = cfg.BindPort
@@ -71,23 +69,32 @@ func (e *Election) Shutdown() error {
 	return err
 }
 
-func (e *Election) Winner(name string) string {
+// Winner returns the node name of the "winning" node, i.e., the node
+// that will announce the service represented by "key".
+func (e *Election) Winner(key string) string {
 	nodes := []string{}
-	for _, node := range e.Memberlist.Members() {
+  	for _, node := range e.Memberlist.Members() {
 		nodes = append(nodes, node.Name)
 	}
 
-	// Sort the slice by the hash of node + service name. This
-	// produces an ordering of ready nodes that is unique to this
+	return election(key, nodes)[0]
+}
+
+// election conducts an election among the candidates based on the
+// provided key. The order of the candidates in the return array is
+// the result of the election.
+func election(key string, candidates []string) []string {
+	// Sort the slice by the hash of candidate name + service key. This
+	// produces an ordering of ready candidates that is unique to this
 	// service.
-	sort.Slice(nodes, func(i, j int) bool {
-		hi := sha256.Sum256([]byte(nodes[i] + "#" + name))
-		hj := sha256.Sum256([]byte(nodes[j] + "#" + name))
+	sort.Slice(candidates, func(i, j int) bool {
+		hi := sha256.Sum256([]byte(candidates[i] + "#" + key))
+		hj := sha256.Sum256([]byte(candidates[j] + "#" + key))
 
 		return bytes.Compare(hi[:], hj[:]) < 0
 	})
 
-	return nodes[0]
+	return candidates
 }
 
 func event2String(e memberlist.NodeEventType) string {

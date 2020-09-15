@@ -86,7 +86,7 @@ func (c *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) e
 	}
 
 	if lbIPNet, defaultifindex, err := c.checkLocal(lbIP); err == nil {
-		if winner := c.election.Winner(name); winner == c.myNode {
+		if winner := c.election.Winner(lbIP.String()); winner == c.myNode {
 			c.logger.Log("msg", "Winner, winner, Chicken dinner", "node", c.myNode, "service", name)
 
 			c.addLocalInterface(lbIPNet, defaultifindex)
