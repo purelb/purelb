@@ -14,13 +14,10 @@ spec:
           properties:
             spec:
               type: object
-              required: ["auto-assign"]
               oneOf:
               - required: ["local"]
               - required: ["egw"]
               properties:
-                auto-assign:
-                  type: boolean
                 local:
                   type: object
                   properties:

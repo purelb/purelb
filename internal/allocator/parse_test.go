@@ -29,11 +29,11 @@ func TestParse(t *testing.T) {
 				egwServiceGroup("pool5", "url"),
 			},
 			want: map[string]Pool{
-				"pool1": mustLocalPool(t, "10.20.0.0/16", true),
-				"pool2": mustLocalPool(t, "30.0.0.0/8", true),
-				"pool3": mustLocalPool(t, "40.0.0.0/25", true),
-				"pool4": mustLocalPool(t, "2001:db8::/126", true),
-				"pool5": mustEGWPool(t, "url", true),
+				"pool1": mustLocalPool(t, "10.20.0.0/16"),
+				"pool2": mustLocalPool(t, "30.0.0.0/8"),
+				"pool3": mustLocalPool(t, "40.0.0.0/25"),
+				"pool4": mustLocalPool(t, "2001:db8::/126"),
+				"pool5": mustEGWPool(t, "url"),
 			},
 		},
 

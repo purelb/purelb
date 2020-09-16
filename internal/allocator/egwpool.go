@@ -39,15 +39,11 @@ type EGWPool struct {
 
 	portsInUse map[string]map[Port]string // ip.String() -> Port -> svc
 
-	// If false, prevents IP addresses from being automatically assigned
-	// from this pool.
-	autoAssign bool
-
 	subnetV4    string
 	aggregation string
 }
 
-func NewEGWPool(autoassign bool, rawurl string, aggregation string) (*EGWPool, error) {
+func NewEGWPool(rawurl string, aggregation string) (*EGWPool, error) {
 	// Make sure that we've got credentials for Netbox
 	user_token, is_set := os.LookupEnv("NETBOX_USER_TOKEN")
 	if !is_set {
@@ -67,7 +63,6 @@ func NewEGWPool(autoassign bool, rawurl string, aggregation string) (*EGWPool, e
 		url:            rawurl,
 		user_token:     user_token,
 		netbox:         *netbox.New(url.String(), user_token),
-		autoAssign:     autoassign,
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
@@ -194,9 +189,4 @@ func (p EGWPool) Overlaps(other Pool) bool {
 // address within this Pool.  It returns true if so, false otherwise.
 func (p EGWPool) Contains(ip net.IP) bool {
 	return false
-}
-
-// AutoAssign indicates whether this pool is available for autoassign.
-func (p EGWPool) AutoAssign() bool {
-	return p.autoAssign
 }
