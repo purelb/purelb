@@ -79,18 +79,12 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	return nil
 }
 
-func (a *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) error {
+func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endpoints) error {
 	a.logger.Log("event", "announceService", "announcer", "local", "service", name)
 
 	// if we haven't been configured then we won't announce
 	if a.config == nil {
 		a.logger.Log("event", "noConfig")
-		return nil
-	}
-
-	// k8s may send us multiple events to advertize same address
-	if _, ok := a.svcAdvs[name]; ok {
-		a.logger.Log("event", "duplicateAnnouncement")
 		return nil
 	}
 
@@ -117,14 +111,26 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) e
 			svc.Annotations[nodeAnnotation] = a.myNode
 			svc.Annotations[intAnnotation] = defaultif.Attrs().Name
 		} else {
+			// We lost the election so we'll withdraw any announcement that
+			// we might have been making
 			a.logger.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", name)
+			return a.DeleteBalancer(name, "lostElection")
 		}
 	} else {
 
-		// the service address is non-local, i.e., it's not within the
-		// same subnet as our primary interface.  We'll add this address
-		// to the "dummy" interface so routing software (e.g., bird) will
-		// announce routes for it
+		// The service address is non-local, i.e., it's not on the same
+		// subnet as our default interface.
+
+		// Should we announce?
+		// No, if externalTrafficPolicy is Local && there's no ready local endpoint
+		// Yes, in all other cases
+		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, a.myNode) {
+			a.logger.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", name)
+			return a.DeleteBalancer(name, "noEndpoints")
+		}
+
+		// add this address to the "dummy" interface so routing software
+		// (e.g., bird) will announce routes for it
 		poolName, gotName := svc.Annotations["purelb.io/allocated-from"]
 		if gotName {
 			allocPool := a.groups[poolName]
@@ -141,10 +147,10 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) e
 
 func (a *announcer) DeleteBalancer(name, reason string) error {
 
-	// if the service isn't in our database then we can't withdraw the address
+	// if the service isn't in our database then we weren't announcing
+	// it so we can't withdraw the address but it's OK
 	svcAddr, ok := a.svcAdvs[name]
 	if !ok {
-		a.logger.Log("event", "withdrawAnnouncement", "service", name, "reason", reason, "msg", "service unknown")
 		return nil
 	}
 
@@ -185,4 +191,34 @@ func (a *announcer) Shutdown() {
 
 func (a *announcer) SetElection(election *election.Election) {
 	a.election = election
+}
+
+// nodeHasHealthyEndpoint returns true if node has at least one
+// healthy endpoint.
+func nodeHasHealthyEndpoint(eps *v1.Endpoints, node string) bool {
+	ready := map[string]bool{}
+	for _, subset := range eps.Subsets {
+		for _, ep := range subset.Addresses {
+			if ep.NodeName == nil || *ep.NodeName != node {
+				continue
+			}
+			if _, ok := ready[ep.IP]; !ok {
+				// Only set true if nothing else has expressed an
+				// opinion. This means that false will take precedence
+				// if there's any unready ports for a given endpoint.
+				ready[ep.IP] = true
+			}
+		}
+		for _, ep := range subset.NotReadyAddresses {
+			ready[ep.IP] = false
+		}
+	}
+
+	for _, r := range ready {
+		if r {
+			// At least one fully healthy endpoint on this node
+			return true
+		}
+	}
+	return false
 }
