@@ -12,7 +12,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package lbnodeagent
+
+package main
 
 import (
 	"net"
@@ -20,6 +21,7 @@ import (
 	"purelb.io/internal/acnodal"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
+	"purelb.io/internal/lbnodeagent"
 	"purelb.io/internal/local"
 	purelbv1 "purelb.io/pkg/apis/v1"
 
@@ -32,7 +34,7 @@ type controller struct {
 	logger     log.Logger
 	myNode     string
 	prometheus *prometheus.GaugeVec
-	announcers []Announcer
+	announcers []lbnodeagent.Announcer
 	svcIP      map[string]net.IP // service name -> assigned IP
 }
 
@@ -41,7 +43,7 @@ func NewController(l log.Logger, myNode string, prometheus *prometheus.GaugeVec)
 		logger:     l,
 		myNode:     myNode,
 		prometheus: prometheus,
-		announcers: []Announcer{
+		announcers: []lbnodeagent.Announcer{
 			local.NewAnnouncer(l, myNode),
 			acnodal.NewAnnouncer(l, myNode),
 		},
@@ -112,8 +114,7 @@ func (c *controller) deleteBalancer(name, reason string) k8s.SyncState {
 }
 
 func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
-	c.logger.Log("event", "startUpdate", "msg", "start of config update")
-	defer c.logger.Log("event", "endUpdate", "msg", "end of config update")
+	c.logger.Log("op", "setConfig")
 
 	retval := k8s.SyncStateReprocessAll
 

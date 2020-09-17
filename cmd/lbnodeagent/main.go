@@ -1,3 +1,4 @@
+// Copyright 2020 Acnodal Inc.
 // Copyright 2017 Google Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +23,6 @@ import (
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
-	"purelb.io/internal/lbnodeagent"
 	"purelb.io/internal/logging"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -74,7 +74,7 @@ func main() {
 	defer logger.Log("op", "shutdown", "msg", "done")
 
 	// Set up controller
-	ctrl, err := lbnodeagent.NewController(
+	ctrl, err := NewController(
 		logger,
 		*myNode,
 		announcing,

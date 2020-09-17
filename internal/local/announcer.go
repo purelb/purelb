@@ -11,20 +11,21 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package local
 
 import (
-	"fmt"
 	"net"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+
 	"purelb.io/internal/election"
+	"purelb.io/internal/lbnodeagent"
 	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
 	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netlink/nl"
 )
 
 const (
@@ -37,274 +38,151 @@ type announcer struct {
 	myNode     string
 	nodeLabels labels.Set
 	config     *purelbv1.LBNodeAgentLocalSpec
-	svcAdvs    map[string]net.IP //svcName -> IP
+	groups     map[string]*purelbv1.ServiceGroupLocalSpec // groupName -> ServiceGroupLocalSpec
+	svcAdvs    map[string]net.IP                          // svcName -> IP
 	election   *election.Election
+	dummy      *netlink.Link
 }
 
-func NewAnnouncer(l log.Logger, node string) *announcer {
+// NewAnnouncer returns a new local Announcer.
+func NewAnnouncer(l log.Logger, node string) lbnodeagent.Announcer {
 	return &announcer{logger: l, myNode: node, svcAdvs: map[string]net.IP{}}
 }
 
-func (c *announcer) SetConfig(cfg *purelbv1.Config) error {
-	c.logger.Log("event", "newConfig")
+func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
+	a.logger.Log("event", "newConfig")
 
 	// the default is nil which means that we don't announce
-	c.config = nil
+	a.config = nil
 
-	// if there's a "Local" config then we'll announce
+	// if there's a "Local" agent config then we'll announce
 	for _, agent := range cfg.Agents {
 		if spec := agent.Spec.Local; spec != nil {
-			c.config = spec
+			a.config = spec
+
+			// stash the local service group configs
+			a.groups = map[string]*purelbv1.ServiceGroupLocalSpec{}
+			for _, group := range cfg.Groups {
+				if group.Spec.Local != nil {
+					a.groups[group.ObjectMeta.Name] = group.Spec.Local
+				}
+			}
 
 			// now that we've got a config we can create the dummy interface
-			c.createDummyInterface(spec.ExtLBInterface)
+			var err error
+			if a.dummy, err = addDummyInterface(spec.ExtLBInterface); err != nil {
+				return err
+			}
 		}
 	}
 
 	return nil
 }
 
-func (c *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) error {
-	c.logger.Log("event", "announceService", "announcer", "local", "service", name)
+func (a *announcer) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) error {
+	a.logger.Log("event", "announceService", "announcer", "local", "service", name)
 
 	// if we haven't been configured then we won't announce
-	if c.config == nil {
-		c.logger.Log("event", "noConfig")
+	if a.config == nil {
+		a.logger.Log("event", "noConfig")
 		return nil
 	}
 
 	// k8s may send us multiple events to advertize same address
-	if _, ok := c.svcAdvs[name]; ok {
-		c.logger.Log("event", "duplicateAnnouncement")
+	if _, ok := a.svcAdvs[name]; ok {
+		a.logger.Log("event", "duplicateAnnouncement")
 		return nil
 	}
 
+	// validate the allocated address
 	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
 	if lbIP == nil {
-		c.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP)
+		a.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", svc.Status.LoadBalancer.Ingress[0].IP)
 		return nil
 	}
 
-	if lbIPNet, defaultifindex, err := c.checkLocal(lbIP); err == nil {
-		if winner := c.election.Winner(lbIP.String()); winner == c.myNode {
-			c.logger.Log("msg", "Winner, winner, Chicken dinner", "node", c.myNode, "service", name)
+	if lbIPNet, defaultif, err := checkLocal(lbIP); err == nil {
 
-			c.addLocalInterface(lbIPNet, defaultifindex)
-			c.svcAdvs[name] = lbIP
-			svc.Annotations[nodeAnnotation] = c.myNode
-			ifa, _ := net.InterfaceByIndex(defaultifindex)
-			svc.Annotations[intAnnotation] = ifa.Name
+		// the service address is local, i.e., it's within the same subnet
+		// as our primary interface.  We can announce the address if we
+		// win the election
+		if winner := a.election.Winner(lbIP.String()); winner == a.myNode {
+
+			// we won the election so we'll add the service address to our
+			// node's default interface so linux will respond to ARP
+			// requests for it
+			a.logger.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", name)
+
+			addNetwork(lbIPNet, defaultif)
+			svc.Annotations[nodeAnnotation] = a.myNode
+			svc.Annotations[intAnnotation] = defaultif.Attrs().Name
 		} else {
-			c.logger.Log("msg", "notWinner", "node", c.myNode, "winner", winner, "service", name)
+			a.logger.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", name)
 		}
 	} else {
-		c.logger.Log("msg", "notAnnouncing", "node", c.myNode, "service", name, "reason", err)
+
+		// the service address is non-local, i.e., it's not within the
+		// same subnet as our primary interface.  We'll add this address
+		// to the "dummy" interface so routing software (e.g., bird) will
+		// announce routes for it
+		poolName, gotName := svc.Annotations["purelb.io/allocated-from"]
+		if gotName {
+			allocPool := a.groups[poolName]
+			a.logger.Log("msg", "announcingNonLocal", "node", a.myNode, "service", name, "reason", err)
+			addVirtualInt(lbIP, *a.dummy, allocPool.Subnet, allocPool.Aggregation)
+		}
 	}
+
+	// add the address to our announcement database
+	a.svcAdvs[name] = lbIP
 
 	return nil
 }
 
-func (c *announcer) DeleteBalancer(name, reason string) error {
-	svcAddr, ok := c.svcAdvs[name]
+func (a *announcer) DeleteBalancer(name, reason string) error {
 
 	// if the service isn't in our database then we can't withdraw the address
+	svcAddr, ok := a.svcAdvs[name]
 	if !ok {
-		c.logger.Log("event", "withdrawAnnouncement", "service", name, "reason", reason, "msg", "service unknown")
+		a.logger.Log("event", "withdrawAnnouncement", "service", name, "reason", reason, "msg", "service unknown")
 		return nil
 	}
 
 	// delete this service from our announcement database
-	delete(c.svcAdvs, name)
+	delete(a.svcAdvs, name)
 
 	// if any other service is still using that address then we don't
 	// want to withdraw it
-	for _, addr := range c.svcAdvs {
+	for _, addr := range a.svcAdvs {
 		if addr.Equal(svcAddr) {
-			c.logger.Log("event", "withdrawAnnouncement", "service", name, "reason", reason, "msg", "ip in use by other service")
+			a.logger.Log("event", "withdrawAnnouncement", "service", name, "reason", reason, "msg", "ip in use by other service")
 			return nil
 		}
 	}
 
-	c.logger.Log("event", "withdrawAnnouncement", "msg", "Delete balancer", "service", name, "reason", reason)
-	c.deletesvcAdv(svcAddr)
+	a.logger.Log("event", "withdrawAnnouncement", "msg", "Delete balancer", "service", name, "reason", reason)
+	deleteAddr(svcAddr)
 
 	return nil
 }
 
-func (c *announcer) SetNode(node *v1.Node) error {
-	c.logger.Log("event", "updatedNodes", "msg", "Node announced", "name", node.Name)
+func (a *announcer) SetNode(node *v1.Node) error {
+	a.logger.Log("event", "updatedNodes", "msg", "Node announced", "name", node.Name)
 	return nil
 }
 
 // Shutdown cleans up changes that we've made to the local networking
 // configuration.
-func (c *announcer) Shutdown() {
+func (a *announcer) Shutdown() {
 	// withdraw any announcements that we have made
-	for _, ip := range c.svcAdvs {
-		c.deletesvcAdv(ip)
+	for _, ip := range a.svcAdvs {
+		deleteAddr(ip)
 	}
 
 	// remove the "dummy" interface
-	c.removeInterface(c.config.ExtLBInterface)
+	removeInterface(a.config.ExtLBInterface)
 }
 
-// checkLocal determines whether the provided net.IP is on the same
-// network as the machine on which this code is running.  If the
-// interface is local then the int return value will be the default
-// interface index and error will be nil.  If error is non-nil then
-// the address is non-local.
-func (c *announcer) checkLocal(lbIP net.IP) (net.IPNet, int, error) {
-
-	var err error
-	var defaultifindex int
-	var lbIPNet net.IPNet = net.IPNet{IP: lbIP}
-	var family int = nl.FAMILY_V6
-	if lbIP.To4() != nil {
-		family = nl.FAMILY_V4
-	}
-
-	defaultifindex, err = defaultInterface(family)
-	if err != nil {
-		return lbIPNet, defaultifindex, err
-	}
-
-	defaultint, _ := netlink.LinkByIndex(defaultifindex)
-	defaddrs, _ := netlink.AddrList(defaultint, family)
-
-	if family == nl.FAMILY_V4 {
-		for _, addrs := range defaddrs {
-			localnet := addrs.IPNet
-
-			if localnet.Contains(lbIPNet.IP) {
-				lbIPNet.Mask = localnet.Mask
-			}
-		}
-
-	} else {
-		for _, addrs := range defaddrs {
-
-			/*  ifa_flags from linux source if_addr.h
-
-			#define IFA_F_SECONDARY		0x01
-			#define IFA_F_TEMPORARY		IFA_F_SECONDARY
-
-			#define	IFA_F_NODAD		0x02
-			#define IFA_F_OPTIMISTIC	0x04
-			#define IFA_F_DADFAILED		0x08
-			#define	IFA_F_HOMEADDRESS	0x10
-			#define IFA_F_DEPRECATED	0x20
-			#define IFA_F_TENTATIVE		0x40
-			#define IFA_F_PERMANENT		0x80
-			#define IFA_F_MANAGETEMPADDR	0x100
-			#define IFA_F_NOPREFIXROUTE	0x200
-			#define IFA_F_MCAUTOJOIN	0x400
-			#define IFA_F_STABLE_PRIVACY	0x800
-
-			*/
-
-			localnet := addrs.IPNet
-
-			if localnet.Contains(lbIPNet.IP) == true && addrs.Flags < 256 {
-				lbIPNet.Mask = localnet.Mask
-			}
-		}
-	}
-
-	if lbIPNet.Mask == nil {
-		return lbIPNet, defaultifindex, fmt.Errorf("non-local address")
-	}
-
-	return lbIPNet, defaultifindex, nil
-}
-
-func (c *announcer) addLocalInterface(lbIPNet net.IPNet, defaultifindex int) error {
-	c.logger.Log("event", "addLocalInt", "ip-address", lbIPNet.String(), "index", defaultifindex)
-
-	addr, _ := netlink.ParseAddr(lbIPNet.String())
-	ifindex, _ := netlink.LinkByIndex(defaultifindex)
-	err := netlink.AddrReplace(ifindex, addr)
-	if err != nil {
-		return fmt.Errorf("could not add %v: to %v %v", addr, ifindex, err)
-	}
-	return nil
-}
-
-func (c *announcer) deletesvcAdv(lbIP net.IP) error {
-	hostints, _ := net.Interfaces()
-	for _, hostint := range hostints {
-		addrs, _ := hostint.Addrs()
-		for _, ipnet := range addrs {
-
-			ipaddr, _, _ := net.ParseCIDR(ipnet.String())
-
-			if lbIP.Equal(ipaddr) {
-				ifindex, _ := netlink.LinkByIndex(hostint.Index)
-				deladdr, _ := netlink.ParseAddr(ipnet.String())
-				err := netlink.AddrDel(ifindex, deladdr)
-				if err != nil {
-					return fmt.Errorf("could not add %v: to %v %v", deladdr, ifindex, err)
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-func (c *announcer) createDummyInterface(dummyint string) error {
-
-	c.logger.Log("setting up dummy interface", dummyint)
-
-	_, err := netlink.LinkByName(dummyint)
-	if err != nil {
-
-		dumint := netlink.NewLinkAttrs()
-		dumint.Name = dummyint
-		targetint := &netlink.Dummy{LinkAttrs: dumint}
-		if err == netlink.LinkAdd(targetint) {
-			return fmt.Errorf("failed adding dummy int %s: ", dummyint)
-		}
-		netlink.LinkSetUp(targetint)
-	}
-
-	return nil
-}
-
-// removeInterface removes the interface with the provided name. It
-// returns nil if everything goes fine, an error otherwise.
-func (c *announcer) removeInterface(name string) error {
-	link, err := netlink.LinkByName(name)
-	if err == nil {
-		if err = netlink.LinkDel(link); err == nil {
-			return nil
-		}
-	}
-
-	c.logger.Log("error", err)
-	return err
-}
-
-// defaultInterface finds the default interface (i.e., the one with
-// the default route) for the given IP family.
-func defaultInterface(family int) (int, error) {
-	var defaultifindex int = 0
-
-	rt, _ := netlink.RouteList(nil, family)
-	for _, r := range rt {
-		// check each route to see if it's the default (i.e., no destination)
-		if r.Dst == nil && defaultifindex == 0 {
-			// this is the first default route we've seen
-			defaultifindex = r.LinkIndex
-		} else if r.Dst == nil && defaultifindex != 0 {
-			// if there's a *second* default route then we're in trouble
-			return -1, fmt.Errorf("error, cannot determine default in, multiple default routes")
-		}
-	}
-
-	// there's only one default route
-	return defaultifindex, nil
-}
-
-func (c *announcer) SetElection(election *election.Election) {
-	c.election = election
+func (a *announcer) SetElection(election *election.Election) {
+	a.election = election
 }
