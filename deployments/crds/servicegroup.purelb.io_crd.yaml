@@ -27,6 +27,7 @@ spec:
                       type: string
                     aggregation:
                       type: string
+                      default: default
                 egw:
                   type: object
                   properties:
@@ -34,6 +35,7 @@ spec:
                       type: string
                     aggregation:
                       type: string
+                      default: default
             status:
               type: object
               properties:

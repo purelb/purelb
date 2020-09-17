@@ -11,15 +11,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package lbnodeagent
 
 import (
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 	"purelb.io/internal/election"
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
-// Announces service IP addresses
+// Announcer announces service IP addresses.
 type Announcer interface {
 	SetConfig(*purelbv1.Config) error
 	SetBalancer(string, *v1.Service, *v1.Endpoints) error
