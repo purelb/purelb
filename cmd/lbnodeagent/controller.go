@@ -128,17 +128,6 @@ func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
 	return retval
 }
 
-func (c *controller) SetNode(node *v1.Node) k8s.SyncState {
-	retval := k8s.SyncStateSuccess
-	for _, announcer := range c.announcers {
-		if err := announcer.SetNode(node); err != nil {
-			c.logger.Log("op", "setNode", "error", err)
-			retval = k8s.SyncStateError
-		}
-	}
-	return retval
-}
-
 func (c *controller) SetElection(election *election.Election) {
 	for _, announcer := range c.announcers {
 		announcer.SetElection(election)
