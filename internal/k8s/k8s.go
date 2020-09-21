@@ -181,7 +181,7 @@ func New(cfg *Config) (*Client, error) {
 	c.serviceDeleted = cfg.ServiceDeleted
 	c.syncFuncs = append(c.syncFuncs, c.svcInformer.HasSynced)
 
-	// Endpoint Watcher (only used by Nodes, not Allocators)
+	// Endpoint Watcher (used by node agents, not the allocator)
 
 	if cfg.ReadEndpoints {
 		epHandlers := cache.ResourceEventHandlerFuncs{
@@ -192,10 +192,22 @@ func New(cfg *Config) (*Client, error) {
 				}
 			},
 			UpdateFunc: func(old interface{}, new interface{}) {
-				// FIXME: we were getting spammed by updates to
-				// kube-system/kube-scheduler and
-				// kube-system/kube-controller-manager so I'm disabling
-				// endpoint updates for the time being
+				key, err := cache.MetaNamespaceKeyFunc(new)
+				if err == nil {
+					// there are two "special" endpoints:
+					// kube-system/kube-controller-manager and
+					// kube-system/kube-scheduler. They cause event spam because
+					// they hold the leader election leases which update
+					// frequently. These events are useless so we want to return
+					// silently and not spam the logs. We can remove this check
+					// if https://github.com/kubernetes/kubernetes/issues/34627
+					// is ever fixed.
+					if key == "kube-system/kube-controller-manager" || key == "kube-system/kube-scheduler" {
+						return
+					}
+
+					c.queue.Add(svcKey(key))
+				}
 			},
 			DeleteFunc: func(obj interface{}) {
 				key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
@@ -374,17 +386,19 @@ func (c *Client) Errorf(svc *corev1.Service, kind, msg string, args ...interface
 func (c *Client) sync(key interface{}) SyncState {
 	defer c.queue.Done(key)
 
-	switch k := key.(type) {
+	switch key.(type) {
 	case svcKey:
-		l := log.With(c.logger, "service", string(k))
-		svcMaybe, exists, err := c.svcIndexer.GetByKey(string(k))
+		svcName := string(key.(svcKey))
+		l := log.With(c.logger, "service", svcName)
+
+		svcMaybe, exists, err := c.svcIndexer.GetByKey(svcName)
 		if err != nil {
 			l.Log("op", "getService", "error", err, "msg", "failed to get service")
 			return SyncStateError
 		}
 		if !exists {
 			l.Log("op", "getService", "msg", "doesn't exist")
-			return c.serviceDeleted(string(k))
+			return c.serviceDeleted(svcName)
 		}
 		svc := svcMaybe.(*corev1.Service)
 
@@ -395,7 +409,7 @@ func (c *Client) sync(key interface{}) SyncState {
 
 		var eps *corev1.Endpoints
 		if c.epIndexer != nil {
-			epsIntf, exists, err := c.epIndexer.GetByKey(string(k))
+			epsIntf, exists, err := c.epIndexer.GetByKey(svcName)
 			if err != nil {
 				l.Log("op", "getEndpoints", "error", err, "msg", "failed to get endpoints")
 				return SyncStateError
@@ -410,7 +424,7 @@ func (c *Client) sync(key interface{}) SyncState {
 		svcOriginal := svc.DeepCopy()
 
 		// tell the app about the service change
-		status := c.serviceChanged(string(k), svc, eps)
+		status := c.serviceChanged(svcName, svc, eps)
 
 		// write any changes to the service back to the cluster
 		if status == SyncStateSuccess {
@@ -424,8 +438,10 @@ func (c *Client) sync(key interface{}) SyncState {
 		return status
 
 	case nodeKey:
-		l := log.With(c.logger, "node", string(k))
-		n, exists, err := c.nodeIndexer.GetByKey(string(k))
+		nodeName := string(key.(nodeKey))
+
+		l := log.With(c.logger, "node", nodeName)
+		n, exists, err := c.nodeIndexer.GetByKey(nodeName)
 		if err != nil {
 			l.Log("op", "getNode", "error", err, "msg", "failed to get node")
 			return SyncStateError
