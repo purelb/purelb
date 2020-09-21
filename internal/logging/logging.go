@@ -7,6 +7,7 @@ import (
 	"flag"
 	"os"
 	"regexp"
+	"strings"
 
 	"github.com/go-kit/kit/log"
 	"k8s.io/klog"
@@ -31,6 +32,7 @@ var (
 // os.Exit(1).
 func Init() log.Logger {
 	l := log.NewJSONLogger(log.NewSyncWriter(os.Stdout))
+	l = &filterLogger{downstream: l}
 
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -104,4 +106,32 @@ func deformat(b []byte) (level string, caller, msg string) {
 	msg = string(ms[9])
 
 	return
+}
+
+type filterLogger struct {
+	downstream log.Logger
+}
+
+// Log implements the gokit logging Log() function. This version looks
+// for memberlist DEBUG-level messages and sends them to the bit
+// bucket. They're much more annoying than they are useful.
+func (l *filterLogger) Log(keyvals ...interface{}) error {
+	for i, arg := range keyvals {
+		str, ok := arg.(string)
+
+		// look for the "msg" key - the next item will contain the message
+		// from memberlist
+		if ok && str == "msg" {
+			message := keyvals[i+1].(string)
+
+			// if the message is a memberlist DEBUG message then we don't
+			// want to see it
+			if strings.Contains(message, "[DEBUG] memberlist: ") {
+				return nil
+			}
+		}
+	}
+
+	// it's *not* a memberlist DEBUG message so pass it through
+	return l.downstream.Log(keyvals...)
 }
