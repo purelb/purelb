@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/memberlist"
 )
 
+// Config provides the configuration data that New() needs.
 type Config struct {
 	Namespace string
 	NodeName  string
@@ -73,7 +74,7 @@ func (e *Election) Shutdown() error {
 // that will announce the service represented by "key".
 func (e *Election) Winner(key string) string {
 	nodes := []string{}
-  	for _, node := range e.Memberlist.Members() {
+	for _, node := range e.Memberlist.Members() {
 		nodes = append(nodes, node.Name)
 	}
 

@@ -94,7 +94,6 @@ func main() {
 		ServiceChanged: ctrl.ServiceChanged,
 		ServiceDeleted: ctrl.DeleteBalancer,
 		ConfigChanged:  ctrl.SetConfig,
-		NodeChanged:    ctrl.SetNode,
 		Shutdown:       ctrl.Shutdown,
 	})
 	if err != nil {

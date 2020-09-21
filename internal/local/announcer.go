@@ -167,11 +167,6 @@ func (a *announcer) DeleteBalancer(name, reason string) error {
 	return nil
 }
 
-func (a *announcer) SetNode(node *v1.Node) error {
-	a.logger.Log("event", "updatedNodes", "msg", "Node announced", "name", node.Name)
-	return nil
-}
-
 // Shutdown cleans up changes that we've made to the local networking
 // configuration.
 func (a *announcer) Shutdown() {

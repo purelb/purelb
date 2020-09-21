@@ -15,7 +15,8 @@
 package lbnodeagent
 
 import (
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+
 	"purelb.io/internal/election"
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
@@ -25,7 +26,6 @@ type Announcer interface {
 	SetConfig(*purelbv1.Config) error
 	SetBalancer(string, *v1.Service, *v1.Endpoints) error
 	DeleteBalancer(string, string) error
-	SetNode(*v1.Node) error
 	SetElection(*election.Election)
 	Shutdown()
 }

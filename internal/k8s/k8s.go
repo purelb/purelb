@@ -49,12 +49,10 @@ type Client struct {
 	events record.EventRecorder
 	queue  workqueue.RateLimitingInterface
 
-	svcIndexer   cache.Indexer
-	svcInformer  cache.Controller
-	epIndexer    cache.Indexer
-	epInformer   cache.Controller
-	nodeIndexer  cache.Indexer
-	nodeInformer cache.Controller
+	svcIndexer  cache.Indexer
+	svcInformer cache.Controller
+	epIndexer   cache.Indexer
+	epInformer  cache.Controller
 
 	crInformerFactory externalversions.SharedInformerFactory
 	crController      Controller
@@ -64,7 +62,6 @@ type Client struct {
 	serviceChanged func(string, *corev1.Service, *corev1.Endpoints) SyncState
 	serviceDeleted func(string) SyncState
 	configChanged  func(*purelbv1.Config) SyncState
-	nodeChanged    func(*corev1.Node) SyncState
 	synced         func()
 	shutdown       func()
 }
@@ -101,14 +98,12 @@ type Config struct {
 	ServiceChanged func(string, *corev1.Service, *corev1.Endpoints) SyncState
 	ServiceDeleted func(string) SyncState
 	ConfigChanged  func(*purelbv1.Config) SyncState
-	NodeChanged    func(*corev1.Node) SyncState
 	Synced         func()
 	Shutdown       func()
 }
 
 type svcKey string
 type cmKey string
-type nodeKey string
 type synced string
 
 // New connects to masterAddr, using kubeconfig to authenticate.
@@ -222,36 +217,6 @@ func New(cfg *Config) (*Client, error) {
 		c.syncFuncs = append(c.syncFuncs, c.epInformer.HasSynced)
 	}
 
-	// Node Watcher
-
-	if cfg.NodeChanged != nil {
-		nodeHandlers := cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				key, err := cache.MetaNamespaceKeyFunc(obj)
-				if err == nil {
-					c.queue.Add(nodeKey(key))
-				}
-			},
-			UpdateFunc: func(old interface{}, new interface{}) {
-				key, err := cache.MetaNamespaceKeyFunc(new)
-				if err == nil {
-					c.queue.Add(nodeKey(key))
-				}
-			},
-			DeleteFunc: func(obj interface{}) {
-				key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-				if err == nil {
-					c.queue.Add(nodeKey(key))
-				}
-			},
-		}
-		nodeWatcher := cache.NewListWatchFromClient(c.client.CoreV1().RESTClient(), "nodes", corev1.NamespaceAll, fields.OneTermEqualSelector("metadata.name", cfg.NodeName))
-		c.nodeIndexer, c.nodeInformer = cache.NewIndexerInformer(nodeWatcher, &corev1.Node{}, 0, nodeHandlers, cache.Indexers{})
-
-		c.nodeChanged = cfg.NodeChanged
-		c.syncFuncs = append(c.syncFuncs, c.nodeInformer.HasSynced)
-	}
-
 	// Sync Watcher
 
 	c.synced = cfg.Synced
@@ -291,9 +256,6 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 	}
 	if c.epInformer != nil {
 		go c.epInformer.Run(stopCh)
-	}
-	if c.nodeInformer != nil {
-		go c.nodeInformer.Run(stopCh)
 	}
 
 	if !cache.WaitForCacheSync(stopCh, c.syncFuncs...) {
@@ -436,22 +398,6 @@ func (c *Client) sync(key interface{}) SyncState {
 		}
 
 		return status
-
-	case nodeKey:
-		nodeName := string(key.(nodeKey))
-
-		l := log.With(c.logger, "node", nodeName)
-		n, exists, err := c.nodeIndexer.GetByKey(nodeName)
-		if err != nil {
-			l.Log("op", "getNode", "error", err, "msg", "failed to get node")
-			return SyncStateError
-		}
-		if !exists {
-			l.Log("op", "getNode", "error", "node doesn't exist in k8s, but I'm running on it!")
-			return SyncStateError
-		}
-		node := n.(*corev1.Node)
-		return c.nodeChanged(node)
 
 	case synced:
 		if c.synced != nil {

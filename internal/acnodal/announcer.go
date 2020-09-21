@@ -18,8 +18,9 @@ import (
 	"fmt"
 	"net/url"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+
 	"purelb.io/internal/election"
 	"purelb.io/internal/lbnodeagent"
 	purelbv1 "purelb.io/pkg/apis/v1"
@@ -101,10 +102,6 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 }
 
 func (a *announcer) DeleteBalancer(name, reason string) error {
-	return nil
-}
-
-func (a *announcer) SetNode(node *v1.Node) error {
 	return nil
 }
 
