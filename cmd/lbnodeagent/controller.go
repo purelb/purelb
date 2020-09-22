@@ -74,13 +74,6 @@ func (c *controller) ServiceChanged(name string, svc *v1.Service, endpoints *v1.
 		return k8s.SyncStateSuccess
 	}
 
-	// don't announce if externalTrafficPolicy is Local and there's no
-	// ready local endpoint
-	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, c.myNode) {
-		c.logger.Log("msg", "policyLocalNoEndpoints", "node", c.myNode, "service", name)
-		return c.deleteBalancer(name, "noEndpoints")
-	}
-
 	// give each announcer a chance to announce
 	announceError := k8s.SyncStateSuccess
 	for _, announcer := range c.announcers {
@@ -153,34 +146,4 @@ func (c *controller) Shutdown() {
 	for _, announcer := range c.announcers {
 		announcer.Shutdown()
 	}
-}
-
-// nodeHasHealthyEndpoint returns true if node has at least one
-// healthy endpoint.
-func nodeHasHealthyEndpoint(eps *v1.Endpoints, node string) bool {
-	ready := map[string]bool{}
-	for _, subset := range eps.Subsets {
-		for _, ep := range subset.Addresses {
-			if ep.NodeName == nil || *ep.NodeName != node {
-				continue
-			}
-			if _, ok := ready[ep.IP]; !ok {
-				// Only set true if nothing else has expressed an
-				// opinion. This means that false will take precedence
-				// if there's any unready ports for a given endpoint.
-				ready[ep.IP] = true
-			}
-		}
-		for _, ep := range subset.NotReadyAddresses {
-			ready[ep.IP] = false
-		}
-	}
-
-	for _, r := range ready {
-		if r {
-			// At least one fully healthy endpoint on this node
-			return true
-		}
-	}
-	return false
 }

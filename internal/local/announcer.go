@@ -119,6 +119,14 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 		// The service address is non-local, i.e., it's not on the same
 		// subnet as our default interface.
 
+		// Should we advertise?
+		// No, if externalTrafficPolicy is Local && there's no ready local endpoint
+		// Yes, in all other cases
+		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, a.myNode) {
+			a.logger.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", name)
+			return nil
+		}
+
 		// add this address to the "dummy" interface so routing software
 		// (e.g., bird) will announce routes for it
 		poolName, gotName := svc.Annotations[purelbv1.PoolAnnotation]
@@ -176,4 +184,34 @@ func (a *announcer) Shutdown() {
 
 func (a *announcer) SetElection(election *election.Election) {
 	a.election = election
+}
+
+// nodeHasHealthyEndpoint returns true if node has at least one
+// healthy endpoint.
+func nodeHasHealthyEndpoint(eps *v1.Endpoints, node string) bool {
+	ready := map[string]bool{}
+	for _, subset := range eps.Subsets {
+		for _, ep := range subset.Addresses {
+			if ep.NodeName == nil || *ep.NodeName != node {
+				continue
+			}
+			if _, ok := ready[ep.IP]; !ok {
+				// Only set true if nothing else has expressed an
+				// opinion. This means that false will take precedence
+				// if there's any unready ports for a given endpoint.
+				ready[ep.IP] = true
+			}
+		}
+		for _, ep := range subset.NotReadyAddresses {
+			ready[ep.IP] = false
+		}
+	}
+
+	for _, r := range ready {
+		if r {
+			// At least one fully healthy endpoint on this node
+			return true
+		}
+	}
+	return false
 }
