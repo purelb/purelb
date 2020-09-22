@@ -10,16 +10,16 @@ https://purelb.gitlab.io/docs
 
 ## Quick Start
 
-PureLB manages Service Group containing pools of IP addresses and their associated network configuration.  It configures the Linux OS to
+PureLB uses Service Group containing pools of IP addresses and their associated network configuration.  It configures the Linux OS to
 advertise them.  The easiest way to get started is to create a Service Group that uses the same IPNET as the host interface, PureLB will add
 the allocated addresses to the same network interface.  Installation takes only a few steps:
 
 1. Create the PureLB namespace<br/>
 `kubectl apply -f deployments/namespace.yaml`
 1. Create the PureLB custom resource definitions<br/>
-`kubectl apply -f deployments/crds/lbnodeagent.purelb.io_crd.yaml -f deployments/crds/servicegroup.purelb.io_crd.yml`
+`kubectl apply -f deployments/crds/lbnodeagent.purelb.io_crd.yaml -f deployments/crds/servicegroup.purelb.io_crd.yaml`
 1. Load a sample PureLB configuration<br/>
-`kubectl apply -f configs/default-lbnodeagent.yml -f configs/default-servicegroup.yml`
+`kubectl apply -f configs/default-lbnodeagent.yaml -f configs/default-servicegroup.yaml`
 1. Deploy the PureLB components<br/>
 `kubectl apply -f deployments/purelb.yaml`
 
