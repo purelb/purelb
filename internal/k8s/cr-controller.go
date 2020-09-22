@@ -238,6 +238,9 @@ func (c *Controller) syncHandler() error {
 	}
 
 	c.configCB(&cfg)
+
+	configLoaded.Set(1)
+
 	return nil
 }
 

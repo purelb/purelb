@@ -24,28 +24,13 @@ import (
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
-
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
 	mlLabels = "app=purelb,component=lbnodeagent"
 )
 
-var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-	Namespace: "purelb",
-	Subsystem: "lbnodeagent_local",
-	Name:      "announced",
-	Help:      "Services being announced from this node. This is desired state, it does not guarantee that the routing protocols have converged.",
-}, []string{
-	"service",
-	"node",
-	"ip",
-})
-
 func main() {
-	prometheus.MustRegister(announcing)
-
 	logger := logging.Init()
 
 	var (
@@ -77,7 +62,6 @@ func main() {
 	ctrl, err := NewController(
 		logger,
 		*myNode,
-		announcing,
 	)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to create controller")

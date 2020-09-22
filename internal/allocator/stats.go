@@ -1,40 +1,32 @@
 package allocator
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	purelbv1 "purelb.io/pkg/apis/v1"
 
-var stats = struct {
-	poolCapacity  *prometheus.GaugeVec
-	poolActive    *prometheus.GaugeVec
-	poolAllocated *prometheus.GaugeVec
-}{
-	poolCapacity: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "purelb",
-		Subsystem: "allocator_pool",
-		Name:      "addresses_total",
-		Help:      "Number of usable IP addresses, per pool",
-	}, []string{
-		"pool",
-	}),
-	poolActive: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "purelb",
-		Subsystem: "allocator_pool",
-		Name:      "addresses_in_use_total",
-		Help:      "Number of IP addresses in use, per pool",
-	}, []string{
-		"pool",
-	}),
-	poolAllocated: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "purelb",
-		Subsystem: "allocator_pool",
-		Name:      "services_allocated_total",
-		Help:      "Number of services allocated, per pool",
-	}, []string{
-		"pool",
-	}),
-}
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+const subsystem = "address_pool"
+
+var (
+	labelNames = []string{"pool"}
+
+	poolCapacity = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: purelbv1.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "size",
+		Help:      "Number of addresses in the pool",
+	}, labelNames)
+
+	poolActive = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: purelbv1.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "addresses_in_use",
+		Help:      "Number of addresses allocated from the pool",
+	}, labelNames)
+)
 
 func init() {
-	prometheus.MustRegister(stats.poolCapacity)
-	prometheus.MustRegister(stats.poolActive)
-	prometheus.MustRegister(stats.poolAllocated)
+	prometheus.MustRegister(poolCapacity)
+	prometheus.MustRegister(poolActive)
 }

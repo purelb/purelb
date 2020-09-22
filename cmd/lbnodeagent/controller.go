@@ -26,7 +26,6 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
-	"github.com/prometheus/client_golang/prometheus"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -34,18 +33,16 @@ type controller struct {
 	client     k8s.ServiceEvent
 	logger     log.Logger
 	myNode     string
-	prometheus *prometheus.GaugeVec
 	announcers []lbnodeagent.Announcer
 	svcIP      map[string]net.IP // service name -> assigned IP
 }
 
 // NewController configures a new controller. If error is non-nil then
 // the controller object shouldn't be used.
-func NewController(l log.Logger, myNode string, prometheus *prometheus.GaugeVec) (*controller, error) {
+func NewController(l log.Logger, myNode string) (*controller, error) {
 	con := &controller{
-		logger:     l,
-		myNode:     myNode,
-		prometheus: prometheus,
+		logger: l,
+		myNode: myNode,
 		announcers: []lbnodeagent.Announcer{
 			local.NewAnnouncer(l, myNode),
 			acnodal.NewAnnouncer(l, myNode),
@@ -93,11 +90,6 @@ func (c *controller) ServiceChanged(name string, svc *v1.Service, endpoints *v1.
 		}
 	}
 
-	c.prometheus.With(prometheus.Labels{
-		"service": name,
-		"node":    c.myNode,
-		"ip":      lbIP.String(),
-	}).Set(1)
 	c.logger.Log("event", "serviceAnnounced", "node", c.myNode, "msg", "service has IP, announcing")
 
 	c.svcIP[name] = lbIP
@@ -119,11 +111,6 @@ func (c *controller) deleteBalancer(name, reason string) k8s.SyncState {
 		}
 	}
 
-	c.prometheus.Delete(prometheus.Labels{
-		"service": name,
-		"node":    c.myNode,
-		"ip":      c.svcIP[name].String(),
-	})
 	delete(c.svcIP, name)
 	// Spamming the log, temporatly removed.
 	// c.logger.Log("event", "serviceWithdrawn", "ip", c.svcIP[name], "reason", reason, "msg", "withdrawing service announcement")

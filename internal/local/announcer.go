@@ -25,6 +25,7 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vishvananda/netlink"
 )
 
@@ -38,6 +39,21 @@ type announcer struct {
 	election    *election.Election
 	announceInt *netlink.Link // for local announcements
 	dummyInt    *netlink.Link // for non-local announcements
+}
+
+var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: purelbv1.MetricsNamespace,
+	Subsystem: "lbnodeagent",
+	Name:      "announced",
+	Help:      "Services announced from this node",
+}, []string{
+	"service",
+	"node",
+	"ip",
+})
+
+func init() {
+	prometheus.MustRegister(announcing)
 }
 
 // NewAnnouncer returns a new local Announcer.
@@ -149,6 +165,11 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 			addNetwork(lbIPNet, defaultif)
 			svc.Annotations[purelbv1.NodeAnnotation] = a.myNode
 			svc.Annotations[purelbv1.IntAnnotation] = defaultif.Attrs().Name
+			announcing.With(prometheus.Labels{
+				"service": name,
+				"node":    a.myNode,
+				"ip":      lbIP.String(),
+			}).Set(1)
 		} else {
 			// We lost the election so we'll withdraw any announcement that
 			// we might have been making
@@ -176,6 +197,11 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 			a.logger.Log("msg", "announcingNonLocal", "node", a.myNode, "service", name, "reason", err)
 			a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (*a.dummyInt).Attrs().Name)
 			addVirtualInt(lbIP, *a.dummyInt, allocPool.Subnet, allocPool.Aggregation)
+			announcing.With(prometheus.Labels{
+				"service": name,
+				"node":    a.myNode,
+				"ip":      lbIP.String(),
+			}).Set(1)
 		}
 	}
 
@@ -193,6 +219,14 @@ func (a *announcer) DeleteBalancer(name, reason string) error {
 	if !ok {
 		return nil
 	}
+
+	// delete the service from Prometheus, i.e., it won't show up in the
+	// metrics anymore
+	announcing.Delete(prometheus.Labels{
+		"service": name,
+		"node":    a.myNode,
+		"ip":      svcAddr.String(),
+	})
 
 	// delete this service from our announcement database
 	delete(a.svcAdvs, name)
