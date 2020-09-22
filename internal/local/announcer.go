@@ -83,12 +83,6 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 		return nil
 	}
 
-	// k8s may send us multiple events to advertize same address
-	if _, ok := a.svcAdvs[name]; ok {
-		a.logger.Log("event", "duplicateAnnouncement")
-		return nil
-	}
-
 	// validate the allocated address
 	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
 	if lbIP == nil {
@@ -112,19 +106,22 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 			svc.Annotations[purelbv1.NodeAnnotation] = a.myNode
 			svc.Annotations[purelbv1.IntAnnotation] = defaultif.Attrs().Name
 		} else {
+			// We lost the election so we'll withdraw any announcement that
+			// we might have been making
 			a.logger.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", name)
+			return a.DeleteBalancer(name, "lostElection")
 		}
 	} else {
 
 		// The service address is non-local, i.e., it's not on the same
 		// subnet as our default interface.
 
-		// Should we advertise?
+		// Should we announce?
 		// No, if externalTrafficPolicy is Local && there's no ready local endpoint
 		// Yes, in all other cases
 		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, a.myNode) {
 			a.logger.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", name)
-			return nil
+			return a.DeleteBalancer(name, "noEndpoints")
 		}
 
 		// add this address to the "dummy" interface so routing software
@@ -145,10 +142,10 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 
 func (a *announcer) DeleteBalancer(name, reason string) error {
 
-	// if the service isn't in our database then we can't withdraw the address
+	// if the service isn't in our database then we weren't announcing
+	// it so we can't withdraw the address but it's OK
 	svcAddr, ok := a.svcAdvs[name]
 	if !ok {
-		a.logger.Log("event", "withdrawAnnouncement", "service", name, "reason", reason, "msg", "service unknown")
 		return nil
 	}
 
