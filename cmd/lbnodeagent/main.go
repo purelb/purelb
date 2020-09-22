@@ -34,7 +34,7 @@ const (
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Namespace: "purelb",
-	Subsystem: "lbnodeagent_local",
+	Subsystem: "lbnodeagent",
 	Name:      "announced",
 	Help:      "Services being announced from this node. This is desired state, it does not guarantee that the routing protocols have converged.",
 }, []string{
