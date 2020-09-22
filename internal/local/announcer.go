@@ -18,7 +18,6 @@ import (
 	"net"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/labels"
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/lbnodeagent"
@@ -31,7 +30,6 @@ import (
 type announcer struct {
 	logger     log.Logger
 	myNode     string
-	nodeLabels labels.Set
 	config     *purelbv1.LBNodeAgentLocalSpec
 	groups     map[string]*purelbv1.ServiceGroupLocalSpec // groupName -> ServiceGroupLocalSpec
 	svcAdvs    map[string]net.IP                          // svcName -> IP
