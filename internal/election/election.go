@@ -17,7 +17,6 @@ import (
 type Config struct {
 	Namespace string
 	NodeName  string
-	Labels    string
 	BindAddr  string
 	BindPort  int
 	Secret    []byte

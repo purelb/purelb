@@ -104,7 +104,6 @@ func main() {
 	election, err := election.New(&election.Config{
 		Namespace: *memberlistNS,
 		NodeName:  *myNode,
-		Labels:    mlLabels,
 		BindAddr:  "0.0.0.0",
 		BindPort:  7946,
 		Secret:    []byte(os.Getenv("ML_SECRET")),
