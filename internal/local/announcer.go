@@ -28,11 +28,6 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-const (
-	nodeAnnotation string = "purelb.io/announcing-node"
-	intAnnotation  string = "purelb.io/announcing-interface"
-)
-
 type announcer struct {
 	logger     log.Logger
 	myNode     string
@@ -114,8 +109,8 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 			a.logger.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", name)
 
 			addNetwork(lbIPNet, defaultif)
-			svc.Annotations[nodeAnnotation] = a.myNode
-			svc.Annotations[intAnnotation] = defaultif.Attrs().Name
+			svc.Annotations[purelbv1.NodeAnnotation] = a.myNode
+			svc.Annotations[purelbv1.IntAnnotation] = defaultif.Attrs().Name
 		} else {
 			a.logger.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", name)
 		}
@@ -126,7 +121,7 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 
 		// add this address to the "dummy" interface so routing software
 		// (e.g., bird) will announce routes for it
-		poolName, gotName := svc.Annotations["purelb.io/allocated-from"]
+		poolName, gotName := svc.Annotations[purelbv1.PoolAnnotation]
 		if gotName {
 			allocPool := a.groups[poolName]
 			a.logger.Log("msg", "announcingNonLocal", "node", a.myNode, "service", name, "reason", err)

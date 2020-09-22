@@ -68,6 +68,12 @@ func (c *controller) ServiceChanged(name string, svc *v1.Service, endpoints *v1.
 		return c.deleteBalancer(name, "invalidIP")
 	}
 
+	// If we didn't allocate the address then we shouldn't announce it.
+	if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] != purelbv1.Brand {
+		c.logger.Log("msg", "notAllocatedByPureLB", "node", c.myNode, "service", name)
+		return k8s.SyncStateSuccess
+	}
+
 	// don't announce if externalTrafficPolicy is Local and there's no
 	// ready local endpoint
 	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, c.myNode) {
