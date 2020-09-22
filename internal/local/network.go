@@ -148,9 +148,10 @@ func addDummyInterface(name string) (*netlink.Link, error) {
 		if err = netlink.LinkAdd(link); err != nil {
 			return nil, fmt.Errorf("failed adding dummy int %s: %w", name, err)
 		}
-		netlink.LinkSetUp(link)
-	}
 
+	}
+	// Make sure that "dummy" interface is set to up.
+	netlink.LinkSetUp(link)
 	return &link, nil
 }
 
