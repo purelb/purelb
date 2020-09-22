@@ -21,6 +21,9 @@ import (
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
+// ServiceGroup is the top-level custom resource for configuring
+// service groups. It contains the usual CRD metadata, and the service
+// group spec and status.
 type ServiceGroup struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -35,8 +38,8 @@ type ServiceGroup struct {
 // Acnodal's EGW). For examples, see the "config/" directory in the
 // PureLB source tree.
 type ServiceGroupSpec struct {
-	Local      *ServiceGroupLocalSpec `json:"local"`
-	EGW        *ServiceGroupEGWSpec   `json:"egw"`
+	Local *ServiceGroupLocalSpec `json:"local"`
+	EGW   *ServiceGroupEGWSpec   `json:"egw"`
 }
 
 // ServiceGroupLocalSpec configures the allocator to manage a pool of
@@ -52,17 +55,24 @@ type ServiceGroupLocalSpec struct {
 	Aggregation string `json:"aggregation"`
 }
 
+// ServiceGroupEGWSpec configures the allocator to work with the
+// Acnodal Enterprise GateWay. The URL is the base URL of the service
+// group on the EGW. Aggregation is currently unused.
 type ServiceGroupEGWSpec struct {
 	URL         string `json:"url"`
 	Aggregation string `json:"aggregation"`
 }
 
+// ServiceGroupStatus is currently unused.
 type ServiceGroupStatus struct {
 }
 
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
+// LBNodeAgent is the top-level custom resource for configuring node
+// agents. It contains the usual CRD metadata, and the agent spec and
+// status.
 type LBNodeAgent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -92,14 +102,19 @@ type LBNodeAgentLocalSpec struct {
 	ExtLBInterface string `json:"extlbint"`
 }
 
+// LBNodeAgentEGWSpec configures the announcers to announce service
+// addresses to the Acnodal Enterprise GateWay. It doesn't have any
+// data but acts as a flag.
 type LBNodeAgentEGWSpec struct {
 }
 
+// LBNodeAgentStatus is currently unused.
 type LBNodeAgentStatus struct {
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
+// ServiceGroupList holds a list of ServiceGroup.
 type ServiceGroupList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata"`
@@ -109,6 +124,7 @@ type ServiceGroupList struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
+// LBNodeAgentList holds a list of LBNodeAgent.
 type LBNodeAgentList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata"`
