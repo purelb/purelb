@@ -38,6 +38,8 @@ type controller struct {
 	svcIP      map[string]net.IP // service name -> assigned IP
 }
 
+// NewController configures a new controller. If error is non-nil then
+// the controller object shouldn't be used.
 func NewController(l log.Logger, myNode string, prometheus *prometheus.GaugeVec) (*controller, error) {
 	con := &controller{
 		logger:     l,
@@ -64,6 +66,12 @@ func (c *controller) ServiceChanged(name string, svc *v1.Service, endpoints *v1.
 	if lbIP == nil {
 		c.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP)
 		return c.deleteBalancer(name, "invalidIP")
+	}
+
+	// If we didn't allocate the address then we shouldn't announce it.
+	if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] != purelbv1.Brand {
+		c.logger.Log("msg", "notAllocatedByPureLB", "node", c.myNode, "service", name)
+		return k8s.SyncStateSuccess
 	}
 
 	// give each announcer a chance to announce

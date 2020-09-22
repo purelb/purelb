@@ -19,21 +19,11 @@ import (
 	"fmt"
 	"net"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/acnodal"
 	"purelb.io/internal/k8s"
-)
-
-const (
-	brand                 string = "PureLB"
-	brandAnnotation       string = "purelb.io/allocated-by"
-	poolAnnotation        string = "purelb.io/allocated-from"
-	sharingAnnotation     string = "purelb.io/allow-shared-ip"
-	desiredPoolAnnotation string = "purelb.io/address-pool"
-	groupAnnotation       string = "acnodal.io/groupURL"
-	serviceAnnotation     string = "acnodal.io/serviceURL"
-	endpointAnnotation    string = "acnodal.io/endpointcreateURL"
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 func (c *controller) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
@@ -76,8 +66,8 @@ func (c *controller) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) 
 	if svc.Annotations == nil {
 		svc.Annotations = map[string]string{}
 	}
-	svc.Annotations[brandAnnotation] = brand
-	svc.Annotations[poolAnnotation] = pool
+	svc.Annotations[purelbv1.BrandAnnotation] = purelbv1.Brand
+	svc.Annotations[purelbv1.PoolAnnotation] = pool
 
 	if c.baseURL != nil {
 		// Connect to the EGW
@@ -103,9 +93,9 @@ func (c *controller) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) 
 			c.client.Errorf(svc, "AnnouncementFailed", "Failed to announce service for %s: %s", svc.Name, err)
 			return k8s.SyncStateError
 		}
-		svc.Annotations[groupAnnotation] = egwsvc.Links["group"]
-		svc.Annotations[serviceAnnotation] = egwsvc.Links["self"]
-		svc.Annotations[endpointAnnotation] = egwsvc.Links["create-endpoint"]
+		svc.Annotations[purelbv1.GroupAnnotation] = egwsvc.Links["group"]
+		svc.Annotations[purelbv1.ServiceAnnotation] = egwsvc.Links["self"]
+		svc.Annotations[purelbv1.EndpointAnnotation] = egwsvc.Links["create-endpoint"]
 	}
 
 	return k8s.SyncStateSuccess
@@ -126,7 +116,7 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, er
 	}
 
 	// Otherwise, did the user ask for a specific pool?
-	desiredPool := svc.Annotations[desiredPoolAnnotation]
+	desiredPool := svc.Annotations[purelbv1.DesiredPoolAnnotation]
 	if desiredPool != "" {
 		ip, err := c.ips.AllocateFromPool(key, desiredPool, Ports(svc), SharingKey(svc))
 		if err != nil {

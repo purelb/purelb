@@ -9,7 +9,7 @@ import (
 
 	"github.com/go-kit/kit/log"
 	"github.com/google/go-cmp/cmp"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -48,8 +48,8 @@ func statusAssigned(ip string) v1.ServiceStatus {
 // testK8S implements service by recording what the controller wants
 // to do to k8s.
 type testK8S struct {
-	loggedWarning       bool
-	t                   *testing.T
+	loggedWarning bool
+	t             *testing.T
 }
 
 func (s *testK8S) Infof(_ *v1.Service, evtType string, msg string, args ...interface{}) {
@@ -141,8 +141,8 @@ func TestControllerConfig(t *testing.T) {
 	wantSvc.Status = statusAssigned("1.2.3.0")
 	wantSvc.ObjectMeta = metav1.ObjectMeta{
 		Annotations: map[string]string{
-			brandAnnotation: brand,
-			poolAnnotation:  "default",
+			purelbv1.BrandAnnotation: purelbv1.Brand,
+			purelbv1.PoolAnnotation:  "default",
 		},
 	}
 
