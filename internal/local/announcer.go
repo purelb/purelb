@@ -28,13 +28,14 @@ import (
 )
 
 type announcer struct {
-	logger     log.Logger
-	myNode     string
-	config     *purelbv1.LBNodeAgentLocalSpec
-	groups     map[string]*purelbv1.ServiceGroupLocalSpec // groupName -> ServiceGroupLocalSpec
-	svcAdvs    map[string]net.IP                          // svcName -> IP
-	election   *election.Election
-	dummy      *netlink.Link
+	logger      log.Logger
+	myNode      string
+	config      *purelbv1.LBNodeAgentLocalSpec
+	groups      map[string]*purelbv1.ServiceGroupLocalSpec // groupName -> ServiceGroupLocalSpec
+	svcAdvs     map[string]net.IP                          // svcName -> IP
+	election    *election.Election
+	announceInt *netlink.Link // for local announcements
+	dummyInt    *netlink.Link // for non-local announcements
 }
 
 // NewAnnouncer returns a new local Announcer.
@@ -61,11 +62,26 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 				}
 			}
 
+			// if the user specified an interface then we'll use that,
+			// otherwise we'll wait until we get an IP address so we can
+			// figure out the default interface
+			if spec.LocalInterface != "default" {
+				link, err := netlink.LinkByName(spec.LocalInterface)
+				if err != nil {
+					return err
+				}
+				a.announceInt = &link
+			}
+
 			// now that we've got a config we can create the dummy interface
 			var err error
-			if a.dummy, err = addDummyInterface(spec.ExtLBInterface); err != nil {
+			if a.dummyInt, err = addDummyInterface(spec.ExtLBInterface); err != nil {
 				return err
 			}
+
+			// we've got our marching orders so we don't need to continue
+			// scanning
+			return nil
 		}
 	}
 
@@ -73,6 +89,8 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 }
 
 func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endpoints) error {
+	var err error
+
 	a.logger.Log("event", "announceService", "announcer", "local", "service", name)
 
 	// if we haven't been configured then we won't announce
@@ -88,7 +106,17 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 		return nil
 	}
 
-	if lbIPNet, defaultif, err := checkLocal(lbIP); err == nil {
+	// If the user specified an announcement interface then use that,
+	// otherwise figure out a default
+	announceInt := a.announceInt
+	if announceInt == nil {
+		announceInt, err = defaultInterface(addrFamily(lbIP))
+		if err != nil {
+			return err
+		}
+	}
+
+	if lbIPNet, defaultif, err := checkLocal(announceInt, lbIP); err == nil {
 
 		// the service address is local, i.e., it's within the same subnet
 		// as our primary interface.  We can announce the address if we
@@ -128,7 +156,7 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 		if gotName {
 			allocPool := a.groups[poolName]
 			a.logger.Log("msg", "announcingNonLocal", "node", a.myNode, "service", name, "reason", err)
-			addVirtualInt(lbIP, *a.dummy, allocPool.Subnet, allocPool.Aggregation)
+			addVirtualInt(lbIP, *a.dummyInt, allocPool.Subnet, allocPool.Aggregation)
 		}
 	}
 
@@ -174,7 +202,7 @@ func (a *announcer) Shutdown() {
 	}
 
 	// remove the "dummy" interface
-	removeInterface(a.config.ExtLBInterface)
+	removeInterface(a.dummyInt)
 }
 
 func (a *announcer) SetElection(election *election.Election) {
