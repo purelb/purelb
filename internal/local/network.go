@@ -39,20 +39,15 @@ func addrFamily(lbIP net.IP) (lbIPFamily int) {
 }
 
 // checkLocal determines whether lbIP belongs to the same network as
-// the machine on which this code is running.  If so, then the
-// netlink.Link return value will be the default interface and error
-// will be nil.  If error is non-nil then the address is non-local.
-func checkLocal(lbIP net.IP) (net.IPNet, netlink.Link, error) {
+// intf.  If so, then the netlink.Link return value will be the
+// default interface and error will be nil.  If error is non-nil then
+// the address is non-local.
+func checkLocal(intf *netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	var lbIPNet net.IPNet = net.IPNet{IP: lbIP}
 
 	family := addrFamily(lbIP)
 
-	defaultint, err := defaultInterface(family)
-	if err != nil {
-		return lbIPNet, *defaultint, err
-	}
-
-	defaddrs, _ := netlink.AddrList(*defaultint, family)
+	defaddrs, _ := netlink.AddrList(*intf, family)
 
 	if family == nl.FAMILY_V4 {
 		for _, addrs := range defaddrs {
@@ -94,10 +89,10 @@ func checkLocal(lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	}
 
 	if lbIPNet.Mask == nil {
-		return lbIPNet, *defaultint, fmt.Errorf("non-local address")
+		return lbIPNet, *intf, fmt.Errorf("non-local address")
 	}
 
-	return lbIPNet, *defaultint, nil
+	return lbIPNet, *intf, nil
 }
 
 // defaultInterface finds the default interface (i.e., the one with
@@ -155,17 +150,14 @@ func addDummyInterface(name string) (*netlink.Link, error) {
 	return &link, nil
 }
 
-// removeInterface removes the interface with the provided name. It
-// returns nil if everything goes fine, an error otherwise.
-func removeInterface(name string) error {
-	link, err := netlink.LinkByName(name)
-	if err == nil {
-		if err = netlink.LinkDel(link); err == nil {
-			return nil
-		}
+// removeInterface removes link. It returns nil if everything goes
+// fine, an error otherwise.
+func removeInterface(link *netlink.Link) error {
+	if err := netlink.LinkDel(*link); err != nil {
+		return err
 	}
 
-	return err
+	return nil
 }
 
 // deleteAddr deletes lbIP from whichever interface has it.

@@ -98,7 +98,15 @@ type LBNodeAgentSpec struct {
 // whichever interface carries the default route. ExtLBInterface is
 // also unimplemented.
 type LBNodeAgentLocalSpec struct {
+	// LocalInterface allows the user to specify the interface to use
+	// for announcement of local addresses. This field is optional -
+	// PureLB by default will use the interface that has the default
+	// route, which works in most cases.
 	LocalInterface string `json:"localint"`
+
+	// ExtLBInterface specifies the name of the interface to use for
+	// announcement of non-local routes. This field is optional - the
+	// default is "kube-lb0" which works in most cases.
 	ExtLBInterface string `json:"extlbint"`
 }
 

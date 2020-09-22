@@ -28,10 +28,10 @@ import (
 )
 
 type announcer struct {
-	logger     log.Logger
-	myNode     string
-	config     *purelbv1.ServiceGroupEGWSpec
-	baseURL    *url.URL
+	logger  log.Logger
+	myNode  string
+	config  *purelbv1.ServiceGroupEGWSpec
+	baseURL *url.URL
 }
 
 // NewAnnouncer returns a new Acnodal EGW Announcer.
