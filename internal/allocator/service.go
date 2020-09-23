@@ -67,7 +67,7 @@ func (c *controller) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) 
 		return k8s.SyncStateSuccess
 	}
 	c.logger.Log("event", "ipAllocated", "ip", lbIP, "pool", pool, "service", name)
-	c.client.Infof(svc, "IPAllocated", "Assigned IP %q", lbIP)
+	c.client.Infof(svc, "IPAllocated", "Assigned IP %s from pool %s", lbIP, pool)
 
 	// we have an IP selected somehow, so program the data plane
 	svc.Status.LoadBalancer.Ingress = []v1.LoadBalancerIngress{{IP: lbIP.String()}}
