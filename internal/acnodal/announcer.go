@@ -21,6 +21,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/election"
+	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
 	purelbv1 "purelb.io/pkg/apis/v1"
 
@@ -28,6 +29,7 @@ import (
 )
 
 type announcer struct {
+	client  k8s.ServiceEvent
 	logger  log.Logger
 	myNode  string
 	config  *purelbv1.ServiceGroupEGWSpec
@@ -37,6 +39,11 @@ type announcer struct {
 // NewAnnouncer returns a new Acnodal EGW Announcer.
 func NewAnnouncer(l log.Logger, node string) lbnodeagent.Announcer {
 	return &announcer{logger: l, myNode: node}
+}
+
+// SetClient configures this announcer to use the provided client.
+func (a *announcer) SetClient(client *k8s.Client) {
+	a.client = client
 }
 
 func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
