@@ -118,6 +118,16 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 
 	if lbIPNet, defaultif, err := checkLocal(announceInt, lbIP); err == nil {
 
+		// Local addresses do not support ExternalTrafficPolicyLocal
+		// Set the service back to ExternalTrafficPolicyCluster if adding to local interface
+
+		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal {
+			a.logger.Log("op", "setBalancer", "error", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster")
+			svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
+			return a.DeleteBalancer(name, "ClusterLocal")
+
+		}
+
 		// the service address is local, i.e., it's within the same subnet
 		// as our primary interface.  We can announce the address if we
 		// win the election

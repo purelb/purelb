@@ -279,7 +279,7 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 		}
 		updates.Inc()
 		st := c.sync(key)
-		c.logger.Log("sync", key, "result", st)
+		// c.logger.Log("sync", key, "result", st)
 		switch st {
 		case SyncStateSuccess:
 			c.queue.Forget(key)
@@ -359,7 +359,7 @@ func (c *Client) sync(key interface{}) SyncState {
 			return SyncStateError
 		}
 		if !exists {
-			l.Log("op", "getService", "msg", "doesn't exist")
+			// l.Log("op", "getService", "msg", "doesn't exist")
 			return c.serviceDeleted(svcName)
 		}
 		svc := svcMaybe.(*corev1.Service)
