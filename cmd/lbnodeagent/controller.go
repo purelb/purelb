@@ -115,8 +115,8 @@ func (c *controller) deleteBalancer(name, reason string) k8s.SyncState {
 		"ip":      c.svcIP[name].String(),
 	})
 	delete(c.svcIP, name)
-
-	c.logger.Log("event", "serviceWithdrawn", "ip", c.svcIP[name], "reason", reason, "msg", "withdrawing service announcement")
+	// Spamming the log, temporatly removed.
+	// c.logger.Log("event", "serviceWithdrawn", "ip", c.svcIP[name], "reason", reason, "msg", "withdrawing service announcement")
 
 	return retval
 }
