@@ -31,6 +31,7 @@ import (
 )
 
 type controller struct {
+	client     k8s.ServiceEvent
 	logger     log.Logger
 	myNode     string
 	prometheus *prometheus.GaugeVec
@@ -53,6 +54,15 @@ func NewController(l log.Logger, myNode string, prometheus *prometheus.GaugeVec)
 	}
 
 	return con, nil
+}
+
+// SetClient configures this controller and its announcers to use the
+// provided client.
+func (c *controller) SetClient(client *k8s.Client) {
+	c.client = client
+	for _, announcer := range c.announcers {
+		announcer.SetClient(client)
+	}
 }
 
 func (c *controller) ServiceChanged(name string, svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {

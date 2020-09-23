@@ -101,6 +101,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctrl.SetClient(client)
+
 	election, err := election.New(&election.Config{
 		Namespace: *memberlistNS,
 		NodeName:  *myNode,
