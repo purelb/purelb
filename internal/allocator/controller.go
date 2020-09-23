@@ -18,11 +18,24 @@ package allocator
 import (
 	"net/url"
 
+	v1 "k8s.io/api/core/v1"
+
 	"purelb.io/internal/k8s"
 	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
 )
+
+// Controller provides an event-handling interface for the k8s client
+// to use.
+type Controller interface {
+	SetClient(*k8s.Client)
+	SetConfig(*purelbv1.Config) k8s.SyncState
+	SetBalancer(string, *v1.Service, *v1.Endpoints) k8s.SyncState
+	DeleteBalancer(string) k8s.SyncState
+	MarkSynced()
+	Shutdown()
+}
 
 type controller struct {
 	client   k8s.ServiceEvent
@@ -33,9 +46,9 @@ type controller struct {
 	logger   log.Logger
 }
 
-func NewController(l log.Logger, ips *Allocator) (*controller, error) {
 // NewController configures a new controller. If error is non-nil then
 // the controller object shouldn't be used.
+func NewController(l log.Logger, ips *Allocator) (Controller, error) {
 	con := &controller{
 		logger: l,
 		ips:    ips,
