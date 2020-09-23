@@ -34,6 +34,8 @@ type controller struct {
 }
 
 func NewController(l log.Logger, ips *Allocator) (*controller, error) {
+// NewController configures a new controller. If error is non-nil then
+// the controller object shouldn't be used.
 	con := &controller{
 		logger: l,
 		ips:    ips,

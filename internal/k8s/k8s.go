@@ -66,7 +66,7 @@ type Client struct {
 	shutdown       func()
 }
 
-// Service offers methods to add events to services.
+// ServiceEvent adds events to services.
 type ServiceEvent interface {
 	Infof(svc *corev1.Service, desc, msg string, args ...interface{})
 	Errorf(svc *corev1.Service, desc, msg string, args ...interface{})
@@ -76,13 +76,13 @@ type ServiceEvent interface {
 type SyncState int
 
 const (
-	// The update was processed successfully.
+	// SyncStateSuccess indicates that the update succeeded.
 	SyncStateSuccess SyncState = iota
-	// The update caused a transient error, the k8s client should
-	// retry later.
+	// SyncStateError indicates that the update caused a transient error
+	// and the k8s client should retry later.
 	SyncStateError
-	// The update was accepted, but requires reprocessing all watched
-	// services.
+	// SyncStateReprocessAll indicates that the update succeeded but
+	// requires reprocessing all watched services.
 	SyncStateReprocessAll
 )
 
