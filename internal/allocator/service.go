@@ -40,13 +40,24 @@ func (c *controller) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) 
 		return k8s.SyncStateSuccess
 	}
 
-	// If the service already has an address then we don't need to
-	// allocate one.
-	if len(svc.Status.LoadBalancer.Ingress) == 1 {
-		if existingIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP); existingIP != nil {
-			c.logger.Log("event", "ipAlreadySet")
-			return k8s.SyncStateSuccess
+	// Check if the service already has an address
+	if len(svc.Status.LoadBalancer.Ingress) > 0 {
+		c.logger.Log("event", "ipAlreadySet")
+
+		// if it's one of ours then we'll tell the allocator about it, in
+		// case it didn't know. one example of this is at startup where
+		// our allocation database is empty and we get notifications of
+		// all the services. we can use the notifications to warm up our
+		// database so we don't allocate the same address twice.
+		if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
+			if existingIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP); existingIP != nil {
+				_, _ = c.ips.Assign(name, existingIP, Ports(svc), SharingKey(svc))
+			}
 		}
+
+		// If the service already has an address then we don't need to
+		// allocate one.
+		return k8s.SyncStateSuccess
 	}
 
 	pool, lbIP, err := c.allocateIP(name, svc)
