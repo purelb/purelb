@@ -38,9 +38,9 @@ PureLB includes an optional packaged BIRD Router POD.  Instead of implementing r
 {{</mermaid>}}
 
 ## Bundled Bird POD
-For simplicity, the repo packages the bird router container, daemonset configuration and sample configmap.  This can either be loaded with simple configuration changes or used as a template for more complex network configurations.  A key component of the operation of k8s infrastructure networking is the use of hostNetwork: true in the POD configuration.  This combined with securityContext capabilities enables the POD to access the host network namespace. Using this technique, the Bird router process is isolated but has access to access to the host network.  PureLB relies on the same functionality.
+For simplicity, the repo packages the bird router container, daemonset configuration and sample configmap.  This can either be loaded with simple configuration changes or used as a template for more complex network configurations.  A key component of the operation of k8s infrastructure networking is the use of _hostNetwork: true_ in the POD configuration.  This combined with securityContext capabilities enables the POD to access the host network namespace. Using this technique, the Bird router process is isolated but has access to access to the host network.  PureLB relies on the same functionality.
 
-Bird POD's obtain there configuration from a configmap projected into the BIRD container in the same namespace.  Ionotify watches the projected file and reloads the bird router process on change.  The container also includes the birdc, the bird command line, useful for troubleshooting.
+Bird POD's read their configuration from a configmap projected into the BIRD container in the same namespace.  Ionotify watches the projected file and reloads the bird router process on change.  The container also includes the birdc, the bird command line, useful for troubleshooting.
 
 
 ### The Sample Configuration
@@ -57,7 +57,7 @@ Each of the routing templates is configured to advertize routes learned from kub
 
 The choice of routing protocols will depend upon how the k8s cluster is integrated with  network infrastructure.  In a configuration with IGP (interior gateway protocol) such as OSPF or RIP, OSPF is an ideal alternative.  Each node will establish adjacencies with the OSPF routers and advertize routes.  A solution often used in larger cloud systems uses the EGP (exterior gateway protocol), BGP as both an EGP and IGP, in this case each node establishes a peering relationship with the neighboring BGP router and once established advertizes routes.  Each of these alternatives has benefits, once OSPF is configured routes are distributed within the OSPF network, however there are few controls over which routes are distributed and how distribution is controlled.  BGP provides total control over how routes are configure, especially where peering is E-BGP, however configurion is required to distribute routes, by default BGP does nothing.  
 
-A template for RIP is included however if either BGP or OSPF can be used, they are recommended.  However is some cases older routes have limited capabilities/functionality, in this case RIP can help as its simple and widely supported.
+A template for RIP is included however if either BGP or OSPF can be used, they are recommended.  In some cases older routes have limited capabilities/functionality, in this case RIP can help as its simple and widely supported.
 
 
 

@@ -39,7 +39,7 @@ Supports CNI's such as Calico that implement routing, simple tell the routing so
 Allows multiple Load Balancer Controllers to be installed in the same cluster for use in Public Clouds
 
 * **Configured using Custom Resources.**
-Configuration via Custom Resource Definations.
+Use of CRD's simplifies configuration with validation
 
 * **Native Support for IPv4 & IPv6.**
 PureLB provides support for IPv4 & IPv6 (subject to your cluster & network configuraiton)
