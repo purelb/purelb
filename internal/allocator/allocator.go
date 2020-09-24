@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net"
 
-	"purelb.io/pkg/apis/v1"
+	v1 "purelb.io/pkg/apis/v1"
 )
 
 // An Allocator tracks IP address pools and allocates addresses from them.
@@ -38,9 +38,8 @@ func (a *Allocator) SetPools(groups []*v1.ServiceGroup) error {
 
 	for n := range a.pools {
 		if pools[n] == nil {
-			stats.poolCapacity.DeleteLabelValues(n)
-			stats.poolActive.DeleteLabelValues(n)
-			stats.poolAllocated.DeleteLabelValues(n)
+			poolCapacity.DeleteLabelValues(n)
+			poolActive.DeleteLabelValues(n)
 		}
 	}
 
@@ -48,8 +47,8 @@ func (a *Allocator) SetPools(groups []*v1.ServiceGroup) error {
 
 	// Refresh or initiate stats
 	for n, p := range a.pools {
-		stats.poolCapacity.WithLabelValues(n).Set(float64(p.Size()))
-		stats.poolActive.WithLabelValues(n).Set(float64(p.InUse()))
+		poolCapacity.WithLabelValues(n).Set(float64(p.Size()))
+		poolActive.WithLabelValues(n).Set(float64(p.InUse()))
 	}
 
 	return nil
@@ -64,8 +63,8 @@ func (a *Allocator) assign(svc string, alloc *alloc) {
 	pool := a.pools[alloc.pool]
 	pool.Assign(alloc.ip, alloc.ports, svc, &alloc.Key)
 
-	stats.poolCapacity.WithLabelValues(alloc.pool).Set(float64(a.pools[alloc.pool].Size()))
-	stats.poolActive.WithLabelValues(alloc.pool).Set(float64(pool.InUse()))
+	poolCapacity.WithLabelValues(alloc.pool).Set(float64(a.pools[alloc.pool].Size()))
+	poolActive.WithLabelValues(alloc.pool).Set(float64(pool.InUse()))
 }
 
 // Assign assigns the requested ip to svc, if the assignment is
@@ -82,7 +81,7 @@ func (a *Allocator) Assign(svc string, ip net.IP, ports []Port, sharingKey strin
 	// Does the IP already have allocs? If so, needs to be the same
 	// sharing key, and have non-overlapping ports. If not, the proposed
 	// IP needs to be allowed by configuration.
-	err := a.pools[pool].Available(ip, ports, svc, sk)	// FIXME: this should Assign() here, not check Available.  Might need to iterate over pools rather than do poolFor
+	err := a.pools[pool].Available(ip, ports, svc, sk) // FIXME: this should Assign() here, not check Available.  Might need to iterate over pools rather than do poolFor
 	if err != nil {
 		return "", err
 	}
@@ -116,7 +115,7 @@ func (a *Allocator) Unassign(svc string) bool {
 	pool, tracked := a.pools[al.pool]
 	if tracked {
 		pool.Release(al.ip, svc)
-		stats.poolActive.WithLabelValues(al.pool).Set(float64(pool.InUse()))
+		poolActive.WithLabelValues(al.pool).Set(float64(pool.InUse()))
 	}
 
 	delete(a.allocated, svc)

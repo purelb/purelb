@@ -9,7 +9,7 @@ import (
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"purelb.io/pkg/apis/v1"
+	v1 "purelb.io/pkg/apis/v1"
 )
 
 func TestAssignment(t *testing.T) {
@@ -766,7 +766,7 @@ func TestPoolMetrics(t *testing.T) {
 	}
 
 	// The "test" pool contains one range: 1.2.3.4/30
-	value := ptu.ToFloat64(stats.poolCapacity.WithLabelValues("test"))
+	value := ptu.ToFloat64(poolCapacity.WithLabelValues("test"))
 	if int(value) != 4 {
 		t.Errorf("stats.poolCapacity invalid %f. Expected 4", value)
 	}
@@ -774,7 +774,7 @@ func TestPoolMetrics(t *testing.T) {
 	for _, test := range tests {
 		if test.ip == "" {
 			alloc.Unassign(test.svc)
-			value := ptu.ToFloat64(stats.poolActive.WithLabelValues("test"))
+			value := ptu.ToFloat64(poolActive.WithLabelValues("test"))
 			if value != test.ipsInUse {
 				t.Errorf("%v; in-use %v. Expected %v", test.desc, value, test.ipsInUse)
 			}
@@ -793,7 +793,7 @@ func TestPoolMetrics(t *testing.T) {
 		if a := assigned(alloc, test.svc); a != test.ip {
 			t.Errorf("%q: ran Assign(%q, %q), but allocator has recorded allocation of %q", test.desc, test.svc, test.ip, a)
 		}
-		value := ptu.ToFloat64(stats.poolActive.WithLabelValues("test"))
+		value := ptu.ToFloat64(poolActive.WithLabelValues("test"))
 		if value != test.ipsInUse {
 			t.Errorf("%v; in-use %v. Expected %v", test.desc, value, test.ipsInUse)
 		}
@@ -841,13 +841,13 @@ func ports(ports ...string) []Port {
 
 func localServiceGroup(name string, pool string) *v1.ServiceGroup {
 	return serviceGroup(name, v1.ServiceGroupSpec{
-		Local:      &v1.ServiceGroupLocalSpec{Pool: pool},
+		Local: &v1.ServiceGroupLocalSpec{Pool: pool},
 	})
 }
 
 func egwServiceGroup(name string, url string) *v1.ServiceGroup {
 	return serviceGroup(name, v1.ServiceGroupSpec{
-		EGW:        &v1.ServiceGroupEGWSpec{URL: url},
+		EGW: &v1.ServiceGroupEGWSpec{URL: url},
 	})
 }
 
