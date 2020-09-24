@@ -15,5 +15,7 @@ stages:
 format:
   stage: test
   script:
-    - go vet ./...
-    - go test -short -race ./...
+    - make deployments/purelb-complete.yaml check
+  artifacts:
+    paths:
+      - deployments/purelb-complete.yaml

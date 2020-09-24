@@ -3,6 +3,7 @@ SUFFIX = dev
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
+MANIFEST_FRAGMENTS = deployments/namespace.yaml deployments/crds/servicegroup.purelb.io_crd.yaml deployments/crds/lbnodeagent.purelb.io_crd.yaml deployments/purelb.yaml
 
 ##@ Default Goal
 .PHONY: help
@@ -18,7 +19,7 @@ help: ## Display help message
 
 ##@ Development Goals
 .PHONY: all
-all: check $(shell echo ${COMMANDS} | sed s,cmd/,image-,g)  ## Build all docker images
+all: check $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) manifest ## Build it all!
 
 .PHONY: check
 check:	## Run "short" tests
@@ -44,13 +45,18 @@ install-%:
 	docker push ${TAG}
 
 .PHONY: run-%
-run-%:  ## Run PureLB command locally (e.g., 'make run-node-local')
+run-%:  ## Run PureLB command locally (e.g., 'make run-allocator')
 	go run ./cmd/$(subst run-,,$@)
 
 .PHONY: clean-gen
 clean-gen:  ## Delete generated files
-	rm -fr pkg/generated/ pkg/apis/v1/zz_generated.deepcopy.go
+	rm -fr pkg/generated/ pkg/apis/v1/zz_generated.deepcopy.go deployments/purelb-complete.yaml
 
-.PHONY: generate
-generate:  ## Generate client-side stubs for our custom resources
+.PHONY: generate-stubs
+generate-stubs:  ## Generate client-side stubs for our custom resources
 	hack/update-codegen.sh
+
+deployments/purelb-complete.yaml: ${MANIFEST_FRAGMENTS} ## Generate the all-in-one deployment manifest
+	cat $^ > $@
+
+generate: generate-stubs deployments/purelb-complete.yaml ## Generate stubs and all-in-one deployment manifest
