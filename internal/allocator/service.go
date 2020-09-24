@@ -117,6 +117,16 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, er
 
 	// If the user asked for a specific IP, try that.
 	if svc.Spec.LoadBalancerIP != "" {
+
+		// It doesn't make sense to use Spec.LoadBalancerIP *and*
+		// DesiredGroupAnnotation because Spec.LoadBalancerIP is more
+		// specific so DesiredGroupAnnotation can only cause problems. If
+		// you're using Spec.LoadBalancerIP then you don't need
+		// DesiredGroupAnnotation.
+		if desiredGroup != "" {
+			return "", nil, fmt.Errorf("spec.loadBalancerIP and DesiredGroupAnnotation are mutually exclusive, use Spec.LoadBalancerIP alone")
+		}
+
 		ip := net.ParseIP(svc.Spec.LoadBalancerIP)
 		if ip == nil {
 			return "", nil, fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
