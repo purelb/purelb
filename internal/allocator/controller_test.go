@@ -22,6 +22,7 @@ import (
 
 	"github.com/go-kit/kit/log"
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -94,30 +95,18 @@ func TestControllerConfig(t *testing.T) {
 			ClusterIP: "1.2.3.4",
 		},
 	}
-	if c.SetBalancer("test", svc, nil) != k8s.SyncStateError {
-		t.Fatalf("SetBalancer should have failed")
-	}
-	if k.loggedWarning {
-		t.Error("SetBalancer with no configuration logged an error")
-	}
+	assert.Equal(t, k8s.SyncStateError, c.SetBalancer("test", svc, nil), "SetBalancer should have failed")
+	assert.False(t, k.loggedWarning, "SetBalancer with no configuration logged an error")
 
 	// Set an empty config. Balancer should still not do anything to
 	// our unallocated service, and return an error to force a
 	// retry after sync is complete.
 	wantSvc := svc.DeepCopy()
-	if c.SetConfig(&purelbv1.Config{}) == k8s.SyncStateError {
-		t.Fatalf("SetConfig with empty config failed")
-	}
-	if c.SetBalancer("test", svc, nil) != k8s.SyncStateError {
-		t.Fatal("SetBalancer did not fail")
-	}
+	assert.Equal(t, k8s.SyncStateReprocessAll, c.SetConfig(&purelbv1.Config{}), "SetConfig with empty config failed")
+	assert.Equal(t, k8s.SyncStateError, c.SetBalancer("test", svc, nil), "SetBalancer did not fail")
 
-	if diff := diffService(wantSvc, svc); diff != "" {
-		t.Errorf("unsynced SetBalancer mutated service (-in +out)\n%s", diff)
-	}
-	if k.loggedWarning {
-		t.Error("unsynced SetBalancer logged an error")
-	}
+	assert.Empty(t, diffService(wantSvc, svc), "unsynced SetBalancer mutated service")
+	assert.False(t, k.loggedWarning, "unsynced SetBalancer logged an error")
 
 	// Set a config with some IPs. Still no allocation, not synced.
 	cfg := &purelbv1.Config{
@@ -132,20 +121,12 @@ func TestControllerConfig(t *testing.T) {
 			},
 		},
 	}
-	if c.SetConfig(cfg) == k8s.SyncStateError {
-		t.Fatalf("SetConfig failed")
-	}
+	assert.Equal(t, k8s.SyncStateReprocessAll, c.SetConfig(cfg), "SetConfig failed")
 	wantSvc = svc.DeepCopy()
-	if c.SetBalancer("test", svc, nil) != k8s.SyncStateError {
-		t.Fatal("SetBalancer did not fail")
-	}
+	assert.Equal(t, k8s.SyncStateError, c.SetBalancer("test", svc, nil), "SetBalancer did not fail")
 
-	if diff := diffService(wantSvc, svc); diff != "" {
-		t.Errorf("unsynced SetBalancer mutated service (-in +out)\n%s", diff)
-	}
-	if k.loggedWarning {
-		t.Error("unsynced SetBalancer logged an error")
-	}
+	assert.Empty(t, diffService(wantSvc, svc), "unsynced SetBalancer mutated service")
+	assert.False(t, k.loggedWarning, "unsynced SetBalancer logged an error")
 
 	// Mark synced. Finally, we can allocate.
 	c.MarkSynced()
@@ -159,18 +140,12 @@ func TestControllerConfig(t *testing.T) {
 		},
 	}
 
-	if c.SetBalancer("test", svc, nil) == k8s.SyncStateError {
-		t.Fatalf("SetBalancer failed")
-	}
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer("test", svc, nil), "SetBalancer failed")
 
-	if diff := diffService(wantSvc, svc); diff != "" {
-		t.Errorf("SetBalancer produced unexpected mutation (-want +got)\n%s", diff)
-	}
+	assert.Empty(t, diffService(wantSvc, svc), "SetBalancer produced unexpected mutation")
 
 	// Deleting the config also makes PureLB sad.
-	if c.SetConfig(nil) != k8s.SyncStateError {
-		t.Fatalf("SetConfig that deletes the config was accepted")
-	}
+	assert.Equal(t, k8s.SyncStateError, c.SetConfig(nil), "SetConfig that deletes the config was accepted")
 }
 
 func TestDeleteRecyclesIP(t *testing.T) {
@@ -193,9 +168,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 			},
 		},
 	}
-	if c.SetConfig(cfg) == k8s.SyncStateError {
-		t.Fatal("SetConfig failed")
-	}
+	assert.Equal(t, k8s.SyncStateReprocessAll, c.SetConfig(cfg), "SetConfig failed")
 	c.MarkSynced()
 
 	svc1 := &v1.Service{
@@ -204,12 +177,9 @@ func TestDeleteRecyclesIP(t *testing.T) {
 			ClusterIP: "1.2.3.4",
 		},
 	}
-	if c.SetBalancer("test", svc1, nil) == k8s.SyncStateError {
-		t.Fatal("SetBalancer svc1 failed")
-	}
-	if len(svc1.Status.LoadBalancer.Ingress) == 0 || svc1.Status.LoadBalancer.Ingress[0].IP != "1.2.3.0" {
-		t.Fatal("svc1 didn't get an IP")
-	}
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer("test", svc1, nil), "SetBalancer svc1 failed")
+	assert.NotEmpty(t, svc1.Status.LoadBalancer.Ingress, "svc1 didn't get an IP")
+	assert.Equal(t, "1.2.3.0", svc1.Status.LoadBalancer.Ingress[0].IP, "svc1 got the wrong IP")
 	k.reset()
 
 	// Second service should converge correctly, but not allocate an
@@ -220,22 +190,17 @@ func TestDeleteRecyclesIP(t *testing.T) {
 			ClusterIP: "1.2.3.4",
 		},
 	}
-	if c.SetBalancer("test2", svc2, nil) == k8s.SyncStateError {
-		t.Fatal("SetBalancer svc2 failed")
-	}
-	if len(svc2.Status.LoadBalancer.Ingress) > 0 {
-		t.Fatal("svc2 has the wrong address")
-	}
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer("test2", svc2, nil), "SetBalancer svc2 failed")
+	assert.Empty(t, svc2.Status.LoadBalancer.Ingress, "svc2 didn't get an IP")
 	k.reset()
 
 	// Deleting the first LB should tell us to reprocess all services.
-	if c.DeleteBalancer("test") != k8s.SyncStateReprocessAll {
-		t.Fatal("DeleteBalancer didn't tell us to reprocess all balancers")
-	}
+	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer("test"), "DeleteBalancer didn't tell us to reprocess all balancers")
 
 	// Setting svc2 should now allocate correctly.
-	if c.SetBalancer("test2", svc2, nil) == k8s.SyncStateError {
-		t.Fatal("SetBalancer svc2 failed")
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer("test2", svc2, nil), "SetBalancer svc2 failed")
+	assert.NotEmpty(t, svc2.Status.LoadBalancer.Ingress, "svc2 didn't get an IP")
+	assert.Equal(t, "1.2.3.0", svc2.Status.LoadBalancer.Ingress[0].IP, "svc2 got the wrong IP")
 	}
 	if len(svc2.Status.LoadBalancer.Ingress) == 0 || svc2.Status.LoadBalancer.Ingress[0].IP != "1.2.3.0" {
 		t.Fatal("svc2 didn't get an IP")
