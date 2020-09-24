@@ -1,17 +1,30 @@
+// Copyright 2020 Acnodal Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package allocator
 
 import (
 	"bytes"
- 	"fmt"
+	"fmt"
 	"math"
 	"net"
 	"strings"
 )
 
-
 type IPRange struct {
 	from net.IP
-	to net.IP
+	to   net.IP
 }
 
 // NewIPRange parses a string representation of an IP address range
@@ -46,7 +59,7 @@ func (r IPRange) Overlaps(other IPRange) bool {
 // address within this IPRange.  It returns true if so, false
 // otherwise.
 func (r IPRange) Contains(ip net.IP) bool {
-	if (bytes.Compare(ip, r.from) >= 0 && bytes.Compare(ip, r.to) <= 0) {
+	if bytes.Compare(ip, r.from) >= 0 && bytes.Compare(ip, r.to) <= 0 {
 		return true
 	}
 
@@ -131,7 +144,7 @@ func parseFromTo(rawrange string) (IPRange, error) {
 
 // toInt converts the provided address into a uint64.
 func toInt(ip net.IP) uint64 {
-  var n uint64
+	var n uint64
 	for i := 0; i < len(ip); i++ {
 		n *= 256
 		n = n + uint64(ip[i])

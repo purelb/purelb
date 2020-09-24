@@ -1,5 +1,5 @@
-// Copyright 2020 Acnodal Inc.
 // Copyright 2017 Google Inc.
+// Copyright 2020 Acnodal Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -49,8 +49,8 @@ func NewLocalPool(rawrange string, subnet string, aggregation string) (*LocalPoo
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
-		subnetV4: subnet,
-		aggregation: aggregation,
+		subnetV4:       subnet,
+		aggregation:    aggregation,
 	}, nil
 }
 

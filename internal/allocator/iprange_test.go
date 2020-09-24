@@ -1,3 +1,17 @@
+// Copyright 2020 Acnodal Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package allocator
 
 import (
@@ -5,7 +19,7 @@ import (
 	"net"
 	"testing"
 
-  "github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestParseCIDR(t *testing.T) {
@@ -83,32 +97,32 @@ func TestContains(t *testing.T) {
 	assert.False(t, ipr1.Contains(net.ParseIP("1.1.1.2")))
 }
 
-func TestInt(t *testing.T)  {
+func TestInt(t *testing.T) {
 	// anything greater than 64 bits gets truncated
-  assert.Equal(t, uint64(0x68), toInt(net.ParseIP("2001:db8::68")))
+	assert.Equal(t, uint64(0x68), toInt(net.ParseIP("2001:db8::68")))
 
 	// explicit IPV4
-  assert.Equal(t, uint64(0x01000100), toInt(net.ParseIP("1.0.1.0").To4()))
+	assert.Equal(t, uint64(0x01000100), toInt(net.ParseIP("1.0.1.0").To4()))
 
 	// IPV4 in IPV6
-  assert.Equal(t, uint64(0xffff00000100), toInt(net.ParseIP("0.0.1.0")))
+	assert.Equal(t, uint64(0xffff00000100), toInt(net.ParseIP("0.0.1.0")))
 }
 
-func TestSize(t *testing.T)  {
+func TestSize(t *testing.T) {
 	// IPV4 CIDR
-  assert.Equal(t, uint64(1), mustIPRange(t, "1.1.1.1/32").Size())
-  assert.Equal(t, uint64(256), mustIPRange(t, "1.1.1.0/24").Size())
+	assert.Equal(t, uint64(1), mustIPRange(t, "1.1.1.1/32").Size())
+	assert.Equal(t, uint64(256), mustIPRange(t, "1.1.1.0/24").Size())
 
 	// IPV4 to-from
-  assert.Equal(t, uint64(2), mustIPRange(t, "1.1.1.0-1.1.1.1").Size())
-  assert.Equal(t, uint64(256), mustIPRange(t, "1.1.0.0-1.1.0.255").Size())
+	assert.Equal(t, uint64(2), mustIPRange(t, "1.1.1.0-1.1.1.1").Size())
+	assert.Equal(t, uint64(256), mustIPRange(t, "1.1.0.0-1.1.0.255").Size())
 
 	// IPV6 CIDR
-  assert.Equal(t, uint64(65535), mustIPRange(t, "2001:db8::1/112").Size())
+	assert.Equal(t, uint64(65535), mustIPRange(t, "2001:db8::1/112").Size())
 
 	// IPV6 to-from
-  assert.Equal(t, uint64(5), mustIPRange(t, "2001:db8::68 - 2001:db8::6c").Size())
-  assert.Equal(t, uint64(math.MaxUint64), mustIPRange(t, "2002:db8::68 - 2001:db8::68").Size())
+	assert.Equal(t, uint64(5), mustIPRange(t, "2001:db8::68 - 2001:db8::6c").Size())
+	assert.Equal(t, uint64(math.MaxUint64), mustIPRange(t, "2002:db8::68 - 2001:db8::68").Size())
 }
 
 func assertFromTo(t *testing.T, raw string, from string, to string) {

@@ -1,5 +1,5 @@
-// Copyright 2020 Acnodal Inc.
 // Copyright 2017 The Kubernetes Authors.
+// Copyright 2020 Acnodal Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-kit/kit/log"
 	apps "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,7 +32,6 @@ import (
 	core "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
-	"github.com/go-kit/kit/log"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
 	"purelb.io/pkg/generated/clientset/versioned/fake"
@@ -49,7 +49,7 @@ type fixture struct {
 	client     *fake.Clientset
 	kubeclient *k8sfake.Clientset
 	// Objects to put in the store.
-	serviceGroupLister        []*purelbv1.ServiceGroup
+	serviceGroupLister []*purelbv1.ServiceGroup
 	// Actions expected to happen on the client.
 	kubeactions []core.Action
 	actions     []core.Action
