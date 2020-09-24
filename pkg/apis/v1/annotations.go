@@ -24,10 +24,10 @@ const (
 	// share their IP address.
 	SharingAnnotation string = "purelb.io/allow-shared-ip"
 
-	// DesiredPoolAnnotation is the key for the annotation that
+	// DesiredGroupAnnotation is the key for the annotation that
 	// indicates the pool from which the user would like PureLB to
 	// allocate this service's IP address.
-	DesiredPoolAnnotation string = "purelb.io/address-pool"
+	DesiredGroupAnnotation string = "purelb.io/service-group"
 
 	// Annotations that PureLB sets that might be useful to users.
 
