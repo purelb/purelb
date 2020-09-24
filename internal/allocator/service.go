@@ -113,6 +113,8 @@ func (c *controller) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) 
 }
 
 func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, error) {
+	desiredGroup := svc.Annotations[purelbv1.DesiredGroupAnnotation]
+
 	// If the user asked for a specific IP, try that.
 	if svc.Spec.LoadBalancerIP != "" {
 		ip := net.ParseIP(svc.Spec.LoadBalancerIP)
@@ -127,13 +129,12 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, er
 	}
 
 	// Otherwise, did the user ask for a specific pool?
-	desiredPool := svc.Annotations[purelbv1.DesiredPoolAnnotation]
-	if desiredPool != "" {
-		ip, err := c.ips.AllocateFromPool(key, desiredPool, Ports(svc), SharingKey(svc))
+	if desiredGroup != "" {
+		ip, err := c.ips.AllocateFromPool(key, desiredGroup, Ports(svc), SharingKey(svc))
 		if err != nil {
 			return "", nil, err
 		}
-		return desiredPool, ip, nil
+		return desiredGroup, ip, nil
 	}
 
 	// Okay, in that case just bruteforce across all pools.
