@@ -19,7 +19,7 @@ help: ## Display help message
 
 ##@ Development Goals
 .PHONY: all
-all: check $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) manifest ## Build it all!
+all: check $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) generate-manifest ## Build it all!
 
 .PHONY: check
 check:	## Run "short" tests
@@ -52,11 +52,13 @@ run-%:  ## Run PureLB command locally (e.g., 'make run-allocator')
 clean-gen:  ## Delete generated files
 	rm -fr pkg/generated/ pkg/apis/v1/zz_generated.deepcopy.go deployments/purelb-complete.yaml
 
+generate: generate-stubs generate-manifest ## Generate stubs and manifest
+
 .PHONY: generate-stubs
 generate-stubs:  ## Generate client-side stubs for our custom resources
 	hack/update-codegen.sh
 
-deployments/purelb-complete.yaml: ${MANIFEST_FRAGMENTS} ## Generate the all-in-one deployment manifest
-	cat $^ > $@
+generate-manifest: deployments/purelb-complete.yaml  ## Generate the all-in-one deployment manifest
 
-generate: generate-stubs deployments/purelb-complete.yaml ## Generate stubs and all-in-one deployment manifest
+deployments/purelb-complete.yaml: ${MANIFEST_FRAGMENTS}
+	cat $^ > $@
