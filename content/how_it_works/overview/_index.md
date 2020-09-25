@@ -15,7 +15,7 @@ The PureLB LoadBalancer controller consists of two components that interact with
 
  * **LBnodeagent.**  The lbnodeagent runs on all nodes that packets for exposes services can transit, it watches service changes and configures networking behavior
 
- * **KubeProxy.** Important, put not part of PureLB is KubeProxy.  KubeProxy is also watching service changes and adds those the same addresses used by LBNode to configure communication
+ * **KubeProxy.** Important, but not part of PureLB is KubeProxy.  KubeProxy is also watching service changes and adds those the same addresses used by LBNode to configure communication
  within the cluster.  
 
  {{% notice %}} _Instead of thinking of PureLB advertising service, think of PureLB attracting packets to allocated addresses with KubeProxy forwarding those packets within the cluster via
