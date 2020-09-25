@@ -47,7 +47,7 @@ tabWidth = 2
 #
 [[menu.shortcuts]]
 name = "Gitlab"
-url = "https://purelb.gitlab.io"
+url = "https://gitlab.com/purelb"
 weight = 10
 
 #[[menu.shortcuts]]
