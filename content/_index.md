@@ -12,7 +12,7 @@ hide: toc, breadcrumb
 to the specified application resource. 
 
 Service Load Balancers are key component in the K8s developer workflow.  They allow the configuration of the resources used to enable access to applications to be pre-configured
-so they can be access on demand by developer via the service defination.  This simple operator can be undertaken on demand or as part of CI without custom configuraiton or tooling.   
+so they can be access on demand by developers via the service defination.  This simple operator can be undertaken on demand or as part of CI without custom configuraiton or tooling.   
 
 
 ### Features

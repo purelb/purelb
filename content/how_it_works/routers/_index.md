@@ -58,7 +58,7 @@ The routing infrastructure should be designed to include k8s nodes as network de
 
 
 ### BIRD
-Bird is a popular opensource linux routing software.  Its used by Calico (see specific configuration example) and can be integrated with any k8s network.   BIRD has a protocol called _Direct_.  This protocol is used to redistribute routes from directly connected networks identfied by a list of interfaces.  Once in the BIRD routing table, they can be advertized using protocols supported by BIRD such as OSPF or BGP by exporting **RTS_DEVICE**.  The configuration snippit for the _Direct_ protocol is and an example for the desired protocol.
+Bird is a popular open source linux routing software.  Its used by Calico (see specific configuration example) and can be integrated with any k8s network.   BIRD has a protocol called _Direct_.  This protocol is used to redistribute routes from directly connected networks identified by a list of interfaces.  Once in the BIRD routing table, they can be advertized using protocols supported by BIRD such as OSPF or BGP by exporting **RTS_DEVICE**.  The configuration snippit for the _Direct_ protocol is and an example for the desired protocol.
 
 ```plaintext
 protocol direct {
@@ -73,7 +73,7 @@ Note:  The PureLB repo includes BIRD packaged and configured when routing is req
 
 
 ### FRR
-Free Range Routing (FRR) is another popular opensource linux routing software alternative.  Its has a more _tradition_ configuration style so will be more familar for some engineers  and it also has more implemented routing protocols.  To import routes from a linux interface, a specific protocol is chosen to have the routes distributed and a route map is used to select the interface,  other routing protocols then recieve routes from that protocol.  An example of redistribution into bgp is:
+Free Range Routing (FRR) is another popular open source linux routing software alternative.  Its has a more _traditional_ configuration style so will be more familiar for some engineers  and it also has more implemented routing protocols.  To import routes from a linux interface, a specific protocol is chosen to have the routes distributed and a route map is used to select the interface,  other routing protocols then receive routes from that protocol.  An example of redistribution into bgp is:
 
 ```plaintext
 router bgp 65552
@@ -128,7 +128,7 @@ B>* 192.168.151.0/24 [20/1] via 172.30.255.1, enp1s0, 3d01h36m
 
 ```
 
-In the example above, 172.31.1.1/32 has 5 equal cost routes indicated by _*_ showing that they are Forwarding Informatoin Base routes.  Note this router is recieving these routes via two protocols, in this case the cluster has been configured with OSPF and BGP, BGP will take precidence therefore it provides the selected and FIB routes.
+In the example above, 172.31.1.1/32 has 5 equal cost routes indicated by _*_ showing that they are Forwarding Information Base routes.  Note this router is receiving these routes via two protocols, in this case the cluster has been configured with OSPF and BGP, BGP will take precedence therefore it provides the selected and FIB routes.
 
 Depending on the router and its configuration, load balancing techniques will vary however they are all generally based upon a 4 tuple hash of sourceIP, sourcePort, destinationIP, destinationPort.  The router will also have a limit to the number of ECMP paths that can be used, in modern TOR switches, this can be set to a size larger than a /24 subnet, however in old routers, the count can be less than 10.  This needs to be considered in the infrastructure design and PureLB combined with routing software can help create a design that avoids this limitation.  Another important consideration can be how the router load balancer cache is populated and updated when paths are removed, again modern devices provide better behavior.
 

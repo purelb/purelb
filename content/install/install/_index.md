@@ -19,12 +19,12 @@ PureLB can be installed from:
 
 ## Installation from Manifest
 
-A Manifest is simply a conconated set of yaml files that install all of the components of PureLB.  The key installed commponents are:
+A Manifest is simply a concatenated set of yaml files that install all of the components of PureLB.  The key installed components are:
 
 
 1. PureLB Namespace.  A namespace is created and annotated for all of the Purelb components
-2. Custom Resource Defination.  PureLB uses two CRD's for configuration
-3. Sample/Default configuration.  The default Purelb configuration and one sample Service Group configuraiton are added
+2. Custom Resource Definition.  PureLB uses two CRD's for configuration
+3. Sample/Default configuration.  The default Purelb configuration and one sample Service Group configuration are added
 4. Allocator deployment.  A deployment with a single instance of the allocator is installed on the cluster
 5. lbnodeagent daemonset.  By default lbnodeagent is installed on all nodes.
 
@@ -33,7 +33,10 @@ A Manifest is simply a conconated set of yaml files that install all of the comp
 Preparing the cluster
 Prior to the installation of PureLB, the k8s cluster should be installed with an operating Container Network Interface.  
 
-It is recommended that the ARP behavior changed from the Linux kernal default.  This is necessary if your using kubeproxy in IPVS model and is also good security practise.  By default Linux will answer ARP requests for addresses on any interface irrespective of the source, we recommend changing this setting so Linux only answers ARP requests for addresses on the interface it recieves the request.  Linux sets this default to increase the the chance of successful communication. This change is made in sysconfig.
+{{% notice warning %}}
+It is recommended that the ARP behavior changed from the Linux kernel default.  This is necessary if your using kubeproxy in IPVS model and is also good security practice.  By default Linux will answer ARP requests for addresses on any interface irrespective of the source, we recommend changing this setting so Linux only answers ARP requests for addresses on the interface it receives the request.  Linux sets this default to increase the the chance of successful communication. This change is made in sysconfig.
+{{% /notice %}}
+
 
 ```plaintext
 cat <<EOF | sudo tee /etc/sysctl.d/k8s_arp.conf
@@ -42,13 +45,14 @@ EOF
 sudo sysctl --system
 
 ```
-
-_PureLB will operate without making this change, however kubeproxy is set to IPVS mode and arp_filter is set to 0, all nodes will respond to locally allocated addresses as kubeproxy adds these addresses to kube-ipvs0_
+{{% notice danger %}}
+PureLB will operate without making this change, however kubeproxy is set to IPVS mode and arp_filter is set to 0, all nodes will respond to locally allocated addresses as kubeproxy adds these addresses to kube-ipvs0
+{{% /notice %}}
 
 ### Installing PureLB
 
 ```plaintext
-# kubectl apply -f http://purelb.io/purelb/manifest
+# kubectl apply -f https://gitlab.com/purelb/purelb/-/raw/main/deployments/purelb-complete.yaml
 ```
 
 ### Verify Installation

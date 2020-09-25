@@ -13,7 +13,7 @@ PureLB includes an optional packaged BIRD Router POD.  Instead of implementing r
   graph BT;
 
     A(Router/Switch 1);
-    B(Router/Swtich 2);
+    B(Router/Switch 2);
 
     subgraph k8s-Node-1
       C1(Bird)
@@ -55,7 +55,7 @@ The sample configuration provides the following:
 
 Each of the routing templates is configured to advertize routes learned from kube-lb0 but not add any routes learned from neighbors or peers, pureLB does not need to learn any routes. 
 
-The choice of routing protocols will depend upon how the k8s cluster is integrated with  network infrastructure.  In a configuration with IGP (interior gateway protocol) such as OSPF or RIP, OSPF is an ideal alternative.  Each node will establish adjacencies with the OSPF routers and advertize routes.  A solution often used in larger cloud systems uses the EGP (exterior gateway protocol), BGP as both an EGP and IGP, in this case each node establishes a peering relationship with the neighboring BGP router and once established advertizes routes.  Each of these alternatives has benefits, once OSPF is configured routes are distributed within the OSPF network, however there are few controls over which routes are distributed and how distribution is controlled.  BGP provides total control over how routes are configure, especially where peering is E-BGP, however configurion is required to distribute routes, by default BGP does nothing.  
+The choice of routing protocols will depend upon how the k8s cluster is integrated with  network infrastructure.  In a configuration with IGP (interior gateway protocol) such as OSPF or RIP, OSPF is an ideal alternative.  Each node will establish adjacencies with the OSPF routers and advertize routes.  A solution often used in larger cloud systems uses the EGP (exterior gateway protocol), BGP as both an EGP and IGP, in this case each node establishes a peering relationship with the neighboring BGP router and once established advertizes routes.  Each of these alternatives has benefits, once OSPF is configured routes are distributed within the OSPF network, however there are few controls over which routes are distributed and how distribution is controlled.  BGP provides total control over how routes are configure, especially where peering is E-BGP, however configuration is required to distribute routes, by default BGP does nothing.  
 
 A template for RIP is included however if either BGP or OSPF can be used, they are recommended.  In some cases older routes have limited capabilities/functionality, in this case RIP can help as its simple and widely supported.
 
