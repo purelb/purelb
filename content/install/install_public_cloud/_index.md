@@ -1,7 +1,7 @@
 ---
 title: "Install PureLB on Public Cloud"
 description: "Describe Operation"
-weight: 35
+weight: 30
 hide: toc, nextpage
 draft: true
 ---

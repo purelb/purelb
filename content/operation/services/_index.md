@@ -5,7 +5,7 @@ weight: 10
 hide: toc, nextpage
 ---
 
-PureLB uses the k8s services API therefore if a default service group has been defined, the instructions provided in the k8s documentation will result in a load balancer service being created.  This command will create a service type LoadBalancer resource for the deployment echoserver using using the default service group.
+PureLB uses the k8s services API and if a default service group has been defined, the following the  instructions provided in the k8s documentation will result in a load balancer service being created.  This command will create a service type LoadBalancer resource for the deployment echoserver using using the default service group.
 
 ```plaintext
 $ kubectl expose deployment echoserver --name=echoserver-service --port=80 --target-port=8080 --type=LoadBalancer
@@ -201,7 +201,7 @@ External Traffic Policy:  Local
 HealthCheck NodePort:     31400
 Events:                   <none>
 ```
-Describing the service shows that address was requested and allocated from the virtualsub pool, in this case the virtualsub pool sets the resulting address to 172.31.1.0/32.  This is the recommended configuration for External Traffic Policy: Local in this case the address is only added when the POD is present and therefore advertised via routing when the POD is present.  If the scale of the application changes, the number of nodes advertized will change.  
+Describing the service shows that address was requested and allocated from the virtualsub pool.  In this case the virtualsub pool sets the resulting address to 172.31.1.0/32.  This is the recommended configuration for External Traffic Policy: Local as the address is only added to _kube-lb0_ when the POD is present and therefore advertised via routing when the POD is present.  If the scale of the application changes, the number of nodes advertized will change.  
 
 {{% alert theme="danger" %}} Aggregation.  Setting Service Group aggregation to a mask other than /32 (or /128) can result in traffic being send to nodes that do not have PODs, kubeproxy will not forward so the traffic will be lost.  There are use cases but caution should be exercised {{% /alert %}}
 

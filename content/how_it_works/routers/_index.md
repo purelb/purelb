@@ -6,7 +6,7 @@ hide: toc, nextpage
 ---
 
 
-Where the cluster spans multiple subnets routing is often used to provide connectivity between hosts and POD (CNI network).  Certain CNI's add routing by default while others leave routing software choice and implementation to the user. 
+Where the cluster spans multiple subnets routing is often used to provide connectivity between hosts and POD (CNI network).  Certain CNIs add routing by default while others leave routing software choice and implementation to the user. 
 
 The Routing software enables the distribution of LoadBalancer addresses to other network devices.  This is achieved using a routing software function called redistribution.
 
@@ -50,7 +50,7 @@ The Routing software enables the distribution of LoadBalancer addresses to other
 
 {{</mermaid>}}
 
-PureLB adds the allocated addresses to kube-lb0 as IP Networks (192.168.100.1/24) therefore creating IPNET entries on the interface and routing entries in the routing table.  Redistribution dynamically copies routing information between different routing protocols and the Linux kernel's routing table is a source.  The routing software "redistributes" entries from the linux routing table using some form of selector, in this case the linux interface the route is attached.  The PureLB-Node adds an addition interface to linux, kube-lb0, and linux can route from its other interfaces to kube-lb0 as well as other interface created by the CNI and kubeProxy in the case of IPVS mode.  The redistributed destinations are distributed according to the routes protocol configuration.
+PureLB adds the allocated addresses to kube-lb0 as IP Networks (192.168.100.1/24) therefore creating IPNET entries on the interface and routing entries in the routing table.  Redistribution dynamically copies routing information between different routing protocols and the Linux kernel routing table is a source.  The routing software "redistributes" entries from the linux routing table using some form of selector, in this case the linux interface the route is attached.  The PureLB-Node adds an additional interface to linux, kube-lb0, and linux can route from its other interfaces to kube-lb0 as well as other interface created by the CNI and kubeProxy in the case of IPVS mode.  The redistributed destinations are distributed according to the routes protocol configuration.
 
 
 ## Routing and K8s
