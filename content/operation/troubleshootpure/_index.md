@@ -1,5 +1,5 @@
 ---
-title: "Troubleshooting"
+title: "Troubleshooting PureLB"
 description: "Describe Operation"
 weight: 40
 hide: toc, nextpage
@@ -7,7 +7,7 @@ hide: toc, nextpage
 
 If PureLB isnt behaving the way you expect, its easy to figure out whats going on.  PureLB uses the standard Linux networking libraries (iproute2/netlink) to configure addresses on nodes.
 
-PureLB added addresses two either the addressed it identifies as the default interface by looking for the interface that has the default route, unless this election was overridden in the custom resource _lbnodeagent_
+PureLB adds addresses to either the interface it identifies as the default interface by looking for the default route, unless this election was overridden in the custom resource _lbnodeagent_ or the virtual interface _kube-lb0_.
 
 
 Inspecting Linux interface and the Linux Routing table will show the load balancer addresses.  It is not necessary to log into the host to do this inspection.  Just like a CNI, the _lbnodeagent_ PODs are set to hostNetwork:true, the container is isolated but uses the host network namespace
@@ -86,7 +86,7 @@ Note that the addresses routes are correctly represented in the routing table.
 
 
 
-For the addresses added by PureLB, the k8s service is authoritative so the Linux host should match k8s expect state.  If the linux network state does not match, there are misconfigurations that are possible at startup.
+For the addresses added by PureLB, the k8s service is authoritative so the Linux host should match k8s expected state.  If the linux network state does not match, there are misconfigurations that are possible.
 
 An example is where multiple default routes have been added to host.  This is not a valid configuration however Linux allows it to occur.  When there are two default routes, Linux picks the first default however this can cause unpredictable behavior.  PureLB does not operate in this manner, if this occurs, PureLB is unable to identify the local interface.   An error will be logged in the _lbnodeagent_ POD log and the address will be added to the virtual interface instead.
 

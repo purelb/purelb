@@ -10,7 +10,7 @@ PureLB attempts to provide all of the information necessary to monitor and troub
 The simplest way to check the status of services if using the _kubectl describe_ command.
 
 ```plaintext
-$kubectl describe service specific-address2 s
+$kubectl describe service specific-address2
 Name:                     specific-address2
 Namespace:                adamd
 Labels:                   app=echoserver3
