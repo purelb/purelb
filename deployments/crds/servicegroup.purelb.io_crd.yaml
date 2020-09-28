@@ -18,6 +18,7 @@ spec:
               oneOf:
               - required: ["local"]
               - required: ["egw"]
+              - required: ["netbox"]
               properties:
                 local:
                   type: object
@@ -26,6 +27,17 @@ spec:
                       type: string
                     pool:
                       type: string
+                    aggregation:
+                      type: string
+                      default: default
+                netbox:
+                  type: object
+                  properties:
+                    url:
+                      type: string
+                    tenant:
+                      type: string
+                      default: ipam-purelb
                     aggregation:
                       type: string
                       default: default
