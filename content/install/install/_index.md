@@ -9,10 +9,8 @@ PureLB can be installed from:
 
 
 * Manifest
-* Helm Chart (comming soon)
+* Helm Chart (coming soon)
 * Source repository
-
-
 
 
 
