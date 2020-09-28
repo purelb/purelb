@@ -1,18 +1,25 @@
 ---
-title: "PureLB"
+title: ""
 description: "Description of PureLB"
 weight: 10
 
 hide: toc, breadcrumb
 ---
 
-# What is PureLB?
+
+<img align="left" src="images/purelb.png">
+
+
+</br>
 
 **_PureLB_** is a Service Load Balancer for Kubernetes.  A LoadBalancer is a Service type that allows configuration of external network components to enable external network access
 to the specified application resource. 
 
 Service Load Balancers are key component in the K8s developer workflow.  They allow the configuration of the resources used to enable access to applications to be pre-configured
 so they can be access on demand by developers via the service definition.  This simple operation can be undertaken on demand or as part of CI without custom configuration or tooling.   
+
+</br>
+
 
 
 ### Features

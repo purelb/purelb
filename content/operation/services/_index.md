@@ -203,11 +203,11 @@ Events:                   <none>
 ```
 Describing the service shows that address was requested and allocated from the virtualsub pool.  In this case the virtualsub pool sets the resulting address to 172.31.1.0/32.  This is the recommended configuration for External Traffic Policy: Local as the address is only added to _kube-lb0_ when the POD is present and therefore advertised via routing when the POD is present.  If the scale of the application changes, the number of nodes advertized will change.  
 
-{{% alert theme="danger" %}} Aggregation.  Setting Service Group aggregation to a mask other than /32 (or /128) can result in traffic being send to nodes that do not have PODs, kubeproxy will not forward so the traffic will be lost.  There are use cases but caution should be exercised {{% /alert %}}
+{{% notice danger %}} Aggregation.  Setting Service Group aggregation to a mask other than /32 (or /128) can result in traffic being send to nodes that do not have PODs, kubeproxy will not forward so the traffic will be lost.  There are use cases but caution should be exercised {{% /notice %}}
 
-{{% alert theme="warning" %}} Local Addresses. Where the address is a local address External Traffic Policy is not supported.  PureLB will reset External Traffic Policy to Cluster.  Where an address is on the local network it can only be allocated to a single node, therefore this setting is not applicable {{% /alert %}}
+{{% notice warning %}} Local Addresses. Where the address is a local address External Traffic Policy is not supported.  PureLB will reset External Traffic Policy to Cluster.  Where an address is on the local network it can only be allocated to a single node, therefore this setting is not applicable {{% /notice %}}
 
-{{% alert theme="warning" %}} Address Sharing.  External Traffic Policy: Local does not support Address Sharing.  Address sharing can result in nodes that do not have POD (endpoints) being advertised.  Kubeproxy will not forward so traffic would be lost.  PureLB does not allow this configuration {{% /alert %}}
+{{% notice warning %}} Address Sharing.  External Traffic Policy: Local does not support Address Sharing.  Address sharing can result in nodes that do not have POD (endpoints) being advertised.  Kubeproxy will not forward so traffic would be lost.  PureLB does not allow this configuration {{% /notice %}}
 
 
 
