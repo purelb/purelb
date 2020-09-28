@@ -1,6 +1,6 @@
 baseURL = "https://purelb.gitlab.io/docs/"
 languageCode = "en-us"
-title = "PureLB Documentation"
+title = "PureLB"
 theme = "docport"
 DefaultContentLanguage = "en"
 pygmentsCodeFences = true
@@ -18,8 +18,8 @@ home = [ "HTML", "RSS", "JSON"]
 # Site params
 [params]
 ordersectionsby = "weight" # ordersectionsby = "title"
-color_main = "#3366ff"
-color_second = "#b3c6ff"
+color_main = "#66b1de"
+color_second = "#ffffff"
 disableSearch = false # default is false
 disableNavChevron = false # set true to hide next/prev chevron, default is false
 menushortcutsnewtab = false # set true to open shortcuts links to a new tab/window
