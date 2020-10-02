@@ -11,6 +11,10 @@ enableMissingTranslationPlaceholders = false
 
 # googleanalytics = "UA-123-45"
 
+
+
+
+
 # Keep this as is
 [outputs]
 home = [ "HTML", "RSS", "JSON"]
@@ -19,7 +23,7 @@ home = [ "HTML", "RSS", "JSON"]
 [params]
 ordersectionsby = "weight" # ordersectionsby = "title"
 color_main = "#66b1de"
-color_second = "#ffffff"
+#color_second = "#ffffff"
 disableSearch = false # default is false
 disableNavChevron = false # set true to hide next/prev chevron, default is false
 menushortcutsnewtab = false # set true to open shortcuts links to a new tab/window
