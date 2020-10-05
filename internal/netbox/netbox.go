@@ -23,42 +23,49 @@ import (
 	"net/url"
 )
 
+// Netbox represents a connection to a
+// [Netbox](https://netbox.readthedocs.io/) IPAM system.
 type Netbox struct {
-	http       http.Client
-	base       string
-	auth_token string
+	http http.Client
+	// The base URL of the Netbox system.
+	base string
+	// The Netbox tenant slug.
+	tenant string
+	// The Netbox user token that PureLB uses to authenticate.
+	token string
 }
 
-type Address struct {
+type address struct {
 	ID      int
 	Address string
 }
-type AddressQueryResponse struct {
+type addressQueryResponse struct {
 	Count   int
-	Results []Address
+	Results []address
 }
 
-func New(base string, auth_token string) *Netbox {
-	return &Netbox{http: http.Client{}, base: base, auth_token: auth_token}
+// NewNetbox configures a new connection to a Netbox system.
+func NewNetbox(base string, tenant string, token string) *Netbox {
+	return &Netbox{http: http.Client{}, base: base, tenant: tenant, token: token}
 }
 
-func (n *Netbox) NewRequest(verb string, url string) (*http.Request, error) {
+func (n *Netbox) newRequest(verb string, url string) (*http.Request, error) {
 	req, err := http.NewRequest(verb, n.base+url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Add("Content-Type", "application/json")
 	req.Header.Add("accept", "application/json")
-	req.Header.Add("Authorization", "Token "+n.auth_token)
+	req.Header.Add("Authorization", "Token "+n.token)
 	return req, nil
 }
 
-func (n *Netbox) NewGetRequest(url string) (*http.Request, error) {
-	return n.NewRequest(http.MethodGet, url)
+func (n *Netbox) newGetRequest(url string) (*http.Request, error) {
+	return n.newRequest(http.MethodGet, url)
 }
 
-func (n *Netbox) NewPatchRequest(url string, body []byte) (*http.Request, error) {
-	req, err := n.NewRequest(http.MethodPatch, url)
+func (n *Netbox) newPatchRequest(url string, body []byte) (*http.Request, error) {
+	req, err := n.newRequest(http.MethodPatch, url)
 	if err != nil {
 		return nil, err
 	}
@@ -66,8 +73,11 @@ func (n *Netbox) NewPatchRequest(url string, body []byte) (*http.Request, error)
 	return req, nil
 }
 
-func (n *Netbox) fetchAddrs(tenant string, status string) ([]Address, error) {
-	req, err := n.NewGetRequest("/api/ipam/ip-addresses/")
+// fetchAddrs finds out if Netbox has any available addresses. An
+// address is available if it belongs to our tenant and its status
+// matches the status parameter.
+func (n *Netbox) fetchAddrs(tenant string, status string) ([]address, error) {
+	req, err := n.newGetRequest("api/ipam/ip-addresses/")
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +87,13 @@ func (n *Netbox) fetchAddrs(tenant string, status string) ([]Address, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	var body AddressQueryResponse
+
+	// FIXME: Netbox is not good about HTTP response codes.  If our
+	// authn fails then Netbox 302's to a login page even though we
+	// specified that we want a JSON response. We need to treat 302 as
+	// an error.
+
+	var body addressQueryResponse
 	err = json.NewDecoder(resp.Body).Decode(&body)
 	if err != nil {
 		return nil, err
@@ -89,9 +105,11 @@ func (n *Netbox) fetchAddrs(tenant string, status string) ([]Address, error) {
 	return body.Results, nil
 }
 
-func (n *Netbox) allocateAddr(addr Address) error {
-	url := fmt.Sprintf("/api/ipam/ip-addresses/%d/", addr.ID)
-	req, err := n.NewPatchRequest(url, []byte("{\"status\": \"active\"}"))
+func (n *Netbox) allocateAddr(addr address) error {
+	// mark the address as "in use" by sending an HTTP PATCH request to
+	// set the Netbox address status to "active"
+	url := fmt.Sprintf("api/ipam/ip-addresses/%d/", addr.ID)
+	req, err := n.newPatchRequest(url, []byte("{\"status\": \"active\"}"))
 	if err != nil {
 		return err
 	}
@@ -104,14 +122,16 @@ func (n *Netbox) allocateAddr(addr Address) error {
 	return err
 }
 
+// Fetch fetches an address from Netbox. If the fetch is successful
+// then error will be nil and the returned string will describe an
+// address.
 func (n *Netbox) Fetch() (string, error) {
 	var (
-		tenant    string = "ipam-purelb-customer-exp"
-		ip_status string = "reserved"
+		ipStatus string = "reserved"
 	)
 
 	// fetch list of addresses
-	addrs, err := n.fetchAddrs(tenant, ip_status)
+	addrs, err := n.fetchAddrs(n.tenant, ipStatus)
 	if err != nil {
 		return "", err
 	}

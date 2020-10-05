@@ -38,8 +38,9 @@ type ServiceGroup struct {
 // Acnodal's EGW). For examples, see the "config/" directory in the
 // PureLB source tree.
 type ServiceGroupSpec struct {
-	Local *ServiceGroupLocalSpec `json:"local"`
-	EGW   *ServiceGroupEGWSpec   `json:"egw"`
+	Local  *ServiceGroupLocalSpec  `json:"local"`
+	EGW    *ServiceGroupEGWSpec    `json:"egw"`
+	Netbox *ServiceGroupNetboxSpec `json:"netbox"`
 }
 
 // ServiceGroupLocalSpec configures the allocator to manage a pool of
@@ -60,6 +61,14 @@ type ServiceGroupLocalSpec struct {
 // group on the EGW. Aggregation is currently unused.
 type ServiceGroupEGWSpec struct {
 	URL         string `json:"url"`
+	Aggregation string `json:"aggregation"`
+}
+
+// ServiceGroupNetboxSpec configures the allocator to request
+// addresses from a Netbox IPAM system.
+type ServiceGroupNetboxSpec struct {
+	URL         string `json:"url"`
+	Tenant      string `json:"tenant"`
 	Aggregation string `json:"aggregation"`
 }
 

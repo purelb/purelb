@@ -15,7 +15,6 @@
 package allocator
 
 import (
-	"errors"
 	"fmt"
 	"net"
 
@@ -171,6 +170,11 @@ func (a *Allocator) AllocateFromPool(svc string, poolName string, ports []Port, 
 
 // Allocate assigns any available and assignable IP to service.
 func (a *Allocator) Allocate(svc string, ports []Port, sharingKey string) (string, net.IP, error) {
+	var (
+		err error
+		ip  net.IP
+	)
+
 	// if we have already allocated an address for this service then
 	// return it
 	if alloc := a.allocated[svc]; alloc != nil {
@@ -179,11 +183,10 @@ func (a *Allocator) Allocate(svc string, ports []Port, sharingKey string) (strin
 
 	// we need an address but no pool was specified so it's either the
 	// "default" pool or nothing
-	if ip, err := a.AllocateFromPool(svc, "default", ports, sharingKey); err == nil {
+	if ip, err = a.AllocateFromPool(svc, "default", ports, sharingKey); err == nil {
 		return "default", ip, nil
 	}
-
-	return "", nil, errors.New("no available IPs")
+	return "", nil, err
 }
 
 // IP returns the IP address allocated to service, or nil if none are allocated.
@@ -245,6 +248,12 @@ func parseConfig(groups []*v1.ServiceGroup) (map[string]Pool, error) {
 func parseGroup(name string, group v1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
 		ret, err := NewLocalPool(group.Local.Pool, group.Local.Subnet, group.Local.Aggregation)
+		if err != nil {
+			return nil, err
+		}
+		return *ret, nil
+	} else if group.Netbox != nil {
+		ret, err := NewNetboxPool(group.Netbox.URL, group.Netbox.Tenant, group.Netbox.Aggregation)
 		if err != nil {
 			return nil, err
 		}
