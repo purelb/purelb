@@ -28,7 +28,12 @@ NodePort:                 <unset>  32380/TCP
 Endpoints:                <none>
 Session Affinity:         None
 External Traffic Policy:  Cluster
-Events:                   <none>
+Events:
+  Type    Reason           Age                From                Message
+  ----    ------           ----               ----                -------
+  Normal  IPAllocated      92m (x2 over 92m)  purelb-allocator    Assigned IP 172.30.250.53 from pool default
+  Normal  AnnouncingLocal  92m (x2 over 92m)  purelb-lbnodeagent  Node node3 announcing 172.30.250.53 on interface eth1
+
 ```
 
 ### PureLB Annotations
@@ -36,7 +41,7 @@ PureLB uses annotations to configure functionality not native in the k8s API.
 
 Annotation | example | Description
 -----------|---------|--------------
-purelb.io/address-pool | purelb.io/address-pool: virtualsg |  Sets the Service Group that will be used to allocate the address (yes we know this is confusing, the annotation will change to sg in the near future)
+purelb.io/service-group | purelb.io/service-group: virtualsg |  Sets the Service Group that will be used to allocate the address
 purelb.io/allow-shared-ip | purelb.io/allow-shared-ip: sharingkey |  Allows the allocated address to be shared between multiple services in the same namespace
 
 
@@ -57,7 +62,7 @@ apiVersion: v1
 kind: Service
 metadata:
   annotations:
-    purelb.io/address-pool: localaddr
+    purelb.io/service-group: localaddr
   labels:
     app: echoserver
   name: servicetest
@@ -80,7 +85,8 @@ $ kubectl describe service echoserver
 Name:                     servicetest
 Namespace:                servicetest
 Labels:                   app=echoserver
-Annotations:              purelb.io/allocated-by: PureLB
+Annotations:              purelb.io/service-group: localaddr
+                          purelb.io/allocated-by: PureLB
                           purelb.io/allocated-from: localaddr
                           purelb.io/announcing-interface: enp1s0
                           purelb.io/announcing-node: purelb2-1
@@ -94,7 +100,12 @@ NodePort:                 <unset>  32380/TCP
 Endpoints:                <none>
 Session Affinity:         None
 External Traffic Policy:  Cluster
-Events:                   <none>
+Events:Type    Reason           Age                From                Message
+  ----    ------           ----               ----                -------
+  Normal  IPAllocated      92m (x2 over 92m)  purelb-allocator    Assigned IP 172.30.250.53 from pool localaddr
+  Normal  AnnouncingLocal  92m (x2 over 92m)  purelb-lbnodeagent  Node node3 announcing 172.30.250.53 on interface enp1s0
+
+
 ```
 Describing the service displays the address provided by PureLB, in addition PureLB annotates the service to provide status information.  The annotations show that PureLB allocated the address from the localaddr Service Group.  Further, the annotations show that the address was added to a local interface, enp1s0 on k8s node purelb2-1.
 
@@ -104,6 +115,7 @@ piVersion: v1
 kind: Service
 metadata:
   annotations:
+    purelb.io/service-group: virtualsub
   labels:
     app: echoserver
   name: specificaddress
@@ -127,7 +139,8 @@ $ kubectl describe service -n adamd specificaddress2
 Name:                     specificaddress
 Namespace:                adamd
 Labels:                   app=echoserver
-Annotations:              purelb.io/allocated-by: PureLB
+Annotations:              purelb.io/service-group: virtualsub
+                          purelb.io/allocated-by: PureLB
                           purelb.io/allocated-from: virtualsub
 Selector:                 app=echoserver3
 Type:                     LoadBalancer
@@ -140,7 +153,16 @@ NodePort:                 <unset>  31377/TCP
 Endpoints:                10.129.3.151:8080,10.129.4.33:8080
 Session Affinity:         None
 External Traffic Policy:  Cluster
-Events:                   <none>
+Events:                   
+  Type    Reason              Age                From                Message
+  ----    ------              ----               ----                -------
+  Normal  IPAllocated         47m (x2 over 47m)  purelb-allocator    Assigned IP 172.31.1.225 from pool virtualsub
+  Normal  AnnouncingNonLocal  47m                purelb-lbnodeagent  Announcing 172.31.1.225 from node node3 interface kube-lb0
+  Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.225 from node node1 interface kube-lb0
+  Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.225 from node node2 interface kube-lb0
+  Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.225 from node node5 interface kube-lb0
+  Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.225 from node node4 interface kube-lb0
+
 ```
 Describing the service shows that the requested address has been allocated by Purelb from the pool virtualsub.  PureLB scanned the configured service groups to confirm the address is in a service group and not in use prior to allocation.  
 
@@ -149,7 +171,7 @@ apiVersion: v1
 kind: Service
 metadata:
   annotations:
-    purelb.io/address-pool: virtualsub
+    purelb.io/service-group: virtualsub
   labels:
     app: echoserver
   name: endpoints
@@ -185,7 +207,7 @@ $ kubectl describe service endpoints
 Name:                     endpoints
 Namespace:                servicetest
 Labels:                   app=echoserver
-Annotations:              purelb.io/address-pool: virtualsub
+Annotations:              purelb.io/service-group: virtualsub
                           purelb.io/allocated-by: PureLB
                           purelb.io/allocated-from: virtualsub
 Selector:                 app=echoserver
@@ -199,7 +221,13 @@ Endpoints:                10.129.1.70:8080,10.129.3.146:8080,10.129.4.30:8080
 Session Affinity:         None
 External Traffic Policy:  Local
 HealthCheck NodePort:     31400
-Events:                   <none>
+Events:
+  Type    Reason              Age                From                Message
+  ----    ------              ----               ----                -------
+  Normal  IPAllocated         47m (x2 over 47m)  purelb-allocator    Assigned IP 172.31.1.0 from pool virtualsub
+  Normal  AnnouncingNonLocal  47m                purelb-lbnodeagent  Announcing 172.31.1.0 from node node3 interface kube-lb0
+  Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.0 from node node1 interface kube-lb0
+  Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.0 from node node2 interface kube-lb0
 ```
 Describing the service shows that address was requested and allocated from the virtualsub pool.  In this case the virtualsub pool sets the resulting address to 172.31.1.0/32.  This is the recommended configuration for External Traffic Policy: Local as the address is only added to _kube-lb0_ when the POD is present and therefore advertised via routing when the POD is present.  If the scale of the application changes, the number of nodes advertized will change.  
 

@@ -23,7 +23,6 @@ metadata:
   name: LocalAddressRange
   namespace: purelb 
 spec:
-  name: 'localaddrange'
   subnet: '192.168.151.0/24'
   pool: '192.168.151.240-192.168.151.250'
   aggregation: 'default'
@@ -33,9 +32,11 @@ $ kubectl describe service echoserver-service1
 Name:                     echoserver-service1
 Namespace:                default
 Labels:                   app=echoserver1
-Annotations:              purelb.io/allocated-by: PureLB
-                          purelb.io/allocated-from: localaddrange
-                          purelb.io/added-to: node1/enp1s0
+Annotations:              purelb.io/service-group: LocalAddressRange
+                          purelb.io/allocated-by: PureLB
+                          purelb.io/allocated-from: LocalAddressRange
+                          purelb.io/announcing-interface: enp1s0
+                          purelb.io/announcing-node: node1
 Selector:                 app=echoserver1
 Type:                     LoadBalancer
 IP:                       10.102.207.235
@@ -46,7 +47,12 @@ NodePort:                 <unset>  32416/TCP
 Endpoints:                10.128.2.67:8080
 Session Affinity:         None
 External Traffic Policy:  Cluster
-Events:                   <none>
+Events:
+ Type    Reason           Age                From                Message
+  ----    ------           ----               ----                -------
+  Normal  IPAllocated      71m (x2 over 71m)  purelb-allocator    Assigned IP 192.168.151.240 from pool LocalAddressRange
+  Normal  AnnouncingLocal  71m (x2 over 71m)  purelb-lbnodeagent  Node node3 announcing 192.168.151.240 on interface enp1s0
+
 
 node1# ip -4 addr show dev enp1s0
 2: enp1s0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000

@@ -26,7 +26,6 @@ metadata:
   name: VirtualAddressRange
   namespace: purelb 
 spec:
-  name: 'virtaddrange'
   subnet: '172.22.0.0/24'
   pool: '172.22.0.10-172.22.0.25'
   aggregation: 'default'
@@ -36,8 +35,9 @@ $ k describe service echoserver-service22
 Name:                     echoserver-service22
 Namespace:                default
 Labels:                   app=echoserver1
-Annotations:              purelb.io/allocated-by: PureLB
-                          purelb.io/allocated-from: virtualaddrange
+Annotations:              purelb.io/service-group: VirtualAddressRange
+                          purelb.io/allocated-by: PureLB
+                          purelb.io/allocated-from: VirtualAddressRange
 Selector:                 app=echoserver1
 Type:                     LoadBalancer
 IP:                       10.105.255.29
@@ -48,7 +48,13 @@ NodePort:                 <unset>  30815/TCP
 Endpoints:                10.128.2.67:8080
 Session Affinity:         None
 External Traffic Policy:  Cluster
-Events:                   <none>
+Events:
+ Type    Reason              Age                From                Message
+  ----    ------              ----               ----                -------
+  Normal  IPAllocated         31m (x2 over 31m)  purelb-allocator    Assigned IP 172.22.0.11 from pool VirtualAddressRange
+  Normal  AnnouncingNonLocal  31m                purelb-lbnodeagent  Announcing 172.22.0.11 from node node1 interface kube-lb0
+  Normal  AnnouncingNonLocal  10m                purelb-lbnodeagent  Announcing 172.22.0.11 from node node3 interface kube-lb0
+
 
 node1# ip -4 addr show dev kube-lb0 
 4: kube-lb0: <BROADCAST,NOARP> mtu 1500 qdisc noop state UP group default qlen 1000
