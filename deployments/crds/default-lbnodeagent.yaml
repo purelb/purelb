@@ -1,3 +1,4 @@
+---
 apiVersion: "purelb.io/v1"
 kind: LBNodeAgent
 metadata:
