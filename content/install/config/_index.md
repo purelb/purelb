@@ -25,11 +25,11 @@ Namespace:    purelb
 Kind:         LBNodeAgent
 Spec:
   Local:
-    Extlbint:  kube-lb0
-    Localint:  default
+    extlbint:  kube-lb0
+    localint:  default
 ```
-* Extlbint:  This sets the name of the virtual interface used for virtual addresses.  The default is kube-lb0.  (If you change it, and are using the purelb bird configuration, make sure you update the bird.cm)
-* Localint: Purelb automatically identifies the interface that is connected to the local network and the address range used.  The default setting enables this automatic functionality.  If you wish to override this functionality and specify which interface Purelb should add local address, specify it here. Currently it must be uniform throughout the cluster.  (note that you need to make sure that this interface has appropriate routing, the algorithmic selector finds the interface with the default route, the interface that is most likely to have global communications.)
+* extlbint:  This sets the name of the virtual interface used for virtual addresses.  The default is kube-lb0.  (If you change it, and are using the purelb bird configuration, make sure you update the bird.cm)
+* eocalint: Purelb automatically identifies the interface that is connected to the local network and the address range used.  The default setting enables this automatic functionality.  If you wish to override this functionality and specify which interface Purelb should add local address, specify it here. Currently it must be uniform throughout the cluster.  (note that you need to make sure that this interface has appropriate routing, the algorithmic selector finds the interface with the default route, the interface that is most likely to have global communications.)
 
 
 ## Service Groups
@@ -37,7 +37,8 @@ Service groups contain the configuration required to allocate Load Balancer addr
 
 
 ### Integrated IPAM
-PureLB provides the following default Service Group CR as part of the installation
+{{% notice danger %}} Note: PureLB requires the creation of at least one service group for operation {{% /notice %}}
+**PureLB does not install a default service group and requires a default service group for operation as per the example below.**  The default group is used where no purelb.io/service-group annotation is present in the service definition.
 
 ```yaml
 apiVersion: purelb.io/v1
@@ -52,7 +53,10 @@ spec:
     aggregation: default
 ```
 
-A Service Group is configured for each pool of addresses needed by the k8s cluster.  A _local_ service group designates the integrated IPAM.
+
+
+
+A Service Group is configured for each pool of addresses needed by the k8s cluster. 
 
 
 parameter | type | Description

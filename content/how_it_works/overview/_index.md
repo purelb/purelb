@@ -51,7 +51,7 @@ metadata:
   name: echoserver-service1
   namespace: default
   annotations:
-      purelb.io/address-pool: localaddrange
+      purelb.io/service-group: localaddrange
 spec:
   externalTrafficPolicy: Cluster
   ports:

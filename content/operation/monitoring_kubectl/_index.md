@@ -14,7 +14,7 @@ $kubectl describe service specific-address2
 Name:                     specific-address2
 Namespace:                adamd
 Labels:                   app=echoserver3
-Annotations:              purelb.io/address-pool: virtualsg
+Annotations:              purelb.io/service-group: virtualsg
                           purelb.io/allocated-by: PureLB
                           purelb.io/allocated-from: virtualsub
 Selector:                 app=echoserver3
@@ -47,7 +47,7 @@ $ kubectl describe service echoserver21
 Name:                     echoserver21
 Namespace:                toby
 Labels:                   app=echoserver1
-Annotations:              purelb.io/address-pool: default
+Annotations:              purelb.io/service-group: default
                           purelb.io/allocated-by: PureLB
                           purelb.io/allocated-from: default
                           purelb.io/announcing-interface: enp1s0
