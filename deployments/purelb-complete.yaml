@@ -117,6 +117,15 @@ spec:
     categories:
     - all
 ---
+apiVersion: "purelb.io/v1"
+kind: LBNodeAgent
+metadata:
+  name: default
+  namespace: purelb
+spec:
+  local:
+    localint: default
+---
 apiVersion: policy/v1beta1
 kind: PodSecurityPolicy
 metadata:
