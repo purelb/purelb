@@ -6,6 +6,7 @@ require (
 	github.com/apparentlymart/go-cidr v1.1.0
 	github.com/go-kit/kit v0.9.0
 	github.com/go-resty/resty/v2 v2.3.0
+	github.com/golang/mock v1.2.0
 	github.com/google/go-cmp v0.5.2
 	github.com/googleapis/gnostic v0.2.0 // indirect
 	github.com/hashicorp/memberlist v0.2.2

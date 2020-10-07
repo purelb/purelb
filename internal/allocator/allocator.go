@@ -20,6 +20,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 
+	"purelb.io/internal/acnodal"
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
@@ -262,7 +263,13 @@ func parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 		}
 		return *ret, nil
 	} else if group.EGW != nil {
-		ret, err := NewEGWPool(group.EGW.URL, group.EGW.Aggregation)
+		// Initialize the EGW proxy
+		egw, err := acnodal.NewEGW(group.EGW.URL)
+		if err != nil {
+			return nil, fmt.Errorf("Can't initialize the EGW proxy")
+		}
+
+		ret, err := NewEGWPool(egw, group.EGW.Aggregation)
 		if err != nil {
 			return nil, err
 		}

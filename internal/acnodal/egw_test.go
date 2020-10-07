@@ -21,16 +21,17 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	v1 "k8s.io/api/core/v1"
 )
 
 const (
-	GroupName       = "acnodal-test"
+	GroupName       = "sample"
 	ServiceName     = "test-service"
 	ServiceAddress  = "192.168.1.27"
 	EndpointName    = "test-endpoint"
 	EndpointAddress = "10.42.27.42"
 	EndpointPort    = 80
-	GroupURL        = "/api/egw/groups/b321256d-31b7-4209-bd76-28dec3c77c25" // FIXME: use c.ips.Pool(name) but it's safer to hard-code for now
+	GroupURL        = "/api/egw/accounts/sample/groups/sample"
 )
 
 func TestMain(m *testing.M) {
@@ -43,16 +44,16 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func NewEGW(t *testing.T) *EGW {
-	e, err := New("", "")
+func MustEGW(t *testing.T) *EGW {
+	e, err := NewEGW("")
 	if err != nil {
 		t.Fatal("initializing EGW", err)
 	}
 	return e
 }
 
-func GetGroup(t *testing.T, e *EGW, url string) EGWGroup {
-	g, err := e.GetGroup(url)
+func GetGroup(t *testing.T, e *EGW, url string) EGWGroupResponse {
+	g, err := e.GetGroup()
 	if err != nil {
 		t.Fatal("getting group", err)
 	}
@@ -60,28 +61,31 @@ func GetGroup(t *testing.T, e *EGW, url string) EGWGroup {
 }
 
 func TestGetGroup(t *testing.T) {
-	e := NewEGW(t)
+	e := MustEGW(t)
 	g := GetGroup(t, e, GroupURL)
-	if g.Name != GroupName {
-		t.Fatal("group name mismatch", g.Name, GroupName)
-	}
+	gotName := g.Group.ObjectMeta.Name
+	assert.Equal(t, gotName, GroupName, "group name mismatch")
 }
 
-func TestAnnounceService(t *testing.T) {
-	e := NewEGW(t)
+func TestAnnouncements(t *testing.T) {
+	e := MustEGW(t)
 	g := GetGroup(t, e, GroupURL)
-	svc, err := e.AnnounceService(g.Links["create-service"], ServiceName, ServiceAddress)
+
+	// announce a service
+	svc, err := e.AnnounceService(g.Links["create-service"], ServiceName, []v1.ServicePort{v1.ServicePort{Port: 80}})
 	if err != nil {
 		t.Fatal("announcing service", err)
 	}
 	assert.Equal(t, svc.Links["group"], GroupURL, "group url mismatch")
-}
 
-func TestAnnounceEndpoint(t *testing.T) {
-	e := NewEGW(t)
-	g := GetGroup(t, e, GroupURL)
-	s, _ := e.AnnounceService(g.Links["create-service"], ServiceName, ServiceAddress)
-	err := e.AnnounceEndpoint(s.Links["create-endpoint"], EndpointAddress, EndpointPort)
+	// announce an endpoint on that service
+	err = e.AnnounceEndpoint(svc.Links["create-endpoint"], EndpointAddress, EndpointPort)
+	if err != nil {
+		t.Errorf("got error %+v", err)
+	}
+
+	// announce another endpoint on that service
+	err = e.AnnounceEndpoint(svc.Links["create-endpoint"], EndpointAddress, EndpointPort+1)
 	if err != nil {
 		t.Errorf("got error %+v", err)
 	}

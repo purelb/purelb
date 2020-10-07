@@ -20,10 +20,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/golang/mock/gomock"
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"purelb.io/internal/acnodal"
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
@@ -839,7 +841,15 @@ func mustLocalPool(t *testing.T, r string) LocalPool {
 }
 
 func mustEGWPool(t *testing.T, url string) EGWPool {
-	p, err := NewEGWPool(url, "")
+	egw, err := acnodal.NewEGW(url)
+	if err != nil {
+		panic(err)
+	}
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	p, err := NewEGWPool(egw, "")
 	if err != nil {
 		panic(err)
 	}

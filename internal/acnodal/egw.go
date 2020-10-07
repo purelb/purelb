@@ -16,119 +16,162 @@ package acnodal
 
 import (
 	"fmt"
-	"os"
+	"net/url"
 
 	"github.com/go-resty/resty/v2"
+	v1 "k8s.io/api/core/v1"
 )
 
-// FIXME: package these in the EGW so we can reference them here
+// EGW represents one connection to an Acnodal Enterprise Gateway.
+type EGW struct {
+	http      resty.Client
+	groupURL  string
+	authToken string
+}
+
+// Links holds a map of URL strings.
 type Links map[string]string
 
-type EGW struct {
-	http       resty.Client
-	base       string
-	auth_token string
+// ObjectMeta is a shadow of the k8s ObjectMeta struct.
+type ObjectMeta struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
 }
 
+// EGWGroup is the on-the-wire representation of one Service Group.
 type EGWGroup struct {
-	Name    string
-	Links   Links  `json:"link"`
-	Created string `json:"created,omitempty"`
-	Updated string `json:"updated,omitempty"`
+	ObjectMeta ObjectMeta `json:"metadata"`
 }
 
+// EGWServiceSpec is the on-the-wire representation of one
+// LoadBalancer Service Spec (i.e., the part that defines what the LB
+// should look like).
+type EGWServiceSpec struct {
+	Address string `json:"public-address"`
+	Ports   []int  `json:"public-ports"`
+}
+
+// EGWService is the on-the-wire representation of one LoadBalancer
+// Service.
 type EGWService struct {
-	Name      string
-	Address   string
-	Endpoints string `json:"id,omitempty"`
-	Links     Links  `json:"link"`
-	Created   string `json:"created,omitempty"`
-	Updated   string `json:"updated,omitempty"`
+	ObjectMeta ObjectMeta     `json:"metadata"`
+	Spec       EGWServiceSpec `json:"spec"`
+	Status     struct{}       `json:"status"`
 }
 
+// EGWEndpoint is the on-the-wire representation of one LoadBalancer
+// endpoint.
 type EGWEndpoint struct {
 	Address string
 	Port    int
-	Links   Links  `json:"link"`
-	Created string `json:"created,omitempty"`
-	Updated string `json:"updated,omitempty"`
 }
 
+// EGWGroupResponse is the body of the HTTP response to a request to
+// show a service group.
+type EGWGroupResponse struct {
+	Links Links    `json:"link"`
+	Group EGWGroup `json:"group"`
+}
+
+// EGWServiceCreate is the body of the HTTP request to create a load
+// balancer service.
 type EGWServiceCreate struct {
-	Service EGWService
-}
-type EGWServiceResponse struct {
-	Service EGWService
+	Service EGWService `json:"service"`
 }
 
+// EGWServiceResponse is the body of the HTTP response to a request to
+// show a load balancer.
+type EGWServiceResponse struct {
+	Links   Links      `json:"link"`
+	Service EGWService `json:"service"`
+}
+
+// EGWEndpointCreate is the body of the HTTP request to create a load
+// balancer endpoint.
 type EGWEndpointCreate struct {
 	Endpoint EGWEndpoint
 }
+
+// EGWEndpointResponse is the body of the HTTP response to a request to
+// show a load balancer endpoint.
 type EGWEndpointResponse struct {
-	Service EGWService
+	Links   Links      `json:"link"`
+	Service EGWService `json:"service"`
 }
 
-func New(base string, auth_token string) (*EGW, error) {
-	var is_set bool
-	if base == "" {
-		base, is_set = os.LookupEnv("NETBOX_BASE_URL")
-		if !is_set {
-			return nil, fmt.Errorf("NETBOX_BASE_URL not set, can't connect to Netbox")
-		}
+// New initializes a new EGW instance. If error is non-nil then the
+// instance shouldn't be used.
+func NewEGW(groupURL string) (*EGW, error) {
+	// Use the hostname from the service group, but reset the path.  EGW
+	// and Netbox each have their own API URL schemes so we only need
+	// the protocol, host, port, credentials, etc.
+	baseURL, err := url.Parse(groupURL)
+	if err != nil {
+		return nil, err
 	}
-	if auth_token == "" {
-		auth_token, is_set = os.LookupEnv("NETBOX_USER_TOKEN")
-		if !is_set {
-			return nil, fmt.Errorf("NETBOX_USER_TOKEN not set, can't connect to Netbox")
-		}
-	}
+	baseURL.Path = "/"
 
+	// Set up a REST client to talk to the EGW
 	r := resty.New().
-		SetHostURL(base).
+		SetHostURL(baseURL.String()).
 		SetHeaders(map[string]string{
 			"Content-Type": "application/json",
 			"accept":       "application/json",
 		}).
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
-	return &EGW{http: *r, base: base, auth_token: auth_token}, nil
+
+	// Initialize the EGW instance
+	return &EGW{http: *r, groupURL: groupURL}, nil
 }
 
-func (n *EGW) GetGroup(url string) (EGWGroup, error) {
+// GetGroup requests a service group from the EGW.
+func (n *EGW) GetGroup() (EGWGroupResponse, error) {
 	response, err := n.http.R().
-		SetResult(EGWGroup{}).
-		Get(url)
+		SetResult(EGWGroupResponse{}).
+		Get(n.groupURL)
 	if err != nil {
-		return EGWGroup{}, err
+		return EGWGroupResponse{}, err
 	}
 	if response.IsError() {
-		return EGWGroup{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+		return EGWGroupResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
 	}
 
-	srv := response.Result().(*EGWGroup)
+	srv := response.Result().(*EGWGroupResponse)
 	return *srv, nil
 }
 
-func (n *EGW) AnnounceService(url string, name string, address string) (EGWService, error) {
+// AnnounceService announces a service to the EGW. url is the service
+// creation URL which is a child of the service group to which this
+// service will belong. name is the service name.  address is a string
+// containing an IP address. ports is a slice of v1.ServicePorts.
+func (n *EGW) AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error) {
+	// translate ServicePorts into raw int ports
+	var intPorts = []int{}
+	for _, port := range ports {
+		intPorts = append(intPorts, int(port.Port))
+	}
+
+	// send the request
 	response, err := n.http.R().
 		SetBody(EGWServiceCreate{
-			Service: EGWService{Name: name, Address: address}}).
-		SetResult(EGWService{}).
+			Service: EGWService{ObjectMeta: ObjectMeta{Name: name}, Spec: EGWServiceSpec{Ports: intPorts}}}).
+		SetResult(EGWServiceResponse{}).
 		Post(url)
 	if err != nil {
-		return EGWService{}, err
+		return EGWServiceResponse{}, err
 	}
 	if response.IsError() {
-		return EGWService{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+		return EGWServiceResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
 	}
 
-	srv := response.Result().(*EGWService)
+	srv := response.Result().(*EGWServiceResponse)
 	return *srv, nil
 }
 
-func (n *EGW) AnnounceEndpoint(url string, endpoint string, port int) error {
+// AnnounceEndpoint announces an endpoint to the EGW.
+func (n *EGW) AnnounceEndpoint(url string, address string, port int) error {
 	response, err := n.http.R().
-		SetBody(EGWEndpointCreate{
-			Endpoint: EGWEndpoint{Address: endpoint, Port: port}}).
+		SetBody(EGWEndpointCreate{Endpoint: EGWEndpoint{Address: address, Port: port}}).
 		SetResult(EGWServiceResponse{}).
 		Post(url)
 	if err != nil {

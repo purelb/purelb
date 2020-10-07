@@ -18,24 +18,19 @@ package allocator
 import (
 	"fmt"
 	"net"
-	"net/url"
-	"os"
 
 	v1 "k8s.io/api/core/v1"
 
-	"purelb.io/internal/netbox"
-)
-
-const (
-	tenant = "ipam-purelb"
+	"purelb.io/internal/acnodal"
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 // EGWPool represents an IP address pool on the Acnodal Enterprise
 // GateWay.
 type EGWPool struct {
-	url       string
-	userToken string
-	netbox    netbox.Netbox
+	userToken        string
+	egw              *acnodal.EGW
+	createServiceUrl string
 
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
@@ -51,30 +46,20 @@ type EGWPool struct {
 
 // NewEGWPool initializes a new instance of EGWPool. If error is
 // non-nil then the returned EGWPool should not be used.
-func NewEGWPool(rawurl string, aggregation string) (*EGWPool, error) {
-	// Make sure that we've got credentials
-	userToken, ok := os.LookupEnv("NETBOX_USER_TOKEN")
-	if !ok {
-		return nil, fmt.Errorf("NETBOX_USER_TOKEN not set, can't connect to Netbox")
-	}
-
-	// Use the hostname from the service group, but reset the path.  EGW
-	// and Netbox each have their own API URL schemes so we only need
-	// the protocol, host, port, credentials, etc.
-	url, err := url.Parse(rawurl)
+func NewEGWPool(egw *acnodal.EGW, aggregation string) (*EGWPool, error) {
+	// Look up the EGW group (which gives us the URL to create services)
+	group, err := egw.GetGroup()
 	if err != nil {
-		return nil, fmt.Errorf("Netbox URL invalid")
+		return nil, err
 	}
-	url.Path = ""
 
 	return &EGWPool{
-		url:            rawurl,
-		userToken:      userToken,
-		netbox:         *netbox.NewNetbox(url.String(), tenant, userToken),
-		addressesInUse: map[string]map[string]bool{},
-		sharingKeys:    map[string]*Key{},
-		portsInUse:     map[string]map[Port]string{},
-		aggregation:    aggregation,
+		egw:              egw,
+		createServiceUrl: group.Links["create-service"],
+		addressesInUse:   map[string]map[string]bool{},
+		sharingKeys:      map[string]*Key{},
+		portsInUse:       map[string]map[Port]string{},
+		aggregation:      aggregation,
 	}, nil
 }
 
@@ -89,15 +74,19 @@ func (p EGWPool) Available(ip net.IP, service *v1.Service) error {
 
 // AssignNext assigns a service to the next available IP.
 func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
-	// fetch from netbox
-	cidr, err := p.netbox.Fetch()
+	// Announce the service to the EGW
+	egwsvc, err := p.egw.AnnounceService(p.createServiceUrl, service.Name, service.Spec.Ports)
 	if err != nil {
-		return nil, fmt.Errorf("no available IPs in pool")
+		return nil, err
 	}
-	ip, _, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing IP %q", ip)
+	ip := net.ParseIP(egwsvc.Service.Spec.Address)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid IP returned by EGW: %s", egwsvc.Service.Spec.Address)
 	}
+
+	service.Annotations[purelbv1.GroupAnnotation] = egwsvc.Links["group"]
+	service.Annotations[purelbv1.ServiceAnnotation] = egwsvc.Links["self"]
+	service.Annotations[purelbv1.EndpointAnnotation] = egwsvc.Links["create-endpoint"]
 
 	return ip, nil
 }

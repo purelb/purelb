@@ -22,7 +22,6 @@ import (
 	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
-	"purelb.io/internal/acnodal"
 	"purelb.io/internal/k8s"
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
@@ -123,35 +122,6 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 	}
 	svc.Annotations[purelbv1.BrandAnnotation] = purelbv1.Brand
 	svc.Annotations[purelbv1.PoolAnnotation] = pool
-
-	if c.baseURL != nil {
-		// Connect to the EGW
-		egw, err := acnodal.New(c.baseURL.String(), "")
-		if err != nil {
-			log.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
-			c.client.Errorf(svc, "AllocationFailed", "Failed to create EGW service for %s: %s", nsName, err)
-			return k8s.SyncStateError
-		}
-
-		// Look up the EGW group (which gives us the URL to create services)
-		group, err := egw.GetGroup(*c.groupURL)
-		if err != nil {
-			log.Log("op", "GetGroup", "group", c.groupURL, "error", err)
-			c.client.Errorf(svc, "GetGroupFailed", "Failed to get group %s: %s", c.groupURL, err)
-			return k8s.SyncStateError
-		}
-
-		// Announce the service to the EGW
-		egwsvc, err := egw.AnnounceService(group.Links["create-service"], nsName, svc.Status.LoadBalancer.Ingress[0].IP)
-		if err != nil {
-			log.Log("op", "AnnouncementFailed", "service", nsName, "error", err)
-			c.client.Errorf(svc, "AnnouncementFailed", "Failed to announce service for %s: %s", nsName, err)
-			return k8s.SyncStateError
-		}
-		svc.Annotations[purelbv1.GroupAnnotation] = egwsvc.Links["group"]
-		svc.Annotations[purelbv1.ServiceAnnotation] = egwsvc.Links["self"]
-		svc.Annotations[purelbv1.EndpointAnnotation] = egwsvc.Links["create-endpoint"]
-	}
 
 	return k8s.SyncStateSuccess
 }

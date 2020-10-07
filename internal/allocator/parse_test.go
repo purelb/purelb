@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
 	v1 "purelb.io/pkg/apis/v1"
 )
 
@@ -39,14 +40,14 @@ func TestParse(t *testing.T) {
 				localServiceGroup("pool2", "30.0.0.0/8"),
 				localServiceGroup("pool3", "40.0.0.0/25"),
 				localServiceGroup("pool4", "2001:db8::/126"),
-				egwServiceGroup("pool5", "url"),
+				egwServiceGroup("pool5", "http://test"),
 			},
 			want: map[string]Pool{
 				"pool1": mustLocalPool(t, "10.20.0.0/16"),
 				"pool2": mustLocalPool(t, "30.0.0.0/8"),
 				"pool3": mustLocalPool(t, "40.0.0.0/25"),
 				"pool4": mustLocalPool(t, "2001:db8::/126"),
-				"pool5": mustEGWPool(t, "url"),
+				"pool5": mustEGWPool(t, "http://test"),
 			},
 		},
 
@@ -96,7 +97,7 @@ func TestParse(t *testing.T) {
 				return
 			}
 			egwComparer := cmp.Comparer(func(x, y EGWPool) bool {
-				return reflect.DeepEqual(x.url, y.url)
+				return reflect.DeepEqual(x.createServiceUrl, y.createServiceUrl)
 			})
 			iprangeComparer := cmp.Comparer(func(x, y IPRange) bool {
 				return reflect.DeepEqual(x.from, y.from) && reflect.DeepEqual(x.to, y.to)
