@@ -9,7 +9,7 @@ pygmentsStyle = "monokai"
 defaultContentLanguageInSubdir= false
 enableMissingTranslationPlaceholders = false
 
-# googleanalytics = "UA-123-45"
+ googleAnalytics = "UA-180188455-2"
 
 
 
