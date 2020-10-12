@@ -59,7 +59,7 @@ type Client struct {
 
 	syncFuncs []cache.InformerSynced
 
-	serviceChanged func(string, *corev1.Service, *corev1.Endpoints) SyncState
+	serviceChanged func(*corev1.Service, *corev1.Endpoints) SyncState
 	serviceDeleted func(string) SyncState
 	configChanged  func(*purelbv1.Config) SyncState
 	synced         func()
@@ -95,7 +95,7 @@ type Config struct {
 	Logger        log.Logger
 	Kubeconfig    string
 
-	ServiceChanged func(string, *corev1.Service, *corev1.Endpoints) SyncState
+	ServiceChanged func(*corev1.Service, *corev1.Endpoints) SyncState
 	ServiceDeleted func(string) SyncState
 	ConfigChanged  func(*purelbv1.Config) SyncState
 	Synced         func()
@@ -386,7 +386,7 @@ func (c *Client) sync(key interface{}) SyncState {
 		svcOriginal := svc.DeepCopy()
 
 		// tell the app about the service change
-		status := c.serviceChanged(svcName, svc, eps)
+		status := c.serviceChanged(svc, eps)
 
 		// write any changes to the service back to the cluster
 		if status == SyncStateSuccess {

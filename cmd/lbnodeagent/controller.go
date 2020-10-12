@@ -62,29 +62,29 @@ func (c *controller) SetClient(client *k8s.Client) {
 	}
 }
 
-func (c *controller) ServiceChanged(name string, svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {
-	defer c.logger.Log("event", "serviceUpdated", "service", name)
+func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {
+	defer c.logger.Log("event", "serviceUpdated", "service", svc.Name)
 
 	if len(svc.Status.LoadBalancer.Ingress) != 1 {
-		return c.deleteBalancer(name, "noIPAllocated")
+		return c.deleteBalancer(svc.Name, "noIPAllocated")
 	}
 
 	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
 	if lbIP == nil {
 		c.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP)
-		return c.deleteBalancer(name, "invalidIP")
+		return c.deleteBalancer(svc.Name, "invalidIP")
 	}
 
 	// If we didn't allocate the address then we shouldn't announce it.
 	if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] != purelbv1.Brand {
-		c.logger.Log("msg", "notAllocatedByPureLB", "node", c.myNode, "service", name)
+		c.logger.Log("msg", "notAllocatedByPureLB", "node", c.myNode, "service", svc.Name)
 		return k8s.SyncStateSuccess
 	}
 
 	// give each announcer a chance to announce
 	announceError := k8s.SyncStateSuccess
 	for _, announcer := range c.announcers {
-		if err := announcer.SetBalancer(name, svc, endpoints); err != nil {
+		if err := announcer.SetBalancer(svc, endpoints); err != nil {
 			c.logger.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
 			announceError = k8s.SyncStateError
 		}
@@ -92,7 +92,7 @@ func (c *controller) ServiceChanged(name string, svc *v1.Service, endpoints *v1.
 
 	c.logger.Log("event", "serviceAnnounced", "node", c.myNode, "msg", "service has IP, announcing")
 
-	c.svcIP[name] = lbIP
+	c.svcIP[svc.Name] = lbIP
 
 	return announceError
 }

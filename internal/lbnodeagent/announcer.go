@@ -26,7 +26,7 @@ import (
 type Announcer interface {
 	SetConfig(*purelbv1.Config) error
 	SetClient(*k8s.Client)
-	SetBalancer(string, *v1.Service, *v1.Endpoints) error
+	SetBalancer(*v1.Service, *v1.Endpoints) error
 	DeleteBalancer(string, string) error
 	SetElection(*election.Election)
 	Shutdown()

@@ -26,7 +26,7 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
-func (c *controller) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
+func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
 	if !c.synced {
 		c.logger.Log("op", "allocateIP", "error", "controller not synced")
 		return k8s.SyncStateError
@@ -60,13 +60,13 @@ func (c *controller) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) 
 		return k8s.SyncStateSuccess
 	}
 
-	pool, lbIP, err := c.allocateIP(name, svc)
+	pool, lbIP, err := c.allocateIP(svc.Name, svc)
 	if err != nil {
 		c.logger.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
-		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", name, err)
+		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", svc.Name, err)
 		return k8s.SyncStateSuccess
 	}
-	c.logger.Log("event", "ipAllocated", "ip", lbIP, "pool", pool, "service", name)
+	c.logger.Log("event", "ipAllocated", "ip", lbIP, "pool", pool, "service", svc.Name)
 	c.client.Infof(svc, "IPAllocated", "Assigned IP %s from pool %s", lbIP, pool)
 
 	// we have an IP selected somehow, so program the data plane

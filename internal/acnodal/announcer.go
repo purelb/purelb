@@ -73,7 +73,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	return nil
 }
 
-func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endpoints) error {
+func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
 	// if we haven't been configured then we won't announce
 	if a.config == nil {
 		return nil
