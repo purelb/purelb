@@ -28,22 +28,6 @@ import (
 )
 
 func diffService(a, b *v1.Service) string {
-	// v5 of the k8s client does not correctly compare nil
-	// *metav1.Time objects, which svc.ObjectMeta contains. Add
-	// some dummy non-nil values to all of in, want, got to work
-	// around this until we migrate to v6.
-	if a != nil {
-		newA := new(v1.Service)
-		*newA = *a
-		newA.ObjectMeta.DeletionTimestamp = &metav1.Time{}
-		a = newA
-	}
-	if b != nil {
-		newB := new(v1.Service)
-		*newB = *b
-		newB.ObjectMeta.DeletionTimestamp = &metav1.Time{}
-		b = newB
-	}
 	return cmp.Diff(a, b)
 }
 
