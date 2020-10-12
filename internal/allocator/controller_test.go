@@ -156,6 +156,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	c.MarkSynced()
 
 	svc1 := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
@@ -169,6 +170,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	// Second service should converge correctly, but not allocate an
 	// IP because we have none left.
 	svc2 := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "test2"},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
@@ -286,6 +288,7 @@ func TestSharingSimple(t *testing.T) {
 
 	svc1 := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
+			Name: "svc1",
 			Annotations: map[string]string{
 				purelbv1.SharingAnnotation: sharing,
 			},
@@ -300,6 +303,7 @@ func TestSharingSimple(t *testing.T) {
 	// Mismatched SharingAnnotation so different address
 	svc2 := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
+			Name: "svc2",
 			Annotations: map[string]string{
 				purelbv1.SharingAnnotation: "i-really-dont-care-do-u",
 			},
@@ -314,6 +318,7 @@ func TestSharingSimple(t *testing.T) {
 	// Matching SharingAnnotation so same address as svc1
 	svc3 := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
+			Name: "svc3",
 			Annotations: map[string]string{
 				purelbv1.SharingAnnotation: sharing,
 			},

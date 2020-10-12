@@ -51,7 +51,7 @@ func (c *controller) SetBalancer(name string, svc *v1.Service, _ *v1.Endpoints) 
 		// database so we don't allocate the same address twice.
 		if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
 			if existingIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP); existingIP != nil {
-				_, _ = c.ips.Assign(name, existingIP, Ports(svc), SharingKey(svc))
+				_, _ = c.ips.Assign(svc, existingIP)
 			}
 		}
 
@@ -131,7 +131,7 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, er
 		if ip == nil {
 			return "", nil, fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
 		}
-		pool, err := c.ips.Assign(key, ip, Ports(svc), SharingKey(svc))
+		pool, err := c.ips.Assign(svc, ip)
 		if err != nil {
 			return "", nil, err
 		}
@@ -140,7 +140,7 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, er
 
 	// Otherwise, did the user ask for a specific pool?
 	if desiredGroup != "" {
-		ip, err := c.ips.AllocateFromPool(key, desiredGroup, Ports(svc), SharingKey(svc))
+		ip, err := c.ips.AllocateFromPool(svc, desiredGroup)
 		if err != nil {
 			return "", nil, err
 		}
@@ -148,5 +148,5 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, er
 	}
 
 	// Okay, in that case just bruteforce across all pools.
-	return c.ips.Allocate(key, Ports(svc), SharingKey(svc))
+	return c.ips.Allocate(svc)
 }
