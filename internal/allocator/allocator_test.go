@@ -841,13 +841,12 @@ func mustLocalPool(t *testing.T, r string) LocalPool {
 }
 
 func mustEGWPool(t *testing.T, url string) EGWPool {
-	egw, err := acnodal.NewEGW(url)
-	if err != nil {
-		panic(err)
-	}
-
 	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
+	egw := acnodal.NewMockEGW(ctrl)
+	egw.EXPECT().
+		GetGroup().
+		Return(acnodal.EGWGroupResponse{}, nil).
+		AnyTimes()
 
 	p, err := NewEGWPool(egw, "")
 	if err != nil {

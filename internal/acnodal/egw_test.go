@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func MustEGW(t *testing.T) *EGW {
+func MustEGW(t *testing.T) EGW {
 	e, err := NewEGW("")
 	if err != nil {
 		t.Fatal("initializing EGW", err)
@@ -52,7 +52,7 @@ func MustEGW(t *testing.T) *EGW {
 	return e
 }
 
-func GetGroup(t *testing.T, e *EGW, url string) EGWGroupResponse {
+func GetGroup(t *testing.T, e EGW, url string) EGWGroupResponse {
 	g, err := e.GetGroup()
 	if err != nil {
 		t.Fatal("getting group", err)
@@ -72,7 +72,7 @@ func TestAnnouncements(t *testing.T) {
 	g := GetGroup(t, e, GroupURL)
 
 	// announce a service
-	svc, err := e.AnnounceService(g.Links["create-service"], ServiceName, []v1.ServicePort{v1.ServicePort{Port: 80}})
+	svc, err := e.AnnounceService(g.Links["create-service"], ServiceName, []v1.ServicePort{{Port: 80}})
 	if err != nil {
 		t.Fatal("announcing service", err)
 	}

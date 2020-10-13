@@ -29,7 +29,7 @@ import (
 // GateWay.
 type EGWPool struct {
 	userToken        string
-	egw              *acnodal.EGW
+	egw              acnodal.EGW
 	createServiceUrl string
 
 	// Map of the addresses that have been assigned.
@@ -46,20 +46,13 @@ type EGWPool struct {
 
 // NewEGWPool initializes a new instance of EGWPool. If error is
 // non-nil then the returned EGWPool should not be used.
-func NewEGWPool(egw *acnodal.EGW, aggregation string) (*EGWPool, error) {
-	// Look up the EGW group (which gives us the URL to create services)
-	group, err := egw.GetGroup()
-	if err != nil {
-		return nil, err
-	}
-
+func NewEGWPool(egw acnodal.EGW, aggregation string) (*EGWPool, error) {
 	return &EGWPool{
-		egw:              egw,
-		createServiceUrl: group.Links["create-service"],
-		addressesInUse:   map[string]map[string]bool{},
-		sharingKeys:      map[string]*Key{},
-		portsInUse:       map[string]map[Port]string{},
-		aggregation:      aggregation,
+		egw:            egw,
+		addressesInUse: map[string]map[string]bool{},
+		sharingKeys:    map[string]*Key{},
+		portsInUse:     map[string]map[Port]string{},
+		aggregation:    aggregation,
 	}, nil
 }
 
@@ -74,6 +67,16 @@ func (p EGWPool) Available(ip net.IP, service *v1.Service) error {
 
 // AssignNext assigns a service to the next available IP.
 func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
+	// Lazily look up the EGW group (which gives us the URL to create
+	// services)
+	if p.createServiceUrl == "" {
+		group, err := p.egw.GetGroup()
+		if err != nil {
+			return nil, err
+		}
+		p.createServiceUrl = group.Links["create-service"]
+	}
+
 	// Announce the service to the EGW
 	egwsvc, err := p.egw.AnnounceService(p.createServiceUrl, service.Name, service.Spec.Ports)
 	if err != nil {

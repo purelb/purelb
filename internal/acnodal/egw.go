@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:generate mockgen -destination internal/acnodal/mock_egw.go -package purelb.io/internal/acnodal
+
 package acnodal
 
 import (
@@ -23,7 +25,14 @@ import (
 )
 
 // EGW represents one connection to an Acnodal Enterprise Gateway.
-type EGW struct {
+type EGW interface {
+	GetGroup() (EGWGroupResponse, error)
+	AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error)
+	AnnounceEndpoint(url string, address string, port int) error
+}
+
+// egw represents one connection to an Acnodal Enterprise Gateway.
+type egw struct {
 	http      resty.Client
 	groupURL  string
 	authToken string
@@ -101,7 +110,7 @@ type EGWEndpointResponse struct {
 
 // New initializes a new EGW instance. If error is non-nil then the
 // instance shouldn't be used.
-func NewEGW(groupURL string) (*EGW, error) {
+func NewEGW(groupURL string) (EGW, error) {
 	// Use the hostname from the service group, but reset the path.  EGW
 	// and Netbox each have their own API URL schemes so we only need
 	// the protocol, host, port, credentials, etc.
@@ -121,11 +130,11 @@ func NewEGW(groupURL string) (*EGW, error) {
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 
 	// Initialize the EGW instance
-	return &EGW{http: *r, groupURL: groupURL}, nil
+	return &egw{http: *r, groupURL: groupURL}, nil
 }
 
 // GetGroup requests a service group from the EGW.
-func (n *EGW) GetGroup() (EGWGroupResponse, error) {
+func (n *egw) GetGroup() (EGWGroupResponse, error) {
 	response, err := n.http.R().
 		SetResult(EGWGroupResponse{}).
 		Get(n.groupURL)
@@ -144,7 +153,7 @@ func (n *EGW) GetGroup() (EGWGroupResponse, error) {
 // creation URL which is a child of the service group to which this
 // service will belong. name is the service name.  address is a string
 // containing an IP address. ports is a slice of v1.ServicePorts.
-func (n *EGW) AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error) {
+func (n *egw) AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error) {
 	// translate ServicePorts into raw int ports
 	var intPorts = []int{}
 	for _, port := range ports {
@@ -169,7 +178,7 @@ func (n *EGW) AnnounceService(url string, name string, ports []v1.ServicePort) (
 }
 
 // AnnounceEndpoint announces an endpoint to the EGW.
-func (n *EGW) AnnounceEndpoint(url string, address string, port int) error {
+func (n *egw) AnnounceEndpoint(url string, address string, port int) error {
 	response, err := n.http.R().
 		SetBody(EGWEndpointCreate{Endpoint: EGWEndpoint{Address: address, Port: port}}).
 		SetResult(EGWServiceResponse{}).
