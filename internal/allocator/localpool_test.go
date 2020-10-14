@@ -95,11 +95,11 @@ func TestAssignNext(t *testing.T) {
 	assert.Equal(t, net.ParseIP("192.168.1.1"), ip)
 
 	// Same port: should fail
-	ip, err = p.AssignNext("svc3", []Port{http}, &key2)
+	_, err = p.AssignNext("svc3", []Port{http}, &key2)
 	assert.NotNil(t, err)
 
 	// Shared key, different ports: should succeed
-	ip, err = p.AssignNext("svc3", []Port{smtp}, &key2)
+	_, err = p.AssignNext("svc3", []Port{smtp}, &key2)
 	assert.Nil(t, err)
 }
 

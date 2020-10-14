@@ -139,5 +139,5 @@ func (n *Netbox) Fetch() (string, error) {
 	first := addrs[0]
 	err = n.allocateAddr(addrs[0])
 
-	return first.Address, nil
+	return first.Address, err
 }
