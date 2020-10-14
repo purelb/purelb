@@ -67,14 +67,13 @@ func (a *announcer) SetClient(client *k8s.Client) {
 }
 
 func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
-	a.logger.Log("event", "newConfig")
-
 	// the default is nil which means that we don't announce
 	a.config = nil
 
 	// if there's a "Local" agent config then we'll announce
 	for _, agent := range cfg.Agents {
 		if spec := agent.Spec.Local; spec != nil {
+			a.logger.Log("op", "setConfig", "config", spec)
 			a.config = spec
 
 			// stash the local service group configs
@@ -108,24 +107,27 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 		}
 	}
 
+	if a.config == nil {
+		a.logger.Log("event", "noConfig")
+	}
+
 	return nil
 }
 
 func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
 	var err error
-
-	a.logger.Log("event", "announceService", "announcer", "local", "service", svc.Name)
+	l := log.With(a.logger, "service", svc.Name)
 
 	// if we haven't been configured then we won't announce
 	if a.config == nil {
-		a.logger.Log("event", "noConfig")
+		l.Log("event", "noConfig")
 		return nil
 	}
 
 	// validate the allocated address
 	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
 	if lbIP == nil {
-		a.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", svc.Status.LoadBalancer.Ingress[0].IP)
+		l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", svc.Status.LoadBalancer.Ingress[0].IP)
 		return nil
 	}
 
@@ -135,6 +137,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	if announceInt == nil {
 		announceInt, err = defaultInterface(addrFamily(lbIP))
 		if err != nil {
+			l.Log("event", "announceError", "err", err)
 			return err
 		}
 	}
@@ -145,10 +148,9 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		// Set the service back to ExternalTrafficPolicyCluster if adding to local interface
 
 		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal {
-			a.logger.Log("op", "setBalancer", "error", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster")
+			l.Log("op", "setBalancer", "error", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster")
 			svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
 			return a.DeleteBalancer(svc.Name, "ClusterLocal")
-
 		}
 
 		// the service address is local, i.e., it's within the same subnet
@@ -159,7 +161,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 			// we won the election so we'll add the service address to our
 			// node's default interface so linux will respond to ARP
 			// requests for it
-			a.logger.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", svc.Name)
+			l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", svc.Name)
 			a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, defaultif.Attrs().Name)
 
 			addNetwork(lbIPNet, defaultif)
@@ -173,7 +175,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		} else {
 			// We lost the election so we'll withdraw any announcement that
 			// we might have been making
-			a.logger.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", svc.Name)
+			l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", svc.Name)
 			return a.DeleteBalancer(svc.Name, "lostElection")
 		}
 	} else {
@@ -185,7 +187,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		// No, if externalTrafficPolicy is Local && there's no ready local endpoint
 		// Yes, in all other cases
 		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, a.myNode) {
-			a.logger.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", svc.Name)
+			l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", svc.Name)
 			return a.DeleteBalancer(svc.Name, "noEndpoints")
 		}
 
@@ -194,7 +196,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		poolName, gotName := svc.Annotations[purelbv1.PoolAnnotation]
 		if gotName {
 			allocPool := a.groups[poolName]
-			a.logger.Log("msg", "announcingNonLocal", "node", a.myNode, "service", svc.Name, "reason", err)
+			l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", svc.Name, "reason", err)
 			a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (*a.dummyInt).Attrs().Name)
 			addVirtualInt(lbIP, *a.dummyInt, allocPool.Subnet, allocPool.Aggregation)
 			announcing.With(prometheus.Labels{

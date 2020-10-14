@@ -63,9 +63,8 @@ func (c *controller) SetClient(client *k8s.Client) {
 }
 
 func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {
-	defer c.logger.Log("event", "serviceUpdated", "service", svc.Name)
-
 	if len(svc.Status.LoadBalancer.Ingress) != 1 {
+		c.logger.Log("event", "noAddress", "service", svc.Name)
 		return c.deleteBalancer(svc.Name, "noIPAllocated")
 	}
 
@@ -89,8 +88,6 @@ func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8
 			announceError = k8s.SyncStateError
 		}
 	}
-
-	c.logger.Log("event", "serviceAnnounced", "node", c.myNode, "msg", "service has IP, announcing")
 
 	c.svcIP[svc.Name] = lbIP
 
@@ -119,8 +116,6 @@ func (c *controller) deleteBalancer(name, reason string) k8s.SyncState {
 }
 
 func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
-	c.logger.Log("op", "setConfig")
-
 	retval := k8s.SyncStateReprocessAll
 
 	for _, announcer := range c.announcers {
