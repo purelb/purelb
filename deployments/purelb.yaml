@@ -315,8 +315,6 @@ spec:
             drop:
             - ALL
           readOnlyRootFilesystem: true
-      imagePullSecrets:
-      - name: gitlab
       hostNetwork: true
       nodeSelector:
         beta.kubernetes.io/os: linux
@@ -373,8 +371,6 @@ spec:
             drop:
             - all
           readOnlyRootFilesystem: true
-      imagePullSecrets:
-      - name: gitlab
       nodeSelector:
         beta.kubernetes.io/os: linux
       securityContext:

@@ -20,7 +20,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"strings"
 
 	"purelb.io/internal/netbox"
 )
@@ -82,38 +81,7 @@ func NewEGWPool(rawurl string, aggregation string) (*EGWPool, error) {
 // whether this service can share the address with it. error will be
 // nil if the ip is available, and will contain an explanation if not.
 func (p EGWPool) Available(ip net.IP, ports []Port, service string, key *Key) error {
-	// No key: no sharing
-	if key == nil {
-		key = &Key{}
-	}
-
-	// Does the IP already have allocs? If so, needs to be the same
-	// sharing key, and have non-overlapping ports. If not, the
-	// proposed IP needs to be allowed by configuration.
-	if existingSK := p.SharingKey(ip); existingSK != nil {
-		if err := sharingOK(existingSK, key); err != nil {
-
-			// Sharing key is incompatible. However, if the owner is
-			// the same service, and is the only user of the IP, we
-			// can just update its sharing key in place.
-			var otherSvcs []string
-			for _, otherSvc := range p.servicesOnIP(ip) {
-				if otherSvc != service {
-					otherSvcs = append(otherSvcs, otherSvc)
-				}
-			}
-			if len(otherSvcs) > 0 {
-				return fmt.Errorf("can't change sharing key for %q, address also in use by %s", service, strings.Join(otherSvcs, ","))
-			}
-		}
-
-		for _, port := range ports {
-			if curSvc, ok := p.portsInUse[ip.String()][port]; ok && curSvc != service {
-				return fmt.Errorf("port %s is already in use on %q", port, ip)
-			}
-		}
-	}
-
+	// We haven't yet implemented address sharing
 	return nil
 }
 
