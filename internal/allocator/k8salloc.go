@@ -24,7 +24,7 @@ func Ports(svc *v1.Service) []Port {
 	var ret []Port
 	for _, port := range svc.Spec.Ports {
 		ret = append(ret, Port{
-			Proto: string(port.Protocol),
+			Proto: port.Protocol,
 			Port:  int(port.Port),
 		})
 	}

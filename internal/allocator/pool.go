@@ -25,7 +25,7 @@ import (
 
 // Port represents one port in use by a service.
 type Port struct {
-	Proto string
+	Proto v1.Protocol
 	Port  int
 }
 

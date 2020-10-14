@@ -24,8 +24,8 @@ import (
 var (
 	key1 = Key{Sharing: "sharing1"}
 	key2 = Key{Sharing: "sharing2"}
-	http = Port{Proto: string(v1.ProtocolTCP), Port: 80}
-	smtp = Port{Proto: string(v1.ProtocolTCP), Port: 25}
+	http = Port{Proto: v1.ProtocolTCP, Port: 80}
+	smtp = Port{Proto: v1.ProtocolTCP, Port: 25}
 )
 
 func TestInUse(t *testing.T) {
