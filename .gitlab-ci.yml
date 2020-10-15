@@ -2,8 +2,11 @@ image: docker:latest
 services:
   - docker:dind
 variables:
+  PROJECT: $CI_PROJECT_NAME
   ALLOCATOR_IMG: $CI_REGISTRY_IMAGE/allocator
   LBNODEAGENT_IMG: $CI_REGISTRY_IMAGE/lbnodeagent
+  TAG_SPECIFIC: ci-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
+  TAG_LATEST: ci-${CI_COMMIT_REF_SLUG}-latest
   NETBOX_USER_TOKEN: no-op
   # https://docs.gitlab.com/12.10/ee/ci/docker/using_docker_build.html#tls-enabled
   DOCKER_TLS_CERTDIR: "/certs"
@@ -30,30 +33,31 @@ allocatorarm64:
   stage: image
   tags:
   - arm64
-  script: make SUFFIX=arm64-ci image-allocator install-allocator
+  script: make SUFFIX=arm64-${TAG_SPECIFIC} image-allocator install-allocator
 
 allocatoramd:
   stage: image
-  script: make SUFFIX=amd64-ci image-allocator install-allocator
+  script: make SUFFIX=amd64-${TAG_SPECIFIC} image-allocator install-allocator
 
 lbnodeagentarm64:
   stage: image
   tags:
   - arm64
-  script: make SUFFIX=arm64-ci image-lbnodeagent install-lbnodeagent
+  script: make SUFFIX=arm64-${TAG_SPECIFIC} image-lbnodeagent install-lbnodeagent
 
 lbnodeagentamd:
   stage: image
-  script: make SUFFIX=amd64-ci image-lbnodeagent install-lbnodeagent
+  script: make SUFFIX=amd64-${TAG_SPECIFIC} image-lbnodeagent install-lbnodeagent
 
 manifest:
   stage: manifest
   script:
-    - docker manifest create $ALLOCATOR_IMG:ci $ALLOCATOR_IMG:amd64-ci $ALLOCATOR_IMG:arm64-ci
-    - docker manifest push $ALLOCATOR_IMG:ci
-    - docker manifest create $LBNODEAGENT_IMG:ci $LBNODEAGENT_IMG:amd64-ci $LBNODEAGENT_IMG:arm64-ci
-    - docker manifest push $LBNODEAGENT_IMG:ci
-    - make generate-manifest
+    - wget --quiet -O - https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv4.0.1/kustomize_v4.0.1_linux_amd64.tar.gz | tar -C /usr/local/bin -xzf -
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} manifest docker-manifest
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} manifest
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} docker-manifest
+
   artifacts:
     paths:
-      - deployments/purelb-complete.yaml
+      - deployments/*
+      - configs/*
