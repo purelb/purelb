@@ -28,31 +28,15 @@ import (
 // EGWPool represents an IP address pool on the Acnodal Enterprise
 // GateWay.
 type EGWPool struct {
-	userToken        string
 	egw              acnodal.EGW
 	createServiceUrl string
-
-	// Map of the addresses that have been assigned.
-	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
-
-	// Map of the "sharing keys" for each IP address
-	sharingKeys map[string]*Key // ip.String() -> pointer to sharing key
-
-	portsInUse map[string]map[Port]string // ip.String() -> Port -> svc
-
-	subnetV4    string
-	aggregation string
 }
 
 // NewEGWPool initializes a new instance of EGWPool. If error is
 // non-nil then the returned EGWPool should not be used.
-func NewEGWPool(egw acnodal.EGW, aggregation string) (*EGWPool, error) {
+func NewEGWPool(egw acnodal.EGW, _ string) (*EGWPool, error) {
 	return &EGWPool{
-		egw:            egw,
-		addressesInUse: map[string]map[string]bool{},
-		sharingKeys:    map[string]*Key{},
-		portsInUse:     map[string]map[Port]string{},
-		aggregation:    aggregation,
+		egw: egw,
 	}, nil
 }
 
@@ -101,6 +85,7 @@ func (p EGWPool) Assign(ip net.IP, service *v1.Service) error {
 
 // Release releases an IP so it can be assigned again.
 func (p EGWPool) Release(ip net.IP, service string) {
+
 }
 
 // InUse returns the count of addresses that currently have services
@@ -109,24 +94,9 @@ func (p EGWPool) InUse() int {
 	return -1
 }
 
-// servicesOnIP returns the names of the services who are assigned to
-// the address.
-func (p EGWPool) servicesOnIP(ip net.IP) []string {
-	ipstr := ip.String()
-	svcs, has := p.addressesInUse[ipstr]
-	if has {
-		keys := make([]string, 0, len(svcs))
-		for k := range svcs {
-			keys = append(keys, k)
-		}
-		return keys
-	}
-	return []string{}
-}
-
 // SharingKey returns the "sharing key" for the specified address.
 func (p EGWPool) SharingKey(ip net.IP) *Key {
-	return p.sharingKeys[ip.String()]
+	return nil
 }
 
 // First returns the first (i.e., lowest-valued) net.IP within this
