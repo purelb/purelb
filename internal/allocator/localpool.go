@@ -61,7 +61,7 @@ func NewLocalPool(rawrange string, subnet string, aggregation string) (*LocalPoo
 // whether this service can share the address with it. error will be
 // nil if the ip is available, and will contain an explanation if not.
 func (p LocalPool) Available(ip net.IP, service *v1.Service) error {
-	nsName := service.Namespace + "/" + service.Name
+	nsName := namespacedName(service)
 	key := &Key{Sharing: SharingKey(service)}
 	ports := Ports(service)
 
@@ -114,7 +114,7 @@ func (p LocalPool) AssignNext(service *v1.Service) (net.IP, error) {
 
 // Assign assigns a service to an IP.
 func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
-	nsName := service.Namespace + "/" + service.Name
+	nsName := namespacedName(service)
 
 	ipstr := ip.String()
 	sharingKey := &Key{Sharing: SharingKey(service)}

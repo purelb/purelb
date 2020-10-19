@@ -10,6 +10,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package allocator
 
 import (
@@ -42,11 +43,11 @@ func TestInUse(t *testing.T) {
 	assert.Equal(t, 2, p.InUse())
 	p.Assign(ip, &svc3)
 	assert.Equal(t, 2, p.InUse()) // allocating the same address doesn't change the count
-	p.Release(ip, "test/svc2")
-	assert.Equal(t, 2, p.InUse()) // the shared address isn't fully released yet
-	p.Release(ip, "test/svc3")
-	assert.Equal(t, 1, p.InUse()) // the shared address is released
-	p.Release(ip2, "test/svc1")
+	p.Release(ip, namespacedName(&svc2))
+	assert.Equal(t, 2, p.InUse()) // the address isn't fully released yet
+	p.Release(ip, namespacedName(&svc3))
+	assert.Equal(t, 1, p.InUse()) // the address isn't fully released yet
+	p.Release(ip2, namespacedName(&svc1))
 	assert.Equal(t, 0, p.InUse()) // all addresses are released
 }
 
@@ -57,11 +58,11 @@ func TestServicesOn(t *testing.T) {
 	svc2 := service("svc2", ports("tcp/25"), "sharing1")
 
 	p.Assign(ip2, &svc1)
-	assert.Equal(t, []string{"test/svc1"}, p.servicesOnIP(ip2))
+	assert.Equal(t, []string{namespacedName(&svc1)}, p.servicesOnIP(ip2))
 	p.Assign(ip2, &svc2)
-	sameStrings(t, []string{"test/svc1", "test/svc2"}, p.servicesOnIP(ip2))
-	p.Release(ip2, "test/svc1")
-	assert.Equal(t, []string{"test/svc2"}, p.servicesOnIP(ip2))
+	sameStrings(t, []string{namespacedName(&svc1), namespacedName(&svc2)}, p.servicesOnIP(ip2))
+	p.Release(ip2, namespacedName(&svc1))
+	assert.Equal(t, []string{namespacedName(&svc2)}, p.servicesOnIP(ip2))
 }
 
 func TestSharingKeys(t *testing.T) {
@@ -71,16 +72,16 @@ func TestSharingKeys(t *testing.T) {
 	svc2 := service("svc2", ports("tcp/81"), "sharing1")
 	svc3 := service("svc3", ports("tcp/81"), "sharing1")
 
-	p.Release(ip, "test/svc3") // releasing a not-assigned service should be OK
+	p.Release(ip, namespacedName(&svc3)) // releasing a not-assigned service should be OK
 
 	assert.Nil(t, p.Assign(ip, &svc1))
 	assert.Equal(t, &key1, p.SharingKey(ip))
 	assert.Nil(t, p.Assign(ip, &svc2))
-	p.Release(ip, "test/svc1")
+	p.Release(ip, namespacedName(&svc1))
 	// svc2 is still using the IP
 	assert.Equal(t, &key1, p.SharingKey(ip))
 	assert.NotNil(t, p.Assign(ip, &svc3)) // svc3 is blocked by svc2 (same port)
-	p.Release(ip, "test/svc2")
+	p.Release(ip, namespacedName(&svc2))
 	// the IP is unused
 	assert.Nil(t, p.SharingKey(ip))
 	assert.Nil(t, p.Assign(ip, &svc3)) // svc2 is out of the picture so svc3 can use the address

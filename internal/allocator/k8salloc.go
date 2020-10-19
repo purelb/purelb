@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package allocator
 
 import (
@@ -34,4 +35,8 @@ func Ports(svc *v1.Service) []Port {
 // SharingKey extracts the sharing key for a service.
 func SharingKey(svc *v1.Service) string {
 	return svc.Annotations[purelbv1.SharingAnnotation]
+}
+
+func namespacedName(svc *v1.Service) string {
+	return svc.Namespace + "/" + svc.Name
 }

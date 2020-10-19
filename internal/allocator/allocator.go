@@ -70,7 +70,7 @@ func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
 // assign unconditionally updates internal state to reflect svc's
 // allocation of alloc. Caller must ensure that this call is safe.
 func (a *Allocator) assign(service *v1.Service, alloc *alloc) {
-	svc := service.Namespace + "/" + service.Name
+	svc := namespacedName(service)
 
 	a.Unassign(svc)
 	a.allocated[svc] = alloc
@@ -122,11 +122,10 @@ func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
 
 // Unassign frees the IP associated with service, if any.
 func (a *Allocator) Unassign(svc string) bool {
-	if a.allocated[svc] == nil {
+	al := a.allocated[svc]
+	if al == nil {
 		return false
 	}
-
-	al := a.allocated[svc]
 
 	// tell the pool that the address has been released. there might not
 	// be a pool, e.g., in the case of a config change that move

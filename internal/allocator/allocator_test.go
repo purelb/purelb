@@ -249,21 +249,21 @@ func TestAssignment(t *testing.T) {
 	}
 
 	for _, test := range tests {
+		service := service(test.svc, test.ports, test.sharingKey)
 		if test.ip == "" {
-			alloc.Unassign("test/" + test.svc)
+			alloc.Unassign(namespacedName(&service))
 			continue
 		}
 		ip := net.ParseIP(test.ip)
 		if ip == nil {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
-		alreadyHasIP := assigned(alloc, "test/"+test.svc) == test.ip
-		service := service(test.svc, test.ports, test.sharingKey)
+		alreadyHasIP := assigned(alloc, namespacedName(&service)) == test.ip
 		_, err := alloc.Assign(&service, ip)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%q should have caused an error, but did not", test.desc)
-			} else if a := assigned(alloc, "test/"+test.svc); !alreadyHasIP && a == test.ip {
+			} else if a := assigned(alloc, namespacedName(&service)); !alreadyHasIP && a == test.ip {
 				t.Errorf("%q: Assign(%q, %q) failed, but allocator did record allocation", test.desc, test.svc, test.ip)
 			}
 
@@ -273,7 +273,7 @@ func TestAssignment(t *testing.T) {
 		if err != nil {
 			t.Errorf("%q: Assign(%q, %q): %s", test.desc, test.svc, test.ip, err)
 		}
-		if a := assigned(alloc, "test/"+test.svc); a != test.ip {
+		if a := assigned(alloc, namespacedName(&service)); a != test.ip {
 			t.Errorf("%q: ran Assign(%q, %q), but allocator has recorded allocation of %q", test.desc, test.svc, test.ip, a)
 		}
 	}
@@ -491,15 +491,15 @@ func TestPoolAllocation(t *testing.T) {
 	}
 
 	for _, test := range tests {
+		service := service(test.svc, test.ports, test.sharingKey)
 		if test.unassign {
-			alloc.Unassign("test/" + test.svc)
+			alloc.Unassign(namespacedName(&service))
 			continue
 		}
 		pool := "test"
 		if test.isIPv6 {
 			pool = "testV6"
 		}
-		service := service(test.svc, test.ports, test.sharingKey)
 		ip, err := alloc.AllocateFromPool(&service, pool)
 		if test.wantErr {
 			if err == nil {
@@ -520,7 +520,7 @@ func TestPoolAllocation(t *testing.T) {
 		}
 	}
 
-	alloc.Unassign("test/s5")
+	alloc.Unassign("unit/s5")
 	service := service("s5", []v1.ServicePort{}, "")
 	if _, err := alloc.AllocateFromPool(&service, "nonexistentpool"); err == nil {
 		t.Error("Allocating from non-existent pool succeeded")
@@ -683,11 +683,11 @@ func TestAllocation(t *testing.T) {
 	}
 
 	for _, test := range tests {
+		service := service(test.svc, test.ports, test.sharingKey)
 		if test.unassign {
-			alloc.Unassign("test/" + test.svc)
+			alloc.Unassign(namespacedName(&service))
 			continue
 		}
-		service := service(test.svc, test.ports, test.sharingKey)
 		_, ip, err := alloc.Allocate(&service)
 		if test.wantErr {
 			if err == nil {
@@ -791,8 +791,9 @@ func TestPoolMetrics(t *testing.T) {
 	}
 
 	for _, test := range tests {
+		service := service(test.svc, test.ports, test.sharingKey)
 		if test.ip == "" {
-			alloc.Unassign("test/" + test.svc)
+			alloc.Unassign(namespacedName(&service))
 			value := ptu.ToFloat64(poolActive.WithLabelValues("test"))
 			if value != test.ipsInUse {
 				t.Errorf("%v; in-use %v. Expected %v", test.desc, value, test.ipsInUse)
@@ -804,13 +805,12 @@ func TestPoolMetrics(t *testing.T) {
 		if ip == nil {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
-		service := service(test.svc, test.ports, test.sharingKey)
 		_, err := alloc.Assign(&service, ip)
 
 		if err != nil {
 			t.Errorf("%q: Assign(%q, %q): %v", test.desc, test.svc, test.ip, err)
 		}
-		if a := assigned(alloc, "test/"+test.svc); a != test.ip {
+		if a := assigned(alloc, namespacedName(&service)); a != test.ip {
 			t.Errorf("%q: ran Assign(%q, %q), but allocator has recorded allocation of %q", test.desc, test.svc, test.ip, a)
 		}
 		value := ptu.ToFloat64(poolActive.WithLabelValues("test"))
@@ -872,7 +872,7 @@ func serviceGroup(name string, spec purelbv1.ServiceGroupSpec) *purelbv1.Service
 func service(name string, ports []v1.ServicePort, sharingKey string) v1.Service {
 	service := v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace:   "test",
+			Namespace:   "unit",
 			Name:        name,
 			Annotations: map[string]string{},
 		},
