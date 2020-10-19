@@ -107,7 +107,6 @@ type Config struct {
 }
 
 type svcKey string
-type cmKey string
 type synced string
 
 // New connects to masterAddr, using kubeconfig to authenticate.
