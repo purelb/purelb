@@ -30,13 +30,15 @@ import (
 type EGWPool struct {
 	egw              acnodal.EGW
 	createServiceURL string
+	serviceURLCache  map[string]string // map from service key to service url
 }
 
 // NewEGWPool initializes a new instance of EGWPool. If error is
 // non-nil then the returned EGWPool should not be used.
 func NewEGWPool(egw acnodal.EGW, _ string) (*EGWPool, error) {
 	return &EGWPool{
-		egw: egw,
+		egw:             egw,
+		serviceURLCache: map[string]string{},
 	}, nil
 }
 
@@ -75,17 +77,27 @@ func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 	service.Annotations[purelbv1.ServiceAnnotation] = egwsvc.Links["self"]
 	service.Annotations[purelbv1.EndpointAnnotation] = egwsvc.Links["create-endpoint"]
 
+	// add the service's URL to the cache so we'll be able to get back
+	// to it later if we need to delete the service
+	p.serviceURLCache[namespacedName(service)] = egwsvc.Links["self"]
+
 	return ip, nil
 }
 
 // Assign assigns a service to an IP.
 func (p EGWPool) Assign(ip net.IP, service *v1.Service) error {
+	// Grab the service URL to warm up our cache
+	url, exists := service.Annotations[purelbv1.ServiceAnnotation]
+	if exists {
+		p.serviceURLCache[namespacedName(service)] = url
+	}
+
 	return nil
 }
 
 // Release releases an IP so it can be assigned again.
 func (p EGWPool) Release(ip net.IP, service string) {
-
+	p.egw.WithdrawService(p.serviceURLCache[service])
 }
 
 // InUse returns the count of addresses that currently have services

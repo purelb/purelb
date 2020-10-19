@@ -28,6 +28,7 @@ import (
 type EGW interface {
 	GetGroup() (EGWGroupResponse, error)
 	AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error)
+	WithdrawService(svcUrl string) error
 	AnnounceEndpoint(url string, address string, port int) error
 }
 
@@ -183,6 +184,18 @@ func (n *egw) AnnounceEndpoint(url string, address string, port int) error {
 		SetBody(EGWEndpointCreate{Endpoint: EGWEndpoint{Address: address, Port: port}}).
 		SetResult(EGWServiceResponse{}).
 		Post(url)
+	if err != nil {
+		return err
+	}
+	if response.IsError() {
+		return fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+	}
+	return nil
+}
+
+// WithdrawService tells the EGW that this service should be deleted.
+func (n *egw) WithdrawService(url string) error {
+	response, err := n.http.R().Delete(url)
 	if err != nil {
 		return err
 	}
