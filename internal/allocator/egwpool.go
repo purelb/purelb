@@ -29,7 +29,7 @@ import (
 // GateWay.
 type EGWPool struct {
 	egw              acnodal.EGW
-	createServiceUrl string
+	createServiceURL string
 }
 
 // NewEGWPool initializes a new instance of EGWPool. If error is
@@ -53,16 +53,16 @@ func (p EGWPool) Available(ip net.IP, service *v1.Service) error {
 func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 	// Lazily look up the EGW group (which gives us the URL to create
 	// services)
-	if p.createServiceUrl == "" {
+	if p.createServiceURL == "" {
 		group, err := p.egw.GetGroup()
 		if err != nil {
 			return nil, err
 		}
-		p.createServiceUrl = group.Links["create-service"]
+		p.createServiceURL = group.Links["create-service"]
 	}
 
 	// Announce the service to the EGW
-	egwsvc, err := p.egw.AnnounceService(p.createServiceUrl, service.Name, service.Spec.Ports)
+	egwsvc, err := p.egw.AnnounceService(p.createServiceURL, service.Name, service.Spec.Ports)
 	if err != nil {
 		return nil, err
 	}

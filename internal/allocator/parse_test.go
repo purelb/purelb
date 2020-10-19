@@ -97,7 +97,7 @@ func TestParse(t *testing.T) {
 				return
 			}
 			egwComparer := cmp.Comparer(func(x, y EGWPool) bool {
-				return reflect.DeepEqual(x.createServiceUrl, y.createServiceUrl)
+				return reflect.DeepEqual(x.createServiceURL, y.createServiceURL)
 			})
 			iprangeComparer := cmp.Comparer(func(x, y IPRange) bool {
 				return reflect.DeepEqual(x.from, y.from) && reflect.DeepEqual(x.to, y.to)

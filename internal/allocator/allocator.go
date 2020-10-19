@@ -72,7 +72,7 @@ func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
 // assign unconditionally updates internal state to reflect svc's
 // allocation of alloc. Caller must ensure that this call is safe.
 func (a *Allocator) assign(service *v1.Service, alloc *alloc) {
-	svc := service.Namespace + "/" + service.Name
+	svc := namespacedName(service)
 
 	a.Unassign(svc)
 	a.allocated[svc] = alloc
@@ -124,11 +124,10 @@ func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
 
 // Unassign frees the IP associated with service, if any.
 func (a *Allocator) Unassign(svc string) bool {
-	if a.allocated[svc] == nil {
+	al := a.allocated[svc]
+	if al == nil {
 		return false
 	}
-
-	al := a.allocated[svc]
 
 	// tell the pool that the address has been released. there might not
 	// be a pool, e.g., in the case of a config change that move
@@ -191,24 +190,6 @@ func (a *Allocator) Allocate(svc *v1.Service) (string, net.IP, error) {
 		return "default", ip, nil
 	}
 	return "", nil, err
-}
-
-// IP returns the IP address allocated to service, or nil if none are allocated.
-func (a *Allocator) IP(svc string) net.IP {
-	if alloc := a.allocated[svc]; alloc != nil {
-		return alloc.ip
-	}
-	return nil
-}
-
-// Pool returns the pool from which service's IP was allocated. If
-// service has no IP allocated, "" is returned.
-func (a *Allocator) Pool(svc string) string {
-	ip := a.IP(svc)
-	if ip == nil {
-		return ""
-	}
-	return poolFor(a.pools, ip)
 }
 
 // poolFor returns the pool that owns the requested IP, or "" if none.

@@ -183,7 +183,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	k.reset()
 
 	// Deleting the first LB should tell us to reprocess all services.
-	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer("test/test"), "DeleteBalancer didn't tell us to reprocess all balancers")
+	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer(namespacedName(svc1)), "DeleteBalancer didn't tell us to reprocess all balancers")
 
 	// Setting svc2 should now allocate correctly.
 	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc2, nil), "SetBalancer svc2 failed")
