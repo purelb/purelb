@@ -14,6 +14,7 @@ require (
 	github.com/prometheus/client_golang v1.0.0
 	github.com/stretchr/testify v1.4.0
 	github.com/vishvananda/netlink v1.1.0
+	gitlab.com/acnodal/packet-forwarding-component/src/go v0.0.0-20201020195035-7f33411c47cb
 	k8s.io/api v0.18.8
 	k8s.io/apimachinery v0.18.8
 	k8s.io/client-go v0.18.8

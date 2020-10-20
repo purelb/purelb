@@ -21,6 +21,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	pfc "gitlab.com/acnodal/packet-forwarding-component/src/go/pfc"
+
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
@@ -112,6 +114,15 @@ func main() {
 	}
 
 	go k8s.RunMetrics(*host, *port)
+
+	// See if the PFC is installed
+	ok, message := pfc.Check()
+	if ok {
+		// print the version
+		logger.Log("op", "pfc-check", "version", message)
+	} else {
+		logger.Log("error", "PFC Error", "message", message)
+	}
 
 	// the k8s client doesn't return until it's time to shut down
 	if err := client.Run(stopCh); err != nil {

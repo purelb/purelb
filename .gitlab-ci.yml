@@ -10,6 +10,9 @@ variables:
 before_script:
 - apk add make
 - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+- git config --global url."https://$PFC_DEPLOY_USER:$PFC_DEPLOY_TOKEN@gitlab.com/".insteadOf "https://gitlab.com/"
+- mkdir -p ~/.ssh && chmod 700 ~/.ssh
+- ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
 
 stages:
   - test
@@ -21,7 +24,7 @@ format:
   image: golang:latest
   before_script: []
   script:
-    - make deployments/purelb-complete.yaml check
+    - make GITLAB_TOKEN=foobar deployments/purelb-complete.yaml check
   artifacts:
     paths:
       - deployments/purelb-complete.yaml

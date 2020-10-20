@@ -16,6 +16,7 @@ RUN go build -tags 'osusergo netgo' -o ${bin} \
 ./cmd/${cmd}/
 
 FROM ubuntu:20.04 as runtime
+ARG GITLAB_TOKEN
 ARG cmd
 ARG branch
 ARG commit
@@ -26,6 +27,14 @@ LABEL commit=${commit}
 LABEL command=${cmd}
 
 COPY --from=builder ${bin} ${bin}
+
+RUN apt-get update && apt-get install -y curl libelf1 iproute2
+
+# copy the packet forwarding components from the pfc project
+WORKDIR /opt/acnodal
+RUN curl -L -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+https://gitlab.com/api/v4/projects/acnodal%2Fpacket-forwarding-component/jobs/830241872/artifacts/pfc.tar.bz2 | \
+tar -xjf -
 
 # The softlink is because variable interpolation happens at run-time
 # so if you have variables in the entrypoint string they won't get

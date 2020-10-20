@@ -5,7 +5,13 @@ ARG opts
 ARG branch
 ARG commit
 ARG release=development
+ARG GITLAB_TOKEN
 ENV bin=/usr/local/bin/$cmd
+
+# install and configure git. we need it because some of our modules
+# (e.g., egw-resource-model) are private
+RUN apk add git
+RUN git config --global url."https://oauth2:${GITLAB_TOKEN}@gitlab.com/acnodal".insteadOf https://gitlab.com/acnodal
 
 WORKDIR /usr/src
 COPY . ./
@@ -16,6 +22,7 @@ RUN env ${opts} go build -o ${bin} \
 ./cmd/${cmd}/
 
 FROM alpine as runtime
+ARG DEST=/opt/acnodal/bin
 ARG cmd
 ARG branch
 ARG commit
@@ -26,6 +33,9 @@ LABEL commit=${commit}
 LABEL command=${cmd}
 
 COPY --from=builder ${bin} ${bin}
+
+# copy the packet forwarding components from the pfc dockerfile
+COPY --from=registry.gitlab.com/acnodal/packet-forwarding-component/pfc:latest /opt/acnodal/bin/* ${DEST}/
 
 # The softlink is because variable interpolation happens at run-time
 # so if you have variables in the entrypoint string they won't get

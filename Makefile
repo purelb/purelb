@@ -32,6 +32,7 @@ image-%: CMD=$(subst image-,,$@)
 image-%: TAG=${REPO}/${PREFIX}/${CMD}:${SUFFIX}
 image-%:
 	docker build -t ${TAG} \
+	--build-arg GITLAB_TOKEN \
 	--build-arg cmd=${CMD} \
 	--build-arg commit=`git describe --dirty --always` \
 	--build-arg branch=`git rev-parse --abbrev-ref HEAD` \
