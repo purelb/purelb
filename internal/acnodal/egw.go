@@ -29,7 +29,7 @@ type EGW interface {
 	GetGroup() (EGWGroupResponse, error)
 	AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error)
 	WithdrawService(svcUrl string) error
-	AnnounceEndpoint(url string, address string, port int) error
+	AnnounceEndpoint(url string, address string, port v1.EndpointPort) error
 }
 
 // egw represents one connection to an Acnodal Enterprise Gateway.
@@ -57,8 +57,8 @@ type EGWGroup struct {
 // LoadBalancer Service Spec (i.e., the part that defines what the LB
 // should look like).
 type EGWServiceSpec struct {
-	Address string `json:"public-address"`
-	Ports   []int  `json:"public-ports"`
+	Address string           `json:"public-address,omitempty"`
+	Ports   []v1.ServicePort `json:"public-ports"`
 }
 
 // EGWService is the on-the-wire representation of one LoadBalancer
@@ -73,7 +73,7 @@ type EGWService struct {
 // endpoint.
 type EGWEndpoint struct {
 	Address string
-	Port    int
+	Port    v1.EndpointPort
 }
 
 // EGWGroupResponse is the body of the HTTP response to a request to
@@ -154,17 +154,11 @@ func (n *egw) GetGroup() (EGWGroupResponse, error) {
 // creation URL which is a child of the service group to which this
 // service will belong. name is the service name.  address is a string
 // containing an IP address. ports is a slice of v1.ServicePorts.
-func (n *egw) AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error) {
-	// translate ServicePorts into raw int ports
-	var intPorts = []int{}
-	for _, port := range ports {
-		intPorts = append(intPorts, int(port.Port))
-	}
-
+func (n *egw) AnnounceService(url string, name string, sPorts []v1.ServicePort) (EGWServiceResponse, error) {
 	// send the request
 	response, err := n.http.R().
 		SetBody(EGWServiceCreate{
-			Service: EGWService{ObjectMeta: ObjectMeta{Name: name}, Spec: EGWServiceSpec{Ports: intPorts}}}).
+			Service: EGWService{ObjectMeta: ObjectMeta{Name: name}, Spec: EGWServiceSpec{Ports: sPorts}}}).
 		SetResult(EGWServiceResponse{}).
 		Post(url)
 	if err != nil {
@@ -179,9 +173,9 @@ func (n *egw) AnnounceService(url string, name string, ports []v1.ServicePort) (
 }
 
 // AnnounceEndpoint announces an endpoint to the EGW.
-func (n *egw) AnnounceEndpoint(url string, address string, port int) error {
+func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort) error {
 	response, err := n.http.R().
-		SetBody(EGWEndpointCreate{Endpoint: EGWEndpoint{Address: address, Port: port}}).
+		SetBody(EGWEndpointCreate{Endpoint: EGWEndpoint{Address: address, Port: ePort}}).
 		SetResult(EGWServiceResponse{}).
 		Post(url)
 	if err != nil {

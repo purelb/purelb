@@ -24,13 +24,18 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+var (
+	ServicePort80  = v1.ServicePort{Port: 80}
+	EndpointPort80 = v1.EndpointPort{Port: 80}
+	EndpointPort81 = v1.EndpointPort{Port: 81}
+)
+
 const (
 	GroupName       = "sample"
 	ServiceName     = "test-service"
 	ServiceAddress  = "192.168.1.27"
 	EndpointName    = "test-endpoint"
 	EndpointAddress = "10.42.27.42"
-	EndpointPort    = 80
 	GroupURL        = "/api/egw/accounts/sample/groups/sample"
 )
 
@@ -72,20 +77,20 @@ func TestAnnouncements(t *testing.T) {
 	g := GetGroup(t, e, GroupURL)
 
 	// announce a service
-	svc, err := e.AnnounceService(g.Links["create-service"], ServiceName, []v1.ServicePort{{Port: 80}})
+	svc, err := e.AnnounceService(g.Links["create-service"], ServiceName, []v1.ServicePort{ServicePort80})
 	if err != nil {
 		t.Fatal("announcing service", err)
 	}
 	assert.Equal(t, svc.Links["group"], GroupURL, "group url mismatch")
 
 	// announce an endpoint on that service
-	err = e.AnnounceEndpoint(svc.Links["create-endpoint"], EndpointAddress, EndpointPort)
+	err = e.AnnounceEndpoint(svc.Links["create-endpoint"], EndpointAddress, EndpointPort80)
 	if err != nil {
 		t.Errorf("got error %+v", err)
 	}
 
 	// announce another endpoint on that service
-	err = e.AnnounceEndpoint(svc.Links["create-endpoint"], EndpointAddress, EndpointPort+1)
+	err = e.AnnounceEndpoint(svc.Links["create-endpoint"], EndpointAddress, EndpointPort81)
 	if err != nil {
 		t.Errorf("got error %+v", err)
 	}

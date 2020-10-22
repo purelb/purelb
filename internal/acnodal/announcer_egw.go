@@ -105,7 +105,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 				l.Log("op", "DontAnnounceEndpoint", "address", address.IP, "port", port, "node", "not me")
 			} else {
 				l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port, "node", a.myNode)
-				err := egw.AnnounceEndpoint(createUrl, address.IP, int(port))
+				err := egw.AnnounceEndpoint(createUrl, address.IP, ep.Ports[0])
 				if err != nil {
 					l.Log("op", "AnnounceEndpoint", "error", err)
 				}
