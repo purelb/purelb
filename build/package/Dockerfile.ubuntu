@@ -1,4 +1,4 @@
-FROM golang:buster as builder
+FROM golang:alpine as builder
 
 ARG cmd
 ARG branch
@@ -6,6 +6,12 @@ ARG commit
 ARG release=development
 ENV bin=/usr/local/bin/$cmd
 ENV GOOS=linux
+ARG GITLAB_TOKEN
+
+# install and configure git. we need it because some of our modules
+# (e.g., egw-resource-model) are private
+RUN apk add git
+RUN git config --global url."https://oauth2:${GITLAB_TOKEN}@gitlab.com/acnodal".insteadOf https://gitlab.com/acnodal
 
 WORKDIR /usr/src
 COPY . ./
@@ -21,6 +27,7 @@ ARG cmd
 ARG branch
 ARG commit
 ENV bin=/usr/local/bin/$cmd
+ARG DEST=/opt/acnodal/bin
 
 LABEL branch=${branch}
 LABEL commit=${commit}
