@@ -65,7 +65,7 @@ spec:
   - max: 7472
     min: 7472
   privileged: true
-  readOnlyRootFilesystem: true
+  readOnlyRootFilesystem: false
   requiredDropCapabilities:
   - ALL
   runAsUser:
@@ -316,7 +316,7 @@ spec:
             - SYS_ADMIN
             drop:
             - ALL
-          readOnlyRootFilesystem: true
+          readOnlyRootFilesystem: false
       hostNetwork: true
       nodeSelector:
         beta.kubernetes.io/os: linux
