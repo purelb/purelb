@@ -25,6 +25,8 @@ import (
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
+	"purelb.io/internal/local"
+	"purelb.io/internal/pfc"
 	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
@@ -101,11 +103,16 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	for _, ep := range endpoints.Subsets {
 		port := ep.Ports[0].Port
 		for _, address := range ep.Addresses {
+			// we've got an endpoint that we want to announce so let's set
+			// up the PFC first
+			a.setupPFC(address)
+
 			if address.NodeName == nil || *address.NodeName != a.myNode {
 				l.Log("op", "DontAnnounceEndpoint", "address", address.IP, "port", port, "node", "not me")
 			} else {
+
 				l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port, "node", a.myNode)
-				err := egw.AnnounceEndpoint(createUrl, address.IP, ep.Ports[0])
+				err = egw.AnnounceEndpoint(createUrl, address.IP, ep.Ports[0])
 				if err != nil {
 					l.Log("op", "AnnounceEndpoint", "error", err)
 				}
@@ -125,4 +132,17 @@ func (a *announcer) SetElection(election *election.Election) {
 }
 
 func (a *announcer) Shutdown() {
+}
+
+func (a *announcer) setupPFC(address v1.EndpointAddress) {
+	// cni0 is easy - its name is hard-coded
+	pfc.SetupNIC(a.logger, "cni0", "egress", 1, 8)
+
+	// figure out which interface is the default and set that up, too
+	defaultNIC, err := local.DefaultInterface(local.AddrFamily(net.ParseIP(address.IP)))
+	if err == nil {
+		pfc.SetupNIC(a.logger, defaultNIC.Attrs().Name, "ingress", 0, 9)
+	} else {
+		a.logger.Log("op", "AnnounceEndpoint", "error", err)
+	}
 }

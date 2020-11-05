@@ -37,8 +37,8 @@ type announcer struct {
 	groups      map[string]*purelbv1.ServiceGroupLocalSpec // groupName -> ServiceGroupLocalSpec
 	svcAdvs     map[string]net.IP                          // svcName -> IP
 	election    *election.Election
-	announceInt *netlink.Link // for local announcements
-	dummyInt    *netlink.Link // for non-local announcements
+	announceInt netlink.Link // for local announcements
+	dummyInt    netlink.Link // for non-local announcements
 }
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -92,7 +92,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 				if err != nil {
 					return err
 				}
-				a.announceInt = &link
+				a.announceInt = link
 			}
 
 			// now that we've got a config we can create the dummy interface
@@ -136,7 +136,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	// otherwise figure out a default
 	announceInt := a.announceInt
 	if announceInt == nil {
-		announceInt, err = defaultInterface(addrFamily(lbIP))
+		announceInt, err = DefaultInterface(AddrFamily(lbIP))
 		if err != nil {
 			l.Log("event", "announceError", "err", err)
 			return err
@@ -198,8 +198,8 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		if gotName {
 			allocPool := a.groups[poolName]
 			l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "reason", err)
-			a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (*a.dummyInt).Attrs().Name)
-			addVirtualInt(lbIP, *a.dummyInt, allocPool.Subnet, allocPool.Aggregation)
+			a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (a.dummyInt).Attrs().Name)
+			addVirtualInt(lbIP, a.dummyInt, allocPool.Subnet, allocPool.Aggregation)
 			announcing.With(prometheus.Labels{
 				"service": nsName,
 				"node":    a.myNode,
