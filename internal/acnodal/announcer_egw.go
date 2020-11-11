@@ -33,16 +33,17 @@ import (
 )
 
 type announcer struct {
-	client  k8s.ServiceEvent
-	logger  log.Logger
-	myNode  string
-	config  *purelbv1.ServiceGroupEGWSpec
-	baseURL *url.URL
+	client     *k8s.Client
+	logger     log.Logger
+	myNode     string
+	myNodeAddr string
+	config     *purelbv1.ServiceGroupEGWSpec
+	baseURL    *url.URL
 }
 
 // NewAnnouncer returns a new Acnodal EGW Announcer.
-func NewAnnouncer(l log.Logger, node string) lbnodeagent.Announcer {
-	return &announcer{logger: l, myNode: node}
+func NewAnnouncer(l log.Logger, node string, nodeAddr string) lbnodeagent.Announcer {
+	return &announcer{logger: l, myNode: node, myNodeAddr: nodeAddr}
 }
 
 // SetClient configures this announcer to use the provided client.
@@ -112,7 +113,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 			} else {
 
 				l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port, "node", a.myNode)
-				err = egw.AnnounceEndpoint(createUrl, address.IP, ep.Ports[0])
+				err = egw.AnnounceEndpoint(createUrl, address.IP, ep.Ports[0], a.myNodeAddr)
 				if err != nil {
 					l.Log("op", "AnnounceEndpoint", "error", err)
 				}

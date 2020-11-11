@@ -29,7 +29,7 @@ type EGW interface {
 	GetGroup() (EGWGroupResponse, error)
 	AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error)
 	WithdrawService(svcUrl string) error
-	AnnounceEndpoint(url string, address string, port v1.EndpointPort) error
+	AnnounceEndpoint(url string, address string, port v1.EndpointPort, nodeAddress string) error
 }
 
 // egw represents one connection to an Acnodal Enterprise Gateway.
@@ -72,8 +72,9 @@ type EGWService struct {
 // EGWEndpoint is the on-the-wire representation of one LoadBalancer
 // endpoint.
 type EGWEndpoint struct {
-	Address string
-	Port    v1.EndpointPort
+	Address     string
+	Port        v1.EndpointPort
+	NodeAddress string `json:"node-address"`
 }
 
 // EGWGroupResponse is the body of the HTTP response to a request to
@@ -173,9 +174,9 @@ func (n *egw) AnnounceService(url string, name string, sPorts []v1.ServicePort) 
 }
 
 // AnnounceEndpoint announces an endpoint to the EGW.
-func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort) error {
+func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort, nodeAddress string) error {
 	response, err := n.http.R().
-		SetBody(EGWEndpointCreate{Endpoint: EGWEndpoint{Address: address, Port: ePort}}).
+		SetBody(EGWEndpointCreate{Endpoint: EGWEndpoint{Address: address, Port: ePort, NodeAddress: nodeAddress}}).
 		SetResult(EGWServiceResponse{}).
 		Post(url)
 	if err != nil {

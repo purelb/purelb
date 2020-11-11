@@ -33,19 +33,21 @@ type controller struct {
 	client     k8s.ServiceEvent
 	logger     log.Logger
 	myNode     string
+	myNodeAddr string
 	announcers []lbnodeagent.Announcer
 	svcIP      map[string]net.IP // service "namespace/name" -> assigned IP
 }
 
 // NewController configures a new controller. If error is non-nil then
 // the controller object shouldn't be used.
-func NewController(l log.Logger, myNode string) (*controller, error) {
+func NewController(l log.Logger, myNode string, myNodeAddr string) (*controller, error) {
 	con := &controller{
-		logger: l,
-		myNode: myNode,
+		logger:     l,
+		myNode:     myNode,
+		myNodeAddr: myNodeAddr,
 		announcers: []lbnodeagent.Announcer{
 			local.NewAnnouncer(l, myNode),
-			acnodal.NewAnnouncer(l, myNode),
+			acnodal.NewAnnouncer(l, myNode, myNodeAddr),
 		},
 		svcIP: map[string]net.IP{},
 	}
