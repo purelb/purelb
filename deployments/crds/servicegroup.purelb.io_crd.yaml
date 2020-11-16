@@ -49,6 +49,8 @@ spec:
                     aggregation:
                       type: string
                       default: default
+                    auth-creds:
+                      type: string
             status:
               type: object
               properties:
