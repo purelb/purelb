@@ -18,6 +18,7 @@ package allocator
 import (
 	"fmt"
 	"net"
+	"strconv"
 
 	v1 "k8s.io/api/core/v1"
 
@@ -75,6 +76,7 @@ func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 
 	service.Annotations[purelbv1.GroupAnnotation] = egwsvc.Links["group"]
 	service.Annotations[purelbv1.ServiceAnnotation] = egwsvc.Links["self"]
+	service.Annotations[purelbv1.ServiceGUEKeyAnnotation] = strconv.Itoa(int(egwsvc.Service.Spec.GUEKey))
 	service.Annotations[purelbv1.EndpointAnnotation] = egwsvc.Links["create-endpoint"]
 
 	// add the service's URL to the cache so we'll be able to get back

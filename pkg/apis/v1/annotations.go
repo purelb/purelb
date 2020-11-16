@@ -67,4 +67,8 @@ const (
 	// for this service. It's used internally by PureLB and is unlikely
 	// to be useful to the user.
 	EndpointAnnotation string = "acnodal.io/endpointcreateURL"
+
+	// ServiceGUEKeyAnnotation describes the service-level key for
+	// establishing GUE tunnels with the Acnodal EGW.
+	ServiceGUEKeyAnnotation string = "acnodal.io/serviceGUEKey"
 )

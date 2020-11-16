@@ -59,6 +59,7 @@ type EGWGroup struct {
 type EGWServiceSpec struct {
 	Address string           `json:"public-address,omitempty"`
 	Ports   []v1.ServicePort `json:"public-ports"`
+	GUEKey  uint32           `json:"gue-key"`
 }
 
 // EGWService is the on-the-wire representation of one LoadBalancer
