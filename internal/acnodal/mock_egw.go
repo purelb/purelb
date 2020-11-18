@@ -63,6 +63,21 @@ func (mr *MockEGWMockRecorder) AnnounceService(url, name, ports interface{}) *go
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AnnounceService", reflect.TypeOf((*MockEGW)(nil).AnnounceService), url, name, ports)
 }
 
+// FetchService mocks base method
+func (m *MockEGW) FetchService(url string) (EGWServiceResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FetchService", url)
+	ret0, _ := ret[0].(EGWServiceResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FetchService indicates an expected call of FetchService
+func (mr *MockEGWMockRecorder) FetchService(url interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FetchService", reflect.TypeOf((*MockEGW)(nil).FetchService), url)
+}
+
 // WithdrawService mocks base method
 func (m *MockEGW) WithdrawService(svcUrl string) error {
 	m.ctrl.T.Helper()

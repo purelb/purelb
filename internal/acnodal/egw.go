@@ -28,6 +28,7 @@ import (
 type EGW interface {
 	GetGroup() (EGWGroupResponse, error)
 	AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error)
+	FetchService(url string) (EGWServiceResponse, error)
 	WithdrawService(svcUrl string) error
 	AnnounceEndpoint(url string, address string, port v1.EndpointPort, nodeAddress string) error
 }
@@ -62,12 +63,18 @@ type EGWServiceSpec struct {
 	GUEKey  uint32           `json:"gue-key"`
 }
 
+type EGWServiceStatus struct {
+	// GUEAddress is the EGW's GUE tunnel endpoint address for this load
+	// balancer.
+	GUEAddress string `json:"gue-address"`
+}
+
 // EGWService is the on-the-wire representation of one LoadBalancer
 // Service.
 type EGWService struct {
-	ObjectMeta ObjectMeta     `json:"metadata"`
-	Spec       EGWServiceSpec `json:"spec"`
-	Status     struct{}       `json:"status"`
+	ObjectMeta ObjectMeta       `json:"metadata"`
+	Spec       EGWServiceSpec   `json:"spec"`
+	Status     EGWServiceStatus `json:"status,omitempty"`
 }
 
 // EGWEndpoint is the on-the-wire representation of one LoadBalancer
@@ -163,6 +170,21 @@ func (n *egw) AnnounceService(url string, name string, sPorts []v1.ServicePort) 
 			Service: EGWService{ObjectMeta: ObjectMeta{Name: name}, Spec: EGWServiceSpec{Ports: sPorts}}}).
 		SetResult(EGWServiceResponse{}).
 		Post(url)
+	if err != nil {
+		return EGWServiceResponse{}, err
+	}
+	if response.IsError() {
+		return EGWServiceResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+	}
+
+	srv := response.Result().(*EGWServiceResponse)
+	return *srv, nil
+}
+
+func (n *egw) FetchService(url string) (EGWServiceResponse, error) {
+	response, err := n.http.R().
+		SetResult(EGWServiceResponse{}).
+		Get(url)
 	if err != nil {
 		return EGWServiceResponse{}, err
 	}

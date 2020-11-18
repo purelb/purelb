@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 
@@ -83,7 +84,29 @@ func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 	// to it later if we need to delete the service
 	p.serviceURLCache[namespacedName(service)] = egwsvc.Links["self"]
 
+	// check if the GUE address field has been filled in yet. Sometimes
+	// it's not and we need to retry.
+	gueAddr := egwsvc.Service.Status.GUEAddress
+	if "" == gueAddr {
+		gueAddr, err = p.FetchGUEAddress(egwsvc.Links["self"])
+		if err != nil {
+			return nil, fmt.Errorf("no GUE address returned by EGW: %w", err)
+		}
+	}
+	service.Annotations[purelbv1.ServiceGUEAddressAnnotation] = gueAddr
+
 	return ip, nil
+}
+
+// FetchGUEAddress fetches the GUE tunnel IP address from the EGW.
+func (p EGWPool) FetchGUEAddress(url string) (string, error) {
+	// Give the EGW a chance to fill in the address
+	time.Sleep(5 * time.Second)
+	egwsvc, err := p.egw.FetchService(url)
+	if err != nil {
+		return "", err
+	}
+	return egwsvc.Service.Status.GUEAddress, nil
 }
 
 // Assign assigns a service to an IP.

@@ -71,4 +71,8 @@ const (
 	// ServiceGUEKeyAnnotation describes the service-level key for
 	// establishing GUE tunnels with the Acnodal EGW.
 	ServiceGUEKeyAnnotation string = "acnodal.io/serviceGUEKey"
+
+	// ServiceGUEAddressAnnotation describes the EGW endpoint address
+	// for service-level GUE tunnels.
+	ServiceGUEAddressAnnotation string = "acnodal.io/serviceGUEAddress"
 )
