@@ -88,7 +88,7 @@ func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 	// it's not and we need to retry.
 	gueAddr := egwsvc.Service.Status.GUEAddress
 	if "" == gueAddr {
-		gueAddr, err = p.FetchGUEAddress(egwsvc.Links["self"])
+		gueAddr, err = p.fetchGUEAddress(egwsvc.Links["self"])
 		if err != nil {
 			return nil, fmt.Errorf("no GUE address returned by EGW: %w", err)
 		}
@@ -98,8 +98,8 @@ func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 	return ip, nil
 }
 
-// FetchGUEAddress fetches the GUE tunnel IP address from the EGW.
-func (p EGWPool) FetchGUEAddress(url string) (string, error) {
+// fetchGUEAddress fetches the GUE tunnel IP address from the EGW.
+func (p EGWPool) fetchGUEAddress(url string) (string, error) {
 	// Give the EGW a chance to fill in the address
 	time.Sleep(5 * time.Second)
 	egwsvc, err := p.egw.FetchService(url)
