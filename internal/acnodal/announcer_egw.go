@@ -46,6 +46,7 @@ type announcer struct {
 	myNodeAddr string
 	config     *purelbv1.ServiceGroupEGWSpec
 	baseURL    *url.URL
+	pinger     *exec.Cmd
 }
 
 // NewAnnouncer returns a new Acnodal EGW Announcer.
@@ -118,6 +119,16 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 				return nil
 			}
 			l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port, "node", a.myNode)
+
+			// Start the GUE pinger if it's not running
+			if a.pinger == nil {
+				a.pinger = exec.Command("/opt/acnodal/bin/gue_ping_svc_auto", "25", "10", "3")
+				err := a.pinger.Start()
+				if err != nil {
+					l.Log("event", "error starting pinger", "error", err)
+					a.pinger = nil // retry next time we announce an endpoint
+				}
+			}
 
 			// we've got an endpoint that we want to announce so let's set
 			// up the PFC first
