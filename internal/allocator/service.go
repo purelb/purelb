@@ -18,6 +18,7 @@ package allocator
 import (
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
@@ -113,7 +114,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 	c.client.Infof(svc, "IPAllocated", "Assigned IP %s from pool %s", lbIP, pool)
 
 	// we have an IP selected somehow, so program the data plane
-	svc.Status.LoadBalancer.Ingress = []v1.LoadBalancerIngress{{IP: lbIP.String()}}
+	c.addAddress(svc, lbIP)
 
 	// annotate the service as "ours" and annotate the pool from which
 	// the address came
@@ -163,4 +164,36 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, er
 
 	// Okay, in that case just bruteforce across all pools.
 	return c.ips.Allocate(svc)
+}
+
+// addAddress adds "address" to "svc".
+func (c *controller) addAddress(svc *v1.Service, address net.IP) {
+	var ingress []v1.LoadBalancerIngress
+
+	// We program the service differently depending on where the address
+	// came from.
+	//
+	// If it's a locally-allocated address then we add it to the
+	// LoadBalancerIngress.IP field which in ipvs mode will cause
+	// kube-proxy to add the address to the kube-ipvs0 bridge
+	// interface. This is needed for proper packet forwarding.
+	//
+	// If the address was allocated from the Acnodal EGW, though, then
+	// it should not be added to kube-ipvs0 because that would interfere
+	// with proper packet forwarding to the endpoints after the packets
+	// have been decapsulated. To do that we add the address to the
+	// LoadBalancerIngress.Hostname field. This isn't documented well
+	// but it's also done by cloud providers.
+	//
+	// More info: https://github.com/kubernetes/kubernetes/pull/79976
+	if _, hasServiceAnnotation := svc.Annotations[purelbv1.ServiceAnnotation]; hasServiceAnnotation {
+		hostName := strings.Replace(address.String(), ".", "-", -1) + ".client.acnodal.io"
+		ingress = append(ingress, v1.LoadBalancerIngress{Hostname: hostName})
+		c.logger.Log("event", "programmed ingress address", "dest", "Hostname", "address", hostName)
+	} else {
+		ingress = append(ingress, v1.LoadBalancerIngress{IP: address.String()})
+		c.logger.Log("programmed ingress address", "dest", "IP", "address", address.String())
+	}
+
+	svc.Status.LoadBalancer.Ingress = ingress
 }
