@@ -32,11 +32,13 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
+	"github.com/vishvananda/netlink/nl"
 )
 
 const (
-	TUNNEL_PORT = 4242
-	TUNNEL_AUTH = "fredfredfredfred"
+	TUNNEL_PORT   = 4242
+	TUNNEL_AUTH   = "fredfredfredfred"
+	CNI_INTERFACE = "cni0"
 )
 
 type announcer struct {
@@ -80,6 +82,34 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 			}
 			url.Path = ""
 			a.baseURL = url
+
+			// if we're going to announce then we want to ensure that we
+			// load the PFC filter programs and maps. Filters survive a pod
+			// restart, but maps don't, so we delete the filters so they'll
+			// get reloaded in SetBalancer() which will implicitly set up
+			// the maps.
+			pfc.CleanupFilter(a.logger, CNI_INTERFACE, "ingress")
+			pfc.CleanupFilter(a.logger, CNI_INTERFACE, "egress")
+			pfc.CleanupQueueDiscipline(a.logger, CNI_INTERFACE)
+			// figure out which interface is the default and clean that up, too
+			default4, err := local.DefaultInterface(nl.FAMILY_V4)
+			if err == nil {
+				pfc.CleanupFilter(a.logger, default4.Attrs().Name, "ingress")
+				pfc.CleanupFilter(a.logger, default4.Attrs().Name, "egress")
+				pfc.CleanupQueueDiscipline(a.logger, default4.Attrs().Name)
+			} else {
+				a.logger.Log("op", "SetConfig", "error", err)
+			}
+			default6, err := local.DefaultInterface(nl.FAMILY_V6)
+			if err == nil && default6 != nil {
+				pfc.CleanupFilter(a.logger, default6.Attrs().Name, "ingress")
+				pfc.CleanupFilter(a.logger, default6.Attrs().Name, "egress")
+				pfc.CleanupQueueDiscipline(a.logger, default6.Attrs().Name)
+			}
+
+			// We might have been notified of some services before we got
+			// this config notification, so trigger a resync
+			a.client.ForceSync()
 		}
 	}
 
@@ -169,7 +199,7 @@ func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelKey int, myAddr s
 	tunnelId := tunnelKey
 
 	// cni0 is easy - its name is hard-coded
-	pfc.SetupNIC(a.logger, "cni0", "egress", 1, 8)
+	pfc.SetupNIC(a.logger, CNI_INTERFACE, "egress", 1, 8)
 
 	// figure out which interface is the default and set that up, too
 	defaultNIC, err := local.DefaultInterface(local.AddrFamily(net.ParseIP(address.IP)))
