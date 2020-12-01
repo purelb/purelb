@@ -19,6 +19,7 @@ package acnodal
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/go-resty/resty/v2"
 	v1 "k8s.io/api/core/v1"
@@ -206,6 +207,14 @@ func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort
 		return err
 	}
 	if response.IsError() {
+		body := string(response.Body())
+
+		// if the response indicates that this endpoint is already
+		// announced then it's not an error
+		if response.StatusCode() == 400 && strings.Contains(body, "duplicate endpoint") {
+			return nil
+		}
+
 		return fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
 	}
 	return nil
