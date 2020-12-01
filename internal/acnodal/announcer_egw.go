@@ -121,6 +121,8 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 }
 
 func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
+	var err error
+
 	l := log.With(a.logger, "service", svc.Name)
 
 	// if we haven't been configured then we won't announce
@@ -144,39 +146,37 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	for _, ep := range endpoints.Subsets {
 		port := ep.Ports[0].Port
 		for _, address := range ep.Addresses {
-			if address.NodeName == nil || *address.NodeName != a.myNode {
-				l.Log("op", "DontAnnounceEndpoint", "address", address.IP, "port", port, "node", "not me")
-				return nil
-			}
-			l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port, "node", a.myNode)
+			if address.NodeName != nil && *address.NodeName == a.myNode {
+				l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port, "node", a.myNode)
 
-			// Start the GUE pinger if it's not running
-			if a.pinger == nil {
-				a.pinger = exec.Command("/opt/acnodal/bin/gue_ping_svc_auto", "25", "10", "3")
-				err := a.pinger.Start()
-				if err != nil {
-					l.Log("event", "error starting pinger", "error", err)
-					a.pinger = nil // retry next time we announce an endpoint
+				// Start the GUE pinger if it's not running
+				if a.pinger == nil {
+					a.pinger = exec.Command("/opt/acnodal/bin/gue_ping_svc_auto", "25", "10", "3")
+					err := a.pinger.Start()
+					if err != nil {
+						l.Log("event", "error starting pinger", "error", err)
+						a.pinger = nil // retry next time we announce an endpoint
+					}
 				}
-			}
 
-			// we've got an endpoint that we want to announce so let's set
-			// up the PFC first
-			err = a.setupPFC(address, tunnelKey, a.myNodeAddr, tunnelAddr)
-			if err != nil {
-				l.Log("op", "SetupPFC", "error", err)
-				return err
-			}
+				// we've got an endpoint that we want to announce so let's set
+				// up the PFC first
+				err = a.setupPFC(address, tunnelKey, a.myNodeAddr, tunnelAddr)
+				if err != nil {
+					l.Log("op", "SetupPFC", "error", err)
+				}
 
-			err = egw.AnnounceEndpoint(createUrl, address.IP, ep.Ports[0], a.myNodeAddr)
-			if err != nil {
-				l.Log("op", "AnnounceEndpoint", "error", err)
-				return err
+				err = egw.AnnounceEndpoint(createUrl, address.IP, ep.Ports[0], a.myNodeAddr)
+				if err != nil {
+					l.Log("op", "AnnounceEndpoint", "error", err)
+				}
+			} else {
+				l.Log("op", "DontAnnounceEndpoint", "ep-address", address.IP, "ep-port", port, "node", "not me")
 			}
 		}
 	}
 
-	return nil
+	return err
 }
 
 func (a *announcer) DeleteBalancer(name, reason string, addr net.IP) error {
