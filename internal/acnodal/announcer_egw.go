@@ -20,7 +20,6 @@ import (
 	"net"
 	"net/url"
 	"os/exec"
-	"strconv"
 
 	v1 "k8s.io/api/core/v1"
 
@@ -36,7 +35,6 @@ import (
 )
 
 const (
-	TUNNEL_PORT   = 4242
 	TUNNEL_AUTH   = "fredfredfredfred"
 	CNI_INTERFACE = "cni0"
 )
@@ -139,8 +137,6 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	}
 
 	createUrl := svc.Annotations[purelbv1.EndpointAnnotation]
-	tunnelKey, _ := strconv.Atoi(svc.Annotations[purelbv1.ServiceGUEKeyAnnotation])
-	tunnelAddr := svc.Annotations[purelbv1.ServiceGUEAddressAnnotation]
 
 	// For each endpoint address in each subset on this node, contact the EGW
 	for _, ep := range endpoints.Subsets {
@@ -159,16 +155,23 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 					}
 				}
 
-				// we've got an endpoint that we want to announce so let's set
-				// up the PFC first
-				err = a.setupPFC(address, tunnelKey, a.myNodeAddr, tunnelAddr)
-				if err != nil {
-					l.Log("op", "SetupPFC", "error", err)
-				}
-
-				err = egw.AnnounceEndpoint(createUrl, address.IP, ep.Ports[0], a.myNodeAddr)
+				// Announce this endpoint to the EGW
+				response, err := egw.AnnounceEndpoint(createUrl, address.IP, ep.Ports[0], a.myNodeAddr)
 				if err != nil {
 					l.Log("op", "AnnounceEndpoint", "error", err)
+				}
+
+				myTunnel, exists := response.Service.Status.EGWTunnelEndpoints[a.myNodeAddr]
+				if !exists {
+					l.Log("op", "fetchTunnelConfig", "endpoints", response.Service.Status.EGWTunnelEndpoints)
+					return fmt.Errorf("tunnel config not found")
+				}
+
+				// Now that we've got the announcement response we have enough
+				// info to set up the tunnel
+				err = a.setupPFC(address, myTunnel.TunnelID, response.Service.Spec.GUEKey, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port)
+				if err != nil {
+					l.Log("op", "SetupPFC", "error", err)
 				}
 			} else {
 				l.Log("op", "DontAnnounceEndpoint", "ep-address", address.IP, "ep-port", port, "node", "not me")
@@ -192,12 +195,7 @@ func (a *announcer) Shutdown() {
 
 // setupPFC sets up the Acnodal PFC components and GUE tunnel to
 // communicate with the Acnodal EGW.
-func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelKey int, myAddr string, tunnelAddr string) error {
-	// We can use the tunnelKey as our locally-unique tunnelId. It's
-	// overkill but it will be unique for this instance (and also all
-	// other instances on all client clusters).
-	tunnelId := tunnelKey
-
+func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, tunnelKey uint32, myAddr string, tunnelAddr string, tunnelPort int32) error {
 	// cni0 is easy - its name is hard-coded
 	pfc.SetupNIC(a.logger, CNI_INTERFACE, "egress", 1, 8)
 
@@ -210,7 +208,7 @@ func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelKey int, myAddr s
 	}
 
 	// set up the GUE tunnel to the EGW
-	script := fmt.Sprintf("/opt/acnodal/bin/cli_tunnel get %[1]d | grep %[2]s || /opt/acnodal/bin/cli_tunnel set %[1]d %[3]s %[4]d %[2]s %[4]d", tunnelId, tunnelAddr, myAddr, TUNNEL_PORT)
+	script := fmt.Sprintf("/opt/acnodal/bin/cli_tunnel get %[1]d | grep %[2]s || /opt/acnodal/bin/cli_tunnel set %[1]d %[3]s %[4]d %[2]s %[4]d", tunnelID, tunnelAddr, myAddr, tunnelPort)
 	a.logger.Log("op", "SetupTunnel", "script", script)
 	cmd := exec.Command("/bin/sh", "-c", script)
 	err = cmd.Run()
@@ -226,7 +224,7 @@ func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelKey int, myAddr s
 
 	// set up service forwarding to forward packets through the GUE
 	// tunnel
-	script = fmt.Sprintf("/opt/acnodal/bin/cli_service get %[1]d %[2]d | grep %[3]s || /opt/acnodal/bin/cli_service set-node %[1]d %[2]d %[3]s %[4]d", groupId, serviceId, TUNNEL_AUTH, tunnelId)
+	script = fmt.Sprintf("/opt/acnodal/bin/cli_service get %[1]d %[2]d | grep %[3]s || /opt/acnodal/bin/cli_service set-node %[1]d %[2]d %[3]s %[4]d", groupId, serviceId, TUNNEL_AUTH, tunnelID)
 	a.logger.Log("op", "SetupService", "script", script)
 	cmd = exec.Command("/bin/sh", "-c", script)
 	return cmd.Run()

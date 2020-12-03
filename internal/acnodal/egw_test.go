@@ -84,13 +84,13 @@ func TestAnnouncements(t *testing.T) {
 	assert.Equal(t, svc.Links["group"], GroupURL, "group url mismatch")
 
 	// announce an endpoint on that service
-	err = e.AnnounceEndpoint(svc.Links["create-endpoint"], EndpointAddress, EndpointPort80, "0.0.0.0")
+	_, err = e.AnnounceEndpoint(svc.Links["create-endpoint"], EndpointAddress, EndpointPort80, "0.0.0.0")
 	if err != nil {
 		t.Errorf("got error %+v", err)
 	}
 
 	// announce another endpoint on that service
-	err = e.AnnounceEndpoint(svc.Links["create-endpoint"], EndpointAddress, EndpointPort81, "0.0.0.0")
+	_, err = e.AnnounceEndpoint(svc.Links["create-endpoint"], EndpointAddress, EndpointPort81, "0.0.0.0")
 	if err != nil {
 		t.Errorf("got error %+v", err)
 	}

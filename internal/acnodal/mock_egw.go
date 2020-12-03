@@ -5,9 +5,10 @@
 package acnodal
 
 import (
+	reflect "reflect"
+
 	gomock "github.com/golang/mock/gomock"
 	v1 "k8s.io/api/core/v1"
-	reflect "reflect"
 )
 
 // MockEGW is a mock of EGW interface
@@ -93,11 +94,11 @@ func (mr *MockEGWMockRecorder) WithdrawService(svcUrl interface{}) *gomock.Call 
 }
 
 // AnnounceEndpoint mocks base method
-func (m *MockEGW) AnnounceEndpoint(url, address string, port v1.EndpointPort, nodeAddress string) error {
+func (m *MockEGW) AnnounceEndpoint(url, address string, port v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "AnnounceEndpoint", url, address, port, nodeAddress)
 	ret0, _ := ret[0].(error)
-	return ret0
+	return &EGWEndpointResponse{}, ret0
 }
 
 // AnnounceEndpoint indicates an expected call of AnnounceEndpoint

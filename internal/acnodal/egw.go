@@ -31,7 +31,7 @@ type EGW interface {
 	AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error)
 	FetchService(url string) (EGWServiceResponse, error)
 	WithdrawService(svcUrl string) error
-	AnnounceEndpoint(url string, address string, port v1.EndpointPort, nodeAddress string) error
+	AnnounceEndpoint(url string, address string, port v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error)
 }
 
 // egw represents one connection to an Acnodal Enterprise Gateway.
@@ -64,10 +64,27 @@ type EGWServiceSpec struct {
 	GUEKey  uint32           `json:"gue-key"`
 }
 
+// EGWTunnelEndpoint is an Endpoint on the EGW.
+type EGWTunnelEndpoint struct {
+	// Address is the IP address for this endpoint.
+	Address string `json:"egw-address"`
+
+	// Port is the port on which this endpoint listens.
+	Port v1.EndpointPort `json:"egw-port"`
+
+	// TunnelID distinguishes the traffic using this tunnel from the
+	// traffic using other tunnels that end on the same host.
+	TunnelID uint32 `json:"tunnel-id"`
+}
+
 type EGWServiceStatus struct {
-	// GUEAddress is the EGW's GUE tunnel endpoint address for this load
-	// balancer.
-	GUEAddress string `json:"gue-address"`
+	// GUETunnelEndpoints is a map from client node addresses to public
+	// GUE tunnel endpoints on the EGW. The map key is a client node
+	// address and must be one of the node addresses in the Spec
+	// Endpoints slice. The value is a GUETunnelEndpoint that describes
+	// the public IP and port to which the client can send tunnel ping
+	// packets.
+	EGWTunnelEndpoints map[string]EGWTunnelEndpoint `json:"gue-tunnel-endpoints"`
 }
 
 // EGWService is the on-the-wire representation of one LoadBalancer
@@ -115,8 +132,8 @@ type EGWEndpointCreate struct {
 // EGWEndpointResponse is the body of the HTTP response to a request to
 // show a load balancer endpoint.
 type EGWEndpointResponse struct {
-	Links   Links      `json:"link"`
-	Service EGWService `json:"service"`
+	Message string     `json:"message,omitempty"`
+	Service EGWService `json:"service,omitempty"`
 }
 
 // New initializes a new EGW instance. If error is non-nil then the
@@ -198,26 +215,27 @@ func (n *egw) FetchService(url string) (EGWServiceResponse, error) {
 }
 
 // AnnounceEndpoint announces an endpoint to the EGW.
-func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort, nodeAddress string) error {
+func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error) {
 	response, err := n.http.R().
 		SetBody(EGWEndpointCreate{Endpoint: EGWEndpoint{Address: address, Port: ePort, NodeAddress: nodeAddress}}).
-		SetResult(EGWServiceResponse{}).
+		SetError(EGWEndpointResponse{}).
+		SetResult(EGWEndpointResponse{}).
 		Post(url)
 	if err != nil {
-		return err
+		return &EGWEndpointResponse{}, err
 	}
 	if response.IsError() {
-		body := string(response.Body())
-
 		// if the response indicates that this endpoint is already
 		// announced then it's not an error
-		if response.StatusCode() == 400 && strings.Contains(body, "duplicate endpoint") {
-			return nil
+		if response.StatusCode() == 409 {
+			if strings.Contains(response.Error().(*EGWEndpointResponse).Message, "duplicate endpoint") {
+				return response.Error().(*EGWEndpointResponse), nil
+			}
 		}
 
-		return fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+		return &EGWEndpointResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
 	}
-	return nil
+	return response.Result().(*EGWEndpointResponse), nil
 }
 
 // WithdrawService tells the EGW that this service should be deleted.

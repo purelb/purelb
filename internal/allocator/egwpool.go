@@ -18,8 +18,6 @@ package allocator
 import (
 	"fmt"
 	"net"
-	"strconv"
-	"time"
 
 	v1 "k8s.io/api/core/v1"
 
@@ -77,36 +75,13 @@ func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 
 	service.Annotations[purelbv1.GroupAnnotation] = egwsvc.Links["group"]
 	service.Annotations[purelbv1.ServiceAnnotation] = egwsvc.Links["self"]
-	service.Annotations[purelbv1.ServiceGUEKeyAnnotation] = strconv.Itoa(int(egwsvc.Service.Spec.GUEKey))
 	service.Annotations[purelbv1.EndpointAnnotation] = egwsvc.Links["create-endpoint"]
 
 	// add the service's URL to the cache so we'll be able to get back
 	// to it later if we need to delete the service
 	p.serviceURLCache[namespacedName(service)] = egwsvc.Links["self"]
 
-	// check if the GUE address field has been filled in yet. Sometimes
-	// it's not and we need to retry.
-	gueAddr := egwsvc.Service.Status.GUEAddress
-	if "" == gueAddr {
-		gueAddr, err = p.fetchGUEAddress(egwsvc.Links["self"])
-		if err != nil {
-			return nil, fmt.Errorf("no GUE address returned by EGW: %w", err)
-		}
-	}
-	service.Annotations[purelbv1.ServiceGUEAddressAnnotation] = gueAddr
-
 	return ip, nil
-}
-
-// fetchGUEAddress fetches the GUE tunnel IP address from the EGW.
-func (p EGWPool) fetchGUEAddress(url string) (string, error) {
-	// Give the EGW a chance to fill in the address
-	time.Sleep(5 * time.Second)
-	egwsvc, err := p.egw.FetchService(url)
-	if err != nil {
-		return "", err
-	}
-	return egwsvc.Service.Status.GUEAddress, nil
 }
 
 // Assign assigns a service to an IP.
