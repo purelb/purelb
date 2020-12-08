@@ -35,7 +35,6 @@ import (
 )
 
 const (
-	TUNNEL_AUTH   = "fredfredfredfred"
 	CNI_INTERFACE = "cni0"
 )
 
@@ -169,7 +168,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 				// Now that we've got the announcement response we have enough
 				// info to set up the tunnel
-				err = a.setupPFC(address, myTunnel.TunnelID, response.Service.Spec.GUEKey, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port)
+				err = a.setupPFC(address, myTunnel.TunnelID, response.Service.Spec.GUEKey, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, a.config.AuthCreds)
 				if err != nil {
 					l.Log("op", "SetupPFC", "error", err)
 				}
@@ -195,7 +194,7 @@ func (a *announcer) Shutdown() {
 
 // setupPFC sets up the Acnodal PFC components and GUE tunnel to
 // communicate with the Acnodal EGW.
-func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, tunnelKey uint32, myAddr string, tunnelAddr string, tunnelPort int32) error {
+func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, tunnelKey uint32, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
 	// cni0 is easy - its name is hard-coded
 	pfc.SetupNIC(a.logger, CNI_INTERFACE, "egress", 1, 8)
 
@@ -224,7 +223,7 @@ func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, tunnel
 
 	// set up service forwarding to forward packets through the GUE
 	// tunnel
-	script = fmt.Sprintf("/opt/acnodal/bin/cli_service get %[1]d %[2]d | grep %[3]s || /opt/acnodal/bin/cli_service set-node %[1]d %[2]d %[3]s %[4]d", groupId, serviceId, TUNNEL_AUTH, tunnelID)
+	script = fmt.Sprintf("/opt/acnodal/bin/cli_service get %[1]d %[2]d | grep %[3]s || /opt/acnodal/bin/cli_service set-node %[1]d %[2]d %[3]s %[4]d", groupId, serviceId, tunnelAuth, tunnelID)
 	a.logger.Log("op", "SetupService", "script", script)
 	cmd = exec.Command("/bin/sh", "-c", script)
 	return cmd.Run()
