@@ -56,6 +56,8 @@ func NewAnnouncer(l log.Logger, node string, nodeAddr string) lbnodeagent.Announ
 // SetClient configures this announcer to use the provided client.
 func (a *announcer) SetClient(client *k8s.Client) {
 	a.client = client
+
+	a.resetPFC()
 }
 
 func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
@@ -79,30 +81,6 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 			}
 			url.Path = ""
 			a.baseURL = url
-
-			// if we're going to announce then we want to ensure that we
-			// load the PFC filter programs and maps. Filters survive a pod
-			// restart, but maps don't, so we delete the filters so they'll
-			// get reloaded in SetBalancer() which will implicitly set up
-			// the maps.
-			pfc.CleanupFilter(a.logger, CNI_INTERFACE, "ingress")
-			pfc.CleanupFilter(a.logger, CNI_INTERFACE, "egress")
-			pfc.CleanupQueueDiscipline(a.logger, CNI_INTERFACE)
-			// figure out which interface is the default and clean that up, too
-			default4, err := local.DefaultInterface(nl.FAMILY_V4)
-			if err == nil {
-				pfc.CleanupFilter(a.logger, default4.Attrs().Name, "ingress")
-				pfc.CleanupFilter(a.logger, default4.Attrs().Name, "egress")
-				pfc.CleanupQueueDiscipline(a.logger, default4.Attrs().Name)
-			} else {
-				a.logger.Log("op", "SetConfig", "error", err)
-			}
-			default6, err := local.DefaultInterface(nl.FAMILY_V6)
-			if err == nil && default6 != nil {
-				pfc.CleanupFilter(a.logger, default6.Attrs().Name, "ingress")
-				pfc.CleanupFilter(a.logger, default6.Attrs().Name, "egress")
-				pfc.CleanupQueueDiscipline(a.logger, default6.Attrs().Name)
-			}
 
 			// We might have been notified of some services before we got
 			// this config notification, so trigger a resync
@@ -227,4 +205,31 @@ func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, tunnel
 	a.logger.Log("op", "SetupService", "script", script)
 	cmd = exec.Command("/bin/sh", "-c", script)
 	return cmd.Run()
+}
+
+func (a *announcer) resetPFC() error {
+	// we want to ensure that we load the PFC filter programs and
+	// maps. Filters survive a pod restart, but maps don't, so we delete
+	// the filters so they'll get reloaded in SetBalancer() which will
+	// implicitly set up the maps.
+	pfc.CleanupFilter(a.logger, CNI_INTERFACE, "ingress")
+	pfc.CleanupFilter(a.logger, CNI_INTERFACE, "egress")
+	pfc.CleanupQueueDiscipline(a.logger, CNI_INTERFACE)
+	// figure out which interface is the default and clean that up, too
+	default4, err := local.DefaultInterface(nl.FAMILY_V4)
+	if err == nil {
+		pfc.CleanupFilter(a.logger, default4.Attrs().Name, "ingress")
+		pfc.CleanupFilter(a.logger, default4.Attrs().Name, "egress")
+		pfc.CleanupQueueDiscipline(a.logger, default4.Attrs().Name)
+	} else {
+		a.logger.Log("op", "SetConfig", "error", err)
+	}
+	default6, err := local.DefaultInterface(nl.FAMILY_V6)
+	if err == nil && default6 != nil {
+		pfc.CleanupFilter(a.logger, default6.Attrs().Name, "ingress")
+		pfc.CleanupFilter(a.logger, default6.Attrs().Name, "egress")
+		pfc.CleanupQueueDiscipline(a.logger, default6.Attrs().Name)
+	}
+
+	return nil
 }
