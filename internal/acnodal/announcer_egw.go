@@ -18,7 +18,6 @@ package acnodal
 import (
 	"fmt"
 	"net"
-	"net/url"
 	"os/exec"
 
 	v1 "k8s.io/api/core/v1"
@@ -43,8 +42,7 @@ type announcer struct {
 	logger     log.Logger
 	myNode     string
 	myNodeAddr string
-	config     *purelbv1.ServiceGroupEGWSpec
-	baseURL    *url.URL
+	groups     map[string]*purelbv1.ServiceGroupEGWSpec // groupURL -> ServiceGroupEGWSpec
 	pinger     *exec.Cmd
 }
 
@@ -60,36 +58,43 @@ func (a *announcer) SetClient(client *k8s.Client) {
 	a.resetPFC()
 }
 
+// SetConfig responds to configuration changes.
 func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
-	// the default is nil which means that we don't announce
-	a.config = nil
-
-	// if there's an "EGW" *service group* then we'll announce. At this
-	// point there's no egw node agent-specific config so we don't
-	// require an EGW LBNodeAgent resource, just a ServiceGroup
+	// we'll announce for any an "EGW" *service groups*. At this point
+	// there's no egw node agent-specific config so we don't require an
+	// EGW LBNodeAgent resource, just one or more EGW ServiceGroup.
+	haveConfig := false
+	groups := map[string]*purelbv1.ServiceGroupEGWSpec{}
 	for _, group := range cfg.Groups {
 		if spec := group.Spec.EGW; spec != nil {
-			a.logger.Log("op", "setConfig", "config", spec)
-			a.config = spec
-			// Use the hostname from the service group, but reset the path.  EGW
-			// and Netbox each have their own API URL schemes so we only need
-			// the protocol, host, port, credentials, etc.
-			url, err := url.Parse(group.Spec.EGW.URL)
-			if err != nil {
-				a.logger.Log("op", "setConfig", "error", err)
-				return fmt.Errorf("cannot parse EGW URL %v", err)
-			}
-			url.Path = ""
-			a.baseURL = url
-
-			// We might have been notified of some services before we got
-			// this config notification, so trigger a resync
-			a.client.ForceSync()
+			a.logger.Log("op", "setConfig", "name", group.Name, "config", spec)
+			groups[group.Name] = spec
+			haveConfig = true
 		}
 	}
 
-	if a.config == nil {
+	// if we don't have any EGW configs then we can return
+	if !haveConfig {
 		a.logger.Log("event", "noConfig")
+		return nil
+	}
+
+	// update our configuration
+	a.groups = groups
+
+	// We might have been notified of some services before we got this
+	// config notification and so were unable to announce, so trigger a
+	// resync.
+	a.client.ForceSync()
+
+	// Start the GUE pinger if it's not running
+	if a.pinger == nil {
+		a.pinger = exec.Command("/opt/acnodal/bin/gue_ping_svc_auto", "25", "10", "3")
+		err := a.pinger.Start()
+		if err != nil {
+			a.logger.Log("event", "error starting pinger", "error", err)
+			a.pinger = nil // retry next time we get a config announcement
+		}
 	}
 
 	return nil
@@ -97,17 +102,27 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 
 func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
 	var err error
+	groupName, haveGroupURL := svc.Annotations[purelbv1.PoolAnnotation]
 
-	l := log.With(a.logger, "service", svc.Name)
+	l := log.With(a.logger, "service", svc.Name, "group", groupName)
 
-	// if we haven't been configured then we won't announce
-	if a.config == nil {
+	// if the service doesn't have a group annotation then don't
+	// announce
+	if !haveGroupURL {
+		l.Log("event", "noGroupAnnotation")
+		return nil
+	}
+
+	// if we don't have a config for this service's group then don't
+	// announce
+	group, haveGroup := a.groups[groupName]
+	if !haveGroup {
 		l.Log("event", "noConfig")
 		return nil
 	}
 
 	// connect to the EGW
-	egw, err := NewEGW(a.baseURL.String())
+	egw, err := NewEGW(group.URL)
 	if err != nil {
 		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
 		return fmt.Errorf("Connection init to EGW failed")
@@ -117,23 +132,13 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 	// For each endpoint address in each subset on this node, contact the EGW
 	for _, ep := range endpoints.Subsets {
-		port := ep.Ports[0].Port
 		for _, address := range ep.Addresses {
+			port := ep.Ports[0]
 			if address.NodeName != nil && *address.NodeName == a.myNode {
-				l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port, "node", a.myNode)
-
-				// Start the GUE pinger if it's not running
-				if a.pinger == nil {
-					a.pinger = exec.Command("/opt/acnodal/bin/gue_ping_svc_auto", "25", "10", "3")
-					err := a.pinger.Start()
-					if err != nil {
-						l.Log("event", "error starting pinger", "error", err)
-						a.pinger = nil // retry next time we announce an endpoint
-					}
-				}
+				l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port.Port, "node", a.myNode)
 
 				// Announce this endpoint to the EGW
-				response, err := egw.AnnounceEndpoint(createUrl, address.IP, ep.Ports[0], a.myNodeAddr)
+				response, err := egw.AnnounceEndpoint(createUrl, address.IP, port, a.myNodeAddr)
 				if err != nil {
 					l.Log("op", "AnnounceEndpoint", "error", err)
 				}
@@ -146,12 +151,12 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 				// Now that we've got the announcement response we have enough
 				// info to set up the tunnel
-				err = a.setupPFC(address, myTunnel.TunnelID, response.Service.Spec.GUEKey, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, a.config.AuthCreds)
+				err = a.setupPFC(address, myTunnel.TunnelID, response.Service.Spec.GUEKey, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, group.AuthCreds)
 				if err != nil {
 					l.Log("op", "SetupPFC", "error", err)
 				}
 			} else {
-				l.Log("op", "DontAnnounceEndpoint", "ep-address", address.IP, "ep-port", port, "node", "not me")
+				l.Log("op", "DontAnnounceEndpoint", "ep-address", address.IP, "ep-port", port.Port, "node", "not me")
 			}
 		}
 	}
