@@ -30,7 +30,7 @@ type EGW interface {
 	GetGroup() (EGWGroupResponse, error)
 	AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error)
 	FetchService(url string) (EGWServiceResponse, error)
-	WithdrawService(svcUrl string) error
+	Delete(svcUrl string) error
 	AnnounceEndpoint(url string, address string, port v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error)
 }
 
@@ -95,19 +95,27 @@ type EGWService struct {
 	Status     EGWServiceStatus `json:"status,omitempty"`
 }
 
+// EGWEndpointSpec is the on-the-wire representation of one EGW
+// endpoint specification.
+type EGWEndpointSpec struct {
+	Address     string `json:"address"`
+	Port        v1.EndpointPort
+	NodeAddress string `json:"node-address"`
+}
+
 // EGWEndpoint is the on-the-wire representation of one LoadBalancer
 // endpoint.
 type EGWEndpoint struct {
-	Address     string
-	Port        v1.EndpointPort
-	NodeAddress string `json:"node-address"`
+	ObjectMeta ObjectMeta      `json:"metadata"`
+	Spec       EGWEndpointSpec `json:"spec"`
 }
 
 // EGWGroupResponse is the body of the HTTP response to a request to
 // show a service group.
 type EGWGroupResponse struct {
-	Links Links    `json:"link"`
-	Group EGWGroup `json:"group"`
+	Message string   `json:"message,omitempty"`
+	Links   Links    `json:"link"`
+	Group   EGWGroup `json:"group"`
 }
 
 // EGWServiceCreate is the body of the HTTP request to create a load
@@ -119,6 +127,7 @@ type EGWServiceCreate struct {
 // EGWServiceResponse is the body of the HTTP response to a request to
 // show a load balancer.
 type EGWServiceResponse struct {
+	Message string     `json:"message,omitempty"`
 	Links   Links      `json:"link"`
 	Service EGWService `json:"service"`
 }
@@ -132,8 +141,9 @@ type EGWEndpointCreate struct {
 // EGWEndpointResponse is the body of the HTTP response to a request to
 // show a load balancer endpoint.
 type EGWEndpointResponse struct {
-	Message string     `json:"message,omitempty"`
-	Service EGWService `json:"service,omitempty"`
+	Message  string      `json:"message,omitempty"`
+	Links    Links       `json:"link"`
+	Endpoint EGWEndpoint `json:"endpoint,omitempty"`
 }
 
 // New initializes a new EGW instance. If error is non-nil then the
@@ -217,7 +227,7 @@ func (n *egw) FetchService(url string) (EGWServiceResponse, error) {
 // AnnounceEndpoint announces an endpoint to the EGW.
 func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error) {
 	response, err := n.http.R().
-		SetBody(EGWEndpointCreate{Endpoint: EGWEndpoint{Address: address, Port: ePort, NodeAddress: nodeAddress}}).
+		SetBody(EGWEndpointCreate{Endpoint: EGWEndpoint{Spec: EGWEndpointSpec{Address: address, Port: ePort, NodeAddress: nodeAddress}}}).
 		SetError(EGWEndpointResponse{}).
 		SetResult(EGWEndpointResponse{}).
 		Post(url)
@@ -238,8 +248,8 @@ func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort
 	return response.Result().(*EGWEndpointResponse), nil
 }
 
-// WithdrawService tells the EGW that this service should be deleted.
-func (n *egw) WithdrawService(url string) error {
+// Delete tells the EGW that this object should be deleted.
+func (n *egw) Delete(url string) error {
 	response, err := n.http.R().Delete(url)
 	if err != nil {
 		return err

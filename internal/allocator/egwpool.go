@@ -97,7 +97,7 @@ func (p EGWPool) Assign(ip net.IP, service *v1.Service) error {
 
 // Release releases an IP so it can be assigned again.
 func (p EGWPool) Release(ip net.IP, service string) {
-	p.egw.WithdrawService(p.serviceURLCache[service])
+	p.egw.Delete(p.serviceURLCache[service])
 }
 
 // InUse returns the count of addresses that currently have services

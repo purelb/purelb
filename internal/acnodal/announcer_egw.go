@@ -38,12 +38,13 @@ const (
 )
 
 type announcer struct {
-	client     *k8s.Client
-	logger     log.Logger
-	myNode     string
-	myNodeAddr string
-	groups     map[string]*purelbv1.ServiceGroupEGWSpec // groupURL -> ServiceGroupEGWSpec
-	pinger     *exec.Cmd
+	client        *k8s.Client
+	logger        log.Logger
+	myNode        string
+	myNodeAddr    string
+	groups        map[string]*purelbv1.ServiceGroupEGWSpec // groupURL -> ServiceGroupEGWSpec
+	pinger        *exec.Cmd
+	announcements map[string]struct{} // endpoint URLs
 }
 
 // NewAnnouncer returns a new Acnodal EGW Announcer.
@@ -104,7 +105,8 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	var err error
 	groupName, haveGroupURL := svc.Annotations[purelbv1.PoolAnnotation]
 
-	l := log.With(a.logger, "service", svc.Name, "group", groupName)
+	l := log.With(a.logger, "service", svc.ObjectMeta.Name, "group", groupName)
+	l.Log("op", "SetBalancer")
 
 	// if the service doesn't have a group annotation then don't
 	// announce
@@ -130,36 +132,74 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 	createUrl := svc.Annotations[purelbv1.EndpointAnnotation]
 
-	// For each endpoint address in each subset on this node, contact the EGW
+	announcements := map[string]struct{}{} // set of endpoint URLs
+
+	// For each port in each endpoint address in each subset on this node, contact the EGW
 	for _, ep := range endpoints.Subsets {
 		for _, address := range ep.Addresses {
-			port := ep.Ports[0]
-			if address.NodeName != nil && *address.NodeName == a.myNode {
-				l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port.Port, "node", a.myNode)
+			for _, port := range ep.Ports {
+				if address.NodeName != nil && *address.NodeName == a.myNode {
 
-				// Announce this endpoint to the EGW
-				response, err := egw.AnnounceEndpoint(createUrl, address.IP, port, a.myNodeAddr)
-				if err != nil {
-					l.Log("op", "AnnounceEndpoint", "error", err)
-				}
+					// Announce this endpoint to the EGW and add it to the
+					// announcements list
+					epResponse, err := egw.AnnounceEndpoint(createUrl, address.IP, port, a.myNodeAddr)
+					if err != nil {
+						l.Log("op", "AnnounceEndpoint", "error", err)
+					}
 
-				myTunnel, exists := response.Service.Status.EGWTunnelEndpoints[a.myNodeAddr]
-				if !exists {
-					l.Log("op", "fetchTunnelConfig", "endpoints", response.Service.Status.EGWTunnelEndpoints)
-					return fmt.Errorf("tunnel config not found")
-				}
+					// Add this endpoint to the set of endpoints that we've
+					// announced this time
+					announcements[epResponse.Links["self"]] = struct{}{}
+					l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port.Port, "node", a.myNode, "link", epResponse.Links["self"])
 
-				// Now that we've got the announcement response we have enough
-				// info to set up the tunnel
-				err = a.setupPFC(address, myTunnel.TunnelID, response.Service.Spec.GUEKey, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, group.AuthCreds)
-				if err != nil {
-					l.Log("op", "SetupPFC", "error", err)
+					// Get the service that owns this endpoint. This endpoint
+					// will either re-use an existing tunnel or set up a new one
+					// for this node. Tunnels belong to the service.
+					svcResponse, err := egw.FetchService(svc.Annotations[purelbv1.ServiceAnnotation])
+					if err != nil {
+						l.Log("op", "AnnounceEndpoint", "error", err)
+						return fmt.Errorf("service not found")
+					}
+
+					// See if the tunnel is there (it might not be yet since it
+					// sometimes takes a while to set up). If it's not there
+					// then return an error which will cause a retry.
+					myTunnel, exists := svcResponse.Service.Status.EGWTunnelEndpoints[a.myNodeAddr]
+					if !exists {
+						l.Log("op", "fetchTunnelConfig", "endpoints", svcResponse.Service.Status.EGWTunnelEndpoints)
+						return fmt.Errorf("tunnel config not found")
+					}
+
+					// Now that we've got the service response we have enough
+					// info to set up the tunnel
+					err = a.setupPFC(address, myTunnel.TunnelID, svcResponse.Service.Spec.GUEKey, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, group.AuthCreds)
+					if err != nil {
+						l.Log("op", "SetupPFC", "error", err)
+					}
+				} else {
+					l.Log("op", "DontAnnounceEndpoint", "ep-address", address.IP, "ep-port", port.Port, "node", "not me")
 				}
-			} else {
-				l.Log("op", "DontAnnounceEndpoint", "ep-address", address.IP, "ep-port", port.Port, "node", "not me")
 			}
 		}
 	}
+
+	// See if there are any endpoints that we need to delete, i.e.,
+	// endpoints that we had previously announced but didn't announce
+	// this time.
+	for epURL := range a.announcements {
+		if _, announcedThisTime := announcements[epURL]; !announcedThisTime {
+			l.Log("op", "DeleteEndpoint", "ep-url", epURL)
+			if err := egw.Delete(epURL); err != nil {
+				l.Log("op", "DeleteEndpoint", "error", err)
+			}
+			if err := a.cleanupPFC(); err != nil {
+				l.Log("op", "cleanupPFC", "error", err)
+			}
+		}
+	}
+
+	// Update the persistent announcement set
+	a.announcements = announcements
 
 	return err
 }
@@ -210,6 +250,10 @@ func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, tunnel
 	a.logger.Log("op", "SetupService", "script", script)
 	cmd = exec.Command("/bin/sh", "-c", script)
 	return cmd.Run()
+}
+
+func (a *announcer) cleanupPFC() error {
+	return nil
 }
 
 func (a *announcer) resetPFC() error {

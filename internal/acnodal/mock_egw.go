@@ -79,18 +79,18 @@ func (mr *MockEGWMockRecorder) FetchService(url interface{}) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FetchService", reflect.TypeOf((*MockEGW)(nil).FetchService), url)
 }
 
-// WithdrawService mocks base method
-func (m *MockEGW) WithdrawService(svcUrl string) error {
+// Delete mocks base method
+func (m *MockEGW) Delete(svcUrl string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "WithdrawService", svcUrl)
+	ret := m.ctrl.Call(m, "Delete", svcUrl)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// WithdrawService indicates an expected call of WithdrawService
-func (mr *MockEGWMockRecorder) WithdrawService(svcUrl interface{}) *gomock.Call {
+// Delete indicates an expected call of Delete
+func (mr *MockEGWMockRecorder) Delete(svcUrl interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WithdrawService", reflect.TypeOf((*MockEGW)(nil).WithdrawService), svcUrl)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Delete", reflect.TypeOf((*MockEGW)(nil).Delete), svcUrl)
 }
 
 // AnnounceEndpoint mocks base method
