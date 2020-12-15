@@ -95,11 +95,21 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 
 	// Start the GUE pinger if it's not running
 	if a.pinger == nil {
-		a.pinger = exec.Command("/opt/acnodal/bin/gue_ping_svc_auto", "25", "10", "3")
+		a.pinger = exec.Command("/opt/acnodal/bin/gue_ping_svc_auto", "25")
 		err := a.pinger.Start()
 		if err != nil {
 			a.logger.Log("event", "error starting pinger", "error", err)
 			a.pinger = nil // retry next time we get a config announcement
+		}
+	}
+
+	// Start the GUE sweeper if it's not running
+	if a.sweeper == nil {
+		a.sweeper = exec.Command("/opt/acnodal/bin/sweep_sessions", "10", "3")
+		err := a.sweeper.Start()
+		if err != nil {
+			a.logger.Log("event", "error starting sweeper", "error", err)
+			a.sweeper = nil // retry next time we get a config announcement
 		}
 	}
 
