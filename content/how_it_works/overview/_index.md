@@ -8,21 +8,18 @@ hide: toc, nextpage
 ---
 
 
-The PureLB LoadBalancer controller consists of two components that interact with the k8s API server.  These two compoenents are:
+The PureLB LoadBalancer controller consists of two components that interact with the k8s API server.  These two components are:
 
 
- * **Allocator.**  The allocator watches the service API for LoadBalancer service and replies with an IP address
+ * **Allocator.**  The allocator watches the service API for LoadBalancer service events and allocates IP addresses
 
- * **LBnodeagent.**  The lbnodeagent runs on all nodes that packets for exposes services can transit, it watches service changes and configures networking behavior
+ * **LBnodeagent.**  The lbnodeagent runs on all nodes that packets for exposed services can transit, it watches service changes and configures networking behavior
 
- * **KubeProxy.** Important, but not part of PureLB is KubeProxy.  KubeProxy is also watching service changes and adds those the same addresses used by LBNode to configure communication
+ * **KubeProxy.** KubeProxy is important, but not part of PureLB.  KubeProxy watches service changes and adds the same addresses used by lbnodeagent to configure communication
  within the cluster.  
 
- {{% notice %}} _Instead of thinking of PureLB advertising service, think of PureLB attracting packets to allocated addresses with KubeProxy forwarding those packets within the cluster via
+ {{% notice %}} _Instead of thinking of PureLB as advertising services, think of PureLB as attracting packets to allocated addresses with KubeProxy forwarding those packets within the cluster via
  the Container Network Interface Network (POD Network) between nodes._ {{% /notice %}}
-
-
-
 
 {{<mermaid align="center">}}
 
@@ -39,7 +36,7 @@ The PureLB LoadBalancer controller consists of two components that interact with
 {{</mermaid>}}
 
 
-The PureLB allocator watches the k8s service API for services of type LoadBalancer with IP address set to nil. It sends a request for an IP address to the configured IPAM systems.  The address returned from IPAM is used by the Allocator to update the k8s service. The PureLB allocation also has a built in IPAM.  
+The PureLB allocator watches the k8s service API for services of type LoadBalancer with IP address set to nil. It sends a request for an IP address to the configured IPAM systems.  The address returned from the IPAM system is used by the Allocator to update the k8s service. The PureLB allocation also has a built in IPAM.  
 
 To use a Service Load Balancer the service type is set to LoadBalancer. 
 
@@ -64,11 +61,11 @@ spec:
 
 ```
 
-The Allocator is configured with a minimum of one "default" Service Group,  multiple service groups can be defined and are accessed using annotations.
+The Allocator is configured with a minimum of one "default" Service Group. Multiple service groups can be defined and are accessed using annotations.
 
 * Service Group.  A Service Group represents an IPAM mechanism and its necessary configuration parameters.
 
-In the case of the Allocators inbuilt IPAM a Service Groups consists of the following
+In the case of the Allocator's inbuilt IPAM a Service Group consists of the following:
 
  * Name:  The name of the Service Group referenced by annotations in the service defination.  The default service group is used when no annotation is present.
  * Subnet:  In the form of CIDR, the network that addresses are allocated
@@ -90,11 +87,10 @@ spec:
   aggregation: 'default'
 ```
 
-
-Once the Allocator has provide an address (it will be visible in the service), the service is updated,  lbnodeagent and KubeProxy is watching the Service API.  
+Once the Allocator has provided an address (it will be visible in the service), the service is updated. lbnodeagent and KubeProxy watch the Service API.
 
 KubeProxy makes the necessary configuration changes so when traffic arrives at nodes with the allocated destination address, it is forwarded to the correct POD(s). If KubeProxy is operating in 
-its default mode, it will configure IPtables to match the allocated address before Linux routing (which would drop the packet) and forward to the Nodeport address, if configured in IPVS mode, the external address is added to the IPVS tables and the IPVS virtual interface.  
+its default mode, it will configure IPtables to match the allocated address before Linux routing (which would drop the packet) and forward to the Nodeport address. If configured in IPVS mode, the external address is added to the IPVS tables and the IPVS virtual interface.  
 
 The lbnodeagent converts the address into an IPNet (192.168.100.1/24) and configures Linux Networking so other network devices can use the allocated address.  In PureLB the network configuration undertaken depends upon the allocated IPNET.
 
