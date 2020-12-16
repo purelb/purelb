@@ -230,12 +230,9 @@ func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, tunnel
 	}
 
 	// set up the GUE tunnel to the EGW
-	script := fmt.Sprintf("/opt/acnodal/bin/cli_tunnel get %[1]d | grep %[2]s || /opt/acnodal/bin/cli_tunnel set %[1]d %[3]s %[4]d %[2]s %[4]d", tunnelID, tunnelAddr, myAddr, tunnelPort)
-	a.logger.Log("op", "SetupTunnel", "script", script)
-	cmd := exec.Command("/bin/sh", "-c", script)
-	err = cmd.Run()
+	err = pfc.SetTunnel(a.logger, tunnelID, tunnelAddr, myAddr, tunnelPort)
 	if err != nil {
-		a.logger.Log("op", "SetupTunnel", "error", err)
+		a.logger.Log("op", "SetTunnel", "error", err)
 		return err
 	}
 
@@ -246,10 +243,7 @@ func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, tunnel
 
 	// set up service forwarding to forward packets through the GUE
 	// tunnel
-	script = fmt.Sprintf("/opt/acnodal/bin/cli_service get %[1]d %[2]d | grep %[3]s || /opt/acnodal/bin/cli_service set-node %[1]d %[2]d %[3]s %[4]d", groupId, serviceId, tunnelAuth, tunnelID)
-	a.logger.Log("op", "SetupService", "script", script)
-	cmd = exec.Command("/bin/sh", "-c", script)
-	return cmd.Run()
+	return pfc.SetService(a.logger, groupId, serviceId, tunnelAuth, tunnelID)
 }
 
 func (a *announcer) cleanupPFC() error {
