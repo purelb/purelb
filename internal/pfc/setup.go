@@ -71,8 +71,7 @@ func addFilter(log log.Logger, nic string, direction string) error {
 }
 
 func configurePFC(log log.Logger, nic string, qid int, flags int) error {
-	// configure the PFC only if it hasn't been already
-	return runScript(log, fmt.Sprintf("/opt/acnodal/bin/cli_cfg get %[1]s | /usr/bin/grep %[1]s || /opt/acnodal/bin/cli_cfg set %[1]s %[2]d 0 %[3]d \"%[1]s rx\"", nic, qid, flags))
+	return runScript(log, fmt.Sprintf("/opt/acnodal/bin/cli_cfg set %[1]s %[2]d %[3]d \"%[1]s rx\"", nic, qid, flags))
 }
 
 // SetTunnel sets the parameters needed by one PFC tunnel.
