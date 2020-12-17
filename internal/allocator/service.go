@@ -35,6 +35,33 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		return k8s.SyncStateError
 	}
 
+	// If the service isn't a LoadBalancer then we might need to clean
+	// up. It might have been a load balancer before and the user might
+	// have changed it to tell us to release the address
+	if svc.Spec.Type != "LoadBalancer" {
+
+		// If it's ours then we need to clean up
+		if svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
+
+			// If it has an address then release it
+			if len(svc.Status.LoadBalancer.Ingress) > 0 {
+				log.Log("event", "unassign", "address", svc.Status.LoadBalancer.Ingress)
+				c.ips.Unassign(svc.Name)
+				svc.Status.LoadBalancer.Ingress = nil
+			}
+
+			// "Un-own" the service. Remove PureLB's internal Annotations so
+			// we'll re-allocate if the user flips this service back to a
+			// LoadBalancer
+			for _, a := range []string{purelbv1.BrandAnnotation, purelbv1.PoolAnnotation, purelbv1.ServiceAnnotation, purelbv1.GroupAnnotation, purelbv1.EndpointAnnotation} {
+				delete(svc.Annotations, a)
+			}
+		}
+
+		// It's not a LoadBalancer so there's nothing more for us to do
+		return k8s.SyncStateSuccess
+	}
+
 	// If the ClusterIP is malformed or not set we can't determine the
 	// ipFamily to use.
 	clusterIP := net.ParseIP(svc.Spec.ClusterIP)

@@ -364,11 +364,6 @@ func (c *Client) sync(key interface{}) SyncState {
 		}
 		svc := svcMaybe.(*corev1.Service)
 
-		// Not a LoadBalancer: no need to do anything
-		if svc.Spec.Type != "LoadBalancer" {
-			return SyncStateSuccess
-		}
-
 		var eps *corev1.Endpoints
 		if c.epIndexer != nil {
 			epsIntf, exists, err := c.epIndexer.GetByKey(svcName)
