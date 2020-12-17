@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/acnodal"
@@ -27,8 +28,10 @@ import (
 )
 
 func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
+	log := log.With(c.logger, "ns", svc.ObjectMeta.Namespace, "svc-name", svc.ObjectMeta.Name)
+
 	if !c.synced {
-		c.logger.Log("op", "allocateIP", "error", "controller not synced")
+		log.Log("op", "allocateIP", "error", "controller not synced")
 		return k8s.SyncStateError
 	}
 
@@ -36,13 +39,13 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 	// ipFamily to use.
 	clusterIP := net.ParseIP(svc.Spec.ClusterIP)
 	if clusterIP == nil {
-		c.logger.Log("event", "clearAssignment", "reason", "noClusterIP")
+		log.Log("event", "clearAssignment", "reason", "noClusterIP")
 		return k8s.SyncStateSuccess
 	}
 
 	// Check if the service already has an address
 	if len(svc.Status.LoadBalancer.Ingress) > 0 {
-		c.logger.Log("event", "ipAlreadySet")
+		log.Log("event", "ipAlreadySet")
 
 		// if it's one of ours then we'll tell the allocator about it, in
 		// case it didn't know. one example of this is at startup where
@@ -62,11 +65,11 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 
 	pool, lbIP, err := c.allocateIP(svc.Name, svc)
 	if err != nil {
-		c.logger.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
+		log.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", svc.Name, err)
 		return k8s.SyncStateSuccess
 	}
-	c.logger.Log("event", "ipAllocated", "ip", lbIP, "pool", pool, "service", svc.Name)
+	log.Log("event", "ipAllocated", "ip", lbIP, "pool", pool, "service", svc.Name)
 	c.client.Infof(svc, "IPAllocated", "Assigned IP %s from pool %s", lbIP, pool)
 
 	// we have an IP selected somehow, so program the data plane
@@ -84,7 +87,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		// Connect to the EGW
 		egw, err := acnodal.New(c.baseURL.String(), "")
 		if err != nil {
-			c.logger.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
+			log.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
 			c.client.Errorf(svc, "AllocationFailed", "Failed to create EGW service for %s: %s", svc.Name, err)
 			return k8s.SyncStateError
 		}
@@ -92,7 +95,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		// Look up the EGW group (which gives us the URL to create services)
 		group, err := egw.GetGroup(*c.groupURL)
 		if err != nil {
-			c.logger.Log("op", "GetGroup", "group", c.groupURL, "error", err)
+			log.Log("op", "GetGroup", "group", c.groupURL, "error", err)
 			c.client.Errorf(svc, "GetGroupFailed", "Failed to get group %s: %s", c.groupURL, err)
 			return k8s.SyncStateError
 		}
@@ -100,7 +103,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		// Announce the service to the EGW
 		egwsvc, err := egw.AnnounceService(group.Links["create-service"], svc.Name, svc.Status.LoadBalancer.Ingress[0].IP)
 		if err != nil {
-			c.logger.Log("op", "AnnouncementFailed", "service", svc.Name, "error", err)
+			log.Log("op", "AnnouncementFailed", "service", svc.Name, "error", err)
 			c.client.Errorf(svc, "AnnouncementFailed", "Failed to announce service for %s: %s", svc.Name, err)
 			return k8s.SyncStateError
 		}
