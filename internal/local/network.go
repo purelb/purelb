@@ -100,6 +100,7 @@ func checkLocal(intf *netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error
 // nl.FAMILY_V6 or nl.FAMILY_V4.
 func defaultInterface(family int) (*netlink.Link, error) {
 	var defaultifindex int = 0
+	var defaultifmetric int = 0
 
 	rt, _ := netlink.RouteList(nil, family)
 	for _, r := range rt {
@@ -107,9 +108,10 @@ func defaultInterface(family int) (*netlink.Link, error) {
 		if r.Dst == nil && defaultifindex == 0 {
 			// this is the first default route we've seen
 			defaultifindex = r.LinkIndex
-		} else if r.Dst == nil && defaultifindex != 0 {
-			// if there's a *second* default route then we're in trouble
-			return nil, fmt.Errorf("error, cannot determine default in, multiple default routes")
+			defaultifmetric = r.Priority
+		} else if r.Dst == nil && defaultifindex != 0 && r.Priority < defaultifmetric {
+			// if there's another default route with a lower metric use it
+			defaultifindex = r.LinkIndex
 		}
 	}
 
