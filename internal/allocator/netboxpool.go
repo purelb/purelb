@@ -22,6 +22,8 @@ import (
 	"os"
 	"strings"
 
+	v1 "k8s.io/api/core/v1"
+
 	"purelb.io/internal/netbox"
 )
 
@@ -74,7 +76,10 @@ func NewNetboxPool(rawurl string, tenant string, aggregation string) (*NetboxPoo
 // depends on whether another service is using the address, and if so,
 // whether this service can share the address with it. error will be
 // nil if the ip is available, and will contain an explanation if not.
-func (p NetboxPool) Available(ip net.IP, ports []Port, service string, key *Key) error {
+func (p NetboxPool) Available(ip net.IP, service *v1.Service) error {
+	key := &Key{Sharing: SharingKey(service)}
+	ports := Ports(service)
+
 	// No key: no sharing
 	if key == nil {
 		key = &Key{}
@@ -91,7 +96,7 @@ func (p NetboxPool) Available(ip net.IP, ports []Port, service string, key *Key)
 			// can just update its sharing key in place.
 			var otherSvcs []string
 			for _, otherSvc := range p.servicesOnIP(ip) {
-				if otherSvc != service {
+				if otherSvc != service.Name {
 					otherSvcs = append(otherSvcs, otherSvc)
 				}
 			}
@@ -101,7 +106,7 @@ func (p NetboxPool) Available(ip net.IP, ports []Port, service string, key *Key)
 		}
 
 		for _, port := range ports {
-			if curSvc, ok := p.portsInUse[ip.String()][port]; ok && curSvc != service {
+			if curSvc, ok := p.portsInUse[ip.String()][port]; ok && curSvc != service.Name {
 				return fmt.Errorf("port %s is already in use on %q", port, ip)
 			}
 		}
@@ -111,7 +116,7 @@ func (p NetboxPool) Available(ip net.IP, ports []Port, service string, key *Key)
 }
 
 // AssignNext assigns a service to the next available IP.
-func (p NetboxPool) AssignNext(service string, ports []Port, sharingKey *Key) (net.IP, error) {
+func (p NetboxPool) AssignNext(service *v1.Service) (net.IP, error) {
 	// fetch from netbox
 	cidr, err := p.netbox.Fetch()
 	if err != nil {
@@ -126,7 +131,7 @@ func (p NetboxPool) AssignNext(service string, ports []Port, sharingKey *Key) (n
 }
 
 // Assign assigns a service to an IP.
-func (p NetboxPool) Assign(ip net.IP, ports []Port, service string, sharingKey *Key) error {
+func (p NetboxPool) Assign(ip net.IP, service *v1.Service) error {
 	return nil
 }
 

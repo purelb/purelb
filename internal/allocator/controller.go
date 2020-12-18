@@ -31,7 +31,7 @@ import (
 type Controller interface {
 	SetClient(*k8s.Client)
 	SetConfig(*purelbv1.Config) k8s.SyncState
-	SetBalancer(string, *v1.Service, *v1.Endpoints) k8s.SyncState
+	SetBalancer(*v1.Service, *v1.Endpoints) k8s.SyncState
 	DeleteBalancer(string) k8s.SyncState
 	MarkSynced()
 	Shutdown()

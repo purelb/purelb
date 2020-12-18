@@ -19,11 +19,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+
+	v1 "k8s.io/api/core/v1"
 )
 
 // Port represents one port in use by a service.
 type Port struct {
-	Proto string
+	Proto v1.Protocol
 	Port  int
 }
 
@@ -37,9 +39,9 @@ type Key struct {
 }
 
 type Pool interface {
-	Available(net.IP, []Port, string, *Key) error
-	AssignNext(string, []Port, *Key) (net.IP, error)
-	Assign(net.IP, []Port, string, *Key) error
+	Available(net.IP, *v1.Service) error
+	AssignNext(*v1.Service) (net.IP, error)
+	Assign(net.IP, *v1.Service) error
 	Release(net.IP, string)
 	InUse() int
 	SharingKey(net.IP) *Key

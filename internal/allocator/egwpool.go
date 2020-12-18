@@ -21,6 +21,8 @@ import (
 	"net/url"
 	"os"
 
+	v1 "k8s.io/api/core/v1"
+
 	"purelb.io/internal/netbox"
 )
 
@@ -80,13 +82,13 @@ func NewEGWPool(rawurl string, aggregation string) (*EGWPool, error) {
 // depends on whether another service is using the address, and if so,
 // whether this service can share the address with it. error will be
 // nil if the ip is available, and will contain an explanation if not.
-func (p EGWPool) Available(ip net.IP, ports []Port, service string, key *Key) error {
+func (p EGWPool) Available(ip net.IP, service *v1.Service) error {
 	// We haven't yet implemented address sharing
 	return nil
 }
 
 // AssignNext assigns a service to the next available IP.
-func (p EGWPool) AssignNext(service string, ports []Port, sharingKey *Key) (net.IP, error) {
+func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 	// fetch from netbox
 	cidr, err := p.netbox.Fetch()
 	if err != nil {
@@ -101,7 +103,7 @@ func (p EGWPool) AssignNext(service string, ports []Port, sharingKey *Key) (net.
 }
 
 // Assign assigns a service to an IP.
-func (p EGWPool) Assign(ip net.IP, ports []Port, service string, sharingKey *Key) error {
+func (p EGWPool) Assign(ip net.IP, service *v1.Service) error {
 	return nil
 }
 

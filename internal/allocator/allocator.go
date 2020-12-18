@@ -18,7 +18,9 @@ import (
 	"fmt"
 	"net"
 
-	v1 "purelb.io/pkg/apis/v1"
+	v1 "k8s.io/api/core/v1"
+
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 // An Allocator tracks IP address pools and allocates addresses from them.
@@ -43,7 +45,7 @@ func New() *Allocator {
 }
 
 // SetPools updates the set of address pools that the allocator owns.
-func (a *Allocator) SetPools(groups []*v1.ServiceGroup) error {
+func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
 	pools, err := parseConfig(groups)
 	if err != nil {
 		return err
@@ -69,12 +71,14 @@ func (a *Allocator) SetPools(groups []*v1.ServiceGroup) error {
 
 // assign unconditionally updates internal state to reflect svc's
 // allocation of alloc. Caller must ensure that this call is safe.
-func (a *Allocator) assign(svc string, alloc *alloc) {
+func (a *Allocator) assign(service *v1.Service, alloc *alloc) {
+	svc := service.Name
+
 	a.Unassign(svc)
 	a.allocated[svc] = alloc
 
 	pool := a.pools[alloc.pool]
-	pool.Assign(alloc.ip, alloc.ports, svc, &alloc.Key)
+	pool.Assign(alloc.ip, service)
 
 	poolCapacity.WithLabelValues(alloc.pool).Set(float64(a.pools[alloc.pool].Size()))
 	poolActive.WithLabelValues(alloc.pool).Set(float64(pool.InUse()))
@@ -82,19 +86,20 @@ func (a *Allocator) assign(svc string, alloc *alloc) {
 
 // Assign assigns the requested ip to svc, if the assignment is
 // permissible by sharingKey.
-func (a *Allocator) Assign(svc string, ip net.IP, ports []Port, sharingKey string) (string, error) {
+func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
+	ports := Ports(svc)
 	pool := poolFor(a.pools, ip)
 	if pool == "" {
 		return "", fmt.Errorf("%q is not allowed in config", ip)
 	}
 	sk := &Key{
-		Sharing: sharingKey,
+		Sharing: SharingKey(svc),
 	}
 
 	// Does the IP already have allocs? If so, needs to be the same
 	// sharing key, and have non-overlapping ports. If not, the proposed
 	// IP needs to be allowed by configuration.
-	err := a.pools[pool].Available(ip, ports, svc, sk) // FIXME: this should Assign() here, not check Available.  Might need to iterate over pools rather than do poolFor
+	err := a.pools[pool].Available(ip, svc) // FIXME: this should Assign() here, not check Available.  Might need to iterate over pools rather than do poolFor
 	if err != nil {
 		return "", err
 	}
@@ -137,8 +142,9 @@ func (a *Allocator) Unassign(svc string) bool {
 }
 
 // AllocateFromPool assigns an available IP from pool to service.
-func (a *Allocator) AllocateFromPool(svc string, poolName string, ports []Port, sharingKey string) (net.IP, error) {
+func (a *Allocator) AllocateFromPool(svc *v1.Service, poolName string) (net.IP, error) {
 	var ip net.IP
+	ports := Ports(svc)
 
 	pool := a.pools[poolName]
 	if pool == nil {
@@ -146,9 +152,9 @@ func (a *Allocator) AllocateFromPool(svc string, poolName string, ports []Port, 
 	}
 
 	sk := &Key{
-		Sharing: sharingKey,
+		Sharing: SharingKey(svc),
 	}
-	ip, err := pool.AssignNext(svc, ports, sk)
+	ip, err := pool.AssignNext(svc)
 	if err != nil {
 		// Woops, no IPs :( Fail.
 		return nil, err
@@ -169,7 +175,7 @@ func (a *Allocator) AllocateFromPool(svc string, poolName string, ports []Port, 
 }
 
 // Allocate assigns any available and assignable IP to service.
-func (a *Allocator) Allocate(svc string, ports []Port, sharingKey string) (string, net.IP, error) {
+func (a *Allocator) Allocate(svc *v1.Service) (string, net.IP, error) {
 	var (
 		err error
 		ip  net.IP
@@ -177,13 +183,13 @@ func (a *Allocator) Allocate(svc string, ports []Port, sharingKey string) (strin
 
 	// if we have already allocated an address for this service then
 	// return it
-	if alloc := a.allocated[svc]; alloc != nil {
+	if alloc := a.allocated[svc.Name]; alloc != nil {
 		return alloc.pool, alloc.ip, nil
 	}
 
 	// we need an address but no pool was specified so it's either the
 	// "default" pool or nothing
-	if ip, err = a.AllocateFromPool(svc, "default", ports, sharingKey); err == nil {
+	if ip, err = a.AllocateFromPool(svc, "default"); err == nil {
 		return "default", ip, nil
 	}
 	return "", nil, err
@@ -217,7 +223,7 @@ func poolFor(pools map[string]Pool, ip net.IP) string {
 	return ""
 }
 
-func parseConfig(groups []*v1.ServiceGroup) (map[string]Pool, error) {
+func parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
 	pools := map[string]Pool{}
 
 	for i, group := range groups {
@@ -245,7 +251,7 @@ func parseConfig(groups []*v1.ServiceGroup) (map[string]Pool, error) {
 	return pools, nil
 }
 
-func parseGroup(name string, group v1.ServiceGroupSpec) (Pool, error) {
+func parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
 		ret, err := NewLocalPool(group.Local.Pool, group.Local.Subnet, group.Local.Aggregation)
 		if err != nil {

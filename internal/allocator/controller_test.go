@@ -74,12 +74,13 @@ func TestControllerConfig(t *testing.T) {
 	// Create service that would need an IP allocation
 
 	svc := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
 		},
 	}
-	assert.Equal(t, k8s.SyncStateError, c.SetBalancer("test", svc, nil), "SetBalancer should have failed")
+	assert.Equal(t, k8s.SyncStateError, c.SetBalancer(svc, nil), "SetBalancer should have failed")
 	assert.False(t, k.loggedWarning, "SetBalancer with no configuration logged an error")
 
 	// Set an empty config. Balancer should still not do anything to
@@ -87,7 +88,7 @@ func TestControllerConfig(t *testing.T) {
 	// retry after sync is complete.
 	wantSvc := svc.DeepCopy()
 	assert.Equal(t, k8s.SyncStateReprocessAll, c.SetConfig(&purelbv1.Config{}), "SetConfig with empty config failed")
-	assert.Equal(t, k8s.SyncStateError, c.SetBalancer("test", svc, nil), "SetBalancer did not fail")
+	assert.Equal(t, k8s.SyncStateError, c.SetBalancer(svc, nil), "SetBalancer did not fail")
 
 	assert.Empty(t, diffService(wantSvc, svc), "unsynced SetBalancer mutated service")
 	assert.False(t, k.loggedWarning, "unsynced SetBalancer logged an error")
@@ -95,8 +96,7 @@ func TestControllerConfig(t *testing.T) {
 	// Set a config with some IPs. Still no allocation, not synced.
 	cfg := &purelbv1.Config{
 		Groups: []*purelbv1.ServiceGroup{
-			&purelbv1.ServiceGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
 						Pool: "1.2.3.0/24",
@@ -107,7 +107,7 @@ func TestControllerConfig(t *testing.T) {
 	}
 	assert.Equal(t, k8s.SyncStateReprocessAll, c.SetConfig(cfg), "SetConfig failed")
 	wantSvc = svc.DeepCopy()
-	assert.Equal(t, k8s.SyncStateError, c.SetBalancer("test", svc, nil), "SetBalancer did not fail")
+	assert.Equal(t, k8s.SyncStateError, c.SetBalancer(svc, nil), "SetBalancer did not fail")
 
 	assert.Empty(t, diffService(wantSvc, svc), "unsynced SetBalancer mutated service")
 	assert.False(t, k.loggedWarning, "unsynced SetBalancer logged an error")
@@ -118,13 +118,14 @@ func TestControllerConfig(t *testing.T) {
 	wantSvc = svc.DeepCopy()
 	wantSvc.Status = statusAssigned("1.2.3.0")
 	wantSvc.ObjectMeta = metav1.ObjectMeta{
+		Name: "test",
 		Annotations: map[string]string{
 			purelbv1.BrandAnnotation: purelbv1.Brand,
 			purelbv1.PoolAnnotation:  "default",
 		},
 	}
 
-	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer("test", svc, nil), "SetBalancer failed")
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc, nil), "SetBalancer failed")
 
 	assert.Empty(t, diffService(wantSvc, svc), "SetBalancer produced unexpected mutation")
 
@@ -142,8 +143,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 
 	cfg := &purelbv1.Config{
 		Groups: []*purelbv1.ServiceGroup{
-			&purelbv1.ServiceGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
 						Pool: "1.2.3.0/32",
@@ -156,12 +156,13 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	c.MarkSynced()
 
 	svc1 := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
 		},
 	}
-	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer("test", svc1, nil), "SetBalancer svc1 failed")
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc1, nil), "SetBalancer svc1 failed")
 	assert.NotEmpty(t, svc1.Status.LoadBalancer.Ingress, "svc1 didn't get an IP")
 	assert.Equal(t, "1.2.3.0", svc1.Status.LoadBalancer.Ingress[0].IP, "svc1 got the wrong IP")
 	k.reset()
@@ -169,12 +170,13 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	// Second service should converge correctly, but not allocate an
 	// IP because we have none left.
 	svc2 := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "test2"},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
 		},
 	}
-	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer("test2", svc2, nil), "SetBalancer svc2 failed")
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc2, nil), "SetBalancer svc2 failed")
 	assert.Empty(t, svc2.Status.LoadBalancer.Ingress, "svc2 didn't get an IP")
 	k.reset()
 
@@ -182,7 +184,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer("test"), "DeleteBalancer didn't tell us to reprocess all balancers")
 
 	// Setting svc2 should now allocate correctly.
-	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer("test2", svc2, nil), "SetBalancer svc2 failed")
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc2, nil), "SetBalancer svc2 failed")
 	assert.NotEmpty(t, svc2.Status.LoadBalancer.Ingress, "svc2 didn't get an IP")
 	assert.Equal(t, "1.2.3.0", svc2.Status.LoadBalancer.Ingress[0].IP, "svc2 got the wrong IP")
 }
@@ -199,8 +201,7 @@ func TestSpecificAddress(t *testing.T) {
 
 	cfg := &purelbv1.Config{
 		Groups: []*purelbv1.ServiceGroup{
-			&purelbv1.ServiceGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
 						Pool: "1.2.3.0/31",
@@ -270,8 +271,7 @@ func TestSharingSimple(t *testing.T) {
 
 	cfg := &purelbv1.Config{
 		Groups: []*purelbv1.ServiceGroup{
-			&purelbv1.ServiceGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
 						Pool: "1.2.3.0/31",
@@ -286,6 +286,7 @@ func TestSharingSimple(t *testing.T) {
 
 	svc1 := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
+			Name: "svc1",
 			Annotations: map[string]string{
 				purelbv1.SharingAnnotation: sharing,
 			},
@@ -300,6 +301,7 @@ func TestSharingSimple(t *testing.T) {
 	// Mismatched SharingAnnotation so different address
 	svc2 := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
+			Name: "svc2",
 			Annotations: map[string]string{
 				purelbv1.SharingAnnotation: "i-really-dont-care-do-u",
 			},
@@ -314,6 +316,7 @@ func TestSharingSimple(t *testing.T) {
 	// Matching SharingAnnotation so same address as svc1
 	svc3 := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
+			Name: "svc3",
 			Annotations: map[string]string{
 				purelbv1.SharingAnnotation: sharing,
 			},

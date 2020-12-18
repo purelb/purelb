@@ -21,9 +21,10 @@ import (
 	"testing"
 
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 func TestAssignment(t *testing.T) {
@@ -39,7 +40,7 @@ func TestAssignment(t *testing.T) {
 		desc       string
 		svc        string
 		ip         string
-		ports      []Port
+		ports      []v1.ServicePort
 		sharingKey string
 		wantErr    bool
 	}{
@@ -257,7 +258,8 @@ func TestAssignment(t *testing.T) {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
 		alreadyHasIP := assigned(alloc, test.svc) == test.ip
-		_, err := alloc.Assign(test.svc, ip, test.ports, test.sharingKey)
+		service := service(test.svc, test.ports, test.sharingKey)
+		_, err := alloc.Assign(&service, ip)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%q should have caused an error, but did not", test.desc)
@@ -305,7 +307,7 @@ func TestPoolAllocation(t *testing.T) {
 	tests := []struct {
 		desc       string
 		svc        string
-		ports      []Port
+		ports      []v1.ServicePort
 		sharingKey string
 		unassign   bool
 		wantErr    bool
@@ -497,7 +499,8 @@ func TestPoolAllocation(t *testing.T) {
 		if test.isIPv6 {
 			pool = "testV6"
 		}
-		ip, err := alloc.AllocateFromPool(test.svc, pool, test.ports, test.sharingKey)
+		service := service(test.svc, test.ports, test.sharingKey)
+		ip, err := alloc.AllocateFromPool(&service, pool)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%s: should have caused an error, but did not", test.desc)
@@ -518,7 +521,8 @@ func TestPoolAllocation(t *testing.T) {
 	}
 
 	alloc.Unassign("s5")
-	if _, err := alloc.AllocateFromPool("s5", "nonexistentpool", nil, ""); err == nil {
+	service := service("s5", []v1.ServicePort{}, "")
+	if _, err := alloc.AllocateFromPool(&service, "nonexistentpool"); err == nil {
 		t.Error("Allocating from non-existent pool succeeded")
 	}
 }
@@ -542,7 +546,7 @@ func TestAllocation(t *testing.T) {
 	tests := []struct {
 		desc       string
 		svc        string
-		ports      []Port
+		ports      []v1.ServicePort
 		sharingKey string
 		unassign   bool
 		wantErr    bool
@@ -683,7 +687,8 @@ func TestAllocation(t *testing.T) {
 			alloc.Unassign(test.svc)
 			continue
 		}
-		_, ip, err := alloc.Allocate(test.svc, test.ports, test.sharingKey)
+		service := service(test.svc, test.ports, test.sharingKey)
+		_, ip, err := alloc.Allocate(&service)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%s: should have caused an error, but did not", test.desc)
@@ -709,7 +714,7 @@ func TestPoolMetrics(t *testing.T) {
 		desc       string
 		svc        string
 		ip         string
-		ports      []Port
+		ports      []v1.ServicePort
 		sharingKey string
 		ipsInUse   float64
 	}{
@@ -799,7 +804,8 @@ func TestPoolMetrics(t *testing.T) {
 		if ip == nil {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
-		_, err := alloc.Assign(test.svc, ip, test.ports, test.sharingKey)
+		service := service(test.svc, test.ports, test.sharingKey)
+		_, err := alloc.Assign(&service, ip)
 
 		if err != nil {
 			t.Errorf("%q: Assign(%q, %q): %v", test.desc, test.svc, test.ip, err)
@@ -840,36 +846,56 @@ func mustEGWPool(t *testing.T, url string) EGWPool {
 	return *p
 }
 
-func ports(ports ...string) []Port {
-	var ret []Port
+func ports(ports ...string) []v1.ServicePort {
+	var ret []v1.ServicePort
 	for _, s := range ports {
 		fs := strings.Split(s, "/")
 		p, err := strconv.Atoi(fs[1])
 		if err != nil {
 			panic("bad port in test")
 		}
-		ret = append(ret, Port{Proto: fs[0], Port: p})
+		proto := v1.ProtocolTCP
+		if fs[0] == "udp" {
+			proto = v1.ProtocolUDP
+		}
+		ret = append(ret, v1.ServicePort{Protocol: proto, Port: int32(p)})
 	}
 	return ret
 }
 
-func localServiceGroup(name string, pool string) *v1.ServiceGroup {
-	return serviceGroup(name, v1.ServiceGroupSpec{
-		Local: &v1.ServiceGroupLocalSpec{Pool: pool},
+func localServiceGroup(name string, pool string) *purelbv1.ServiceGroup {
+	return serviceGroup(name, purelbv1.ServiceGroupSpec{
+		Local: &purelbv1.ServiceGroupLocalSpec{Pool: pool},
 	})
 }
 
-func egwServiceGroup(name string, url string) *v1.ServiceGroup {
-	return serviceGroup(name, v1.ServiceGroupSpec{
-		EGW: &v1.ServiceGroupEGWSpec{URL: url},
+func egwServiceGroup(name string, url string) *purelbv1.ServiceGroup {
+	return serviceGroup(name, purelbv1.ServiceGroupSpec{
+		EGW: &purelbv1.ServiceGroupEGWSpec{URL: url},
 	})
 }
 
-func serviceGroup(name string, spec v1.ServiceGroupSpec) *v1.ServiceGroup {
-	return &v1.ServiceGroup{
+func serviceGroup(name string, spec purelbv1.ServiceGroupSpec) *purelbv1.ServiceGroup {
+	return &purelbv1.ServiceGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
 		Spec: spec,
 	}
+}
+
+func service(name string, ports []v1.ServicePort, sharingKey string) v1.Service {
+	service := v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Annotations: map[string]string{},
+		},
+		Spec: v1.ServiceSpec{Ports: ports},
+	}
+
+	if sharingKey != "" {
+		service.Annotations[purelbv1.SharingAnnotation] = sharingKey
+	}
+
+	return service
 }

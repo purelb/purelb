@@ -48,14 +48,15 @@ func (a *announcer) SetClient(client *k8s.Client) {
 }
 
 func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
-	a.logger.Log("event", "newConfig")
-
 	// the default is nil which means that we don't announce
 	a.config = nil
 
-	// if there's an "EGW" service group then we'll announce
+	// if there's an "EGW" *service group* then we'll announce. At this
+	// point there's no egw node agent-specific config so we don't
+	// require an EGW LBNodeAgent resource, just a ServiceGroup
 	for _, group := range cfg.Groups {
 		if spec := group.Spec.EGW; spec != nil {
+			a.logger.Log("op", "setConfig", "config", spec)
 			a.config = spec
 			// Use the hostname from the service group, but reset the path.  EGW
 			// and Netbox each have their own API URL schemes so we only need
@@ -70,19 +71,26 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 		}
 	}
 
+	if a.config == nil {
+		a.logger.Log("event", "noConfig")
+	}
+
 	return nil
 }
 
-func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endpoints) error {
+func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
+	l := log.With(a.logger, "service", svc.Name)
+
 	// if we haven't been configured then we won't announce
 	if a.config == nil {
+		l.Log("event", "noConfig")
 		return nil
 	}
 
 	// connect to the EGW
 	egw, err := New(a.baseURL.String(), "")
 	if err != nil {
-		a.logger.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
+		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
 		return fmt.Errorf("Connection init to EGW failed")
 	}
 
@@ -93,12 +101,12 @@ func (a *announcer) SetBalancer(name string, svc *v1.Service, endpoints *v1.Endp
 		port := ep.Ports[0].Port
 		for _, address := range ep.Addresses {
 			if address.NodeName == nil || *address.NodeName != a.myNode {
-				a.logger.Log("op", "DontAnnounceEndpoint", "address", address.IP, "port", port, "node", "not me")
+				l.Log("op", "DontAnnounceEndpoint", "address", address.IP, "port", port, "node", "not me")
 			} else {
-				a.logger.Log("op", "AnnounceEndpoint", "address", address.IP, "port", port, "node", a.myNode)
+				l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port, "node", a.myNode)
 				err := egw.AnnounceEndpoint(createUrl, address.IP, int(port))
 				if err != nil {
-					a.logger.Log("op", "AnnounceEndpoint", "error", err)
+					l.Log("op", "AnnounceEndpoint", "error", err)
 				}
 			}
 		}
