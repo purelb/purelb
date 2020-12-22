@@ -76,7 +76,7 @@ func configurePFC(log log.Logger, nic string, qid int, flags int) error {
 
 // SetTunnel sets the parameters needed by one PFC tunnel.
 func SetTunnel(log log.Logger, tunnelID uint32, tunnelAddr string, myAddr string, tunnelPort int32) error {
-	return runScript(log, fmt.Sprintf("/opt/acnodal/bin/cli_tunnel set %[1]d %[3]s %[4]d %[2]s %[4]d", tunnelID, tunnelAddr, myAddr, tunnelPort))
+	return runScript(log, fmt.Sprintf("/opt/acnodal/bin/cli_tunnel get %[1]d || /opt/acnodal/bin/cli_tunnel set %[1]d %[3]s %[4]d %[2]s %[4]d", tunnelID, tunnelAddr, myAddr, tunnelPort))
 }
 
 // SetService sets the parameters needed by one PFC service.
