@@ -1,3 +1,4 @@
+REPO ?= registry.gitlab.com/purelb
 PREFIX = purelb
 SUFFIX = dev
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
@@ -28,7 +29,7 @@ check:	## Run "short" tests
 
 .PHONY: image-%
 image-%: CMD=$(subst image-,,$@)
-image-%: TAG=${PREFIX}/${CMD}:${SUFFIX}
+image-%: TAG=${REPO}/${PREFIX}/${CMD}:${SUFFIX}
 image-%:
 	docker build -t ${TAG} \
 	--build-arg cmd=${CMD} \
@@ -40,7 +41,7 @@ image-%:
 install: all $(shell echo ${COMMANDS} | sed s,cmd/,install-,g) ## Push images to registry
 
 .PHONY: install-%
-install-%: TAG=${PREFIX}/$(subst install-,,$@):${SUFFIX}
+install-%: TAG=${REPO}/${PREFIX}/$(subst install-,,$@):${SUFFIX}
 install-%:
 	docker push ${TAG}
 
