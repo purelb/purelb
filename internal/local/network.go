@@ -55,6 +55,7 @@ func checkLocal(intf *netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error
 
 			if localnet.Contains(lbIPNet.IP) {
 				lbIPNet.Mask = localnet.Mask
+				fmt.Println("***Local addr", lbIPNet.IP)
 			}
 		}
 
@@ -114,8 +115,8 @@ func defaultInterface(family int) (*netlink.Link, error) {
 			defaultifindex = r.LinkIndex
 		}
 	}
-
-	// there's only one default route
+	fmt.Println("***Default Interface", defaultifindex)
+	// there's only one default interface
 	defaultint, _ := netlink.LinkByIndex(defaultifindex)
 	return &defaultint, nil
 }
@@ -123,6 +124,7 @@ func defaultInterface(family int) (*netlink.Link, error) {
 // addNetwork adds lbIPNet to link.
 func addNetwork(lbIPNet net.IPNet, link netlink.Link) error {
 	addr, _ := netlink.ParseAddr(lbIPNet.String())
+	fmt.Println("***Adding Address", addr, "to ifindex", link)
 	err := netlink.AddrReplace(link, addr)
 	if err != nil {
 		return fmt.Errorf("could not add %v: to %v %w", addr, link, err)

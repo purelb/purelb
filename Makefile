@@ -1,5 +1,5 @@
 PREFIX = purelb
-SUFFIX = dev
+SUFFIX = addev
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
