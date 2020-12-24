@@ -106,7 +106,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	groupName, haveGroupURL := svc.Annotations[purelbv1.PoolAnnotation]
 
 	l := log.With(a.logger, "service", svc.ObjectMeta.Name, "group", groupName)
-	l.Log("op", "SetBalancer")
+	l.Log("op", "SetBalancer", "endpoints", endpoints.Subsets)
 
 	// if the service doesn't have a group annotation then don't
 	// announce
@@ -200,6 +200,8 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 	// Update the persistent announcement set
 	a.announcements = announcements
+
+	l.Log("announcements", a.announcements)
 
 	return err
 }
