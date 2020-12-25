@@ -2,6 +2,8 @@ image: golang:latest
 
 variables:
   REPO_NAME: gitlab.com/purelb/purelb
+  ALLOCATOR_IMG: $CI_REGISTRY_IMAGE/allocator
+  LBNODEAGENT_IMG: $CI_REGISTRY_IMAGE/lbnodeagent
   NETBOX_USER_TOKEN: no-op
 
 before_script:
@@ -10,6 +12,7 @@ before_script:
   - cd $GOPATH/src/$REPO_NAME
 
 stages:
+  - image
   - test
 
 format:
@@ -19,3 +22,37 @@ format:
   artifacts:
     paths:
       - deployments/purelb-complete.yaml
+
+allocator:
+  image: docker:latest
+  stage: image
+  script:
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker build -f build/package/Dockerfile.allocator --build-arg opts="CGO_ENABLED=0 GOARCH=amd64" --build-arg cmd=allocator --build-arg branch=$CI_COMMIT_REF_NAME --build-arg commit=$CI_COMMIT_TAG --pull -t $ALLOCATOR_IMG:amd64 .
+    - docker build -f build/package/Dockerfile.allocator --build-arg opts="GOARCH=arm GOARM=6" --build-arg cmd=allocator --build-arg branch=$CI_COMMIT_REF_NAME --build-arg commit=$CI_COMMIT_TAG --pull -t $ALLOCATOR_IMG:arm32v6 .
+    - docker build -f build/package/Dockerfile.allocator --build-arg opts="GOARCH=arm64" --build-arg cmd=allocator --build-arg branch=$CI_COMMIT_REF_NAME --build-arg commit=$CI_COMMIT_TAG --pull -t $ALLOCATOR_IMG:arm64 .
+
+    - docker push $ALLOCATOR_IMG:arm32v6
+    - docker push $ALLOCATOR_IMG:amd64
+    - docker push $ALLOCATOR_IMG:arm64
+    - docker manifest create $ALLOCATOR_IMG $ALLOCATOR_IMG:amd64 $ALLOCATOR_IMG:arm32v6 $ALLOCATOR_IMG:arm64
+    - docker manifest annotate $ALLOCATOR_IMG  $ALLOCATOR_IMG:arm32v6 --os linux --arch arm
+    - docker manifest annotate $ALLOCATOR_IMG  $ALLOCATOR_IMG:arm64 --os linux --arch arm64
+    - docker manifest push $ALLOCATOR_IMG
+
+lbnodeagent:
+  image: docker:latest
+  stage: image
+  script:
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker build -f build/package/Dockerfile.lbnodeagent --build-arg opts="CGO_ENABLED=0 GOARCH=amd64" --build-arg cmd=lbnodeagent --build-arg branch=$CI_COMMIT_REF_NAME --build-arg commit=$CI_COMMIT_TAG --pull -t $LBNODEAGENT_IMG:amd64 .
+    - docker build -f build/package/Dockerfile.lbnodeagent --build-arg opts="GOARCH=arm GOARM=6" --build-arg cmd=lbnodeagent --build-arg branch=$CI_COMMIT_REF_NAME --build-arg commit=$CI_COMMIT_TAG --pull -t $LBNODEAGENT_IMG:arm32v6 .
+    - docker build -f build/package/Dockerfile.lbnodeagent --build-arg opts="GOARCH=arm64" --build-arg cmd=lbnodeagent --build-arg branch=$CI_COMMIT_REF_NAME --build-arg commit=$CI_COMMIT_TAG --pull -t $LBNODEAGENT_IMG:arm64 .
+
+    - docker push $LBNODEAGENT_IMG:arm32v6
+    - docker push $LBNODEAGENT_IMG:amd64
+    - docker push $LBNODEAGENT_IMG:arm64
+    - docker manifest create $LBNODEAGENT_IMG $LBNODEAGENT_IMG:amd64 $LBNODEAGENT_IMG:arm32v6 $LBNODEAGENT_IMG:arm64
+    - docker manifest annotate $LBNODEAGENT_IMG  $LBNODEAGENT_IMG:arm32v6 --os linux --arch arm
+    - docker manifest annotate $LBNODEAGENT_IMG  $LBNODEAGENT_IMG:arm64 --os linux --arch arm64
+    - docker manifest push $LBNODEAGENT_IMG
