@@ -1,5 +1,6 @@
 image: golang:latest
-
+services:
+  - docker:dind
 variables:
   REPO_NAME: gitlab.com/purelb/purelb
   ALLOCATOR_IMG: $CI_REGISTRY_IMAGE/allocator
