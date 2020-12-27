@@ -145,6 +145,9 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 					epResponse, err := egw.AnnounceEndpoint(createUrl, address.IP, port, a.myNodeAddr)
 					if err != nil {
 						l.Log("op", "AnnounceEndpoint", "error", err)
+
+						// retry once before moving on
+						epResponse, err = egw.AnnounceEndpoint(createUrl, address.IP, port, a.myNodeAddr)
 					}
 
 					// Add this endpoint to the set of endpoints that we've
