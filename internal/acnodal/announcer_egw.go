@@ -38,18 +38,22 @@ const (
 )
 
 type announcer struct {
-	client        *k8s.Client
-	logger        log.Logger
-	myNode        string
-	myNodeAddr    string
-	groups        map[string]*purelbv1.ServiceGroupEGWSpec // groupURL -> ServiceGroupEGWSpec
-	pinger        *exec.Cmd
-	announcements map[string]struct{} // endpoint URLs
+	client     *k8s.Client
+	logger     log.Logger
+	myNode     string
+	myNodeAddr string
+	groups     map[string]*purelbv1.ServiceGroupEGWSpec // groupURL -> ServiceGroupEGWSpec
+	pinger     *exec.Cmd
+	sweeper    *exec.Cmd
+	// announcements is a map of services, keyed by the EGW service
+	// URL. The value is a pseudo-set of that service's endpoints that
+	// we have announced.
+	announcements map[string]map[string]struct{} // key: endpoint create URL, value: pseudo-set of key: endpoint URL, value: none
 }
 
 // NewAnnouncer returns a new Acnodal EGW Announcer.
 func NewAnnouncer(l log.Logger, node string, nodeAddr string) lbnodeagent.Announcer {
-	return &announcer{logger: l, myNode: node, myNodeAddr: nodeAddr}
+	return &announcer{logger: l, myNode: node, myNodeAddr: nodeAddr, announcements: map[string]map[string]struct{}{}}
 }
 
 // SetClient configures this announcer to use the provided client.
@@ -104,6 +108,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
 	var err error
 	groupName, haveGroupURL := svc.Annotations[purelbv1.PoolAnnotation]
+	serviceURL, _ := svc.Annotations[purelbv1.ServiceAnnotation]
 
 	l := log.With(a.logger, "service", svc.ObjectMeta.Name, "group", groupName)
 	l.Log("op", "SetBalancer", "endpoints", endpoints.Subsets)
@@ -132,7 +137,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 	createUrl := svc.Annotations[purelbv1.EndpointAnnotation]
 
-	announcements := map[string]struct{}{} // set of endpoint URLs
+	announcements := map[string]struct{}{} // pseudo-set: key: endpoint URLs, value: struct{}
 
 	// For each port in each endpoint address in each subset on this node, contact the EGW
 	for _, ep := range endpoints.Subsets {
@@ -189,7 +194,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	// See if there are any endpoints that we need to delete, i.e.,
 	// endpoints that we had previously announced but didn't announce
 	// this time.
-	for epURL := range a.announcements {
+	for epURL := range a.announcements[serviceURL] {
 		if _, announcedThisTime := announcements[epURL]; !announcedThisTime {
 			l.Log("op", "DeleteEndpoint", "ep-url", epURL)
 			if err := egw.Delete(epURL); err != nil {
@@ -202,7 +207,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	}
 
 	// Update the persistent announcement set
-	a.announcements = announcements
+	a.announcements[serviceURL] = announcements
 
 	l.Log("announcements", a.announcements)
 
