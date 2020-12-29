@@ -248,12 +248,12 @@ func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, tunnel
 
 	// split the tunnelKey into its parts: groupId in the upper 16 bits
 	// and serviceId in the lower 16
-	var groupId uint16 = uint16(tunnelKey & 0xffff)
-	var serviceId uint16 = uint16(tunnelKey >> 16)
+	var groupID uint16 = uint16(tunnelKey >> 16)
+	var serviceID uint16 = uint16(tunnelKey & 0xffff)
 
 	// set up service forwarding to forward packets through the GUE
 	// tunnel
-	return pfc.SetService(a.logger, groupId, serviceId, tunnelAuth, tunnelID)
+	return pfc.SetService(a.logger, groupID, serviceID, tunnelAuth, tunnelID)
 }
 
 func (a *announcer) cleanupPFC() error {
