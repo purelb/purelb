@@ -95,7 +95,9 @@ func (p EGWPool) Assign(ip net.IP, service *v1.Service) error {
 	return nil
 }
 
-// Release releases an IP so it can be assigned again.
+// Release releases an IP so it can be assigned again. "service"
+// should be a namespaced name, i.e., the output of
+// namespacedName(service)).
 func (p EGWPool) Release(ip net.IP, service string) {
 	p.egw.Delete(p.serviceURLCache[service])
 }
