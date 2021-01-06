@@ -12,9 +12,9 @@ before_script:
 - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
 
 stages:
+  - test
   - image
   - manifest
-  - test
 
 format:
   stage: test
