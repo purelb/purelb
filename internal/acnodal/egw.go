@@ -27,6 +27,7 @@ import (
 
 // EGW represents one connection to an Acnodal Enterprise Gateway.
 type EGW interface {
+	GetAccount() (EGWAccountResponse, error)
 	GetGroup() (EGWGroupResponse, error)
 	AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error)
 	FetchService(url string) (EGWServiceResponse, error)
@@ -50,6 +51,19 @@ type ObjectMeta struct {
 	Namespace string `json:"namespace"`
 }
 
+// EGWAccount is the on-the-wire representation of one EGW Account.
+type EGWAccount struct {
+	ObjectMeta ObjectMeta     `json:"metadata"`
+	Spec       EGWAccountSpec `json:"spec"`
+}
+
+// EGWAccountSpec is the on-the-wire representation of one Account
+// Spec (i.e., the part that defines what the Account should look
+// like).
+type EGWAccountSpec struct {
+	GroupID uint16 `json:"group-id"`
+}
+
 // EGWGroup is the on-the-wire representation of one Service Group.
 type EGWGroup struct {
 	ObjectMeta ObjectMeta `json:"metadata"`
@@ -59,9 +73,9 @@ type EGWGroup struct {
 // LoadBalancer Service Spec (i.e., the part that defines what the LB
 // should look like).
 type EGWServiceSpec struct {
-	Address string           `json:"public-address,omitempty"`
-	Ports   []v1.ServicePort `json:"public-ports"`
-	GUEKey  uint32           `json:"gue-key"`
+	Address   string           `json:"public-address,omitempty"`
+	Ports     []v1.ServicePort `json:"public-ports"`
+	ServiceID uint16           `json:"service-id"`
 }
 
 // EGWTunnelEndpoint is an Endpoint on the EGW.
@@ -108,6 +122,13 @@ type EGWEndpointSpec struct {
 type EGWEndpoint struct {
 	ObjectMeta ObjectMeta      `json:"metadata"`
 	Spec       EGWEndpointSpec `json:"spec"`
+}
+
+// EGWAccountResponse is the body of the HTTP response to a request to
+// show an account.
+type EGWAccountResponse struct {
+	Links   Links      `json:"link"`
+	Account EGWAccount `json:"account"`
 }
 
 // EGWGroupResponse is the body of the HTTP response to a request to
@@ -169,6 +190,27 @@ func NewEGW(groupURL string) (EGW, error) {
 
 	// Initialize the EGW instance
 	return &egw{http: *r, groupURL: groupURL}, nil
+}
+
+// GetAccount requests an account from the EGW.
+func (n *egw) GetAccount() (EGWAccountResponse, error) {
+	group, err := n.GetGroup()
+	if err != nil {
+		return EGWAccountResponse{}, err
+	}
+
+	response, err := n.http.R().
+		SetResult(EGWAccountResponse{}).
+		Get(group.Links["account"])
+	if err != nil {
+		return EGWAccountResponse{}, err
+	}
+	if response.IsError() {
+		return EGWAccountResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+	}
+
+	srv := response.Result().(*EGWAccountResponse)
+	return *srv, nil
 }
 
 // GetGroup requests a service group from the EGW.

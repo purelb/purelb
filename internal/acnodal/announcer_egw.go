@@ -45,6 +45,7 @@ type announcer struct {
 	groups     map[string]*purelbv1.ServiceGroupEGWSpec // groupURL -> ServiceGroupEGWSpec
 	pinger     *exec.Cmd
 	sweeper    *exec.Cmd
+	groupID    uint16
 	// announcements is a map of services, keyed by the EGW service
 	// URL. The value is a pseudo-set of that service's endpoints that
 	// we have announced.
@@ -135,6 +136,13 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		return fmt.Errorf("Connection init to EGW failed")
 	}
 
+	// get the group's owning account
+	account, err := egw.GetAccount()
+	if err != nil {
+		l.Log("op", "SetBalancer", "error", err, "msg", "can't get owning account")
+		return fmt.Errorf("can't get owning account")
+	}
+
 	createUrl := svc.Annotations[purelbv1.EndpointAnnotation]
 
 	announcements := map[string]struct{}{} // pseudo-set: key: endpoint URLs, value: struct{}
@@ -180,7 +188,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 					// Now that we've got the service response we have enough
 					// info to set up the tunnel
-					err = a.setupPFC(address, myTunnel.TunnelID, svcResponse.Service.Spec.GUEKey, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, group.AuthCreds)
+					err = a.setupPFC(address, myTunnel.TunnelID, account.Account.Spec.GroupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, group.AuthCreds)
 					if err != nil {
 						l.Log("op", "SetupPFC", "error", err)
 					}
@@ -227,7 +235,7 @@ func (a *announcer) Shutdown() {
 
 // setupPFC sets up the Acnodal PFC components and GUE tunnel to
 // communicate with the Acnodal EGW.
-func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, tunnelKey uint32, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
+func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, groupID uint16, serviceID uint16, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
 	// cni0 is easy - its name is hard-coded
 	pfc.SetupNIC(a.logger, CNI_INTERFACE, "egress", 1, 8)
 
@@ -245,11 +253,6 @@ func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, tunnel
 		a.logger.Log("op", "SetTunnel", "error", err)
 		return err
 	}
-
-	// split the tunnelKey into its parts: groupId in the upper 16 bits
-	// and serviceId in the lower 16
-	var groupID uint16 = uint16(tunnelKey >> 16)
-	var serviceID uint16 = uint16(tunnelKey & 0xffff)
 
 	// set up service forwarding to forward packets through the GUE
 	// tunnel
