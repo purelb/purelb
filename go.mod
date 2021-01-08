@@ -3,6 +3,7 @@ module purelb.io
 go 1.12
 
 require (
+	github.com/apparentlymart/go-cidr v1.1.0
 	github.com/go-kit/kit v0.9.0
 	github.com/go-resty/resty/v2 v2.3.0
 	github.com/google/go-cmp v0.5.2

@@ -121,10 +121,10 @@ func TestAssignNext(t *testing.T) {
 	// The pool has two addresses; allocate both of them
 	ip, err := p.AssignNext(&svc1)
 	assert.Nil(t, err)
-	assert.Equal(t, net.ParseIP("192.168.1.0"), ip)
+	assert.True(t, net.ParseIP("192.168.1.0").Equal(ip))
 	ip, err = p.AssignNext(&svc2)
 	assert.Nil(t, err)
-	assert.Equal(t, net.ParseIP("192.168.1.1"), ip)
+	assert.True(t, net.ParseIP("192.168.1.1").Equal(ip))
 
 	// Same port: should fail
 	_, err = p.AssignNext(&svc3)
