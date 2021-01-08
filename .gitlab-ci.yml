@@ -26,21 +26,33 @@ format:
     paths:
       - deployments/purelb-complete.yaml
 
-allocatorarm:
+allocatorarm64:
   stage: image
   tags:
-  - arm
-  script: make SUFFIX=arm-ci image-allocator install-allocator
+  - arm64
+  script: make SUFFIX=arm64-ci image-allocator install-allocator
+
+allocatorarm32:
+  stage: image
+  tags:
+  - arm32
+  script: make SUFFIX=arm32-ci image-allocator install-allocator
 
 allocatoramd:
   stage: image
   script: make SUFFIX=amd64-ci image-allocator install-allocator
 
-lbnodeagentarm:
+lbnodeagentarm64:
   stage: image
   tags:
-  - arm
-  script: make SUFFIX=arm-ci image-lbnodeagent install-lbnodeagent
+  - arm64
+  script: make SUFFIX=arm64-ci image-lbnodeagent install-lbnodeagent
+
+lbnodeagentarm32:
+  stage: image
+  tags:
+  - arm32
+  script: make SUFFIX=arm32-ci image-lbnodeagent install-lbnodeagent
 
 lbnodeagentamd:
   stage: image
@@ -49,7 +61,7 @@ lbnodeagentamd:
 manifest:
   stage: manifest
   script:
-    - docker manifest create $ALLOCATOR_IMG:ci $ALLOCATOR_IMG:amd64-ci $ALLOCATOR_IMG:arm-ci
+    - docker manifest create $ALLOCATOR_IMG:ci $ALLOCATOR_IMG:amd64-ci $ALLOCATOR_IMG:arm32-ci $ALLOCATOR_IMG:arm64-ci
     - docker manifest push $ALLOCATOR_IMG:ci
-    - docker manifest create $LBNODEAGENT_IMG:ci $LBNODEAGENT_IMG:amd64-ci $LBNODEAGENT_IMG:arm-ci
+    - docker manifest create $LBNODEAGENT_IMG:ci $LBNODEAGENT_IMG:amd64-ci $LBNODEAGENT_IMG:arm32-ci $LBNODEAGENT_IMG:arm64-ci
     - docker manifest push $LBNODEAGENT_IMG:ci
