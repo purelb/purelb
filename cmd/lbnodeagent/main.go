@@ -17,6 +17,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -91,7 +92,7 @@ func main() {
 		Namespace: *memberlistNS,
 		NodeName:  *myNode,
 		BindAddr:  "0.0.0.0",
-		BindPort:  7946,
+		BindPort:  7934,
 		Secret:    []byte(os.Getenv("ML_SECRET")),
 		Logger:    &logger,
 		StopCh:    stopCh,
@@ -104,6 +105,7 @@ func main() {
 	ctrl.SetElection(&election)
 
 	iplist, err := client.GetPodsIPs(*memberlistNS, mlLabels)
+	fmt.Println("***SetElection memberlist", iplist)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to get PodsIPs")
 		os.Exit(1)
