@@ -208,7 +208,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	}
 
 	// add the address to our announcement database
-	a.svcAdvs[svc.Name] = lbIP
+	a.svcAdvs[svc.Namespace+"/"+svc.Name] = lbIP
 
 	return nil
 }

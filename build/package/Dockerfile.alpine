@@ -1,6 +1,7 @@
 FROM golang:alpine as builder
 
 ARG cmd
+ARG opts
 ARG branch
 ARG commit
 ARG release=development
@@ -10,7 +11,7 @@ WORKDIR /usr/src
 COPY . ./
 
 # build the executable
-RUN go build -o ${bin} \
+RUN env ${opts} go build -o ${bin} \
 -ldflags "-X purelb.io/internal/logging.release=${release} -X purelb.io/internal/logging.commit=${commit} -X purelb.io/internal/logging.branch=${branch}" \
 ./cmd/${cmd}/
 
