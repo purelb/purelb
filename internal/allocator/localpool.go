@@ -80,7 +80,7 @@ func (p LocalPool) Available(ip net.IP, service *v1.Service) error {
 			// can just update its sharing key in place.
 			var otherSvcs []string
 			for _, otherSvc := range p.servicesOnIP(ip) {
-				if otherSvc != service.Name {
+				if otherSvc != service.Namespace+"/"+service.Name {
 					otherSvcs = append(otherSvcs, otherSvc)
 				}
 			}
@@ -90,7 +90,7 @@ func (p LocalPool) Available(ip net.IP, service *v1.Service) error {
 		}
 
 		for _, port := range ports {
-			if curSvc, ok := p.portsInUse[ip.String()][port]; ok && curSvc != service.Name {
+			if curSvc, ok := p.portsInUse[ip.String()][port]; ok && curSvc != service.Namespace+"/"+service.Name {
 				return fmt.Errorf("port %s is already in use on %q", port, ip)
 			}
 		}
@@ -113,6 +113,8 @@ func (p LocalPool) AssignNext(service *v1.Service) (net.IP, error) {
 
 // Assign assigns a service to an IP.
 func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
+	nsName := service.Namespace + "/" + service.Name
+
 	ipstr := ip.String()
 	sharingKey := &Key{Sharing: SharingKey(service)}
 	ports := Ports(service)
@@ -125,12 +127,12 @@ func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
 	if p.addressesInUse[ipstr] == nil {
 		p.addressesInUse[ipstr] = map[string]bool{}
 	}
-	p.addressesInUse[ipstr][service.Name] = true
+	p.addressesInUse[ipstr][nsName] = true
 	if p.portsInUse[ipstr] == nil {
 		p.portsInUse[ipstr] = map[Port]string{}
 	}
 	for _, port := range ports {
-		p.portsInUse[ipstr][port] = service.Name
+		p.portsInUse[ipstr][port] = nsName
 	}
 
 	return nil
