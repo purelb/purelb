@@ -156,7 +156,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	c.MarkSynced()
 
 	svc1 := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "test"},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
@@ -170,7 +170,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	// Second service should converge correctly, but not allocate an
 	// IP because we have none left.
 	svc2 := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "test2"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "test2"},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
@@ -181,7 +181,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	k.reset()
 
 	// Deleting the first LB should tell us to reprocess all services.
-	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer("test"), "DeleteBalancer didn't tell us to reprocess all balancers")
+	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer("test/test"), "DeleteBalancer didn't tell us to reprocess all balancers")
 
 	// Setting svc2 should now allocate correctly.
 	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc2, nil), "SetBalancer svc2 failed")

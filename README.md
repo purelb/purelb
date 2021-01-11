@@ -43,6 +43,25 @@ operating system to advertise the address.
 
 Run `make help` for Makefile documentation.
 
+If you fork this project and want to build ARM images you'll need to set up a Gitlab CI ARM "runner" process for your fork. I use a Raspberry Pi 4 Model B running Raspbian GNU/Linux 10 (Buster).
+
+Find your project's registration token from the project CI Settings - https://gitlab.com/{your_gitlab_name}/purelb/-/settings/ci_cd . Expand the "Runners" section and look for "Set up a specific Runner manually".
+
+Install the runner client program - https://docs.gitlab.com/runner/install/linux-repository.html
+
+Run `gitlab-runner register`. It will ask for the url (`https://gitlab.com/`) and registration token.
+
+Stop the runner (`systemctl stop gitlab-runner.service`) and make a few edits to the `/etc/gitlab-runner/config.toml` runner config file:
+
+* Set the `privileged` flag to `true` (it's `false` by default)
+* Add `"/certs/client"` to the `volumes` list
+* Increase `wait_for_services_timeout` to 300
+* If you're running a Pi4 with 4GB of memory or more you can set `concurrent` to 2 so the allocator and lbnodeagent will build simultaneously
+
+Start the runner `systemctl start gitlab-runner.service` and verify that it's running `systemctl status gitlab-runner.service`.
+
+Verify that the runner is listed on your project's CI Settings page.
+
 ## Code
 
 * [Commands](cmd) - if you're a "top-down" learner then start here

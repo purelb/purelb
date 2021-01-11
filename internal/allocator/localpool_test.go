@@ -42,9 +42,9 @@ func TestInUse(t *testing.T) {
 	assert.Equal(t, 2, p.InUse())
 	p.Assign(ip, &svc3)
 	assert.Equal(t, 2, p.InUse()) // allocating the same address doesn't change the count
-	p.Release(ip, "svc2")
+	p.Release(ip, "test/svc2")
 	assert.Equal(t, 2, p.InUse()) // the address isn't fully released yet
-	p.Release(ip, "svc3")
+	p.Release(ip, "test/svc3")
 	assert.Equal(t, 1, p.InUse()) // the address isn't fully released yet
 }
 
@@ -55,11 +55,11 @@ func TestServicesOn(t *testing.T) {
 	svc2 := service("svc2", ports("tcp/25"), "sharing1")
 
 	p.Assign(ip2, &svc1)
-	assert.Equal(t, []string{"svc1"}, p.servicesOnIP(ip2))
+	assert.Equal(t, []string{"test/svc1"}, p.servicesOnIP(ip2))
 	p.Assign(ip2, &svc2)
-	sameStrings(t, []string{"svc1", "svc2"}, p.servicesOnIP(ip2))
-	p.Release(ip2, "svc1")
-	assert.Equal(t, []string{"svc2"}, p.servicesOnIP(ip2))
+	sameStrings(t, []string{"test/svc1", "test/svc2"}, p.servicesOnIP(ip2))
+	p.Release(ip2, "test/svc1")
+	assert.Equal(t, []string{"test/svc2"}, p.servicesOnIP(ip2))
 }
 
 func TestSharingKeys(t *testing.T) {
@@ -69,7 +69,7 @@ func TestSharingKeys(t *testing.T) {
 
 	p.Assign(ip, &svc1)
 	assert.Equal(t, &key1, p.SharingKey(ip))
-	p.Release(ip, "svc1")
+	p.Release(ip, "test/svc1")
 	assert.Nil(t, p.SharingKey(ip))
 }
 

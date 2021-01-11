@@ -72,7 +72,7 @@ func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
 // assign unconditionally updates internal state to reflect svc's
 // allocation of alloc. Caller must ensure that this call is safe.
 func (a *Allocator) assign(service *v1.Service, alloc *alloc) {
-	svc := service.Name
+	svc := service.Namespace + "/" + service.Name
 
 	a.Unassign(svc)
 	a.allocated[svc] = alloc
