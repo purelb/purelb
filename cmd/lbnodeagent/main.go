@@ -91,8 +91,8 @@ func main() {
 		Namespace: *memberlistNS,
 		NodeName:  *myNode,
 		BindAddr:  "0.0.0.0",
-		BindPort:  7946,
-		Secret:    []byte(os.Getenv("ML_SECRET")),
+		BindPort:  7934,
+		Secret:    []byte(os.Getenv("ML_GROUP")),
 		Logger:    &logger,
 		StopCh:    stopCh,
 	})
