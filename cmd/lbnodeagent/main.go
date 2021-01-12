@@ -91,6 +91,7 @@ func main() {
 		Secret:    []byte(os.Getenv("ML_GROUP")),
 		Logger:    &logger,
 		StopCh:    stopCh,
+		Client:    client,
 	})
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to create election client")
@@ -104,7 +105,7 @@ func main() {
 		logger.Log("op", "startup", "error", err, "msg", "failed to get PodsIPs")
 		os.Exit(1)
 	}
-	err = election.Join(iplist, client)
+	err = election.Join(iplist)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to join election")
 		os.Exit(1)
