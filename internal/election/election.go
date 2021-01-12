@@ -16,6 +16,7 @@ package election
 import (
 	"bytes"
 	"crypto/sha256"
+	"fmt"
 	"log"
 	"sort"
 	"time"
@@ -24,6 +25,10 @@ import (
 
 	gokitlog "github.com/go-kit/kit/log"
 	"github.com/hashicorp/memberlist"
+)
+
+const (
+	mlLabels = "app=purelb,component=lbnodeagent"
 )
 
 // Config provides the configuration data that New() needs.
@@ -35,13 +40,16 @@ type Config struct {
 	Secret    []byte
 	StopCh    chan struct{}
 	Logger    *gokitlog.Logger
+	client    k8s.Client
 }
 
 type Election struct {
 	Memberlist *memberlist.Memberlist
+	Namespace  string
 	logger     gokitlog.Logger
 	stopCh     chan struct{}
 	eventCh    chan memberlist.NodeEvent
+	client     k8s.Client
 }
 
 func New(cfg *Config) (Election, error) {
@@ -60,16 +68,25 @@ func New(cfg *Config) (Election, error) {
 	eventCh := make(chan memberlist.NodeEvent, 16)
 	mconfig.Events = &memberlist.ChannelEventDelegate{Ch: eventCh}
 	election.eventCh = eventCh
+	election.Namespace = cfg.Namespace
 
 	mlist, err := memberlist.Create(mconfig)
 	election.Memberlist = mlist
+	election.client = cfg.client
+
 	return election, err
+}
+
+// SetClient configures this announcer to use the provided client.
+func (e *Election) SetClient(client *k8s.Client) {
+	e.client = client
 }
 
 func (e *Election) Join(iplist []string, client *k8s.Client) error {
 	go e.watchEvents(client)
 
 	n, err := e.Memberlist.Join(iplist)
+	fmt.Println("*** Memberlist hosts found: ", n)
 	e.logger.Log("op", "startup", "msg", "Memberlist join", "nb joined", n, "error", err)
 	return err
 }
@@ -85,11 +102,25 @@ func (e *Election) Shutdown() error {
 // Winner returns the node name of the "winning" node, i.e., the node
 // that will announce the service represented by "key".
 func (e *Election) Winner(key string) string {
+
+	members := e.Memberlist.NumMembers()
+	pods, err := e.client.GetPodCount(e.Namespace, mlLabels)
+
+	if err != nil {
+		e.logger.Log("op", "Election", "error", err, "msg", "failed to get Pod count")
+	}
+	fmt.Println("***Members: ", members, "PODS: ", pods)
+
 	nodes := []string{}
 	for _, node := range e.Memberlist.Members() {
 		nodes = append(nodes, node.Name)
 	}
 
+	fmt.Println("***LocalAddr: ", e.Memberlist.LocalNode().Addr.String())
+	fmt.Println("***LocalPort: ", e.Memberlist.LocalNode().Port)
+	fmt.Println("***LocalName: ", e.Memberlist.LocalNode().Name)
+	fmt.Println("***Memberlist: ", e.Memberlist.Members())
+	fmt.Println("*** nodes: ", nodes)
 	return election(key, nodes)[0]
 }
 
@@ -106,6 +137,8 @@ func election(key string, candidates []string) []string {
 
 		return bytes.Compare(hi[:], hj[:]) < 0
 	})
+
+	fmt.Println("***Candidates :", candidates, "key: ", key)
 
 	return candidates
 }

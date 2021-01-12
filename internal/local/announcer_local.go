@@ -154,10 +154,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 			svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
 			return a.DeleteBalancer(svc.Name, "ClusterLocal")
 		}
-		knownmembers := a.election.Memberlist.Members()
-		fmt.Println("***Memberlist is: ", knownmembers)
-		debugwinner := a.election.Winner(lbIP.String())
-		fmt.Println("***Winner is: ", debugwinner)
+
 		// the service address is local, i.e., it's within the same subnet
 		// as our primary interface.  We can announce the address if we
 		// win the election
