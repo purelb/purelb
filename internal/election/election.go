@@ -27,10 +27,6 @@ import (
 	"github.com/hashicorp/memberlist"
 )
 
-const (
-	mlLabels = "app=purelb,component=lbnodeagent"
-)
-
 // Config provides the configuration data that New() needs.
 type Config struct {
 	Namespace string
