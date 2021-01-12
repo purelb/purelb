@@ -36,7 +36,7 @@ type Config struct {
 	Secret    []byte
 	StopCh    chan struct{}
 	Logger    *gokitlog.Logger
-	client    k8s.Client
+	Client    *k8s.Client
 }
 
 type Election struct {
@@ -45,7 +45,7 @@ type Election struct {
 	logger     gokitlog.Logger
 	stopCh     chan struct{}
 	eventCh    chan memberlist.NodeEvent
-	client     k8s.Client
+	Client     *k8s.Client
 }
 
 func New(cfg *Config) (Election, error) {
@@ -68,18 +68,13 @@ func New(cfg *Config) (Election, error) {
 
 	mlist, err := memberlist.Create(mconfig)
 	election.Memberlist = mlist
-	election.client = cfg.client
+	election.Client = cfg.Client
 
 	return election, err
 }
 
-// SetClient configures this announcer to use the provided client.
-func (e *Election) SetClient(client *k8s.Client) {
-	e.client = client
-}
-
-func (e *Election) Join(iplist []string, client *k8s.Client) error {
-	go e.watchEvents(client)
+func (e *Election) Join(iplist []string) error {
+	go e.watchEvents()
 
 	n, err := e.Memberlist.Join(iplist)
 	fmt.Println("*** Memberlist hosts found: ", n)
@@ -99,16 +94,24 @@ func (e *Election) Shutdown() error {
 // that will announce the service represented by "key".
 func (e *Election) Winner(key string) string {
 
-	members := e.Memberlist.NumMembers()
-	pods, err := e.client.GetPodCount(e.Namespace, mlLabels)
-
+	members := e.Memberlist.Members()
+	pods, err := e.Client.GetPodsIPs(e.Namespace)
 	if err != nil {
 		e.logger.Log("op", "Election", "error", err, "msg", "failed to get Pod count")
 	}
 	fmt.Println("***Members: ", members, "PODS: ", pods)
 
+	// if the number of pods that k8s reports is different than the
+	// number of members in the memberlist then something has gotten out
+	// of sync so back out of the memberlist and rejoin
+	if len(members) != len(pods) {
+		e.logger.Log("op", "Election", "error", "members/pods out of sync")
+		e.Shutdown()
+		e.Join(pods)
+	}
+
 	nodes := []string{}
-	for _, node := range e.Memberlist.Members() {
+	for _, node := range members {
 		nodes = append(nodes, node.Name)
 	}
 
@@ -143,12 +146,12 @@ func event2String(e memberlist.NodeEventType) string {
 	return [...]string{"NodeJoin", "NodeLeave", "NodeUpdate"}[e]
 }
 
-func (e *Election) watchEvents(client *k8s.Client) {
+func (e *Election) watchEvents() {
 	for {
 		select {
 		case event := <-e.eventCh:
 			e.logger.Log("msg", "Node event", "node addr", event.Node.Addr, "node name", event.Node.Name, "node event", event2String(event.Event))
-			client.ForceSync()
+			e.Client.ForceSync()
 		case <-e.stopCh:
 			e.Shutdown()
 			return

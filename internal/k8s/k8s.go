@@ -254,16 +254,6 @@ func (c *Client) GetPodsIPs(namespace string) ([]string, error) {
 	return iplist, nil
 }
 
-// GetPodCount returns the number of pods in the namespace matched by
-// the labels string as reported by k8s.
-func (c *Client) GetPodCount(namespace string) (int, error) {
-	pl, err := c.getPods(namespace)
-	if err != nil {
-		return -1, err
-	}
-	return len(pl.Items), nil
-}
-
 // Run watches for events on the Kubernetes cluster, and dispatches
 // calls to the Controller.
 func (c *Client) Run(stopCh <-chan struct{}) error {
