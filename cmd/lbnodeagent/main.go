@@ -26,10 +26,6 @@ import (
 	"purelb.io/internal/logging"
 )
 
-const (
-	mlLabels = "app=purelb,component=lbnodeagent"
-)
-
 func main() {
 	logger := logging.Init()
 
@@ -103,7 +99,7 @@ func main() {
 
 	ctrl.SetElection(&election)
 
-	iplist, err := client.GetPodsIPs(*memberlistNS, mlLabels)
+	iplist, err := client.GetPodsIPs(*memberlistNS)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to get PodsIPs")
 		os.Exit(1)
