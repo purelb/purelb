@@ -228,9 +228,19 @@ func New(cfg *Config) (*Client, error) {
 	return c, nil
 }
 
-// GetPodsIPs get the IPs from all the pods matched by the labels string
-func (c *Client) GetPodsIPs(namespace, labels string) ([]string, error) {
+// GetPods get the pods in the namespace matched by the labels string.
+func (c *Client) getPods(namespace, labels string) (*corev1.PodList, error) {
 	pl, err := c.client.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: labels})
+	if err != nil {
+		return nil, err
+	}
+	return pl, nil
+}
+
+// GetPodsIPs get the IPs from the pods in the namespace matched by
+// the labels string.
+func (c *Client) GetPodsIPs(namespace, labels string) ([]string, error) {
+	pl, err := c.getPods(namespace, labels)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +249,16 @@ func (c *Client) GetPodsIPs(namespace, labels string) ([]string, error) {
 		iplist = append(iplist, pod.Status.PodIP)
 	}
 	return iplist, nil
+}
+
+// GetPodCount returns the number of pods in the namespace matched by
+// the labels string as reported by k8s.
+func (c *Client) GetPodCount(namespace, labels string) (int, error) {
+	pl, err := c.getPods(namespace, labels)
+	if err != nil {
+		return -1, err
+	}
+	return len(pl.Items), nil
 }
 
 // Run watches for events on the Kubernetes cluster, and dispatches
