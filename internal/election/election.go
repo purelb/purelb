@@ -74,7 +74,7 @@ func (e *Election) Join(iplist []string, client *k8s.Client) error {
 	return err
 }
 
-func (e *Election) Shutdown() error {
+func (e *Election) shutdown() error {
 	err := e.Memberlist.Leave(1 * time.Second)
 	e.Memberlist.Shutdown()
 	e.logger.Log("op", "shutdown", "msg", "MemberList shut down", "error", err)
@@ -121,7 +121,7 @@ func (e *Election) watchEvents(client *k8s.Client) {
 			e.logger.Log("msg", "Node event", "node addr", event.Node.Addr, "node name", event.Node.Name, "node event", event2String(event.Event))
 			client.ForceSync()
 		case <-e.stopCh:
-			e.Shutdown()
+			e.shutdown()
 			return
 		}
 	}
