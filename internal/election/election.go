@@ -82,7 +82,7 @@ func (e *Election) Join(iplist []string) error {
 	return err
 }
 
-func (e *Election) Shutdown() error {
+func (e *Election) shutdown() error {
 	err := e.Memberlist.Leave(1 * time.Second)
 	e.Memberlist.Shutdown()
 	e.logger.Log("op", "shutdown", "msg", "MemberList shut down", "error", err)
@@ -106,7 +106,6 @@ func (e *Election) Winner(key string) string {
 	// of sync so back out of the memberlist and rejoin
 	if len(members) != len(pods) {
 		e.logger.Log("op", "Election", "error", "members/pods out of sync")
-		//	e.Shutdown()
 		e.Join(pods)
 	}
 
@@ -153,7 +152,7 @@ func (e *Election) watchEvents() {
 			e.logger.Log("msg", "Node event", "node addr", event.Node.Addr, "node name", event.Node.Name, "node event", event2String(event.Event))
 			e.Client.ForceSync()
 		case <-e.stopCh:
-			e.Shutdown()
+			e.shutdown()
 			return
 		}
 	}
