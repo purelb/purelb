@@ -78,7 +78,7 @@ func (e *Election) Join(iplist []string) error {
 
 	n, err := e.Memberlist.Join(iplist)
 	fmt.Println("*** Memberlist hosts found: ", n)
-	e.logger.Log("op", "startup", "msg", "Memberlist join", "nb joined", n, "error", err)
+	e.logger.Log("op", "Memberlist", "msg", "join", "nb joined", n, "error", err)
 	return err
 }
 
@@ -114,9 +114,10 @@ func (e *Election) Winner(key string) string {
 		nodes = append(nodes, node.Name)
 	}
 
-	fmt.Println("***LocalAddr: ", e.Memberlist.LocalNode().Addr.String())
+	fmt.Println("***LocalAddr: ", e.Memberlist.LocalNode().FullAddress().Addr)
 	fmt.Println("***LocalPort: ", e.Memberlist.LocalNode().Port)
-	fmt.Println("***LocalName: ", e.Memberlist.LocalNode().Name)
+	fmt.Println("***LocalName: ", e.Memberlist.LocalNode().FullAddress().Name)
+	fmt.Println("***LocalNodeState: ", e.Memberlist.GetHealthScore())
 	fmt.Println("***Memberlist: ", e.Memberlist.Members())
 	fmt.Println("*** nodes: ", nodes)
 	return election(key, nodes)[0]

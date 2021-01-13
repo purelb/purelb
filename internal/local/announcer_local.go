@@ -216,7 +216,9 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	return nil
 }
 
-func (a *announcer) DeleteBalancer(name, reason string) error {
+func (a *announcer) DeleteBalancer(name string, reason string) error {
+
+	fmt.Println("***Deleting Service: ", name)
 
 	// if the service isn't in our database then we weren't announcing
 	// it so we can't withdraw the address but it's OK
@@ -224,6 +226,8 @@ func (a *announcer) DeleteBalancer(name, reason string) error {
 	if !ok {
 		return nil
 	}
+
+	fmt.Println("*** local service array: ", a.svcAdvs)
 
 	// delete the service from Prometheus, i.e., it won't show up in the
 	// metrics anymore

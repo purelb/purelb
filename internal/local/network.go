@@ -55,7 +55,7 @@ func checkLocal(intf *netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error
 
 			if localnet.Contains(lbIPNet.IP) {
 				lbIPNet.Mask = localnet.Mask
-				fmt.Println("***Local addr", lbIPNet.IP)
+				fmt.Println("***LB Addr Local", lbIPNet.IP)
 			}
 		}
 
