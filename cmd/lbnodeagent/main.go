@@ -87,7 +87,7 @@ func main() {
 	election, err := election.New(&election.Config{
 		Namespace: *memberlistNS,
 		NodeName:  *myNode,
-		BindAddr:  "0.0.0.0",
+		BindAddr:  os.Getenv("PURELB_PODIP"),
 		BindPort:  7934,
 		Secret:    []byte(os.Getenv("ML_SECRET")),
 		Logger:    &logger,
