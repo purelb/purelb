@@ -69,8 +69,15 @@ func New(cfg *Config) (Election, error) {
 func (e *Election) Join(iplist []string, client *k8s.Client) error {
 	go e.watchEvents(client)
 
-	n, err := e.Memberlist.Join(iplist)
-	e.logger.Log("op", "startup", "msg", "Memberlist join", "nb joined", n, "error", err)
+	// To minimize the system impact of joining the memberlist we limit
+	// the number of initial peers to 5 no matter how many pods we have.
+	podCount := len(iplist)
+	if podCount > 5 {
+		podCount = 5
+	}
+
+	n, err := e.Memberlist.Join(iplist[0:podCount])
+	e.logger.Log("op", "startup", "msg", "Memberlist join", "hosts contacted", n, "error", err)
 	return err
 }
 
