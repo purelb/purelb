@@ -92,6 +92,10 @@ An example is where multiple default routes have been added to host.  This is no
 
 The maintainers consider logging primarily a developer tool (everybody has an option), however have endeavoured to make the log useful to all.  Logs are always a work in progress.
 
+## Logging
 
+We don't believe that reading logs should be necessary on a day-to-day basis but if you're in a situation where logs can be helpful here's some info to help you use them:
 
+PureLB pods run in the `purelb` namespace. There are two PureLB executables: the allocator and the lbnodeagent. The allocator typically runs a single pod per cluster and the lbnodeagent runs a pod on each node so you might need to examine several lbnodeagent logs before you find the one you're looking for. The `kubectl get -n purelb pods -owide` command can be helpful as it shows you which lbnodeagent pod is running on which node.
 
+We don't log timestamps since k8s adds them implicitly to all log messages. You can use `kubectl logs --timestamps` to see the k8s timestamps.
