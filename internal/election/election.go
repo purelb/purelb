@@ -106,7 +106,7 @@ func (e *Election) Winner(key string) string {
 	// of sync so back out of the memberlist and rejoin
 	if len(members) != len(pods) {
 		e.logger.Log("op", "Election", "error", "members/pods out of sync")
-		e.Shutdown()
+		//	e.Shutdown()
 		e.Join(pods)
 	}
 
