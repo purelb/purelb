@@ -192,18 +192,6 @@ func New(cfg *Config) (*Client, error) {
 			UpdateFunc: func(old interface{}, new interface{}) {
 				key, err := cache.MetaNamespaceKeyFunc(new)
 				if err == nil {
-					// there are two "special" endpoints:
-					// kube-system/kube-controller-manager and
-					// kube-system/kube-scheduler. They cause event spam because
-					// they hold the leader election leases which update
-					// frequently. These events are useless so we want to return
-					// silently and not spam the logs. We can remove this check
-					// if https://github.com/kubernetes/kubernetes/issues/34627
-					// is ever fixed.
-					if key == "kube-system/kube-controller-manager" || key == "kube-system/kube-scheduler" {
-						return
-					}
-
 					c.queue.Add(svcKey(key))
 				}
 			},
@@ -310,7 +298,6 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 func (c *Client) ForceSync() {
 	if c.svcIndexer != nil {
 		for _, k := range c.svcIndexer.ListKeys() {
-			c.logger.Log("forceSync", svcKey(k))
 			c.queue.AddRateLimited(svcKey(k))
 		}
 	}
@@ -365,6 +352,25 @@ func (c *Client) sync(key interface{}) SyncState {
 	case svcKey:
 		svcName := string(key.(svcKey))
 		l := log.With(c.logger, "service", svcName)
+
+		// there are two "special" services: "kubernetes" and
+		// "kube-dns". We don't care about them so we don't want them
+		// generating log spam.
+		if svcName == "default/kubernetes" || svcName == "kube-system/kube-dns" {
+			return SyncStateSuccess
+		}
+
+		// there are two "special" endpoints:
+		// kube-system/kube-controller-manager and
+		// kube-system/kube-scheduler. They cause event spam because
+		// they hold the leader election leases which update
+		// frequently. These events are useless so we want to return
+		// silently and not spam the logs. We can remove this check
+		// if https://github.com/kubernetes/kubernetes/issues/34627
+		// is ever fixed.
+		if svcName == "kube-system/kube-controller-manager" || svcName == "kube-system/kube-scheduler" {
+			return SyncStateSuccess
+		}
 
 		svcMaybe, exists, err := c.svcIndexer.GetByKey(svcName)
 		if err != nil {
