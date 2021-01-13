@@ -418,10 +418,6 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        - name: PURELB_PODIP
-          valueFrom:
-            fieldRef:
-              fieldPath: status.podIP
         - name: PURELB_ML_NAMESPACE
           valueFrom:
             fieldRef:
