@@ -117,6 +117,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
 	var err error
 	l := log.With(a.logger, "service", svc.Name)
+	nsName := svc.Namespace + "/" + svc.Name
 
 	// if we haven't been configured then we won't announce
 	if a.config == nil {
@@ -150,7 +151,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal {
 			l.Log("op", "setBalancer", "error", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster")
 			svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
-			return a.DeleteBalancer(svc.Name, "ClusterLocal")
+			return a.DeleteBalancer(nsName, "ClusterLocal", lbIP)
 		}
 
 		// the service address is local, i.e., it's within the same subnet
@@ -161,22 +162,22 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 			// we won the election so we'll add the service address to our
 			// node's default interface so linux will respond to ARP
 			// requests for it
-			l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", svc.Name)
+			l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName)
 			a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, defaultif.Attrs().Name)
 
 			addNetwork(lbIPNet, defaultif)
 			svc.Annotations[purelbv1.NodeAnnotation] = a.myNode
 			svc.Annotations[purelbv1.IntAnnotation] = defaultif.Attrs().Name
 			announcing.With(prometheus.Labels{
-				"service": svc.Name,
+				"service": nsName,
 				"node":    a.myNode,
 				"ip":      lbIP.String(),
 			}).Set(1)
 		} else {
 			// We lost the election so we'll withdraw any announcement that
 			// we might have been making
-			l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", svc.Name)
-			return a.DeleteBalancer(svc.Name, "lostElection")
+			l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName)
+			return a.DeleteBalancer(nsName, "lostElection", lbIP)
 		}
 	} else {
 
@@ -187,8 +188,8 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		// No, if externalTrafficPolicy is Local && there's no ready local endpoint
 		// Yes, in all other cases
 		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, a.myNode) {
-			l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", svc.Name)
-			return a.DeleteBalancer(svc.Name, "noEndpoints")
+			l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
+			return a.DeleteBalancer(nsName, "noEndpoints", lbIP)
 		}
 
 		// add this address to the "dummy" interface so routing software
@@ -196,11 +197,11 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		poolName, gotName := svc.Annotations[purelbv1.PoolAnnotation]
 		if gotName {
 			allocPool := a.groups[poolName]
-			l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", svc.Name, "reason", err)
+			l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "reason", err)
 			a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (*a.dummyInt).Attrs().Name)
 			addVirtualInt(lbIP, *a.dummyInt, allocPool.Subnet, allocPool.Aggregation)
 			announcing.With(prometheus.Labels{
-				"service": svc.Name,
+				"service": nsName,
 				"node":    a.myNode,
 				"ip":      lbIP.String(),
 			}).Set(1)
@@ -208,41 +209,59 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	}
 
 	// add the address to our announcement database
-	a.svcAdvs[svc.Namespace+"/"+svc.Name] = lbIP
+	a.svcAdvs[nsName] = lbIP
 
 	return nil
 }
 
-func (a *announcer) DeleteBalancer(name, reason string) error {
+// DeleteBalancer deletes the IP address associated with the
+// balancer. The addr parameter is optional and shouldn't be necessary
+// but in some cases (probably involving startup and/or shutdown) we
+// have seen calls to DeleteBalancer with services that weren't in the
+// svcAdvs map, so the service's address wasn't removed. For now, this
+// is a "belt and suspenders" double-check.
+func (a *announcer) DeleteBalancer(nsName, reason string, addr net.IP) error {
 
-	// if the service isn't in our database then we weren't announcing
-	// it so we can't withdraw the address but it's OK
-	svcAddr, ok := a.svcAdvs[name]
+	// if the service isn't in our database then we probably weren't
+	// announcing it so we can't withdraw it unless we were given an
+	// address, too
+	svcAddr, ok := a.svcAdvs[nsName]
 	if !ok {
-		return nil
+		// If we don't know about the named service and we weren't given
+		// an address then there's nothing we can do
+		if addr == nil {
+			return nil
+		}
+
+		// This is a corner case. We should always know about the services
+		// that we're asked to delete, but in this case we don't. Because
+		// the caller has provided an IP address, though, we can clean up
+		// by deleting the address.
+		a.logger.Log("event", "withdrawAnnouncement", "msg", "Not my service", "service", nsName, "reason", reason, "ip", addr, "knownServices", a.svcAdvs)
+		svcAddr = addr
 	}
 
 	// delete the service from Prometheus, i.e., it won't show up in the
 	// metrics anymore
 	announcing.Delete(prometheus.Labels{
-		"service": name,
+		"service": nsName,
 		"node":    a.myNode,
 		"ip":      svcAddr.String(),
 	})
 
 	// delete this service from our announcement database
-	delete(a.svcAdvs, name)
+	delete(a.svcAdvs, nsName)
 
 	// if any other service is still using that address then we don't
 	// want to withdraw it
-	for _, addr := range a.svcAdvs {
-		if addr.Equal(svcAddr) {
-			a.logger.Log("event", "withdrawAnnouncement", "service", name, "reason", reason, "msg", "ip in use by other service")
+	for otherSvc, announcedAddr := range a.svcAdvs {
+		if announcedAddr.Equal(svcAddr) {
+			a.logger.Log("event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by other service", "other", otherSvc)
 			return nil
 		}
 	}
 
-	a.logger.Log("event", "withdrawAnnouncement", "msg", "Delete balancer", "service", name, "reason", reason)
+	a.logger.Log("event", "withdrawAnnouncement", "msg", "Delete balancer", "service", nsName, "reason", reason)
 	deleteAddr(svcAddr)
 
 	return nil
