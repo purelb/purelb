@@ -383,7 +383,7 @@ func (c *Client) sync(key interface{}) SyncState {
 		}
 		svc := svcMaybe.(*corev1.Service)
 
-		var eps *corev1.Endpoints
+		var eps *corev1.Endpoints = &corev1.Endpoints{}
 		if c.epIndexer != nil {
 			epsIntf, exists, err := c.epIndexer.GetByKey(svcName)
 			if err != nil {
