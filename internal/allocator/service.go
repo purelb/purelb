@@ -28,7 +28,8 @@ import (
 )
 
 func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
-	log := log.With(c.logger, "ns", svc.ObjectMeta.Namespace, "svc-name", svc.ObjectMeta.Name)
+	nsName := svc.Namespace + "/" + svc.Name
+	log := log.With(c.logger, "svc-name", nsName)
 
 	if !c.synced {
 		log.Log("op", "allocateIP", "error", "controller not synced")
@@ -45,15 +46,16 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 
 			// If it has an address then release it
 			if len(svc.Status.LoadBalancer.Ingress) > 0 {
-				log.Log("event", "unassign", "address", svc.Status.LoadBalancer.Ingress)
-				c.ips.Unassign(svc.Name)
+				log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", "not a load balancer")
+				c.client.Infof(svc, "IPReleased", fmt.Sprintf("Service is %s, not a LoadBalancer", svc.Spec.Type))
+				c.ips.Unassign(nsName)
 				svc.Status.LoadBalancer.Ingress = nil
 			}
 
 			// "Un-own" the service. Remove PureLB's internal Annotations so
 			// we'll re-allocate if the user flips this service back to a
 			// LoadBalancer
-			for _, a := range []string{purelbv1.BrandAnnotation, purelbv1.PoolAnnotation, purelbv1.ServiceAnnotation, purelbv1.GroupAnnotation, purelbv1.EndpointAnnotation} {
+			for _, a := range []string{purelbv1.BrandAnnotation, purelbv1.PoolAnnotation, purelbv1.ServiceAnnotation, purelbv1.GroupAnnotation, purelbv1.EndpointAnnotation, purelbv1.IntAnnotation, purelbv1.NodeAnnotation} {
 				delete(svc.Annotations, a)
 			}
 		}
@@ -75,13 +77,35 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		log.Log("event", "ipAlreadySet")
 
 		// if it's one of ours then we'll tell the allocator about it, in
-		// case it didn't know. one example of this is at startup where
-		// our allocation database is empty and we get notifications of
-		// all the services. we can use the notifications to warm up our
-		// database so we don't allocate the same address twice.
+		// case it didn't know but needs to. one example of this is at
+		// startup where our allocation database is empty and we get
+		// notifications of all the services. we can use the notifications
+		// to warm up our database so we don't allocate the same address
+		// twice.
 		if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
 			if existingIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP); existingIP != nil {
-				_, _ = c.ips.Assign(svc, existingIP)
+
+				// check if the desired group annotation matches the group
+				// annotation. The user might have changed the desired group
+				// annotation and in that case we need to free the address.
+				desired, exists := svc.Annotations[purelbv1.DesiredGroupAnnotation]
+				if exists && desired != svc.Annotations[purelbv1.PoolAnnotation] {
+					log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", "desired/actual service group mismatch")
+					c.client.Infof(svc, "IPReleased", fmt.Sprintf("Address from group %s requested but current address belongs to %s", desired, svc.Annotations[purelbv1.PoolAnnotation]))
+					c.ips.Unassign(nsName)
+					svc.Status.LoadBalancer.Ingress = nil
+
+					// we'll return SyncStateSuccess which will trigger the
+					// agents to withdraw their notifications. That change will
+					// also generate another event which we'll respond to by
+					// allocating an address from the desired pool
+
+				} else {
+					// the address is from the desired group so warm up our
+					// allocation database so we don't allocate the same address
+					// twice
+					_, _ = c.ips.Assign(svc, existingIP)
+				}
 			}
 		}
 
@@ -90,13 +114,13 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		return k8s.SyncStateSuccess
 	}
 
-	pool, lbIP, err := c.allocateIP(svc.Name, svc)
+	pool, lbIP, err := c.allocateIP(nsName, svc)
 	if err != nil {
 		log.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
-		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", svc.Name, err)
+		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", nsName, err)
 		return k8s.SyncStateSuccess
 	}
-	log.Log("event", "ipAllocated", "ip", lbIP, "pool", pool, "service", svc.Name)
+	log.Log("event", "ipAllocated", "ip", lbIP, "pool", pool)
 	c.client.Infof(svc, "IPAllocated", "Assigned IP %s from pool %s", lbIP, pool)
 
 	// we have an IP selected somehow, so program the data plane
@@ -115,7 +139,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		egw, err := acnodal.New(c.baseURL.String(), "")
 		if err != nil {
 			log.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
-			c.client.Errorf(svc, "AllocationFailed", "Failed to create EGW service for %s: %s", svc.Name, err)
+			c.client.Errorf(svc, "AllocationFailed", "Failed to create EGW service for %s: %s", nsName, err)
 			return k8s.SyncStateError
 		}
 
@@ -128,10 +152,10 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		}
 
 		// Announce the service to the EGW
-		egwsvc, err := egw.AnnounceService(group.Links["create-service"], svc.Name, svc.Status.LoadBalancer.Ingress[0].IP)
+		egwsvc, err := egw.AnnounceService(group.Links["create-service"], nsName, svc.Status.LoadBalancer.Ingress[0].IP)
 		if err != nil {
-			log.Log("op", "AnnouncementFailed", "service", svc.Name, "error", err)
-			c.client.Errorf(svc, "AnnouncementFailed", "Failed to announce service for %s: %s", svc.Name, err)
+			log.Log("op", "AnnouncementFailed", "service", nsName, "error", err)
+			c.client.Errorf(svc, "AnnouncementFailed", "Failed to announce service for %s: %s", nsName, err)
 			return k8s.SyncStateError
 		}
 		svc.Annotations[purelbv1.GroupAnnotation] = egwsvc.Links["group"]
