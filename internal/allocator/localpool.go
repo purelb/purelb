@@ -141,13 +141,13 @@ func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
 // Release releases an IP so it can be assigned again.
 func (p LocalPool) Release(ip net.IP, service string) {
 	ipstr := ip.String()
-	delete(p.sharingKeys, ip.String())
 	delete(p.addressesInUse[ipstr], service)
 	if len(p.addressesInUse[ipstr]) == 0 {
 		delete(p.addressesInUse, ipstr)
+		delete(p.sharingKeys, ip.String())
 	}
 	for port, svc := range p.portsInUse[ipstr] {
-		if svc != service {
+		if svc == service {
 			delete(p.portsInUse[ipstr], port)
 		}
 	}
