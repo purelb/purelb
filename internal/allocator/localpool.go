@@ -91,7 +91,7 @@ func (p LocalPool) Available(ip net.IP, service *v1.Service) error {
 
 		for _, port := range ports {
 			if curSvc, ok := p.portsInUse[ip.String()][port]; ok && curSvc != service.Namespace+"/"+service.Name {
-				return fmt.Errorf("port %s is already in use on %q", port, ip)
+				return fmt.Errorf("port %s on %q is already in use by %s", port, ip, curSvc)
 			}
 		}
 	}

@@ -88,7 +88,7 @@ func (a *Allocator) assign(service *v1.Service, alloc *alloc) {
 func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
 	pool := poolFor(a.pools, ip)
 	if pool == "" {
-		return "", fmt.Errorf("%q is not allowed in config", ip)
+		return "", fmt.Errorf("%q does not belong to any group", ip)
 	}
 	sk := &Key{
 		Sharing: SharingKey(svc),
