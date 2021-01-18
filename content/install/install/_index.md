@@ -31,6 +31,15 @@ A Manifest is simply a concatenated set of yaml files that install all of the co
 Preparing the cluster
 Prior to the installation of PureLB, the k8s cluster should be installed with an operating Container Network Interface.  
 
+#### Firewall Rules
+Purelb uses a library called Memberlist to provide local network address failover faster than standard k8s timeouts would require.  If you plan to use local network address and have applied firewalls to your nodes, it is necessary to add a rule to allow the memberlist election to occur. The port used by Memberlist in PureLB is **Port 7934 UDP/TCP**, memberlist uses both TCP and UDP, open both.
+
+{{% notice danger %}}
+If UDP/TCP 7934 is not open and a local network address is allocated, Purelb will exhibit "split brain" behavior.  Each node will attempt to allocate the address where the local network addresses match and update v1/service.  This will cause the v1/service to continously update, the lbnodeagent logs show repeated attempts to register addresses and it it will appear that Purelb is unstable. 
+{{% /notice %}}
+
+
+#### ARP Behavior
 {{% notice warning %}}
 It is recommended that the ARP behavior changed from the Linux kernel default.  This is necessary if your using kubeproxy in IPVS model and is also good security practice.  By default Linux will answer ARP requests for addresses on any interface irrespective of the source, we recommend changing this setting so Linux only answers ARP requests for addresses on the interface it receives the request.  Linux sets this default to increase the the chance of successful communication. This change is made in sysconfig.
 {{% /notice %}}
