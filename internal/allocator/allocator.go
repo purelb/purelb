@@ -30,9 +30,8 @@ type Allocator struct {
 }
 
 type alloc struct {
-	pool  string
-	ip    net.IP
-	ports []Port
+	pool string
+	ip   net.IP
 	Key
 }
 
@@ -87,7 +86,6 @@ func (a *Allocator) assign(service *v1.Service, alloc *alloc) {
 // Assign assigns the requested ip to svc, if the assignment is
 // permissible by sharingKey.
 func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
-	ports := Ports(svc)
 	pool := poolFor(a.pools, ip)
 	if pool == "" {
 		return "", fmt.Errorf("%q is not allowed in config", ip)
@@ -107,13 +105,9 @@ func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
 	// Either the IP is entirely unused, or the requested use is
 	// compatible with existing uses. Assign!
 	alloc := &alloc{
-		pool:  pool,
-		ip:    ip,
-		ports: make([]Port, len(ports)),
-		Key:   *sk,
-	}
-	for i, port := range ports {
-		alloc.ports[i] = port
+		pool: pool,
+		ip:   ip,
+		Key:  *sk,
 	}
 	a.assign(svc, alloc)
 	return pool, nil
@@ -144,7 +138,6 @@ func (a *Allocator) Unassign(svc string) bool {
 // AllocateFromPool assigns an available IP from pool to service.
 func (a *Allocator) AllocateFromPool(svc *v1.Service, poolName string) (net.IP, error) {
 	var ip net.IP
-	ports := Ports(svc)
 
 	pool := a.pools[poolName]
 	if pool == nil {
@@ -161,13 +154,9 @@ func (a *Allocator) AllocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 	}
 
 	alloc := &alloc{
-		pool:  poolName,
-		ip:    ip,
-		ports: make([]Port, len(ports)),
-		Key:   *sk,
-	}
-	for i, port := range ports {
-		alloc.ports[i] = port
+		pool: poolName,
+		ip:   ip,
+		Key:  *sk,
 	}
 	a.assign(svc, alloc)
 
