@@ -70,6 +70,7 @@ type Client struct {
 type ServiceEvent interface {
 	Infof(svc *corev1.Service, desc, msg string, args ...interface{})
 	Errorf(svc *corev1.Service, desc, msg string, args ...interface{})
+	ForceSync()
 }
 
 // SyncState is the result of calling synchronization callbacks.
@@ -148,7 +149,7 @@ func New(cfg *Config) (*Client, error) {
 	// Custom Resource Watcher
 
 	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Second*0)
-	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, clientset, crClient, c.crInformerFactory)
+	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, c.ForceSync, clientset, crClient, c.crInformerFactory)
 
 	// Service Watcher
 

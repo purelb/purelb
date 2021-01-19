@@ -73,7 +73,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	// if there's a "Local" agent config then we'll announce
 	for _, agent := range cfg.Agents {
 		if spec := agent.Spec.Local; spec != nil {
-			a.logger.Log("op", "setConfig", "config", spec)
+			a.logger.Log("op", "setConfig", "spec", spec, "name", agent.Namespace+"/"+agent.Name)
 			a.config = spec
 
 			// stash the local service group configs
