@@ -81,30 +81,20 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		// startup where our allocation database is empty and we get
 		// notifications of all the services. we can use the notifications
 		// to warm up our database so we don't allocate the same address
-		// twice.
+		// twice. another example is when the user edits a service,
+		// although that would be better handled in a webhook.
 		if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
 			if existingIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP); existingIP != nil {
 
-				// check if the desired group annotation matches the group
-				// annotation. The user might have changed the desired group
-				// annotation and in that case we need to free the address.
-				desired, exists := svc.Annotations[purelbv1.DesiredGroupAnnotation]
-				if exists && desired != svc.Annotations[purelbv1.PoolAnnotation] {
-					log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", "desired/actual service group mismatch")
-					c.client.Infof(svc, "IPReleased", fmt.Sprintf("Address from group %s requested but current address belongs to %s", desired, svc.Annotations[purelbv1.PoolAnnotation]))
+				// The service has an IP so we'll attempt to formally allocate
+				// it. If something goes wrong then we'll release it which
+				// will cause a re-allocation attempt
+				_, err := c.ips.Assign(svc, existingIP)
+				if err != nil {
+					log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", err.Error())
+					c.client.Infof(svc, "IPReleased", err.Error())
 					c.ips.Unassign(nsName)
 					svc.Status.LoadBalancer.Ingress = nil
-
-					// we'll return SyncStateSuccess which will trigger the
-					// agents to withdraw their notifications. That change will
-					// also generate another event which we'll respond to by
-					// allocating an address from the desired pool
-
-				} else {
-					// the address is from the desired group so warm up our
-					// allocation database so we don't allocate the same address
-					// twice
-					_, _ = c.ips.Assign(svc, existingIP)
 				}
 			}
 		}

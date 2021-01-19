@@ -86,10 +86,18 @@ func (a *Allocator) assign(service *v1.Service, alloc *alloc) {
 // Assign assigns the requested ip to svc, if the assignment is
 // permissible by sharingKey.
 func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
+	// Check that the address belongs to a pool
 	pool := poolFor(a.pools, ip)
 	if pool == "" {
 		return "", fmt.Errorf("%q does not belong to any group", ip)
 	}
+
+	// Check that the address belongs to the requested pool
+	desiredGroup, exists := svc.Annotations[purelbv1.DesiredGroupAnnotation]
+	if exists && desiredGroup != pool {
+		return "", fmt.Errorf("%q belongs to group %s but desired group is %s", ip, pool, desiredGroup)
+	}
+
 	sk := &Key{
 		Sharing: SharingKey(svc),
 	}
