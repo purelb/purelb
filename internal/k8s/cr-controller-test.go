@@ -89,7 +89,7 @@ func (f *fixture) newController() (*Controller, informers.SharedInformerFactory,
 	}
 
 	c := NewCRController(log.NewJSONLogger(log.NewSyncWriter(os.Stdout)),
-		stubConfigChanged, f.kubeclient, f.client,
+		stubConfigChanged, func() {}, f.kubeclient, f.client,
 		i)
 
 	c.sgsSynced = alwaysReady

@@ -50,6 +50,7 @@ type Controller struct {
 
 	sgsSynced   cache.InformerSynced
 	configCB    func(*purelbv1.Config) SyncState
+	forceSync   func()
 	sgLister    listers.ServiceGroupLister
 	lbnasSynced cache.InformerSynced
 	lbnaLister  listers.LBNodeAgentLister
@@ -72,6 +73,7 @@ type Controller struct {
 func NewCRController(
 	logger log.Logger,
 	configCB func(*purelbv1.Config) SyncState,
+	forceSync func(),
 	kubeclientset kubernetes.Interface,
 	purelbclientset clientset.Interface,
 	informerFactory externalversions.SharedInformerFactory) *Controller {
@@ -90,6 +92,7 @@ func NewCRController(
 	controller := &Controller{
 		logger:          logger,
 		configCB:        configCB,
+		forceSync:       forceSync,
 		kubeclientset:   kubeclientset,
 		purelbclientset: purelbclientset,
 		lbnaLister:      lbnaInformer.Lister(),
@@ -236,9 +239,15 @@ func (c *Controller) syncHandler() error {
 		return err
 	}
 
-	c.configCB(&cfg)
-
-	configLoaded.Set(1)
+	switch c.configCB(&cfg) {
+	case SyncStateSuccess:
+		configLoaded.Set(1)
+	case SyncStateError:
+		updateErrors.Inc()
+	case SyncStateReprocessAll:
+		configLoaded.Set(1)
+		c.forceSync()
+	}
 
 	return nil
 }

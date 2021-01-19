@@ -61,6 +61,7 @@ func NewLocalPool(rawrange string, subnet string, aggregation string) (*LocalPoo
 // whether this service can share the address with it. error will be
 // nil if the ip is available, and will contain an explanation if not.
 func (p LocalPool) Available(ip net.IP, service *v1.Service) error {
+	nsName := service.Namespace + "/" + service.Name
 	key := &Key{Sharing: SharingKey(service)}
 	ports := Ports(service)
 
@@ -80,18 +81,18 @@ func (p LocalPool) Available(ip net.IP, service *v1.Service) error {
 			// can just update its sharing key in place.
 			var otherSvcs []string
 			for _, otherSvc := range p.servicesOnIP(ip) {
-				if otherSvc != service.Namespace+"/"+service.Name {
+				if otherSvc != nsName {
 					otherSvcs = append(otherSvcs, otherSvc)
 				}
 			}
 			if len(otherSvcs) > 0 {
-				return fmt.Errorf("can't change sharing key for %q, address also in use by %s", service, strings.Join(otherSvcs, ","))
+				return fmt.Errorf("can't change sharing key for %q, address also in use by %s", nsName, strings.Join(otherSvcs, ","))
 			}
 		}
 
 		for _, port := range ports {
-			if curSvc, ok := p.portsInUse[ip.String()][port]; ok && curSvc != service.Namespace+"/"+service.Name {
-				return fmt.Errorf("port %s is already in use on %q", port, ip)
+			if curSvc, ok := p.portsInUse[ip.String()][port]; ok && curSvc != nsName {
+				return fmt.Errorf("port %s on %q is already in use by %s", port, ip, curSvc)
 			}
 		}
 	}
@@ -141,13 +142,13 @@ func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
 // Release releases an IP so it can be assigned again.
 func (p LocalPool) Release(ip net.IP, service string) {
 	ipstr := ip.String()
-	delete(p.sharingKeys, ip.String())
 	delete(p.addressesInUse[ipstr], service)
 	if len(p.addressesInUse[ipstr]) == 0 {
 		delete(p.addressesInUse, ipstr)
+		delete(p.sharingKeys, ip.String())
 	}
 	for port, svc := range p.portsInUse[ipstr] {
-		if svc != service {
+		if svc == service {
 			delete(p.portsInUse[ipstr], port)
 		}
 	}

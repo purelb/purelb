@@ -26,10 +26,6 @@ import (
 	"purelb.io/internal/logging"
 )
 
-const (
-	mlLabels = "app=purelb,component=lbnodeagent"
-)
-
 func main() {
 	logger := logging.Init()
 
@@ -90,11 +86,12 @@ func main() {
 	election, err := election.New(&election.Config{
 		Namespace: *memberlistNS,
 		NodeName:  *myNode,
-		BindAddr:  "0.0.0.0",
+		BindAddr:  os.Getenv("PURELB_HOST"),
 		BindPort:  7934,
 		Secret:    []byte(os.Getenv("ML_GROUP")),
 		Logger:    &logger,
 		StopCh:    stopCh,
+		Client:    client,
 	})
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to create election client")
@@ -103,12 +100,12 @@ func main() {
 
 	ctrl.SetElection(&election)
 
-	iplist, err := client.GetPodsIPs(*memberlistNS, mlLabels)
+	iplist, err := client.GetPodsIPs(*memberlistNS)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to get PodsIPs")
 		os.Exit(1)
 	}
-	err = election.Join(iplist, client)
+	err = election.Join(iplist)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to join election")
 		os.Exit(1)

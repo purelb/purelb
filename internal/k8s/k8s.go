@@ -70,6 +70,7 @@ type Client struct {
 type ServiceEvent interface {
 	Infof(svc *corev1.Service, desc, msg string, args ...interface{})
 	Errorf(svc *corev1.Service, desc, msg string, args ...interface{})
+	ForceSync()
 }
 
 // SyncState is the result of calling synchronization callbacks.
@@ -84,6 +85,9 @@ const (
 	// SyncStateReprocessAll indicates that the update succeeded but
 	// requires reprocessing all watched services.
 	SyncStateReprocessAll
+	// Labels used to select pods that should participate in Memberlist
+	// elections
+	mlLabels = "app=purelb,component=lbnodeagent"
 )
 
 // Config specifies the configuration of the Kubernetes
@@ -145,7 +149,7 @@ func New(cfg *Config) (*Client, error) {
 	// Custom Resource Watcher
 
 	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Second*0)
-	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, clientset, crClient, c.crInformerFactory)
+	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, c.ForceSync, clientset, crClient, c.crInformerFactory)
 
 	// Service Watcher
 
@@ -189,18 +193,6 @@ func New(cfg *Config) (*Client, error) {
 			UpdateFunc: func(old interface{}, new interface{}) {
 				key, err := cache.MetaNamespaceKeyFunc(new)
 				if err == nil {
-					// there are two "special" endpoints:
-					// kube-system/kube-controller-manager and
-					// kube-system/kube-scheduler. They cause event spam because
-					// they hold the leader election leases which update
-					// frequently. These events are useless so we want to return
-					// silently and not spam the logs. We can remove this check
-					// if https://github.com/kubernetes/kubernetes/issues/34627
-					// is ever fixed.
-					if key == "kube-system/kube-controller-manager" || key == "kube-system/kube-scheduler" {
-						return
-					}
-
 					c.queue.Add(svcKey(key))
 				}
 			},
@@ -228,9 +220,19 @@ func New(cfg *Config) (*Client, error) {
 	return c, nil
 }
 
-// GetPodsIPs get the IPs from all the pods matched by the labels string
-func (c *Client) GetPodsIPs(namespace, labels string) ([]string, error) {
-	pl, err := c.client.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: labels})
+// GetPods get the pods in the namespace matched by the labels string.
+func (c *Client) getPods(namespace string) (*corev1.PodList, error) {
+	pl, err := c.client.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: mlLabels})
+	if err != nil {
+		return nil, err
+	}
+	return pl, nil
+}
+
+// GetPodsIPs get the IPs from the pods in the namespace matched by
+// the labels string.
+func (c *Client) GetPodsIPs(namespace string) ([]string, error) {
+	pl, err := c.getPods(namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +299,6 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 func (c *Client) ForceSync() {
 	if c.svcIndexer != nil {
 		for _, k := range c.svcIndexer.ListKeys() {
-			c.logger.Log("forceSync", svcKey(k))
 			c.queue.AddRateLimited(svcKey(k))
 		}
 	}
@@ -353,6 +354,25 @@ func (c *Client) sync(key interface{}) SyncState {
 		svcName := string(key.(svcKey))
 		l := log.With(c.logger, "service", svcName)
 
+		// there are two "special" services: "kubernetes" and
+		// "kube-dns". We don't care about them so we don't want them
+		// generating log spam.
+		if svcName == "default/kubernetes" || svcName == "kube-system/kube-dns" {
+			return SyncStateSuccess
+		}
+
+		// there are two "special" endpoints:
+		// kube-system/kube-controller-manager and
+		// kube-system/kube-scheduler. They cause event spam because
+		// they hold the leader election leases which update
+		// frequently. These events are useless so we want to return
+		// silently and not spam the logs. We can remove this check
+		// if https://github.com/kubernetes/kubernetes/issues/34627
+		// is ever fixed.
+		if svcName == "kube-system/kube-controller-manager" || svcName == "kube-system/kube-scheduler" {
+			return SyncStateSuccess
+		}
+
 		svcMaybe, exists, err := c.svcIndexer.GetByKey(svcName)
 		if err != nil {
 			l.Log("op", "getService", "error", err, "msg", "failed to get service")
@@ -364,7 +384,7 @@ func (c *Client) sync(key interface{}) SyncState {
 		}
 		svc := svcMaybe.(*corev1.Service)
 
-		var eps *corev1.Endpoints
+		var eps *corev1.Endpoints = &corev1.Endpoints{}
 		if c.epIndexer != nil {
 			epsIntf, exists, err := c.epIndexer.GetByKey(svcName)
 			if err != nil {

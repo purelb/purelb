@@ -43,9 +43,11 @@ func TestInUse(t *testing.T) {
 	p.Assign(ip, &svc3)
 	assert.Equal(t, 2, p.InUse()) // allocating the same address doesn't change the count
 	p.Release(ip, "test/svc2")
-	assert.Equal(t, 2, p.InUse()) // the address isn't fully released yet
+	assert.Equal(t, 2, p.InUse()) // the shared address isn't fully released yet
 	p.Release(ip, "test/svc3")
-	assert.Equal(t, 1, p.InUse()) // the address isn't fully released yet
+	assert.Equal(t, 1, p.InUse()) // the shared address is released
+	p.Release(ip2, "test/svc1")
+	assert.Equal(t, 0, p.InUse()) // all addresses are released
 }
 
 func TestServicesOn(t *testing.T) {
@@ -66,11 +68,22 @@ func TestSharingKeys(t *testing.T) {
 	ip := net.ParseIP("192.168.1.1")
 	p := mustLocalPool(t, "192.168.1.1/32")
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
+	svc2 := service("svc2", ports("tcp/81"), "sharing1")
+	svc3 := service("svc3", ports("tcp/81"), "sharing1")
 
-	p.Assign(ip, &svc1)
+	p.Release(ip, "test/svc3") // releasing a not-assigned service should be OK
+
+	assert.Nil(t, p.Assign(ip, &svc1))
 	assert.Equal(t, &key1, p.SharingKey(ip))
+	assert.Nil(t, p.Assign(ip, &svc2))
 	p.Release(ip, "test/svc1")
+	// svc2 is still using the IP
+	assert.Equal(t, &key1, p.SharingKey(ip))
+	assert.NotNil(t, p.Assign(ip, &svc3)) // svc3 is blocked by svc2 (same port)
+	p.Release(ip, "test/svc2")
+	// the IP is unused
 	assert.Nil(t, p.SharingKey(ip))
+	assert.Nil(t, p.Assign(ip, &svc3)) // svc2 is out of the picture so svc3 can use the address
 }
 
 func TestAvailable(t *testing.T) {

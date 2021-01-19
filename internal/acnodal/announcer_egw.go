@@ -17,6 +17,7 @@ package acnodal
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 
 	v1 "k8s.io/api/core/v1"
@@ -115,7 +116,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	return nil
 }
 
-func (a *announcer) DeleteBalancer(name, reason string) error {
+func (a *announcer) DeleteBalancer(name, reason string, addr net.IP) error {
 	return nil
 }
 

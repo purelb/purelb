@@ -59,6 +59,8 @@ func (s *testK8S) Errorf(_ *v1.Service, evtType string, msg string, args ...inte
 	s.loggedWarning = true
 }
 
+func (s *testK8S) ForceSync() {}
+
 func (s *testK8S) reset() {
 	s.loggedWarning = false
 }
