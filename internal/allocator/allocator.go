@@ -39,7 +39,6 @@ type Allocator struct {
 type alloc struct {
 	pool string
 	ip   net.IP
-	Key
 }
 
 // New returns an Allocator managing no pools.
@@ -84,9 +83,6 @@ func (a *Allocator) assign(service *v1.Service, poolName string, ip net.IP) erro
 	alloc := &alloc{
 		pool: poolName,
 		ip:   ip,
-		Key: Key{
-			Sharing: SharingKey(service),
-		},
 	}
 	a.allocated[svc] = alloc
 
