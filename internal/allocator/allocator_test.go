@@ -823,11 +823,10 @@ func TestPoolMetrics(t *testing.T) {
 // Some helpers
 
 func assigned(a *Allocator, svc string) string {
-	ip := a.IP(svc)
-	if ip == nil {
-		return ""
+	if alloc := a.allocated[svc]; alloc != nil {
+		return alloc.ip.String()
 	}
-	return ip.String()
+	return ""
 }
 
 func mustLocalPool(t *testing.T, r string) LocalPool {

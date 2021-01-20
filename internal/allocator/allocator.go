@@ -182,24 +182,6 @@ func (a *Allocator) Allocate(svc *v1.Service) (string, net.IP, error) {
 	return "", nil, err
 }
 
-// IP returns the IP address allocated to service, or nil if none are allocated.
-func (a *Allocator) IP(svc string) net.IP {
-	if alloc := a.allocated[svc]; alloc != nil {
-		return alloc.ip
-	}
-	return nil
-}
-
-// Pool returns the pool from which service's IP was allocated. If
-// service has no IP allocated, "" is returned.
-func (a *Allocator) Pool(svc string) string {
-	ip := a.IP(svc)
-	if ip == nil {
-		return ""
-	}
-	return poolFor(a.pools, ip)
-}
-
 // poolFor returns the pool that owns the requested IP, or "" if none.
 func poolFor(pools map[string]Pool, ip net.IP) string {
 	for pname, p := range pools {
