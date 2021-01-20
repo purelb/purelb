@@ -73,7 +73,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 
 	// Check if the service already has an address
 	if len(svc.Status.LoadBalancer.Ingress) > 0 {
-		log.Log("event", "ipAlreadySet")
+		log.Log("event", "ipAlreadySet", "ingress-address", svc.Status.LoadBalancer.Ingress)
 
 		// if it's one of ours then we'll tell the allocator about it, in
 		// case it didn't know but needs to. one example of this is at
