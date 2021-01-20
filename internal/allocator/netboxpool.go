@@ -36,14 +36,6 @@ type NetboxPool struct {
 
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
-
-	// Map of the "sharing keys" for each IP address
-	sharingKeys map[string]*Key // ip.String() -> pointer to sharing key
-
-	portsInUse map[string]map[Port]string // ip.String() -> Port -> svc
-
-	subnetV4    string
-	aggregation string
 }
 
 // NewNetboxPool initializes a new instance of NetboxPool. If error is
@@ -66,9 +58,6 @@ func NewNetboxPool(rawurl string, tenant string, aggregation string) (*NetboxPoo
 		userToken:      userToken,
 		netbox:         netbox.NewNetbox(url.String(), tenant, userToken),
 		addressesInUse: map[string]map[string]bool{},
-		sharingKeys:    map[string]*Key{},
-		portsInUse:     map[string]map[Port]string{},
-		aggregation:    aggregation,
 	}, nil
 }
 
@@ -78,7 +67,6 @@ func NewNetboxPool(rawurl string, tenant string, aggregation string) (*NetboxPoo
 // nil if the ip is available, and will contain an explanation if not.
 func (p NetboxPool) Available(ip net.IP, service *v1.Service) error {
 	key := &Key{Sharing: SharingKey(service)}
-	ports := Ports(service)
 
 	// No key: no sharing
 	if key == nil {
@@ -104,12 +92,6 @@ func (p NetboxPool) Available(ip net.IP, service *v1.Service) error {
 				return fmt.Errorf("can't change sharing key for %q, address also in use by %s", service, strings.Join(otherSvcs, ","))
 			}
 		}
-
-		for _, port := range ports {
-			if curSvc, ok := p.portsInUse[ip.String()][port]; ok && curSvc != service.Name {
-				return fmt.Errorf("port %s is already in use on %q", port, ip)
-			}
-		}
 	}
 
 	return nil
@@ -124,7 +106,10 @@ func (p NetboxPool) AssignNext(service *v1.Service) (net.IP, error) {
 	}
 	ip, _, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing IP %q", ip)
+		return nil, fmt.Errorf("error parsing CIDR %s", cidr)
+	}
+	if err := p.Assign(ip, service); err != nil {
+		return nil, err
 	}
 
 	return ip, nil
@@ -132,11 +117,24 @@ func (p NetboxPool) AssignNext(service *v1.Service) (net.IP, error) {
 
 // Assign assigns a service to an IP.
 func (p NetboxPool) Assign(ip net.IP, service *v1.Service) error {
+	nsName := service.Namespace + "/" + service.Name
+	ipstr := ip.String()
+
+	if p.addressesInUse[ipstr] == nil {
+		p.addressesInUse[ipstr] = map[string]bool{}
+	}
+	p.addressesInUse[ipstr][nsName] = true
+
 	return nil
 }
 
 // Release releases an IP so it can be assigned again.
 func (p NetboxPool) Release(ip net.IP, service string) {
+	ipstr := ip.String()
+	delete(p.addressesInUse[ipstr], service)
+	if len(p.addressesInUse[ipstr]) == 0 {
+		delete(p.addressesInUse, ipstr)
+	}
 }
 
 // InUse returns the count of addresses that currently have services
@@ -162,7 +160,7 @@ func (p NetboxPool) servicesOnIP(ip net.IP) []string {
 
 // SharingKey returns the "sharing key" for the specified address.
 func (p NetboxPool) SharingKey(ip net.IP) *Key {
-	return p.sharingKeys[ip.String()]
+	return nil
 }
 
 // First returns the first (i.e., lowest-valued) net.IP within this
@@ -185,13 +183,18 @@ func (p NetboxPool) Size() uint64 {
 
 // Overlaps indicates whether the other Pool overlaps with this one
 // (i.e., has any addresses in common).  It returns true if there are
-// any common addresses and false if there aren't.
+// any common addresses and false if there aren't. This implementation
+// always returns false since the pool is managed by a remote system.
 func (p NetboxPool) Overlaps(other Pool) bool {
 	return false
 }
 
 // Contains indicates whether the provided net.IP represents an
-// address within this Pool.  It returns true if so, false otherwise.
+// address within this Pool.  It returns true if so, false
+// otherwise. In this case the pool is owned by a remote system so
+// "address within this Pool" means that the address has been
+// allocated by a previous call to AssignNext().
 func (p NetboxPool) Contains(ip net.IP) bool {
-	return false
+	_, allocated := p.addressesInUse[ip.String()]
+	return allocated
 }
