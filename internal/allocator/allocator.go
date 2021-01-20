@@ -1,5 +1,5 @@
 // Copyright 2017 Google Inc.
-// Copyright 2020 Acnodal Inc.
+// Copyright 2020,2021 Acnodal Inc.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -32,7 +32,6 @@ type Allocator struct {
 type alloc struct {
 	pool string
 	ip   net.IP
-	Key
 }
 
 // New returns an Allocator managing no pools.
@@ -98,10 +97,6 @@ func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
 		return "", fmt.Errorf("%q belongs to group %s but desired group is %s", ip, pool, desiredGroup)
 	}
 
-	sk := &Key{
-		Sharing: SharingKey(svc),
-	}
-
 	// Does the IP already have allocs? If so, needs to be the same
 	// sharing key, and have non-overlapping ports. If not, the proposed
 	// IP needs to be allowed by configuration.
@@ -115,7 +110,6 @@ func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
 	alloc := &alloc{
 		pool: pool,
 		ip:   ip,
-		Key:  *sk,
 	}
 	a.assign(svc, alloc)
 	return pool, nil
@@ -152,9 +146,6 @@ func (a *Allocator) AllocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 		return nil, fmt.Errorf("unknown pool %q", poolName)
 	}
 
-	sk := &Key{
-		Sharing: SharingKey(svc),
-	}
 	ip, err := pool.AssignNext(svc)
 	if err != nil {
 		// Woops, no IPs :( Fail.
@@ -164,7 +155,6 @@ func (a *Allocator) AllocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 	alloc := &alloc{
 		pool: poolName,
 		ip:   ip,
-		Key:  *sk,
 	}
 	a.assign(svc, alloc)
 
