@@ -107,7 +107,6 @@ type Config struct {
 }
 
 type svcKey string
-type cmKey string
 type synced string
 
 // New connects to masterAddr, using kubeconfig to authenticate.
@@ -312,23 +311,25 @@ func (c *Client) maybeUpdateService(was, is *corev1.Service) error {
 		err        error
 	)
 
-	if !(reflect.DeepEqual(was.Annotations, is.Annotations) && reflect.DeepEqual(was.Spec, is.Spec)) {
-		svcUpdated, err = c.client.CoreV1().Services(is.Namespace).Update(context.TODO(), is, metav1.UpdateOptions{})
+	if !reflect.DeepEqual(was.Status, is.Status) {
+		svcUpdated, err = c.client.CoreV1().Services(is.Namespace).UpdateStatus(context.TODO(), is, metav1.UpdateOptions{})
 		if err != nil {
-			c.logger.Log("op", "updateService", "error", err, "msg", "failed to update service")
+			c.logger.Log("op", "updateServiceStatus", "error", err, "msg", "failed to update service status")
 			return err
 		}
 	}
-	if !reflect.DeepEqual(was.Status, is.Status) {
-		st := is.Status.DeepCopy()
+	if !(reflect.DeepEqual(was.Annotations, is.Annotations) && reflect.DeepEqual(was.Spec, is.Spec)) {
+		ann := is.Annotations
+		spec := is.Spec.DeepCopy()
 		if svcUpdated != nil {
 			svcUpdated.DeepCopyInto(is)
 		} else {
 			c.logger.Log("msg", "svcUpdated is nil")
 		}
-		st.DeepCopyInto(&is.Status)
-		if _, err = c.client.CoreV1().Services(is.Namespace).UpdateStatus(context.TODO(), is, metav1.UpdateOptions{}); err != nil {
-			c.logger.Log("op", "updateServiceStatus", "error", err, "msg", "failed to update service status")
+		is.Annotations = ann
+		spec.DeepCopyInto(&is.Spec)
+		if _, err = c.client.CoreV1().Services(is.Namespace).Update(context.TODO(), is, metav1.UpdateOptions{}); err != nil {
+			c.logger.Log("op", "updateService", "error", err, "msg", "failed to update service")
 			return err
 		}
 	}
