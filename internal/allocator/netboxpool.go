@@ -1,5 +1,5 @@
 // Copyright 2017 Google Inc.
-// Copyright 2020 Acnodal Inc.
+// Copyright 2020,2021 Acnodal Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -61,7 +61,7 @@ func NewNetboxPool(rawurl string, tenant string) (*NetboxPool, error) {
 	return &NetboxPool{
 		url:            rawurl,
 		userToken:      userToken,
-		netbox:         *netbox.NewNetbox(url.String(), tenant, userToken),
+		netbox:         netbox.NewNetbox(url.String(), tenant, userToken),
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
