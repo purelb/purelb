@@ -17,6 +17,7 @@
 package acnodal
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net/url"
 	"os"
@@ -198,6 +199,7 @@ func NewEGW(groupURL string) (EGW, error) {
 			"accept":       "application/json",
 		}).
 		SetBasicAuth(username, password).
+		SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}). // FIXME: figure out how to *not* disable cert checks
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 
 	// Initialize the EGW instance
