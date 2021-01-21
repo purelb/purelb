@@ -247,7 +247,7 @@ func parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 		// Initialize the EGW proxy
 		egw, err := acnodal.NewEGW(group.EGW.URL)
 		if err != nil {
-			return nil, fmt.Errorf("Can't initialize the EGW proxy")
+			return nil, err
 		}
 
 		ret, err := NewEGWPool(egw, group.EGW.Aggregation)

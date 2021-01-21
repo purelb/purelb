@@ -19,6 +19,7 @@ package acnodal
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/go-resty/resty/v2"
@@ -179,6 +180,16 @@ func NewEGW(groupURL string) (EGW, error) {
 	}
 	baseURL.Path = "/"
 
+	// Make sure that we've got credentials
+	username, ok := os.LookupEnv("EGW_WS_USERNAME")
+	if !ok {
+		return nil, fmt.Errorf("EGW_WS_USERNAME not set, can't connect to the EGW")
+	}
+	password, ok := os.LookupEnv("EGW_WS_PASSWORD")
+	if !ok {
+		return nil, fmt.Errorf("EGW_WS_PASSWORD not set, can't connect to the EGW")
+	}
+
 	// Set up a REST client to talk to the EGW
 	r := resty.New().
 		SetHostURL(baseURL.String()).
@@ -186,6 +197,7 @@ func NewEGW(groupURL string) (EGW, error) {
 			"Content-Type": "application/json",
 			"accept":       "application/json",
 		}).
+		SetBasicAuth(username, password).
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 
 	// Initialize the EGW instance
