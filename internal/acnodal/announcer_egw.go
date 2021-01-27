@@ -222,7 +222,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	return err
 }
 
-func (a *announcer) DeleteBalancer(name, reason string, addr net.IP) error {
+func (a *announcer) DeleteBalancer(name, reason string, addr *v1.LoadBalancerIngress) error {
 	return nil
 }
 

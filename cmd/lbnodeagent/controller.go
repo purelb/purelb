@@ -16,8 +16,6 @@
 package main
 
 import (
-	"net"
-
 	"purelb.io/internal/acnodal"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
@@ -35,7 +33,7 @@ type controller struct {
 	myNode     string
 	myNodeAddr string
 	announcers []lbnodeagent.Announcer
-	svcIP      map[string]net.IP // service "namespace/name" -> assigned IP
+	svcIP      map[string]*v1.LoadBalancerIngress // service "namespace/name" -> assigned ingress
 }
 
 // NewController configures a new controller. If error is non-nil then
@@ -49,7 +47,7 @@ func NewController(l log.Logger, myNode string, myNodeAddr string) (*controller,
 			local.NewAnnouncer(l, myNode),
 			acnodal.NewAnnouncer(l, myNode, myNodeAddr),
 		},
-		svcIP: map[string]net.IP{},
+		svcIP: map[string]*v1.LoadBalancerIngress{},
 	}
 
 	return con, nil
@@ -72,9 +70,9 @@ func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8
 		return c.deleteBalancer(nsName, "noIPAllocated")
 	}
 
-	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
+	lbIP := &svc.Status.LoadBalancer.Ingress[0]
 	if lbIP == nil {
-		c.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP)
+		c.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP")
 		return c.deleteBalancer(nsName, "invalidIP")
 	}
 

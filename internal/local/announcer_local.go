@@ -151,7 +151,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal {
 			l.Log("op", "setBalancer", "error", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster")
 			svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
-			return a.DeleteBalancer(nsName, "ClusterLocal", lbIP)
+			return a.DeleteBalancer(nsName, "ClusterLocal", &svc.Status.LoadBalancer.Ingress[0])
 		}
 
 		// the service address is local, i.e., it's within the same subnet
@@ -177,7 +177,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 			// We lost the election so we'll withdraw any announcement that
 			// we might have been making
 			l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName)
-			return a.DeleteBalancer(nsName, "lostElection", lbIP)
+			return a.DeleteBalancer(nsName, "lostElection", &svc.Status.LoadBalancer.Ingress[0])
 		}
 	} else {
 
@@ -189,7 +189,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		// Yes, in all other cases
 		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, a.myNode) {
 			l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
-			return a.DeleteBalancer(nsName, "noEndpoints", lbIP)
+			return a.DeleteBalancer(nsName, "noEndpoints", &svc.Status.LoadBalancer.Ingress[0])
 		}
 
 		// add this address to the "dummy" interface so routing software
@@ -220,7 +220,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 // have seen calls to DeleteBalancer with services that weren't in the
 // svcAdvs map, so the service's address wasn't removed. For now, this
 // is a "belt and suspenders" double-check.
-func (a *announcer) DeleteBalancer(nsName, reason string, addr net.IP) error {
+func (a *announcer) DeleteBalancer(nsName, reason string, addr *v1.LoadBalancerIngress) error {
 
 	// if the service isn't in our database then we probably weren't
 	// announcing it so we can't withdraw it unless we were given an
@@ -238,7 +238,10 @@ func (a *announcer) DeleteBalancer(nsName, reason string, addr net.IP) error {
 		// the caller has provided an IP address, though, we can clean up
 		// by deleting the address.
 		a.logger.Log("event", "withdrawAnnouncement", "msg", "Not my service", "service", nsName, "reason", reason, "ip", addr, "knownServices", a.svcAdvs)
-		svcAddr = addr
+		svcAddr = net.ParseIP(addr.IP)
+		if svcAddr == nil {
+			return nil
+		}
 	}
 
 	// delete the service from Prometheus, i.e., it won't show up in the

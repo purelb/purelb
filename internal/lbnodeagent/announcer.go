@@ -15,8 +15,6 @@
 package lbnodeagent
 
 import (
-	"net"
-
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/election"
@@ -29,7 +27,7 @@ type Announcer interface {
 	SetConfig(*purelbv1.Config) error
 	SetClient(*k8s.Client)
 	SetBalancer(*v1.Service, *v1.Endpoints) error
-	DeleteBalancer(string, string, net.IP) error
+	DeleteBalancer(string, string, *v1.LoadBalancerIngress) error
 	SetElection(*election.Election)
 	Shutdown()
 }
