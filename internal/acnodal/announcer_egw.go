@@ -130,7 +130,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	}
 
 	// connect to the EGW
-	egw, err := NewEGW(group.URL)
+	egw, err := NewEGW(*group)
 	if err != nil {
 		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
 		return fmt.Errorf("Connection init to EGW failed")

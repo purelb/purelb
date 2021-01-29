@@ -60,6 +60,10 @@ spec:
                       default: default
                     auth-creds:
                       type: string
+                    ws-username:
+                      type: string
+                    ws-password:
+                      type: string
             status:
               type: object
               properties:
@@ -426,18 +430,6 @@ spec:
               fieldPath: metadata.namespace
         - name: ML_GROUP
           value: 8sb7ikA5qHwQQqxc
-        - name: EGW_WS_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: egw-web-service
-              key: username
-              optional: true
-        - name: EGW_WS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: egw-web-service
-              key: password
-              optional: true
         image: registry.gitlab.com/purelb/purelb/lbnodeagent:latest
         imagePullPolicy: Always
         name: lbnodeagent
@@ -499,18 +491,6 @@ spec:
             secretKeyRef:
               name: netbox-client
               key: user-token
-              optional: true
-        - name: EGW_WS_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: egw-web-service
-              key: username
-              optional: true
-        - name: EGW_WS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: egw-web-service
-              key: password
               optional: true
         imagePullPolicy: Always
         name: allocator

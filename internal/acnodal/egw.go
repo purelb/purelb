@@ -20,11 +20,12 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 
 	"github.com/go-resty/resty/v2"
 	v1 "k8s.io/api/core/v1"
+
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 // EGW represents one connection to an Acnodal Enterprise Gateway.
@@ -171,25 +172,15 @@ type EGWEndpointResponse struct {
 
 // New initializes a new EGW instance. If error is non-nil then the
 // instance shouldn't be used.
-func NewEGW(groupURL string) (EGW, error) {
+func NewEGW(group purelbv1.ServiceGroupEGWSpec) (EGW, error) {
 	// Use the hostname from the service group, but reset the path.  EGW
 	// and Netbox each have their own API URL schemes so we only need
 	// the protocol, host, port, credentials, etc.
-	baseURL, err := url.Parse(groupURL)
+	baseURL, err := url.Parse(group.URL)
 	if err != nil {
 		return nil, err
 	}
 	baseURL.Path = "/"
-
-	// Make sure that we've got credentials
-	username, ok := os.LookupEnv("EGW_WS_USERNAME")
-	if !ok {
-		return nil, fmt.Errorf("EGW_WS_USERNAME not set, can't connect to the EGW")
-	}
-	password, ok := os.LookupEnv("EGW_WS_PASSWORD")
-	if !ok {
-		return nil, fmt.Errorf("EGW_WS_PASSWORD not set, can't connect to the EGW")
-	}
 
 	// Set up a REST client to talk to the EGW
 	r := resty.New().
@@ -198,12 +189,12 @@ func NewEGW(groupURL string) (EGW, error) {
 			"Content-Type": "application/json",
 			"accept":       "application/json",
 		}).
-		SetBasicAuth(username, password).
+		SetBasicAuth(group.WSUsername, group.WSPassword).
 		SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}). // FIXME: figure out how to *not* disable cert checks
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 
 	// Initialize the EGW instance
-	return &egw{http: *r, groupURL: groupURL}, nil
+	return &egw{http: *r, groupURL: group.URL}, nil
 }
 
 // GetAccount requests an account from the EGW.

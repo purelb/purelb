@@ -51,6 +51,10 @@ spec:
                       default: default
                     auth-creds:
                       type: string
+                    ws-username:
+                      type: string
+                    ws-password:
+                      type: string
             status:
               type: object
               properties:

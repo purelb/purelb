@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
+
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 var (
@@ -50,7 +52,7 @@ func TestMain(m *testing.M) {
 }
 
 func MustEGW(t *testing.T) EGW {
-	e, err := NewEGW("")
+	e, err := NewEGW(purelbv1.ServiceGroupEGWSpec{})
 	if err != nil {
 		t.Fatal("initializing EGW", err)
 	}
