@@ -46,13 +46,13 @@ func CleanupFilter(log log.Logger, nic string, direction string) error {
 // SetupNIC adds the PFC components to nic. direction should be either
 // "ingress" or "egress". qid should be 0 or 1. flags is typically
 // either 8 or 9 where 9 adds debug logging.
-func SetupNIC(log log.Logger, nic string, direction string, qid int, flags int) error {
+func SetupNIC(log log.Logger, nic string, function string, direction string, qid int, flags int) error {
 
 	// tc qdisc add dev nic clsact
 	addQueueDiscipline(log, nic)
 
 	// tc filter add dev nic ingress bpf direct-action object-file pfc_ingress_tc.o sec .text
-	addFilter(log, nic, direction)
+	addFilter(log, nic, function, direction)
 
 	// ./cli_cfg set nic 0 0 9 "nic rx"
 	configurePFC(log, nic, qid, flags)
@@ -65,9 +65,9 @@ func addQueueDiscipline(log log.Logger, nic string) error {
 	return runScript(log, fmt.Sprintf("/usr/sbin/tc qdisc list dev %[1]s clsact | /usr/bin/grep clsact || /usr/sbin/tc qdisc add dev %[1]s clsact", nic))
 }
 
-func addFilter(log log.Logger, nic string, direction string) error {
-	// add the pfc_{ingress|egress}_tc filter to the nic if it's not already there
-	return runScript(log, fmt.Sprintf("/usr/sbin/tc filter show dev %[1]s %[2]s | /usr/bin/grep pfc_%[2]s_tc || /usr/sbin/tc filter add dev %[1]s %[2]s bpf direct-action object-file /opt/acnodal/bin/pfc_%[2]s_tc.o sec .text", nic, direction))
+func addFilter(log log.Logger, nic string, function string, direction string) error {
+	// add the pfc_{encap|decap}_tc filter to the nic if it's not already there
+	return runScript(log, fmt.Sprintf("/usr/sbin/tc filter show dev %[1]s %[3]s | /usr/bin/grep pfc_%[2]s_tc || /usr/sbin/tc filter add dev %[1]s %[3]s bpf direct-action object-file /opt/acnodal/bin/pfc_%[2]s_tc.o sec .text", nic, function, direction))
 }
 
 func configurePFC(log log.Logger, nic string, qid int, flags int) error {

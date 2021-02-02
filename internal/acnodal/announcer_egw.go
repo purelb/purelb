@@ -237,12 +237,12 @@ func (a *announcer) Shutdown() {
 // communicate with the Acnodal EGW.
 func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, groupID uint16, serviceID uint16, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
 	// cni0 is easy - its name is hard-coded
-	pfc.SetupNIC(a.logger, CNI_INTERFACE, "egress", 1, 0)
+	pfc.SetupNIC(a.logger, CNI_INTERFACE, "encap", "ingress", 0, 20)
 
 	// figure out which interface is the default and set that up, too
 	defaultNIC, err := local.DefaultInterface(local.AddrFamily(net.ParseIP(address.IP)))
 	if err == nil {
-		pfc.SetupNIC(a.logger, defaultNIC.Attrs().Name, "ingress", 0, 1)
+		pfc.SetupNIC(a.logger, defaultNIC.Attrs().Name, "decap", "ingress", 0, 1)
 	} else {
 		a.logger.Log("op", "AnnounceEndpoint", "error", err)
 	}
