@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y curl libelf1 iproute2
 # copy the packet forwarding components from the pfc project
 WORKDIR /opt/acnodal
 RUN curl -L -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-https://gitlab.com/api/v4/projects/acnodal%2Fpacket-forwarding-component/jobs/artifacts/main/raw/pkg/pfc.tar.bz2?job=make | \
+https://gitlab.com/api/v4/projects/acnodal%2Fpacket-forwarding-component/jobs/1003356860/artifacts/pkg/pfc.tar.bz2 | \
 tar -xjf -
 
 # The softlink is because variable interpolation happens at run-time
