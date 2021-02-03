@@ -1,0 +1,85 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: purelb
+    component: allocator
+  name: allocator
+  namespace: purelb
+spec:
+  ports:
+  - name: monitoring
+    port: 7472
+    protocol: TCP
+    targetPort: 7472
+  selector:
+    app: purelb
+    component: allocator
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: purelb
+    component: lbnodeagent
+  name: lbnodeagent
+  namespace: purelb
+spec:
+  ports:
+  - name: monitoring
+    port: 7472
+    protocol: TCP
+    targetPort: 7472
+  selector:
+    app: purelb
+    component: lbnodeagent
+  type: ClusterIP
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    prometheus: default
+  name: purelb-allocator
+  namespace: purelb
+spec:
+  endpoints:
+  - interval: 60s
+    path: /metrics
+    scrapeTimeout: 30s
+    targetPort: 7472
+  jobLabel: purelb
+  namespaceSelector:
+    matchNames:
+    - purelb
+  selector:
+    matchLabels:
+      app: purelb
+      component: allocator
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    prometheus: default
+  name: purelb-lbnodeagent
+  namespace: purelb
+spec:
+  endpoints:
+  - interval: 60s
+    path: /metrics
+    scrapeTimeout: 30s
+    targetPort: 7472
+  jobLabel: purelb
+  namespaceSelector:
+    matchNames:
+    - purelb
+  selector:
+    matchLabels:
+      app: purelb
+      component: lbnodeagent
