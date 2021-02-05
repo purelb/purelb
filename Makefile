@@ -1,5 +1,5 @@
 REPO ?= registry.gitlab.com/purelb
-PREFIX = purelb
+PREFIX ?= purelb
 SUFFIX = dev
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op

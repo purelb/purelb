@@ -8,9 +8,8 @@ variables:
   # https://docs.gitlab.com/12.10/ee/ci/docker/using_docker_build.html#tls-enabled
   DOCKER_TLS_CERTDIR: "/certs"
 before_script:
-- apk add make
+- apk add make git
 - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
-- git config --global url."https://$PFC_DEPLOY_USER:$PFC_DEPLOY_TOKEN@gitlab.com/".insteadOf "https://gitlab.com/"
 - mkdir -p ~/.ssh && chmod 700 ~/.ssh
 - ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
 
@@ -19,15 +18,13 @@ stages:
   - image
   - manifest
 
-format:
+check:
   stage: test
   image: golang:latest
-  before_script: []
-  script:
-    - make GITLAB_TOKEN=foobar deployments/purelb-complete.yaml check
-  artifacts:
-    paths:
-      - deployments/purelb-complete.yaml
+  services: []
+  before_script:
+  - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
+  script: make check
 
 allocatorarm64:
   stage: image
@@ -68,3 +65,7 @@ manifest:
     - docker manifest push $ALLOCATOR_IMG:ci
     - docker manifest create $LBNODEAGENT_IMG:ci $LBNODEAGENT_IMG:amd64-ci $LBNODEAGENT_IMG:arm32-ci $LBNODEAGENT_IMG:arm64-ci
     - docker manifest push $LBNODEAGENT_IMG:ci
+    - make generate-manifest
+  artifacts:
+    paths:
+      - deployments/purelb-complete.yaml
