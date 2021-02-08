@@ -8,7 +8,7 @@ variables:
   # https://docs.gitlab.com/12.10/ee/ci/docker/using_docker_build.html#tls-enabled
   DOCKER_TLS_CERTDIR: "/certs"
 before_script:
-- apk add make
+- apk add make git
 - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
 
 stages:
