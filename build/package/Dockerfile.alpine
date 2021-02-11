@@ -34,9 +34,6 @@ LABEL command=${cmd}
 
 COPY --from=builder ${bin} ${bin}
 
-# copy the packet forwarding components from the pfc dockerfile
-COPY --from=registry.gitlab.com/acnodal/packet-forwarding-component/pfc:latest /opt/acnodal/bin/* ${DEST}/
-
 # The softlink is because variable interpolation happens at run-time
 # so if you have variables in the entrypoint string they won't get
 # resolved to their values.  This lets us have a hard-coded entrypoint
