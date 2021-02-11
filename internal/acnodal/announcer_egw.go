@@ -198,7 +198,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 					// Now that we've got the service response we have enough
 					// info to set up the tunnel
-					err = a.setupPFC(address, myTunnel.TunnelID, account.Account.Spec.GroupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, group.AuthCreds)
+					err = a.setupPFC(address, myTunnel.TunnelID, account.Account.Spec.GroupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, myTunnel.TunnelKey)
 					if err != nil {
 						l.Log("op", "SetupPFC", "error", err)
 					}

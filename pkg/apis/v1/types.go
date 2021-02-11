@@ -62,7 +62,6 @@ type ServiceGroupLocalSpec struct {
 type ServiceGroupEGWSpec struct {
 	URL         string `json:"url"`
 	Aggregation string `json:"aggregation"`
-	AuthCreds   string `json:"auth-creds"`
 	WSUsername  string `json:"ws-username"`
 	WSPassword  string `json:"ws-password"`
 }

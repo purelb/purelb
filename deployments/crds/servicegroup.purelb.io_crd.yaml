@@ -49,8 +49,6 @@ spec:
                     aggregation:
                       type: string
                       default: default
-                    auth-creds:
-                      type: string
                     ws-username:
                       type: string
                     ws-password:
