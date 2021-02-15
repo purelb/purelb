@@ -19,6 +19,7 @@ import (
 	"net"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"purelb.io/internal/acnodal"
 	purelbv1 "purelb.io/pkg/apis/v1"
@@ -45,8 +46,8 @@ func New() *Allocator {
 }
 
 // SetPools updates the set of address pools that the allocator owns.
-func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
-	pools, err := parseConfig(groups)
+func (a *Allocator) SetPools(myCluster types.UID, groups []*purelbv1.ServiceGroup) error {
+	pools, err := parseConfig(myCluster, groups)
 	if err != nil {
 		return err
 	}
@@ -202,11 +203,11 @@ func poolFor(pools map[string]Pool, ip net.IP) string {
 	return ""
 }
 
-func parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
+func parseConfig(myCluster types.UID, groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
 	pools := map[string]Pool{}
 
 	for i, group := range groups {
-		pool, err := parseGroup(group.Name, group.Spec)
+		pool, err := parseGroup(myCluster, group.Spec)
 		if err != nil {
 			return nil, fmt.Errorf("parsing address pool #%d: %s", i+1, err)
 		}
@@ -230,7 +231,7 @@ func parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
 	return pools, nil
 }
 
-func parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
+func parseGroup(myCluster types.UID, group purelbv1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
 		ret, err := NewLocalPool(group.Local.Pool, group.Local.Subnet, group.Local.Aggregation)
 		if err != nil {
@@ -245,7 +246,7 @@ func parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 		return *ret, nil
 	} else if group.EGW != nil {
 		// Initialize the EGW proxy
-		egw, err := acnodal.NewEGW(*group.EGW)
+		egw, err := acnodal.NewEGW(myCluster, *group.EGW)
 		if err != nil {
 			return nil, err
 		}

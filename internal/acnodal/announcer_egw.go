@@ -21,6 +21,7 @@ import (
 	"os/exec"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
@@ -50,6 +51,7 @@ type announcer struct {
 	// URL. The value is a pseudo-set of that service's endpoints that
 	// we have announced.
 	announcements map[string]map[string]struct{} // key: endpoint create URL, value: pseudo-set of key: endpoint URL, value: none
+	myCluster     types.UID
 }
 
 // NewAnnouncer returns a new Acnodal EGW Announcer.
@@ -66,6 +68,8 @@ func (a *announcer) SetClient(client *k8s.Client) {
 
 // SetConfig responds to configuration changes.
 func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
+	a.myCluster = cfg.MyCluster
+
 	// we'll announce for any an "EGW" *service groups*. At this point
 	// there's no egw node agent-specific config so we don't require an
 	// EGW LBNodeAgent resource, just one or more EGW ServiceGroup.
@@ -140,7 +144,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	}
 
 	// connect to the EGW
-	egw, err := NewEGW(*group)
+	egw, err := NewEGW(a.myCluster, *group)
 	if err != nil {
 		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
 		return fmt.Errorf("Connection init to EGW failed")

@@ -134,6 +134,13 @@ rules:
   - create
   - patch
 - apiGroups:
+  - ''
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+- apiGroups:
   - policy
   resourceNames:
   - allocator
@@ -184,6 +191,13 @@ rules:
   verbs:
   - create
   - patch
+- apiGroups:
+  - ''
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
 - apiGroups:
   - policy
   resourceNames:

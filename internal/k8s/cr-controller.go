@@ -16,12 +16,15 @@
 package k8s
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/go-kit/kit/log"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -66,6 +69,8 @@ type Controller struct {
 	recorder record.EventRecorder
 
 	logger log.Logger
+
+	myCluster types.UID
 }
 
 // NewCRController returns a new controller that watches for changes
@@ -136,12 +141,20 @@ func NewCRController(
 // workqueue and wait for workers to finish processing their current
 // work items.
 func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
+	var err error
 	defer utilruntime.HandleCrash()
 	defer c.workqueue.ShutDown()
 
 	// Wait for the caches to be synced before starting workers
 	if ok := cache.WaitForCacheSync(stopCh, c.sgsSynced, c.lbnasSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
+	}
+
+	// Get and cache the local cluster ID so we don't need to do it
+	// every time we get a config change
+	c.myCluster, err = c.GetClusterID()
+	if err != nil {
+		return err
 	}
 
 	// Launch workers to process ServiceGroup resources
@@ -225,7 +238,7 @@ func (c *Controller) processNextWorkItem() bool {
 func (c *Controller) syncHandler() error {
 	var (
 		err error
-		cfg purelbv1.Config = purelbv1.Config{}
+		cfg purelbv1.Config = purelbv1.Config{MyCluster: c.myCluster}
 	)
 
 	cfg.Groups, err = c.sgLister.ServiceGroups("").List(labels.Everything())
@@ -264,4 +277,15 @@ func (c *Controller) enqueueResource(thing string, obj interface{}) {
 		return
 	}
 	c.workqueue.Add(thing + "/" + key)
+}
+
+// GetClusterID returns the "cluster id" which in this case is the UID
+// of the kube-system namespace.
+// https://groups.google.com/g/kubernetes-sig-architecture/c/mVGobfD4TpY/m/nkdbkX1iBwAJ
+func (c *Controller) GetClusterID() (types.UID, error) {
+	ns, err := c.kubeclientset.CoreV1().Namespaces().Get(context.TODO(), "kube-system", metav1.GetOptions{})
+	if err != nil {
+		return types.UID(""), err
+	}
+	return ns.UID, nil
 }

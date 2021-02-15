@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
@@ -43,6 +44,7 @@ type egw struct {
 	http      resty.Client
 	groupURL  string
 	authToken string
+	myCluster types.UID
 }
 
 // Links holds a map of URL strings.
@@ -149,7 +151,8 @@ type EGWGroupResponse struct {
 // EGWServiceCreate is the body of the HTTP request to create a load
 // balancer service.
 type EGWServiceCreate struct {
-	Service EGWService `json:"service"`
+	ClusterID types.UID  `json:"cluster-id"`
+	Service   EGWService `json:"service"`
 }
 
 // EGWServiceResponse is the body of the HTTP response to a request to
@@ -163,7 +166,8 @@ type EGWServiceResponse struct {
 // EGWEndpointCreate is the body of the HTTP request to create a load
 // balancer endpoint.
 type EGWEndpointCreate struct {
-	Endpoint EGWEndpoint
+	ClusterID types.UID `json:"cluster-id"`
+	Endpoint  EGWEndpoint
 }
 
 // EGWEndpointResponse is the body of the HTTP response to a request to
@@ -176,7 +180,7 @@ type EGWEndpointResponse struct {
 
 // New initializes a new EGW instance. If error is non-nil then the
 // instance shouldn't be used.
-func NewEGW(group purelbv1.ServiceGroupEGWSpec) (EGW, error) {
+func NewEGW(myCluster types.UID, group purelbv1.ServiceGroupEGWSpec) (EGW, error) {
 	// Use the hostname from the service group, but reset the path.  EGW
 	// and Netbox each have their own API URL schemes so we only need
 	// the protocol, host, port, credentials, etc.
@@ -198,7 +202,7 @@ func NewEGW(group purelbv1.ServiceGroupEGWSpec) (EGW, error) {
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 
 	// Initialize the EGW instance
-	return &egw{http: *r, groupURL: group.URL}, nil
+	return &egw{http: *r, groupURL: group.URL, myCluster: myCluster}, nil
 }
 
 // GetAccount requests an account from the EGW.
@@ -246,7 +250,8 @@ func (n *egw) AnnounceService(url string, name string, sPorts []v1.ServicePort) 
 	// send the request
 	response, err := n.http.R().
 		SetBody(EGWServiceCreate{
-			Service: EGWService{ObjectMeta: ObjectMeta{Name: name}, Spec: EGWServiceSpec{Ports: sPorts}}}).
+			ClusterID: n.myCluster,
+			Service:   EGWService{ObjectMeta: ObjectMeta{Name: name}, Spec: EGWServiceSpec{Ports: sPorts}}}).
 		SetResult(EGWServiceResponse{}).
 		Post(url)
 	if err != nil {
@@ -278,7 +283,9 @@ func (n *egw) FetchService(url string) (EGWServiceResponse, error) {
 // AnnounceEndpoint announces an endpoint to the EGW.
 func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error) {
 	response, err := n.http.R().
-		SetBody(EGWEndpointCreate{Endpoint: EGWEndpoint{Spec: EGWEndpointSpec{Address: address, Port: ePort, NodeAddress: nodeAddress}}}).
+		SetBody(EGWEndpointCreate{
+			ClusterID: n.myCluster,
+			Endpoint:  EGWEndpoint{Spec: EGWEndpointSpec{Address: address, Port: ePort, NodeAddress: nodeAddress}}}).
 		SetError(EGWEndpointResponse{}).
 		SetResult(EGWEndpointResponse{}).
 		Post(url)

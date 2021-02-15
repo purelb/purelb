@@ -72,7 +72,7 @@ func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
 		return k8s.SyncStateError
 	}
 
-	if err := c.ips.SetPools(cfg.Groups); err != nil {
+	if err := c.ips.SetPools(cfg.MyCluster, cfg.Groups); err != nil {
 		c.logger.Log("op", "setConfig", "error", err)
 		return k8s.SyncStateError
 	}

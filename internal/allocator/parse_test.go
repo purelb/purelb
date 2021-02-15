@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"k8s.io/apimachinery/pkg/types"
 
 	v1 "purelb.io/pkg/apis/v1"
 )
@@ -87,7 +88,7 @@ func TestParse(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
-			got, err := parseConfig(test.raw)
+			got, err := parseConfig(types.UID(""), test.raw)
 			if err != nil && test.want != nil {
 				t.Errorf("%q: parse failed: %s", test.desc, err)
 				return
