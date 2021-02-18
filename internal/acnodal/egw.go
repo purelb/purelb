@@ -81,6 +81,10 @@ type EGWServiceSpec struct {
 	Address   string           `json:"public-address,omitempty"`
 	Ports     []v1.ServicePort `json:"public-ports"`
 	ServiceID uint16           `json:"service-id"`
+
+	// TunnelKey authenticates the client with the EGW. It must be a
+	// base64-encoded 128-bit value.
+	TunnelKey string `json:"tunnel-key,omitempty"`
 }
 
 // EGWTunnelEndpoint is an Endpoint on the EGW.
@@ -94,10 +98,6 @@ type EGWTunnelEndpoint struct {
 	// TunnelID distinguishes the traffic using this tunnel from the
 	// traffic using other tunnels that end on the same host.
 	TunnelID uint32 `json:"tunnel-id"`
-
-	// TunnelKey authenticates the client with the EGW. It must be a
-	// base64-encoded 128-bit value.
-	TunnelKey string `json:"tunnel-key,omitempty"`
 }
 
 type EGWServiceStatus struct {
