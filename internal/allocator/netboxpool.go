@@ -129,12 +129,13 @@ func (p NetboxPool) Assign(ip net.IP, service *v1.Service) error {
 }
 
 // Release releases an IP so it can be assigned again.
-func (p NetboxPool) Release(ip net.IP, service string) {
+func (p NetboxPool) Release(ip net.IP, service string) error {
 	ipstr := ip.String()
 	delete(p.addressesInUse[ipstr], service)
 	if len(p.addressesInUse[ipstr]) == 0 {
 		delete(p.addressesInUse, ipstr)
 	}
+	return nil
 }
 
 // InUse returns the count of addresses that currently have services

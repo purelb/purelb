@@ -61,7 +61,10 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 			if len(svc.Status.LoadBalancer.Ingress) > 0 {
 				log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", "not a load balancer")
 				c.client.Infof(svc, "IPReleased", fmt.Sprintf("Service is %s, not a LoadBalancer", svc.Spec.Type))
-				c.ips.Unassign(nsName)
+				if err := c.ips.Unassign(nsName); err != nil {
+					c.logger.Log("event", "unassign", "error", err)
+					return k8s.SyncStateError
+				}
 				svc.Status.LoadBalancer.Ingress = nil
 			}
 

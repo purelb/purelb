@@ -135,7 +135,7 @@ func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
 }
 
 // Release releases an IP so it can be assigned again.
-func (p LocalPool) Release(ip net.IP, service string) {
+func (p LocalPool) Release(ip net.IP, service string) error {
 	ipstr := ip.String()
 	delete(p.addressesInUse[ipstr], service)
 	if len(p.addressesInUse[ipstr]) == 0 {
@@ -150,6 +150,7 @@ func (p LocalPool) Release(ip net.IP, service string) {
 	if len(p.portsInUse[ipstr]) == 0 {
 		delete(p.portsInUse, ipstr)
 	}
+	return nil
 }
 
 // InUse returns the count of addresses that currently have services

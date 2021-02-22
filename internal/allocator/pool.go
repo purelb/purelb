@@ -42,7 +42,7 @@ type Pool interface {
 	Available(net.IP, *v1.Service) error
 	AssignNext(*v1.Service) (net.IP, error)
 	Assign(net.IP, *v1.Service) error
-	Release(net.IP, string)
+	Release(net.IP, string) error
 	InUse() int
 	SharingKey(net.IP) *Key
 	Overlaps(Pool) bool
