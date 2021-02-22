@@ -79,10 +79,13 @@ func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
 
 // assign unconditionally updates internal state to reflect svc's
 // allocation of alloc. Caller must ensure that this call is safe.
-func (a *Allocator) assign(service *v1.Service, alloc *alloc) error {
+func (a *Allocator) assign(service *v1.Service, poolName string, ip net.IP) error {
 	svc := namespacedName(service)
 
-	a.Unassign(svc)
+	alloc := &alloc{
+		pool: poolName,
+		ip:   ip,
+	}
 	a.allocated[svc] = alloc
 
 	pool := a.pools[alloc.pool]
@@ -94,18 +97,72 @@ func (a *Allocator) assign(service *v1.Service, alloc *alloc) error {
 	return nil
 }
 
-// Assign assigns the requested ip to svc, if the assignment is
-// permissible by sharingKey.
-func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
-	// Check that the address belongs to a pool. If we've got a pool
-	// annotation then we'll use that; otherwise we'll have to try to
-	// figure it out by querying the pools
-	pool, exists := svc.Annotations[purelbv1.PoolAnnotation]
+// NotifyExisting notifies the allocator of an existing IP assignment,
+// for example, at startup time.
+func (a *Allocator) NotifyExisting(svc *v1.Service, ip net.IP) error {
+	nsName := namespacedName(svc)
+
+	// Get the pool name from our annotation
+	poolName, exists := svc.Annotations[purelbv1.PoolAnnotation]
 	if !exists {
-		pool = poolFor(a.pools, ip)
-		if pool == "" {
-			return "", fmt.Errorf("%q does not belong to any group", ip)
+		return fmt.Errorf("Service %s no pool", nsName)
+	}
+
+	// Tell the pool about the assignment
+	if _, havePool := a.pools[poolName]; !havePool {
+		return nil
+	} else {
+		fmt.Println("notify", poolName, nsName, ip.String())
+		return a.assign(svc, poolName, ip)
+	}
+}
+
+func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
+	desiredGroup := svc.Annotations[purelbv1.DesiredGroupAnnotation]
+
+	// If the user asked for a specific IP, try that.
+	if svc.Spec.LoadBalancerIP != "" {
+
+		// It doesn't make sense to use Spec.LoadBalancerIP *and*
+		// DesiredGroupAnnotation because Spec.LoadBalancerIP is more
+		// specific so DesiredGroupAnnotation can only cause problems. If
+		// you're using Spec.LoadBalancerIP then you don't need
+		// DesiredGroupAnnotation.
+		if desiredGroup != "" {
+			return "", nil, fmt.Errorf("spec.loadBalancerIP and DesiredGroupAnnotation are mutually exclusive, use Spec.LoadBalancerIP alone")
 		}
+
+		ip := net.ParseIP(svc.Spec.LoadBalancerIP)
+		if ip == nil {
+			return "", nil, fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
+		}
+		pool, err := a.AllocateSpecificIP(svc, ip)
+		if err != nil {
+			return "", nil, err
+		}
+		return pool, ip, nil
+	}
+
+	// Otherwise, did the user ask for a specific pool?
+	if desiredGroup != "" {
+		ip, err := a.AllocateFromPool(svc, desiredGroup)
+		if err != nil {
+			return "", nil, err
+		}
+		return desiredGroup, ip, nil
+	}
+
+	// Okay, in that case just bruteforce across all pools.
+	return a.Allocate(svc)
+}
+
+// AllocateSpecificIP assigns the requested ip to svc, if the assignment is
+// permissible by sharingKey.
+func (a *Allocator) AllocateSpecificIP(svc *v1.Service, ip net.IP) (string, error) {
+	// Check that the address belongs to a pool
+	pool := poolFor(a.pools, ip)
+	if pool == "" {
+		return "", fmt.Errorf("%q does not belong to any group", ip)
 	}
 
 	// Check that the address belongs to the requested pool
@@ -122,39 +179,17 @@ func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
 		return "", err
 	}
 
+	// If the service had an IP before, release it
+	if err := a.Unassign(namespacedName(svc)); err != nil {
+		return "", err
+	}
+
 	// Either the IP is entirely unused, or the requested use is
 	// compatible with existing uses. Assign!
-	alloc := &alloc{
-		pool: pool,
-		ip:   ip,
-	}
-	if err := a.assign(svc, alloc); err != nil {
+	if err := a.assign(svc, pool, ip); err != nil {
 		return "", err
 	}
 	return pool, nil
-}
-
-// Unassign frees the IP associated with service, if any.
-func (a *Allocator) Unassign(svc string) error {
-	al := a.allocated[svc]
-	if al == nil {
-		return fmt.Errorf("unknown service name: %s", svc)
-	}
-
-	// tell the pool that the address has been released. there might not
-	// be a pool, e.g., in the case of a config change that moves
-	// addresses from one pool to another
-	pool, tracked := a.pools[al.pool]
-	if tracked {
-		if err := pool.Release(al.ip, svc); err != nil {
-			return err
-		}
-		poolActive.WithLabelValues(al.pool).Set(float64(pool.InUse()))
-	}
-
-	delete(a.allocated, svc)
-
-	return nil
 }
 
 // AllocateFromPool assigns an available IP from pool to service.
@@ -172,11 +207,12 @@ func (a *Allocator) AllocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 		return nil, err
 	}
 
-	alloc := &alloc{
-		pool: poolName,
-		ip:   ip,
+	// If the service had an IP before, release it
+	if err := a.Unassign(namespacedName(svc)); err != nil {
+		return nil, err
 	}
-	if err := a.assign(svc, alloc); err != nil {
+
+	if err := a.assign(svc, poolName, ip); err != nil {
 		return nil, err
 	}
 
@@ -202,6 +238,32 @@ func (a *Allocator) Allocate(svc *v1.Service) (string, net.IP, error) {
 		return "default", ip, nil
 	}
 	return "", nil, err
+}
+
+// Unassign frees the IP associated with service, if any.
+func (a *Allocator) Unassign(svc string) error {
+	al := a.allocated[svc]
+	if al == nil {
+		// not much we can do here, but if we don't know about svc then it
+		// doesn't have an address so we don't need to do anything
+		fmt.Println("don't know about service", svc)
+		return nil
+	}
+
+	// tell the pool that the address has been released. there might not
+	// be a pool, e.g., in the case of a config change that moves
+	// addresses from one pool to another
+	pool, tracked := a.pools[al.pool]
+	if tracked {
+		if err := pool.Release(al.ip, svc); err != nil {
+			return err
+		}
+		poolActive.WithLabelValues(al.pool).Set(float64(pool.InUse()))
+	}
+
+	delete(a.allocated, svc)
+
+	return nil
 }
 
 // poolFor returns the pool that owns the requested IP, or "" if none.

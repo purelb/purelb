@@ -22,6 +22,7 @@ import (
 
 	"github.com/go-kit/kit/log"
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -264,7 +265,7 @@ func TestAssignment(t *testing.T) {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
 		alreadyHasIP := assigned(alloc, namespacedName(&service)) == test.ip
-		_, err := alloc.Assign(&service, ip)
+		_, err := alloc.AllocateSpecificIP(&service, ip)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%q should have caused an error, but did not", test.desc)
@@ -711,9 +712,19 @@ func TestAllocation(t *testing.T) {
 
 func TestPoolMetrics(t *testing.T) {
 	alloc := New(allocatorTestLogger)
-	alloc.pools = map[string]Pool{
-		"test": mustLocalPool(t, "1.2.3.4/30"),
-	}
+	alloc.SetClient(&testK8S{t: t})
+	alloc.SetPools([]*purelbv1.ServiceGroup{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test",
+			},
+			Spec: purelbv1.ServiceGroupSpec{
+				Local: &purelbv1.ServiceGroupLocalSpec{
+					Pool: "1.2.3.4/30",
+				},
+			},
+		},
+	})
 
 	tests := []struct {
 		desc       string
@@ -810,7 +821,7 @@ func TestPoolMetrics(t *testing.T) {
 		if ip == nil {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
-		_, err := alloc.Assign(&service, ip)
+		_, err := alloc.AllocateSpecificIP(&service, ip)
 
 		if err != nil {
 			t.Errorf("%q: Assign(%q, %q): %v", test.desc, test.svc, test.ip, err)
@@ -823,6 +834,136 @@ func TestPoolMetrics(t *testing.T) {
 			t.Errorf("%v; in-use %v. Expected %v", test.desc, value, test.ipsInUse)
 		}
 	}
+}
+
+// TestSpecificAddress tests allocations when a specific address is
+// requested
+func TestSpecificAddress(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
+
+	groups := []*purelbv1.ServiceGroup{
+		{ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			Spec: purelbv1.ServiceGroupSpec{
+				Local: &purelbv1.ServiceGroupLocalSpec{
+					Pool: "1.2.3.0/31",
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "alternate"},
+			Spec: purelbv1.ServiceGroupSpec{
+				Local: &purelbv1.ServiceGroupLocalSpec{
+					Pool: "3.2.1.0/31",
+				},
+			},
+		},
+	}
+
+	if alloc.SetPools(groups) != nil {
+		t.Fatal("SetConfig failed")
+	}
+
+	// Fail to allocate a specific address that's not in the default
+	// pool
+	svc1 := &v1.Service{
+		Spec: v1.ServiceSpec{
+			LoadBalancerIP: "1.2.3.8",
+		},
+	}
+	_, _, err := alloc.AllocateAnyIP(svc1)
+	assert.NotNil(t, err, "address allocated but shouldn't be")
+
+	// Allocate a specific address in the default pool
+	svc1.Spec.LoadBalancerIP = "1.2.3.0"
+	pool, addr, err := alloc.AllocateAnyIP(svc1)
+	assert.Nil(t, err, "error allocating address")
+	assert.Equal(t, "default", pool, "incorrect pool chosen")
+	assert.Equal(t, "1.2.3.0", addr.String(), "incorrect address chosen")
+
+	// Fail to allocate a specific address from a specific pool (that's
+	// an illegal configuration)
+	svc2 := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				purelbv1.DesiredGroupAnnotation: "alternate",
+			},
+		},
+		Spec: v1.ServiceSpec{
+			LoadBalancerIP: "3.2.1.0",
+		},
+	}
+	_, _, err = alloc.AllocateAnyIP(svc2)
+	assert.NotNil(t, err, "address allocated but shouldn't be")
+
+}
+
+// TestSharingSimple tests address sharing with no address or pool
+// specified. Addresses should come from the "default" pool.
+func TestSharingSimple(t *testing.T) {
+	const sharing = "sharing-is-caring"
+	spec := v1.ServiceSpec{}
+
+	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
+
+	groups := []*purelbv1.ServiceGroup{
+		{ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			Spec: purelbv1.ServiceGroupSpec{
+				Local: &purelbv1.ServiceGroupLocalSpec{
+					Pool: "1.2.3.0/31",
+				},
+			},
+		},
+	}
+
+	if alloc.SetPools(groups) != nil {
+		t.Fatal("SetConfig failed")
+	}
+
+	svc1 := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "svc1",
+			Annotations: map[string]string{
+				purelbv1.SharingAnnotation: sharing,
+			},
+		},
+		Spec: spec,
+	}
+	pool, addr, err := alloc.AllocateAnyIP(svc1)
+	assert.Nil(t, err, "error allocating address")
+	assert.Equal(t, "default", pool, "incorrect pool chosen")
+	assert.Equal(t, "1.2.3.0", addr.String(), "incorrect address chosen")
+
+	// Mismatched SharingAnnotation so different address
+	svc2 := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "svc2",
+			Annotations: map[string]string{
+				purelbv1.SharingAnnotation: "i-really-dont-care-do-u",
+			},
+		},
+		Spec: spec,
+	}
+	pool, addr, err = alloc.AllocateAnyIP(svc2)
+	assert.Nil(t, err, "error allocating address")
+	assert.Equal(t, "default", pool, "incorrect pool chosen")
+	assert.Equal(t, "1.2.3.1", addr.String(), "incorrect address chosen")
+
+	// Matching SharingAnnotation so same address as svc1
+	svc3 := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "svc3",
+			Annotations: map[string]string{
+				purelbv1.SharingAnnotation: sharing,
+			},
+		},
+		Spec: spec,
+	}
+	pool, addr, err = alloc.AllocateAnyIP(svc3)
+	assert.Nil(t, err, "error allocating address")
+	assert.Equal(t, "default", pool, "incorrect pool chosen")
+	assert.Equal(t, "1.2.3.0", addr.String(), "incorrect address chosen")
 }
 
 // Some helpers
