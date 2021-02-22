@@ -27,6 +27,10 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
+const (
+	EPICIngressDomain = ".client.acnodal.io"
+)
+
 func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
 	nsName := svc.Namespace + "/" + svc.Name
 	log := log.With(c.logger, "svc-name", nsName)
@@ -46,7 +50,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 
 			// If it has an address then release it
 			if len(svc.Status.LoadBalancer.Ingress) > 0 {
-				log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", "not a load balancer")
+				log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", "type is not LoadBalancer")
 				c.client.Infof(svc, "IPReleased", fmt.Sprintf("Service is %s, not a LoadBalancer", svc.Spec.Type))
 				if err := c.ips.Unassign(nsName); err != nil {
 					c.logger.Log("event", "unassign", "error", err)
@@ -77,7 +81,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 
 	// Check if the service already has an address
 	if len(svc.Status.LoadBalancer.Ingress) > 0 {
-		log.Log("event", "ipAlreadySet")
+		log.Log("event", "hasIngress", "ingress", svc.Status.LoadBalancer.Ingress)
 
 		// if it's one of ours then we'll tell the allocator about it, in
 		// case it didn't know but needs to. one example of this is at
@@ -87,13 +91,12 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		// twice. another example is when the user edits a service,
 		// although that would be better handled in a webhook.
 		if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
-			if existingIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP); existingIP != nil {
+			if existingIP := parseIngress(log, svc.Status.LoadBalancer.Ingress[0]); existingIP != nil {
 
 				// The service has an IP so we'll attempt to formally allocate
 				// it. If something goes wrong then we'll release it which
 				// will cause a re-allocation attempt
-				_, err := c.ips.Assign(svc, existingIP)
-				if err != nil {
+				if err := c.ips.NotifyExisting(svc, existingIP); err != nil {
 					log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", err.Error())
 					c.client.Infof(svc, "IPReleased", err.Error())
 					if err := c.ips.Unassign(nsName); err != nil {
@@ -110,7 +113,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		return k8s.SyncStateSuccess
 	}
 
-	pool, lbIP, err := c.allocateIP(nsName, svc)
+	pool, lbIP, err := c.ips.AllocateAnyIP(svc)
 	if err != nil {
 		log.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", nsName, err)
@@ -120,7 +123,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 	c.client.Infof(svc, "IPAllocated", "Assigned IP %s from pool %s", lbIP, pool)
 
 	// we have an IP selected somehow, so program the data plane
-	c.addAddress(svc, lbIP)
+	c.addIngress(svc, lbIP)
 
 	// annotate the service as "ours" and annotate the pool from which
 	// the address came
@@ -133,47 +136,8 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 	return k8s.SyncStateSuccess
 }
 
-func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, error) {
-	desiredGroup := svc.Annotations[purelbv1.DesiredGroupAnnotation]
-
-	// If the user asked for a specific IP, try that.
-	if svc.Spec.LoadBalancerIP != "" {
-
-		// It doesn't make sense to use Spec.LoadBalancerIP *and*
-		// DesiredGroupAnnotation because Spec.LoadBalancerIP is more
-		// specific so DesiredGroupAnnotation can only cause problems. If
-		// you're using Spec.LoadBalancerIP then you don't need
-		// DesiredGroupAnnotation.
-		if desiredGroup != "" {
-			return "", nil, fmt.Errorf("spec.loadBalancerIP and DesiredGroupAnnotation are mutually exclusive, use Spec.LoadBalancerIP alone")
-		}
-
-		ip := net.ParseIP(svc.Spec.LoadBalancerIP)
-		if ip == nil {
-			return "", nil, fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
-		}
-		pool, err := c.ips.Assign(svc, ip)
-		if err != nil {
-			return "", nil, err
-		}
-		return pool, ip, nil
-	}
-
-	// Otherwise, did the user ask for a specific pool?
-	if desiredGroup != "" {
-		ip, err := c.ips.AllocateFromPool(svc, desiredGroup)
-		if err != nil {
-			return "", nil, err
-		}
-		return desiredGroup, ip, nil
-	}
-
-	// Okay, in that case just bruteforce across all pools.
-	return c.ips.Allocate(svc)
-}
-
-// addAddress adds "address" to "svc".
-func (c *controller) addAddress(svc *v1.Service, address net.IP) {
+// addIngress adds "address" to the Spec.Ingress field of "svc".
+func (c *controller) addIngress(svc *v1.Service, address net.IP) {
 	var ingress []v1.LoadBalancerIngress
 
 	// We program the service differently depending on where the address
@@ -193,7 +157,7 @@ func (c *controller) addAddress(svc *v1.Service, address net.IP) {
 	//
 	// More info: https://github.com/kubernetes/kubernetes/pull/79976
 	if _, hasServiceAnnotation := svc.Annotations[purelbv1.ServiceAnnotation]; hasServiceAnnotation {
-		hostName := strings.Replace(address.String(), ".", "-", -1) + ".client.acnodal.io"
+		hostName := strings.Replace(address.String(), ".", "-", -1) + EPICIngressDomain
 		ingress = append(ingress, v1.LoadBalancerIngress{Hostname: hostName})
 		c.logger.Log("event", "programmed ingress address", "dest", "Hostname", "address", hostName)
 	} else {
@@ -202,4 +166,29 @@ func (c *controller) addAddress(svc *v1.Service, address net.IP) {
 	}
 
 	svc.Status.LoadBalancer.Ingress = ingress
+}
+
+// parseIngress parses the contents of a service Spec.Ingress
+// field. The contents can be either a hostname or an IP address. If
+// it's an IP then we'll return that, but if it's a hostname then it
+// was formatted by addIngress() and we need to parse it
+// ourselves. The returned IP will be valid only if it is not nil.
+func parseIngress(log log.Logger, raw v1.LoadBalancerIngress) net.IP {
+	// This is the easy case. It's an IP address so net.ParseIP will do
+	// the work for us.
+	if ip := net.ParseIP(raw.IP); ip != nil {
+		return ip
+	}
+
+	// See if it's a hostname that we formatted.
+	if strings.HasSuffix(raw.Hostname, EPICIngressDomain) {
+		host_ := strings.ReplaceAll(raw.Hostname, EPICIngressDomain, "")
+		host := strings.Replace(host_, "-", ".", -1)
+		if ip := net.ParseIP(host); ip != nil {
+			return ip
+		}
+	}
+
+	log.Log("error", "can't parse address as either IP or EPIC hostname", "rawAddress", raw)
+	return nil
 }
