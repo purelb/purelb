@@ -1,6 +1,6 @@
-image: docker:latest
+image: docker:20.10.3
 services:
-  - docker:dind
+  - docker:20.10.3-dind
 variables:
   PROJECT: $CI_PROJECT_NAME
   ALLOCATOR_IMG: $CI_REGISTRY_IMAGE/allocator
@@ -23,7 +23,7 @@ stages:
 
 check:
   stage: test
-  image: golang:latest
+  image: golang:1.15.8-buster
   services: []
   before_script:
   - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
