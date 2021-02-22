@@ -72,10 +72,12 @@ func (a *Allocator) SetPools(myCluster types.UID, groups []*purelbv1.ServiceGrou
 
 // assign unconditionally updates internal state to reflect svc's
 // allocation of alloc. Caller must ensure that this call is safe.
-func (a *Allocator) assign(service *v1.Service, alloc *alloc) {
+func (a *Allocator) assign(service *v1.Service, alloc *alloc) error {
 	svc := namespacedName(service)
 
-	a.Unassign(svc)
+	if err := a.Unassign(svc); err != nil {
+		return err
+	}
 	a.allocated[svc] = alloc
 
 	pool := a.pools[alloc.pool]
@@ -83,9 +85,13 @@ func (a *Allocator) assign(service *v1.Service, alloc *alloc) {
 
 	poolCapacity.WithLabelValues(alloc.pool).Set(float64(a.pools[alloc.pool].Size()))
 	poolActive.WithLabelValues(alloc.pool).Set(float64(pool.InUse()))
+
+	return nil
 }
 
-// Assign assigns the requested ip to svc, if the assignment is
+}
+
+// AllocateSpecificIP assigns the requested ip to svc, if the assignment is
 // permissible by sharingKey.
 func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
 	// Check that the address belongs to a pool
@@ -119,29 +125,33 @@ func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
 		ip:   ip,
 		Key:  *sk,
 	}
-	a.assign(svc, alloc)
+	if err := a.assign(svc, alloc); err != nil {
+		return "", err
+	}
 	return pool, nil
 }
 
 // Unassign frees the IP associated with service, if any.
-func (a *Allocator) Unassign(svc string) bool {
+func (a *Allocator) Unassign(svc string) error {
 	al := a.allocated[svc]
 	if al == nil {
-		return false
+		return fmt.Errorf("unknown service name: %s", svc)
 	}
 
 	// tell the pool that the address has been released. there might not
-	// be a pool, e.g., in the case of a config change that move
+	// be a pool, e.g., in the case of a config change that moves
 	// addresses from one pool to another
 	pool, tracked := a.pools[al.pool]
 	if tracked {
-		pool.Release(al.ip, svc)
+		if err := pool.Release(al.ip, svc); err != nil {
+			return err
+		}
 		poolActive.WithLabelValues(al.pool).Set(float64(pool.InUse()))
 	}
 
 	delete(a.allocated, svc)
 
-	return true
+	return nil
 }
 
 // AllocateFromPool assigns an available IP from pool to service.
@@ -167,12 +177,14 @@ func (a *Allocator) AllocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 		ip:   ip,
 		Key:  *sk,
 	}
-	a.assign(svc, alloc)
+	if err := a.assign(svc, alloc); err != nil {
+		return nil, err
+	}
 
 	return ip, nil
 }
 
-// Allocate assigns any available and assignable IP to service.
+// Allocate any available and assignable IP to service.
 func (a *Allocator) Allocate(svc *v1.Service) (string, net.IP, error) {
 	var (
 		err error

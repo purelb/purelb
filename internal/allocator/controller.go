@@ -58,9 +58,12 @@ func (c *controller) SetClient(client *k8s.Client) {
 }
 
 func (c *controller) DeleteBalancer(name string) k8s.SyncState {
-	if c.ips.Unassign(name) {
-		c.logger.Log("event", "serviceDeleted", "msg", "service deleted")
+	if err := c.ips.Unassign(name); err != nil {
+		c.logger.Log("event", "serviceDelete", "error", err)
+		return k8s.SyncStateError
 	}
+
+	c.logger.Log("event", "serviceDelete", "msg", "service deleted successfully")
 	return k8s.SyncStateReprocessAll
 }
 

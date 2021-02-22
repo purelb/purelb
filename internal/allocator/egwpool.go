@@ -98,8 +98,8 @@ func (p EGWPool) Assign(ip net.IP, service *v1.Service) error {
 // Release releases an IP so it can be assigned again. "service"
 // should be a namespaced name, i.e., the output of
 // namespacedName(service)).
-func (p EGWPool) Release(ip net.IP, service string) {
-	p.egw.Delete(p.serviceURLCache[service])
+func (p EGWPool) Release(ip net.IP, service string) error {
+	return p.egw.Delete(p.serviceURLCache[service])
 }
 
 // InUse returns the count of addresses that currently have services
