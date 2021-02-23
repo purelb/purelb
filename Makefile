@@ -67,7 +67,7 @@ generate:  ## Generate client-side stubs for our custom resources
 .PHONY: manifest
 manifest: CACHE != mktemp
 manifest:  ## Generate deployment manifest
-	cd deployments/samples
+	cd deployments/${PROJECT}
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
 	kustomize edit set image registry.gitlab.com/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} registry.gitlab.com/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
