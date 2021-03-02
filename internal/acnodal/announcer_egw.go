@@ -17,8 +17,10 @@ package acnodal
 
 import (
 	"fmt"
+	"math/rand"
 	"net"
 	"os/exec"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -128,6 +130,10 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	l := log.With(a.logger, "service", svc.ObjectMeta.Name, "group", groupName)
 	l.Log("op", "SetBalancer", "endpoints", endpoints.Subsets)
 
+	// Pause a small random interval to avoid the "thundering herd", for
+	// example, when a user changes from NodePort to LoadBalancer
+	time.Sleep(time.Duration(rand.Intn(1000)) * time.Millisecond)
+
 	// if the service doesn't have a group annotation then don't
 	// announce
 	if !haveGroupURL {
@@ -172,9 +178,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 					epResponse, err := egw.AnnounceEndpoint(createUrl, address.IP, port, a.myNodeAddr)
 					if err != nil {
 						l.Log("op", "AnnounceEndpoint", "error", err)
-
-						// retry once before moving on
-						epResponse, err = egw.AnnounceEndpoint(createUrl, address.IP, port, a.myNodeAddr)
+						return fmt.Errorf("announcement failed")
 					}
 
 					// Add this endpoint to the set of endpoints that we've
@@ -182,35 +186,27 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 					announcements[epResponse.Links["self"]] = struct{}{}
 					l.Log("op", "AnnounceEndpoint", "ep-address", address.IP, "ep-port", port.Port, "node", a.myNode, "link", epResponse.Links["self"])
 
-					// Get the service that owns this endpoint. This endpoint
-					// will either re-use an existing tunnel or set up a new one
-					// for this node. Tunnels belong to the service.
-					svcResponse, err := egw.FetchService(svc.Annotations[purelbv1.ServiceAnnotation])
-					if err != nil {
-						l.Log("op", "AnnounceEndpoint", "error", err)
-						return fmt.Errorf("service not found")
-					}
-
-					// See if the tunnel is there (it might not be yet since it
-					// sometimes takes a while to set up). If it's not there
-					// then return an error which will cause a retry.
-					myTunnel, exists := svcResponse.Service.Status.EGWTunnelEndpoints[a.myNodeAddr]
-					if !exists {
-						l.Log("op", "fetchTunnelConfig", "endpoints", svcResponse.Service.Status.EGWTunnelEndpoints)
-						return fmt.Errorf("tunnel config not found")
-					}
-
-					// Now that we've got the service response we have enough
-					// info to set up the tunnel
-					err = a.setupPFC(address, myTunnel.TunnelID, account.Account.Spec.GroupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
-					if err != nil {
-						l.Log("op", "SetupPFC", "error", err)
-					}
 				} else {
 					l.Log("op", "DontAnnounceEndpoint", "ep-address", address.IP, "ep-port", port.Port, "node", "not me")
 				}
 			}
 		}
+	}
+
+	// Try and try again to set up the tunnels. The most likely cause of
+	// retries is that the tunnels won't have been set up yet on the
+	// EPIC side in which case we just back off and retry. If something
+	// goes really wrong then we return an error.
+	tries := 10
+	err = fmt.Errorf("")
+	for retry := true; err != nil && retry && tries > 0; tries-- {
+		err, retry = a.setupTunnels(account.Account.Spec.GroupID, svc, endpoints, l, egw)
+		if err != nil && tries > 1 {
+			time.Sleep(3 * time.Second)
+		}
+	}
+	if err != nil {
+		return err
 	}
 
 	// See if there are any endpoints that we need to delete, i.e.,
@@ -234,6 +230,51 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	l.Log("announcements", a.announcements)
 
 	return err
+}
+
+func (a *announcer) setupTunnels(groupID uint16, svc *v1.Service, endpoints *v1.Endpoints, l log.Logger, egw EGW) (err error, retry bool) {
+	// Get the service that owns this endpoint. This endpoint
+	// will either re-use an existing tunnel or set up a new one
+	// for this node. Tunnels belong to the service.
+	svcResponse, err := egw.FetchService(svc.Annotations[purelbv1.ServiceAnnotation])
+	if err != nil {
+		l.Log("op", "AnnounceEndpoint", "error", err)
+		return fmt.Errorf("service not found"), false
+	}
+
+	// For each port in each endpoint address in each subset on this node, set up the PFC tunnel
+	for _, ep := range endpoints.Subsets {
+		for _, address := range ep.Addresses {
+			for _, port := range ep.Ports {
+				if address.NodeName != nil && *address.NodeName == a.myNode {
+
+					// See if the tunnel is there (it might not be yet since it
+					// sometimes takes a while to set up). If it's not there
+					// then return an error which will cause a retry.
+					myTunnel, exists := svcResponse.Service.Status.EGWTunnelEndpoints[a.myNodeAddr]
+					if !exists {
+						l.Log("op", "fetchTunnelConfig", "endpoints", svcResponse.Service.Status.EGWTunnelEndpoints)
+
+						//  Back off a bit so we don't hammer EPIC
+						time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond)
+
+						return fmt.Errorf("tunnel config not found for %s", a.myNodeAddr), true
+					}
+
+					// Now that we've got the service response we have enough
+					// info to set up the tunnel
+					err = a.setupPFC(address, myTunnel.TunnelID, groupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
+					if err != nil {
+						l.Log("op", "SetupPFC", "error", err)
+					}
+				} else {
+					l.Log("op", "DontAnnounceEndpoint", "ep-address", address.IP, "ep-port", port.Port, "node", "not me")
+				}
+			}
+		}
+	}
+
+	return nil, false
 }
 
 func (a *announcer) DeleteBalancer(name, reason string, addr *v1.LoadBalancerIngress) error {
