@@ -80,7 +80,7 @@ manifest:  ## Generate deployment manifest
 docker-manifest: ALLOCATOR_IMG=${REGISTRY_IMAGE}/allocator
 docker-manifest: $LBNODEAGENT_IMG=${REGISTRY_IMAGE}/lbnodeagent
 docker-manifest:  ## Generate and push Docker multiarch manifest
-	docker manifest create ${ALLOCATOR_IMG}:${MANIFEST_SUFFIX} ${ALLOCATOR_IMG}:amd64-${SUFFIX} ${ALLOCATOR_IMG}:arm64-${SUFFIX}
+	docker manifest create ${ALLOCATOR_IMG}:${MANIFEST_SUFFIX} ${ALLOCATOR_IMG}:amd64-${SUFFIX}
 	docker manifest push ${ALLOCATOR_IMG}:${MANIFEST_SUFFIX}
-	docker manifest create ${LBNODEAGENT_IMG}:${MANIFEST_SUFFIX} ${LBNODEAGENT_IMG}:amd64-${SUFFIX} ${LBNODEAGENT_IMG}:arm64-${SUFFIX}
+	docker manifest create ${LBNODEAGENT_IMG}:${MANIFEST_SUFFIX} ${LBNODEAGENT_IMG}:amd64-${SUFFIX}
 	docker manifest push ${LBNODEAGENT_IMG}:${MANIFEST_SUFFIX}

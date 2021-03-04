@@ -29,21 +29,9 @@ check:
   - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
   script: make check
 
-allocatorarm64:
-  stage: image
-  tags:
-  - arm64
-  script: make SUFFIX=arm64-${TAG_SPECIFIC} image-allocator install-allocator
-
 allocatoramd:
   stage: image
   script: make SUFFIX=amd64-${TAG_SPECIFIC} image-allocator install-allocator
-
-lbnodeagentarm64:
-  stage: image
-  tags:
-  - arm64
-  script: make SUFFIX=arm64-${TAG_SPECIFIC} image-lbnodeagent install-lbnodeagent
 
 lbnodeagentamd:
   stage: image
