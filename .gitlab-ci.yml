@@ -1,67 +1,96 @@
-image: docker:latest
+image: docker:20.10.3
 services:
-  - docker:dind
+- docker:20.10.3-dind
 variables:
-  ALLOCATOR_IMG: $CI_REGISTRY_IMAGE/allocator
-  LBNODEAGENT_IMG: $CI_REGISTRY_IMAGE/lbnodeagent
+  PROJECT: $CI_PROJECT_NAME
+  REGISTRY_IMAGE: $CI_REGISTRY_IMAGE
   NETBOX_USER_TOKEN: no-op
   # https://docs.gitlab.com/12.10/ee/ci/docker/using_docker_build.html#tls-enabled
   DOCKER_TLS_CERTDIR: "/certs"
 before_script:
-- apk add make git
+- apk add make git wget
 - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+- mkdir -p ~/.ssh && chmod 700 ~/.ssh
+- ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
+- |
+  if [ -n "${CI_COMMIT_TAG}" ] ; then
+    # If this build is from a git tag, use that as the docker tag.
+    export TAG_SPECIFIC="${CI_COMMIT_TAG}"
+  else
+    # If this build is from a branch, use the name and sha as the
+    # docker tag.
+    export TAG_SPECIFIC="${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}"
+    # Build both a commit-specific build and a branch-latest build.
+    export TAG_LATEST="${CI_COMMIT_REF_NAME}-latest"
+  fi
 
 stages:
   - test
   - image
   - manifest
 
-format:
+check:
   stage: test
-  image: golang:latest
-  before_script: []
-  script:
-    - make deployments/purelb-complete.yaml check
-  artifacts:
-    paths:
-      - deployments/purelb-complete.yaml
+  image: golang:1.15.8-buster
+  before_script:
+  - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
+  script: make check
 
 allocatorarm64:
   stage: image
   tags:
   - arm64
-  script: make SUFFIX=arm64-ci image-allocator install-allocator
+  script: make SUFFIX=arm64-${TAG_SPECIFIC} image-allocator install-allocator
 
 allocatorarm32:
   stage: image
   tags:
   - arm32
-  script: make SUFFIX=arm32-ci image-allocator install-allocator
+  image: docker:19.03
+  services:
+  - docker:19.03-dind
+  script: make SUFFIX=arm32-${TAG_SPECIFIC} image-allocator install-allocator
 
 allocatoramd:
   stage: image
-  script: make SUFFIX=amd64-ci image-allocator install-allocator
+  script: make SUFFIX=amd64-${TAG_SPECIFIC} image-allocator install-allocator
 
 lbnodeagentarm64:
   stage: image
   tags:
   - arm64
-  script: make SUFFIX=arm64-ci image-lbnodeagent install-lbnodeagent
+  script: make SUFFIX=arm64-${TAG_SPECIFIC} image-lbnodeagent install-lbnodeagent
 
 lbnodeagentarm32:
   stage: image
   tags:
   - arm32
-  script: make SUFFIX=arm32-ci image-lbnodeagent install-lbnodeagent
+  image: docker:19.03
+  services:
+  - docker:19.03-dind
+  script: make SUFFIX=arm32-${TAG_SPECIFIC} image-lbnodeagent install-lbnodeagent
 
 lbnodeagentamd:
   stage: image
-  script: make SUFFIX=amd64-ci image-lbnodeagent install-lbnodeagent
+  script: make SUFFIX=amd64-${TAG_SPECIFIC} image-lbnodeagent install-lbnodeagent
 
 manifest:
   stage: manifest
   script:
-    - docker manifest create $ALLOCATOR_IMG:ci $ALLOCATOR_IMG:amd64-ci $ALLOCATOR_IMG:arm32-ci $ALLOCATOR_IMG:arm64-ci
-    - docker manifest push $ALLOCATOR_IMG:ci
-    - docker manifest create $LBNODEAGENT_IMG:ci $LBNODEAGENT_IMG:amd64-ci $LBNODEAGENT_IMG:arm32-ci $LBNODEAGENT_IMG:arm64-ci
-    - docker manifest push $LBNODEAGENT_IMG:ci
+    - wget --no-verbose -O - https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv4.0.1/kustomize_v4.0.1_linux_amd64.tar.gz | tar -C /usr/local/bin -xzf -
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} manifest docker-manifest
+    - |
+      if [ -n "${TAG_LATEST}" ] ; then
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} docker-manifest
+      else
+        # to make our documention more stable we upload a "latest"
+        # deployment manifest to a fixed location. This means that we
+        # don't need to update the docs for every release.
+        wget --no-verbose --header "JOB-TOKEN: $CI_JOB_TOKEN" --method=PUT --body-file=deployments/purelb-${TAG_SPECIFIC}.yaml "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/manifest/0.0.1/purelb-complete.yaml"
+      fi
+
+  artifacts:
+    paths:
+      - deployments/*
+      - configs/*
