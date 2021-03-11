@@ -1,10 +1,12 @@
-REPO ?= registry.gitlab.com/purelb
-PREFIX = purelb
+PROJECT ?= purelb
+REPO ?= registry.gitlab.com/${PROJECT}
+PREFIX ?= ${PROJECT}
+REGISTRY_IMAGE ?= ${REPO}/${PREFIX}
 SUFFIX = dev
+MANIFEST_SUFFIX = ${SUFFIX}
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
-MANIFEST_FRAGMENTS = deployments/namespace.yaml deployments/crds/servicegroup.purelb.io_crd.yaml deployments/crds/lbnodeagent.purelb.io_crd.yaml deployments/crds/default-lbnodeagent.yaml deployments/purelb.yaml
 
 ##@ Default Goal
 .PHONY: help
@@ -20,7 +22,7 @@ help: ## Display help message
 
 ##@ Development Goals
 .PHONY: all
-all: check $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) generate-manifest ## Build it all!
+all: check $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) ## Build it all!
 
 .PHONY: check
 check:	## Run "short" tests
@@ -29,7 +31,7 @@ check:	## Run "short" tests
 
 .PHONY: image-%
 image-%: CMD=$(subst image-,,$@)
-image-%: TAG=${REPO}/${PREFIX}/${CMD}:${SUFFIX}
+image-%: TAG=${REGISTRY_IMAGE}/${CMD}:${SUFFIX}
 image-%:
 	docker build -t ${TAG} \
 	--build-arg cmd=${CMD} \
@@ -41,7 +43,7 @@ image-%:
 install: all $(shell echo ${COMMANDS} | sed s,cmd/,install-,g) ## Push images to registry
 
 .PHONY: install-%
-install-%: TAG=${REPO}/${PREFIX}/$(subst install-,,$@):${SUFFIX}
+install-%: TAG=${REGISTRY_IMAGE}/$(subst install-,,$@):${SUFFIX}
 install-%:
 	docker push ${TAG}
 
@@ -51,15 +53,31 @@ run-%:  ## Run PureLB command locally (e.g., 'make run-allocator')
 
 .PHONY: clean-gen
 clean-gen:  ## Delete generated files
-	rm -fr pkg/generated/ pkg/apis/v1/zz_generated.deepcopy.go deployments/purelb-complete.yaml
+	rm -fr pkg/generated/
+	rm -fr deployments/${PROJECT}-*.yaml
 
-generate: generate-stubs generate-manifest ## Generate stubs and manifest
-
-.PHONY: generate-stubs
-generate-stubs:  ## Generate client-side stubs for our custom resources
+.PHONY: generate
+generate:  ## Generate client-side stubs for our custom resources
 	hack/update-codegen.sh
 
-generate-manifest: deployments/purelb-complete.yaml  ## Generate the all-in-one deployment manifest
+.ONESHELL:
+.PHONY: manifest
+manifest: CACHE != mktemp
+manifest:  ## Generate deployment manifest
+	cd deployments/samples
+# cache kustomization.yaml because "kustomize edit" modifies it
+	cp kustomization.yaml ${CACHE}
+	kustomize edit set image registry.gitlab.com/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} registry.gitlab.com/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
+	kustomize build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
+# restore kustomization.yaml
+	cp ${CACHE} kustomization.yaml
 
-deployments/purelb-complete.yaml: ${MANIFEST_FRAGMENTS}
-	cat $^ > $@
+.ONESHELL:
+.PHONY: docker-manifest
+docker-manifest: ALLOCATOR_IMG=${REGISTRY_IMAGE}/allocator
+docker-manifest: LBNODEAGENT_IMG=${REGISTRY_IMAGE}/lbnodeagent
+docker-manifest:  ## Generate and push Docker multiarch manifest
+	docker manifest create ${ALLOCATOR_IMG}:${MANIFEST_SUFFIX} ${ALLOCATOR_IMG}:amd64-${SUFFIX} ${ALLOCATOR_IMG}:arm64-${SUFFIX} ${ALLOCATOR_IMG}:arm32-${SUFFIX}
+	docker manifest push ${ALLOCATOR_IMG}:${MANIFEST_SUFFIX}
+	docker manifest create ${LBNODEAGENT_IMG}:${MANIFEST_SUFFIX} ${LBNODEAGENT_IMG}:amd64-${SUFFIX} ${LBNODEAGENT_IMG}:arm64-${SUFFIX} ${LBNODEAGENT_IMG}:arm32-${SUFFIX}
+	docker manifest push ${LBNODEAGENT_IMG}:${MANIFEST_SUFFIX}
