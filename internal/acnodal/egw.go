@@ -19,6 +19,7 @@ package acnodal
 import (
 	"crypto/tls"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -27,6 +28,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
+)
+
+const (
+	locationHeader = "Location"
 )
 
 // EGW represents one connection to an Acnodal Enterprise Gateway.
@@ -258,6 +263,13 @@ func (n *egw) AnnounceService(url string, name string, sPorts []v1.ServicePort) 
 		return EGWServiceResponse{}, err
 	}
 	if response.IsError() {
+		// if the response indicates that this service is already
+		// announced then it's not necessarily an error. Try to fetch the
+		// service and return that.
+		if response.StatusCode() == http.StatusConflict {
+			return n.FetchService(response.Header().Get(locationHeader))
+		}
+
 		return EGWServiceResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
 	}
 
@@ -273,7 +285,7 @@ func (n *egw) FetchService(url string) (EGWServiceResponse, error) {
 		return EGWServiceResponse{}, err
 	}
 	if response.IsError() {
-		return EGWServiceResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+		return EGWServiceResponse{}, fmt.Errorf("%s response code %d status %s", url, response.StatusCode(), response.Status())
 	}
 
 	srv := response.Result().(*EGWServiceResponse)
@@ -295,7 +307,7 @@ func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort
 	if response.IsError() {
 		// if the response indicates that this endpoint is already
 		// announced then it's not an error
-		if response.StatusCode() == 409 {
+		if response.StatusCode() == http.StatusConflict {
 			if strings.Contains(response.Error().(*EGWEndpointResponse).Message, "duplicate endpoint") {
 				return response.Error().(*EGWEndpointResponse), nil
 			}
