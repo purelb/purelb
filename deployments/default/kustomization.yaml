@@ -4,6 +4,9 @@ kind: Kustomization
 # Adds namespace to all resources.
 namespace: purelb
 
+bases:
+- ../crds
+
 resources:
 - namespace.yaml
 - purelb.yaml
