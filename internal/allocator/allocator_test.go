@@ -25,7 +25,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 
 	"purelb.io/internal/acnodal"
 	purelbv1 "purelb.io/pkg/apis/v1"
@@ -847,7 +846,7 @@ func TestSpecificAddress(t *testing.T) {
 		},
 	}
 
-	if alloc.SetPools(types.UID("test"), groups) != nil {
+	if alloc.SetPools("test", groups) != nil {
 		t.Fatal("SetConfig failed")
 	}
 
@@ -903,7 +902,7 @@ func TestSharingSimple(t *testing.T) {
 		},
 	}
 
-	if alloc.SetPools(types.UID("test"), groups) != nil {
+	if alloc.SetPools("test", groups) != nil {
 		t.Fatal("SetConfig failed")
 	}
 

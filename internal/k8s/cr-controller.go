@@ -24,7 +24,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -70,7 +69,7 @@ type Controller struct {
 
 	logger log.Logger
 
-	myCluster types.UID
+	myCluster string
 }
 
 // NewCRController returns a new controller that watches for changes
@@ -280,12 +279,12 @@ func (c *Controller) enqueueResource(thing string, obj interface{}) {
 }
 
 // GetClusterID returns the "cluster id" which in this case is the UID
-// of the kube-system namespace.
+// of the purelb namespace.
 // https://groups.google.com/g/kubernetes-sig-architecture/c/mVGobfD4TpY/m/nkdbkX1iBwAJ
-func (c *Controller) GetClusterID() (types.UID, error) {
-	ns, err := c.kubeclientset.CoreV1().Namespaces().Get(context.TODO(), "kube-system", metav1.GetOptions{})
+func (c *Controller) GetClusterID() (string, error) {
+	ns, err := c.kubeclientset.CoreV1().Namespaces().Get(context.TODO(), "purelb", metav1.GetOptions{})
 	if err != nil {
-		return types.UID(""), err
+		return "", err
 	}
-	return ns.UID, nil
+	return string(ns.UID), nil
 }

@@ -23,7 +23,6 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
@@ -53,7 +52,7 @@ type announcer struct {
 	// URL. The value is a pseudo-set of that service's endpoints that
 	// we have announced.
 	announcements map[string]map[string]struct{} // key: endpoint create URL, value: pseudo-set of key: endpoint URL, value: none
-	myCluster     types.UID
+	myCluster     string
 }
 
 // NewAnnouncer returns a new Acnodal EGW Announcer.

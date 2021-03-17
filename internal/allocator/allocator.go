@@ -19,7 +19,6 @@ import (
 	"net"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 
 	"purelb.io/internal/acnodal"
 	purelbv1 "purelb.io/pkg/apis/v1"
@@ -46,7 +45,7 @@ func New() *Allocator {
 }
 
 // SetPools updates the set of address pools that the allocator owns.
-func (a *Allocator) SetPools(myCluster types.UID, groups []*purelbv1.ServiceGroup) error {
+func (a *Allocator) SetPools(myCluster string, groups []*purelbv1.ServiceGroup) error {
 	pools, err := parseConfig(myCluster, groups)
 	if err != nil {
 		return err
@@ -272,7 +271,7 @@ func poolFor(pools map[string]Pool, ip net.IP) string {
 	return ""
 }
 
-func parseConfig(myCluster types.UID, groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
+func parseConfig(myCluster string, groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
 	pools := map[string]Pool{}
 
 	for i, group := range groups {
@@ -300,7 +299,7 @@ func parseConfig(myCluster types.UID, groups []*purelbv1.ServiceGroup) (map[stri
 	return pools, nil
 }
 
-func parseGroup(myCluster types.UID, group purelbv1.ServiceGroupSpec) (Pool, error) {
+func parseGroup(myCluster string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
 		ret, err := NewLocalPool(group.Local.Pool, group.Local.Subnet, group.Local.Aggregation)
 		if err != nil {

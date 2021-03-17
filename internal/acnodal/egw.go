@@ -25,7 +25,6 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
@@ -49,7 +48,7 @@ type egw struct {
 	http      resty.Client
 	groupURL  string
 	authToken string
-	myCluster types.UID
+	myCluster string
 }
 
 // Links holds a map of URL strings.
@@ -156,7 +155,7 @@ type EGWGroupResponse struct {
 // EGWServiceCreate is the body of the HTTP request to create a load
 // balancer service.
 type EGWServiceCreate struct {
-	ClusterID types.UID  `json:"cluster-id"`
+	ClusterID string     `json:"cluster-id"`
 	Service   EGWService `json:"service"`
 }
 
@@ -171,7 +170,7 @@ type EGWServiceResponse struct {
 // EGWEndpointCreate is the body of the HTTP request to create a load
 // balancer endpoint.
 type EGWEndpointCreate struct {
-	ClusterID types.UID `json:"cluster-id"`
+	ClusterID string `json:"cluster-id"`
 	Endpoint  EGWEndpoint
 }
 
@@ -185,7 +184,7 @@ type EGWEndpointResponse struct {
 
 // New initializes a new EGW instance. If error is non-nil then the
 // instance shouldn't be used.
-func NewEGW(myCluster types.UID, group purelbv1.ServiceGroupEGWSpec) (EGW, error) {
+func NewEGW(myCluster string, group purelbv1.ServiceGroupEGWSpec) (EGW, error) {
 	// Use the hostname from the service group, but reset the path.  EGW
 	// and Netbox each have their own API URL schemes so we only need
 	// the protocol, host, port, credentials, etc.
