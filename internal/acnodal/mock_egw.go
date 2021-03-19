@@ -94,6 +94,36 @@ func (mr *MockEGWMockRecorder) FetchService(url interface{}) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FetchService", reflect.TypeOf((*MockEGW)(nil).FetchService), url)
 }
 
+// AddCluster mocks base method
+func (m *MockEGW) AddCluster(url string) (EGWClusterResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AddCluster", url)
+	ret0, _ := ret[0].(EGWClusterResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// AddCluster indicates an expected call of AddCluster
+func (mr *MockEGWMockRecorder) AddCluster(url interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddCluster", reflect.TypeOf((*MockEGW)(nil).AddCluster), url)
+}
+
+// FetchCluster mocks base method
+func (m *MockEGW) FetchCluster(url string) (EGWClusterResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FetchCluster", url)
+	ret0, _ := ret[0].(EGWClusterResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FetchCluster indicates an expected call of FetchCluster
+func (mr *MockEGWMockRecorder) FetchCluster(url interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FetchCluster", reflect.TypeOf((*MockEGW)(nil).FetchCluster), url)
+}
+
 // Delete mocks base method
 func (m *MockEGW) Delete(svcUrl string) error {
 	m.ctrl.T.Helper()

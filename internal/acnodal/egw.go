@@ -41,6 +41,8 @@ type EGW interface {
 	FetchService(url string) (EGWServiceResponse, error)
 	Delete(svcUrl string) error
 	AnnounceEndpoint(url string, address string, port v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error)
+	AddCluster(createClusterURL string) (EGWClusterResponse, error)
+	FetchCluster(clusterURL string) (EGWClusterResponse, error)
 }
 
 // egw represents one connection to an Acnodal Enterprise Gateway.
@@ -128,6 +130,8 @@ type EGWEndpointSpec struct {
 	Address     string `json:"address"`
 	Port        v1.EndpointPort
 	NodeAddress string `json:"node-address"`
+	// Cluster is the name of the cluster to which this rep belongs.
+	Cluster string `json:"cluster"`
 }
 
 // EGWEndpoint is the on-the-wire representation of one LoadBalancer
@@ -155,8 +159,7 @@ type EGWGroupResponse struct {
 // EGWServiceCreate is the body of the HTTP request to create a load
 // balancer service.
 type EGWServiceCreate struct {
-	ClusterID string     `json:"cluster-id"`
-	Service   EGWService `json:"service"`
+	Service EGWService `json:"service"`
 }
 
 // EGWServiceResponse is the body of the HTTP response to a request to
@@ -170,8 +173,7 @@ type EGWServiceResponse struct {
 // EGWEndpointCreate is the body of the HTTP request to create a load
 // balancer endpoint.
 type EGWEndpointCreate struct {
-	ClusterID string `json:"cluster-id"`
-	Endpoint  EGWEndpoint
+	Endpoint EGWEndpoint
 }
 
 // EGWEndpointResponse is the body of the HTTP response to a request to
@@ -180,6 +182,19 @@ type EGWEndpointResponse struct {
 	Message  string      `json:"message,omitempty"`
 	Links    Links       `json:"link"`
 	Endpoint EGWEndpoint `json:"endpoint,omitempty"`
+}
+
+// EGWClusterCreate is the body of the HTTP request to create a load
+// balancer cluster.
+type EGWClusterCreate struct {
+	ClusterID string `json:"cluster-id"`
+}
+
+// EGWClusterResponse is the body of the HTTP response to a request to
+// show a load balancer cluster.
+type EGWClusterResponse struct {
+	Message string `json:"message,omitempty"`
+	Links   Links  `json:"link"`
 }
 
 // New initializes a new EGW instance. If error is non-nil then the
@@ -254,8 +269,7 @@ func (n *egw) AnnounceService(url string, name string, sPorts []v1.ServicePort) 
 	// send the request
 	response, err := n.http.R().
 		SetBody(EGWServiceCreate{
-			ClusterID: n.myCluster,
-			Service:   EGWService{ObjectMeta: ObjectMeta{Name: name}, Spec: EGWServiceSpec{Ports: sPorts}}}).
+			Service: EGWService{ObjectMeta: ObjectMeta{Name: name}, Spec: EGWServiceSpec{Ports: sPorts}}}).
 		SetResult(EGWServiceResponse{}).
 		Post(url)
 	if err != nil {
@@ -276,6 +290,7 @@ func (n *egw) AnnounceService(url string, name string, sPorts []v1.ServicePort) 
 	return *srv, nil
 }
 
+// FetchService fetches the service at "url" from the EPIC.
 func (n *egw) FetchService(url string) (EGWServiceResponse, error) {
 	response, err := n.http.R().
 		SetResult(EGWServiceResponse{}).
@@ -291,12 +306,55 @@ func (n *egw) FetchService(url string) (EGWServiceResponse, error) {
 	return *srv, nil
 }
 
+// AddCluster adds a cluster to an EPIC
+// LoadBalancer. "createClusterURL" is the value of the
+// "create-cluster" key in the service's "link" object. name is the
+// cluster name.
+func (n *egw) AddCluster(createClusterURL string) (EGWClusterResponse, error) {
+	// send the request
+	response, err := n.http.R().
+		SetBody(EGWClusterCreate{ClusterID: n.myCluster}).
+		SetResult(EGWClusterResponse{}).
+		Post(createClusterURL)
+	if err != nil {
+		return EGWClusterResponse{}, err
+	}
+	if response.IsError() {
+		// if the response indicates that this cluster is already
+		// announced then it's not necessarily an error. Try to fetch the
+		// cluster and return that.
+		if response.StatusCode() == http.StatusConflict {
+			return n.FetchCluster(response.Header().Get(locationHeader))
+		}
+
+		return EGWClusterResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+	}
+
+	cluster := response.Result().(*EGWClusterResponse)
+	return *cluster, nil
+}
+
+// FetchCluster fetches the cluster at "clusterURL" from the EPIC.
+func (n *egw) FetchCluster(clusterURL string) (EGWClusterResponse, error) {
+	response, err := n.http.R().
+		SetResult(EGWClusterResponse{}).
+		Get(clusterURL)
+	if err != nil {
+		return EGWClusterResponse{}, err
+	}
+	if response.IsError() {
+		return EGWClusterResponse{}, fmt.Errorf("%s response code %d status %s", clusterURL, response.StatusCode(), response.Status())
+	}
+
+	srv := response.Result().(*EGWClusterResponse)
+	return *srv, nil
+}
+
 // AnnounceEndpoint announces an endpoint to the EGW.
 func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error) {
 	response, err := n.http.R().
 		SetBody(EGWEndpointCreate{
-			ClusterID: n.myCluster,
-			Endpoint:  EGWEndpoint{Spec: EGWEndpointSpec{Address: address, Port: ePort, NodeAddress: nodeAddress}}}).
+			Endpoint: EGWEndpoint{Spec: EGWEndpointSpec{Cluster: n.myCluster, Address: address, Port: ePort, NodeAddress: nodeAddress}}}).
 		SetError(EGWEndpointResponse{}).
 		SetResult(EGWEndpointResponse{}).
 		Post(url)
@@ -324,7 +382,7 @@ func (n *egw) Delete(url string) error {
 		return err
 	}
 	if response.IsError() {
-		return fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+		return fmt.Errorf("response code %d status \"%s\"", response.StatusCode(), response.Status())
 	}
 	return nil
 }

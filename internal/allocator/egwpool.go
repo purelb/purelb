@@ -30,7 +30,7 @@ import (
 type EGWPool struct {
 	egw              acnodal.EGW
 	createServiceURL string
-	serviceURLCache  map[string]string // map from service key to service url
+	clusterURLCache  map[string]string // map from service key to cluster url
 }
 
 // NewEGWPool initializes a new instance of EGWPool. If error is
@@ -38,7 +38,7 @@ type EGWPool struct {
 func NewEGWPool(egw acnodal.EGW, _ string) (*EGWPool, error) {
 	return &EGWPool{
 		egw:             egw,
-		serviceURLCache: map[string]string{},
+		clusterURLCache: map[string]string{},
 	}, nil
 }
 
@@ -77,9 +77,15 @@ func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 	service.Annotations[purelbv1.ServiceAnnotation] = egwsvc.Links["self"]
 	service.Annotations[purelbv1.EndpointAnnotation] = egwsvc.Links["create-endpoint"]
 
-	// add the service's URL to the cache so we'll be able to get back
+	epicCluster, err := p.egw.AddCluster(egwsvc.Links["create-cluster"])
+	if err != nil {
+		return nil, err
+	}
+	service.Annotations[purelbv1.ClusterAnnotation] = epicCluster.Links["self"]
+
+	// add the cluster's URL to the cache so we'll be able to get back
 	// to it later if we need to delete the service
-	p.serviceURLCache[namespacedName(service)] = egwsvc.Links["self"]
+	p.clusterURLCache[namespacedName(service)] = epicCluster.Links["self"]
 
 	return ip, nil
 }
@@ -87,9 +93,9 @@ func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 // Assign assigns a service to an IP.
 func (p EGWPool) Assign(ip net.IP, service *v1.Service) error {
 	// Grab the service URL to warm up our cache
-	url, exists := service.Annotations[purelbv1.ServiceAnnotation]
+	url, exists := service.Annotations[purelbv1.ClusterAnnotation]
 	if exists {
-		p.serviceURLCache[namespacedName(service)] = url
+		p.clusterURLCache[namespacedName(service)] = url
 	}
 
 	return nil
@@ -99,7 +105,20 @@ func (p EGWPool) Assign(ip net.IP, service *v1.Service) error {
 // should be a namespaced name, i.e., the output of
 // namespacedName(service)).
 func (p EGWPool) Release(ip net.IP, service string) error {
-	return p.egw.Delete(p.serviceURLCache[service])
+
+	cluster, err := p.egw.FetchCluster(p.clusterURLCache[service])
+	if err != nil {
+		return err
+	}
+	// First remove ourselves (i.e., our cluster) from the service
+	err = p.egw.Delete(cluster.Links["self"])
+	if err != nil {
+		return err
+	}
+
+	// Now try to delete the cluster, which will fail if any other
+	// clusters are still attached to it
+	return p.egw.Delete(cluster.Links["service"])
 }
 
 // InUse returns the count of addresses that currently have services

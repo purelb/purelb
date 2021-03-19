@@ -59,6 +59,11 @@ const (
 	// unlikely to be useful to the user.
 	GroupAnnotation string = "acnodal.io/groupURL"
 
+	// ClusterAnnotation describes this cluster's EPIC URL for a
+	// specific service. It's used internally by PureLB and is unlikely
+	// to be useful to the user.
+	ClusterAnnotation string = "acnodal.io/clusterURL"
+
 	// ServiceAnnotation describes this service's EGW URL. It's used
 	// internally by PureLB and is unlikely to be useful to the user.
 	ServiceAnnotation string = "acnodal.io/serviceURL"
