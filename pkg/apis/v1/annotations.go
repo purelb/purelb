@@ -72,4 +72,11 @@ const (
 	// for this service. It's used internally by PureLB and is unlikely
 	// to be useful to the user.
 	EndpointAnnotation string = "acnodal.io/endpointcreateURL"
+
+	// ClusterPrefixAnnotation is the cluster-level name that will be
+	// used as a prefix for cluster names sent to Acnodal's EPIC. This
+	// annotation is optional and should be applied to the purelb
+	// Namespace. If the annotation is not present, the purelb Namespace
+	// will be used.
+	ClusterPrefixAnnotation string = "acnodal.io/cluster-prefix"
 )

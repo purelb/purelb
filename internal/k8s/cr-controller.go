@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
+	v1 "purelb.io/pkg/apis/v1"
 	clientset "purelb.io/pkg/generated/clientset/versioned"
 	purelbscheme "purelb.io/pkg/generated/clientset/versioned/scheme"
 	"purelb.io/pkg/generated/informers/externalversions"
@@ -151,7 +152,7 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 
 	// Get and cache the local cluster ID so we don't need to do it
 	// every time we get a config change
-	c.myCluster, err = c.GetClusterID()
+	c.myCluster, err = c.ClusterPrefix()
 	if err != nil {
 		return err
 	}
@@ -278,13 +279,25 @@ func (c *Controller) enqueueResource(thing string, obj interface{}) {
 	c.workqueue.Add(thing + "/" + key)
 }
 
-// GetClusterID returns the "cluster id" which in this case is the UID
-// of the purelb namespace.
+// ClusterPrefix returns the prefix of all cluster names to be sent to
+// Acnodal's EPIC. The default is the UID of the purelb namespace but
+// it can be overridden by the value of that Namespace's
+// ClusterPrefixAnnotation annotation.
 // https://groups.google.com/g/kubernetes-sig-architecture/c/mVGobfD4TpY/m/nkdbkX1iBwAJ
-func (c *Controller) GetClusterID() (string, error) {
+func (c *Controller) ClusterPrefix() (string, error) {
+	// Fetch the purelb Namespace object
 	ns, err := c.kubeclientset.CoreV1().Namespaces().Get(context.TODO(), "purelb", metav1.GetOptions{})
 	if err != nil {
 		return "", err
 	}
-	return string(ns.UID), nil
+
+	// The ClusterPrefixAnnotation is an override; the default is the
+	// Namespace object's UID.
+	prefix, hasPrefix := ns.Annotations[v1.ClusterPrefixAnnotation]
+	if !hasPrefix {
+		prefix = string(ns.UID)
+	}
+
+	c.logger.Log("cluster name prefix", prefix)
+	return prefix, nil
 }
