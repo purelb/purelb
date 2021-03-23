@@ -95,18 +95,18 @@ func (mr *MockEGWMockRecorder) FetchService(url interface{}) *gomock.Call {
 }
 
 // AddCluster mocks base method
-func (m *MockEGW) AddCluster(url string) (EGWClusterResponse, error) {
+func (m *MockEGW) AddCluster(url, svcName string) (EGWClusterResponse, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AddCluster", url)
+	ret := m.ctrl.Call(m, "AddCluster", url, svcName)
 	ret0, _ := ret[0].(EGWClusterResponse)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // AddCluster indicates an expected call of AddCluster
-func (mr *MockEGWMockRecorder) AddCluster(url interface{}) *gomock.Call {
+func (mr *MockEGWMockRecorder) AddCluster(url, svcName interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddCluster", reflect.TypeOf((*MockEGW)(nil).AddCluster), url)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddCluster", reflect.TypeOf((*MockEGW)(nil).AddCluster), url, svcName)
 }
 
 // FetchCluster mocks base method
@@ -139,15 +139,15 @@ func (mr *MockEGWMockRecorder) Delete(svcUrl interface{}) *gomock.Call {
 }
 
 // AnnounceEndpoint mocks base method
-func (m *MockEGW) AnnounceEndpoint(url, address string, port v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error) {
+func (m *MockEGW) AnnounceEndpoint(url, svcName, address string, port v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AnnounceEndpoint", url, address, port, nodeAddress)
+	ret := m.ctrl.Call(m, "AnnounceEndpoint", url, svcName, address, port, nodeAddress)
 	ret0, _ := ret[0].(error)
 	return &EGWEndpointResponse{}, ret0
 }
 
 // AnnounceEndpoint indicates an expected call of AnnounceEndpoint
-func (mr *MockEGWMockRecorder) AnnounceEndpoint(url, address, port, nodeAddress interface{}) *gomock.Call {
+func (mr *MockEGWMockRecorder) AnnounceEndpoint(url, svcName, address, port, nodeAddress interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AnnounceEndpoint", reflect.TypeOf((*MockEGW)(nil).AnnounceEndpoint), url, address, port, nodeAddress)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AnnounceEndpoint", reflect.TypeOf((*MockEGW)(nil).AnnounceEndpoint), url, svcName, address, port, nodeAddress)
 }

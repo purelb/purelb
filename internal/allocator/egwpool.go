@@ -53,6 +53,8 @@ func (p EGWPool) Available(ip net.IP, service *v1.Service) error {
 
 // AssignNext assigns a service to the next available IP.
 func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
+	nsName := service.Namespace + "/" + service.Name
+
 	// Lazily look up the EGW group (which gives us the URL to create
 	// services)
 	if p.createServiceURL == "" {
@@ -77,7 +79,7 @@ func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 	service.Annotations[purelbv1.ServiceAnnotation] = egwsvc.Links["self"]
 	service.Annotations[purelbv1.EndpointAnnotation] = egwsvc.Links["create-endpoint"]
 
-	epicCluster, err := p.egw.AddCluster(egwsvc.Links["create-cluster"])
+	epicCluster, err := p.egw.AddCluster(egwsvc.Links["create-cluster"], nsName)
 	if err != nil {
 		return nil, err
 	}

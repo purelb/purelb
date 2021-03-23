@@ -40,8 +40,8 @@ type EGW interface {
 	AnnounceService(url string, name string, ports []v1.ServicePort) (EGWServiceResponse, error)
 	FetchService(url string) (EGWServiceResponse, error)
 	Delete(svcUrl string) error
-	AnnounceEndpoint(url string, address string, port v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error)
-	AddCluster(createClusterURL string) (EGWClusterResponse, error)
+	AnnounceEndpoint(url string, nsName string, address string, port v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error)
+	AddCluster(createClusterURL string, nsName string) (EGWClusterResponse, error)
 	FetchCluster(clusterURL string) (EGWClusterResponse, error)
 }
 
@@ -310,10 +310,10 @@ func (n *egw) FetchService(url string) (EGWServiceResponse, error) {
 // LoadBalancer. "createClusterURL" is the value of the
 // "create-cluster" key in the service's "link" object. name is the
 // cluster name.
-func (n *egw) AddCluster(createClusterURL string) (EGWClusterResponse, error) {
+func (n *egw) AddCluster(createClusterURL string, svcName string) (EGWClusterResponse, error) {
 	// send the request
 	response, err := n.http.R().
-		SetBody(EGWClusterCreate{ClusterID: n.myCluster}).
+		SetBody(EGWClusterCreate{ClusterID: clusterName(n.myCluster, svcName)}).
 		SetResult(EGWClusterResponse{}).
 		Post(createClusterURL)
 	if err != nil {
@@ -327,7 +327,7 @@ func (n *egw) AddCluster(createClusterURL string) (EGWClusterResponse, error) {
 			return n.FetchCluster(response.Header().Get(locationHeader))
 		}
 
-		return EGWClusterResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+		return EGWClusterResponse{}, fmt.Errorf("%s response code %d status \"%s\"", createClusterURL, response.StatusCode(), response.Status())
 	}
 
 	cluster := response.Result().(*EGWClusterResponse)
@@ -343,7 +343,7 @@ func (n *egw) FetchCluster(clusterURL string) (EGWClusterResponse, error) {
 		return EGWClusterResponse{}, err
 	}
 	if response.IsError() {
-		return EGWClusterResponse{}, fmt.Errorf("%s response code %d status %s", clusterURL, response.StatusCode(), response.Status())
+		return EGWClusterResponse{}, fmt.Errorf("%s response code %d status \"%s\"", clusterURL, response.StatusCode(), response.Status())
 	}
 
 	srv := response.Result().(*EGWClusterResponse)
@@ -351,10 +351,11 @@ func (n *egw) FetchCluster(clusterURL string) (EGWClusterResponse, error) {
 }
 
 // AnnounceEndpoint announces an endpoint to the EGW.
-func (n *egw) AnnounceEndpoint(url string, address string, ePort v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error) {
+func (n *egw) AnnounceEndpoint(url string, svcName string, address string, ePort v1.EndpointPort, nodeAddress string) (*EGWEndpointResponse, error) {
+
 	response, err := n.http.R().
 		SetBody(EGWEndpointCreate{
-			Endpoint: EGWEndpoint{Spec: EGWEndpointSpec{Cluster: n.myCluster, Address: address, Port: ePort, NodeAddress: nodeAddress}}}).
+			Endpoint: EGWEndpoint{Spec: EGWEndpointSpec{Cluster: clusterName(n.myCluster, svcName), Address: address, Port: ePort, NodeAddress: nodeAddress}}}).
 		SetError(EGWEndpointResponse{}).
 		SetResult(EGWEndpointResponse{}).
 		Post(url)
@@ -385,4 +386,10 @@ func (n *egw) Delete(url string) error {
 		return fmt.Errorf("response code %d status \"%s\"", response.StatusCode(), response.Status())
 	}
 	return nil
+}
+
+// clusterName returns a string that meets k8s' requirements for label
+// values.
+func clusterName(clusterID string, svcNSName string) string {
+	return rfc1123Cleaner.Replace(clusterID + "-" + svcNSName)
 }

@@ -20,6 +20,7 @@ import (
 	"math/rand"
 	"net"
 	"os/exec"
+	"strings"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -37,6 +38,10 @@ import (
 
 const (
 	CNI_INTERFACE = "cni0"
+)
+
+var (
+	rfc1123Cleaner = strings.NewReplacer(".", "-", ":", "-", "/", "-")
 )
 
 type announcer struct {
@@ -189,7 +194,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 					// Announce this endpoint to the EGW and add it to the
 					// announcements list
-					epResponse, err := egw.AnnounceEndpoint(createUrl, address.IP, port, a.myNodeAddr)
+					epResponse, err := egw.AnnounceEndpoint(createUrl, nsName, address.IP, port, a.myNodeAddr)
 					if err != nil {
 						l.Log("op", "AnnounceEndpoint", "error", err)
 						return fmt.Errorf("announcement failed")
