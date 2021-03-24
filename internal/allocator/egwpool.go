@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/acnodal"
@@ -28,6 +29,7 @@ import (
 // EGWPool represents an IP address pool on the Acnodal Enterprise
 // GateWay.
 type EGWPool struct {
+	log              log.Logger
 	egw              acnodal.EGW
 	createServiceURL string
 	clusterURLCache  map[string]string // map from service key to cluster url
@@ -35,8 +37,9 @@ type EGWPool struct {
 
 // NewEGWPool initializes a new instance of EGWPool. If error is
 // non-nil then the returned EGWPool should not be used.
-func NewEGWPool(egw acnodal.EGW, _ string) (*EGWPool, error) {
+func NewEGWPool(log log.Logger, egw acnodal.EGW, _ string) (*EGWPool, error) {
 	return &EGWPool{
+		log:             log,
 		egw:             egw,
 		clusterURLCache: map[string]string{},
 	}, nil

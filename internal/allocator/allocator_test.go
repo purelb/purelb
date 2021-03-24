@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-kit/kit/log"
 	"github.com/golang/mock/gomock"
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -30,8 +31,12 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
+var (
+	allocatorTestLogger = log.NewNopLogger()
+)
+
 func TestAssignment(t *testing.T) {
-	alloc := New()
+	alloc := New(allocatorTestLogger)
 	alloc.pools = map[string]Pool{
 		"test0": mustLocalPool(t, "1.2.3.4/31"),
 		"test1": mustLocalPool(t, "1000::4/127"),
@@ -283,7 +288,7 @@ func TestAssignment(t *testing.T) {
 }
 
 func TestPoolAllocation(t *testing.T) {
-	alloc := New()
+	alloc := New(allocatorTestLogger)
 	// This test only allocates from the "test" and "testV6" pools, so
 	// it will run out of IPs quickly even though there are tons
 	// available in other pools.
@@ -531,7 +536,7 @@ func TestPoolAllocation(t *testing.T) {
 }
 
 func TestAllocation(t *testing.T) {
-	alloc := New()
+	alloc := New(allocatorTestLogger)
 	alloc.pools = map[string]Pool{
 		"default": mustLocalPool(t, "1.2.3.4/30"),
 		"test1V6": mustLocalPool(t, "1000::4/127"),
@@ -708,7 +713,7 @@ func TestAllocation(t *testing.T) {
 }
 
 func TestPoolMetrics(t *testing.T) {
-	alloc := New()
+	alloc := New(allocatorTestLogger)
 	alloc.pools = map[string]Pool{
 		"test": mustLocalPool(t, "1.2.3.4/30"),
 	}
@@ -826,7 +831,7 @@ func TestPoolMetrics(t *testing.T) {
 // TestSpecificAddress tests allocations when a specific address is
 // requested
 func TestSpecificAddress(t *testing.T) {
-	alloc := New()
+	alloc := New(allocatorTestLogger)
 
 	groups := []*purelbv1.ServiceGroup{
 		{ObjectMeta: metav1.ObjectMeta{Name: "default"},
@@ -890,7 +895,7 @@ func TestSharingSimple(t *testing.T) {
 	const sharing = "sharing-is-caring"
 	spec := v1.ServiceSpec{}
 
-	alloc := New()
+	alloc := New(allocatorTestLogger)
 
 	groups := []*purelbv1.ServiceGroup{
 		{ObjectMeta: metav1.ObjectMeta{Name: "default"},
@@ -970,6 +975,7 @@ func mustLocalPool(t *testing.T, r string) LocalPool {
 }
 
 func mustEGWPool(t *testing.T, url string) EGWPool {
+	l := log.NewNopLogger()
 	ctrl := gomock.NewController(t)
 	egw := acnodal.NewMockEGW(ctrl)
 	egw.EXPECT().
@@ -977,7 +983,7 @@ func mustEGWPool(t *testing.T, url string) EGWPool {
 		Return(acnodal.EGWGroupResponse{}, nil).
 		AnyTimes()
 
-	p, err := NewEGWPool(egw, "")
+	p, err := NewEGWPool(l, egw, "")
 	if err != nil {
 		panic(err)
 	}

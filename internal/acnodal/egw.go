@@ -234,14 +234,15 @@ func (n *egw) GetAccount() (EGWAccountResponse, error) {
 		return EGWAccountResponse{}, err
 	}
 
+	url := group.Links["account"]
 	response, err := n.http.R().
 		SetResult(EGWAccountResponse{}).
-		Get(group.Links["account"])
+		Get(url)
 	if err != nil {
 		return EGWAccountResponse{}, err
 	}
 	if response.IsError() {
-		return EGWAccountResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+		return EGWAccountResponse{}, fmt.Errorf("%s GET response code %d status \"%s\"", url, response.StatusCode(), response.Status())
 	}
 
 	srv := response.Result().(*EGWAccountResponse)
@@ -257,7 +258,7 @@ func (n *egw) GetGroup() (EGWGroupResponse, error) {
 		return EGWGroupResponse{}, err
 	}
 	if response.IsError() {
-		return EGWGroupResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+		return EGWGroupResponse{}, fmt.Errorf("%s GET response code %d status \"%s\"", n.groupURL, response.StatusCode(), response.Status())
 	}
 
 	srv := response.Result().(*EGWGroupResponse)
@@ -286,7 +287,7 @@ func (n *egw) AnnounceService(url string, name string, sPorts []v1.ServicePort) 
 			return n.FetchService(response.Header().Get(locationHeader))
 		}
 
-		return EGWServiceResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+		return EGWServiceResponse{}, fmt.Errorf("%s POST response code %d status \"%s\"", url, response.StatusCode(), response.Status())
 	}
 
 	srv := response.Result().(*EGWServiceResponse)
@@ -302,7 +303,7 @@ func (n *egw) FetchService(url string) (EGWServiceResponse, error) {
 		return EGWServiceResponse{}, err
 	}
 	if response.IsError() {
-		return EGWServiceResponse{}, fmt.Errorf("%s response code %d status %s", url, response.StatusCode(), response.Status())
+		return EGWServiceResponse{}, fmt.Errorf("%s GET response code %d status \"%s\"", url, response.StatusCode(), response.Status())
 	}
 
 	srv := response.Result().(*EGWServiceResponse)
@@ -330,7 +331,7 @@ func (n *egw) AddCluster(createClusterURL string, svcName string) (EGWClusterRes
 			return n.FetchCluster(response.Header().Get(locationHeader))
 		}
 
-		return EGWClusterResponse{}, fmt.Errorf("%s response code %d status \"%s\"", createClusterURL, response.StatusCode(), response.Status())
+		return EGWClusterResponse{}, fmt.Errorf("%s GET response code %d status \"%s\"", createClusterURL, response.StatusCode(), response.Status())
 	}
 
 	cluster := response.Result().(*EGWClusterResponse)
@@ -346,7 +347,7 @@ func (n *egw) FetchCluster(clusterURL string) (EGWClusterResponse, error) {
 		return EGWClusterResponse{}, err
 	}
 	if response.IsError() {
-		return EGWClusterResponse{}, fmt.Errorf("%s response code %d status \"%s\"", clusterURL, response.StatusCode(), response.Status())
+		return EGWClusterResponse{}, fmt.Errorf("%s GET response code %d status \"%s\"", clusterURL, response.StatusCode(), response.Status())
 	}
 
 	srv := response.Result().(*EGWClusterResponse)
@@ -374,7 +375,7 @@ func (n *egw) AnnounceEndpoint(url string, svcName string, address string, ePort
 			}
 		}
 
-		return &EGWEndpointResponse{}, fmt.Errorf("response code %d status %s", response.StatusCode(), response.Status())
+		return &EGWEndpointResponse{}, fmt.Errorf("response code %d status \"%s\"", response.StatusCode(), response.Status())
 	}
 	return response.Result().(*EGWEndpointResponse), nil
 }
@@ -386,7 +387,7 @@ func (n *egw) Delete(url string) error {
 		return err
 	}
 	if response.IsError() {
-		return fmt.Errorf("response code %d status \"%s\"", response.StatusCode(), response.Status())
+		return fmt.Errorf("%s DELETE response code %d status \"%s\"", url, response.StatusCode(), response.Status())
 	}
 	return nil
 }

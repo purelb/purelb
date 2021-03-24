@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/acnodal"
@@ -26,6 +27,7 @@ import (
 
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
+	logger    log.Logger
 	pools     map[string]Pool
 	allocated map[string]*alloc // svc -> alloc
 }
@@ -37,8 +39,9 @@ type alloc struct {
 }
 
 // New returns an Allocator managing no pools.
-func New() *Allocator {
+func New(log log.Logger) *Allocator {
 	return &Allocator{
+		logger:    log,
 		pools:     map[string]Pool{},
 		allocated: map[string]*alloc{},
 	}
@@ -46,7 +49,7 @@ func New() *Allocator {
 
 // SetPools updates the set of address pools that the allocator owns.
 func (a *Allocator) SetPools(myCluster string, groups []*purelbv1.ServiceGroup) error {
-	pools, err := parseConfig(myCluster, groups)
+	pools, err := a.parseConfig(myCluster, groups)
 	if err != nil {
 		return err
 	}
@@ -271,11 +274,11 @@ func poolFor(pools map[string]Pool, ip net.IP) string {
 	return ""
 }
 
-func parseConfig(myCluster string, groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
+func (a *Allocator) parseConfig(myCluster string, groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
 	pools := map[string]Pool{}
 
 	for i, group := range groups {
-		pool, err := parseGroup(myCluster, group.Spec)
+		pool, err := a.parseGroup(myCluster, group.Spec)
 		if err != nil {
 			return nil, fmt.Errorf("parsing address pool #%d: %s", i+1, err)
 		}
@@ -299,7 +302,7 @@ func parseConfig(myCluster string, groups []*purelbv1.ServiceGroup) (map[string]
 	return pools, nil
 }
 
-func parseGroup(myCluster string, group purelbv1.ServiceGroupSpec) (Pool, error) {
+func (a *Allocator) parseGroup(myCluster string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
 		ret, err := NewLocalPool(group.Local.Pool, group.Local.Subnet, group.Local.Aggregation)
 		if err != nil {
@@ -319,7 +322,7 @@ func parseGroup(myCluster string, group purelbv1.ServiceGroupSpec) (Pool, error)
 			return nil, err
 		}
 
-		ret, err := NewEGWPool(egw, group.EGW.Aggregation)
+		ret, err := NewEGWPool(a.logger, egw, group.EGW.Aggregation)
 		if err != nil {
 			return nil, err
 		}
