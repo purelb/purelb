@@ -111,19 +111,27 @@ func (p EGWPool) Assign(ip net.IP, service *v1.Service) error {
 // namespacedName(service)).
 func (p EGWPool) Release(ip net.IP, service string) error {
 
+	// Attempt to remove our cluster from the service, but don't fail if
+	// something goes wrong
 	cluster, err := p.egw.FetchCluster(p.clusterURLCache[service])
 	if err != nil {
-		return err
+		p.log.Log("op", "FetchCluster", "result", err.Error())
+		return nil
 	}
-	// First remove ourselves (i.e., our cluster) from the service
-	err = p.egw.Delete(cluster.Links["self"])
-	if err != nil {
-		return err
+
+	// Remove ourselves (i.e., our cluster) from the service
+	if err := p.egw.Delete(cluster.Links["self"]); err != nil {
+		p.log.Log("op", "DeleteCluster", "result", err.Error())
 	}
 
 	// Now try to delete the cluster, which will fail if any other
-	// clusters are still attached to it
-	return p.egw.Delete(cluster.Links["service"])
+	// clusters are still attached to it, but we don't need to error
+	// when that happens
+	if err := p.egw.Delete(cluster.Links["service"]); err != nil {
+		p.log.Log("op", "DeleteService", "result", err.Error())
+	}
+
+	return nil
 }
 
 // InUse returns the count of addresses that currently have services
