@@ -19,7 +19,7 @@ set -o nounset
 set -o pipefail
 
 SCRIPT_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
-CODEGEN_PKG=${CODEGEN_PKG:-../code-generator)}
+CODEGEN_PKG=${CODEGEN_PKG:-../code-generator}
 
 bash "${CODEGEN_PKG}"/generate-groups.sh all \
   purelb.io/pkg/generated \
