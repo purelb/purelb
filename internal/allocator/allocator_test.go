@@ -974,16 +974,16 @@ func mustLocalPool(t *testing.T, r string) LocalPool {
 	return *p
 }
 
-func mustEGWPool(t *testing.T, url string) EGWPool {
+func mustEPICPool(t *testing.T, url string) EPICPool {
 	l := log.NewNopLogger()
 	ctrl := gomock.NewController(t)
-	egw := acnodal.NewMockEGW(ctrl)
-	egw.EXPECT().
+	epic := acnodal.NewMockEPIC(ctrl)
+	epic.EXPECT().
 		GetGroup().
-		Return(acnodal.EGWGroupResponse{}, nil).
+		Return(acnodal.GroupResponse{}, nil).
 		AnyTimes()
 
-	p, err := NewEGWPool(l, egw, "")
+	p, err := NewEPICPool(l, epic, "")
 	if err != nil {
 		panic(err)
 	}
@@ -1013,9 +1013,9 @@ func localServiceGroup(name string, pool string) *purelbv1.ServiceGroup {
 	})
 }
 
-func egwServiceGroup(name string, url string) *purelbv1.ServiceGroup {
+func epicServiceGroup(name string, url string) *purelbv1.ServiceGroup {
 	return serviceGroup(name, purelbv1.ServiceGroupSpec{
-		EGW: &purelbv1.ServiceGroupEGWSpec{URL: url},
+		EPIC: &purelbv1.ServiceGroupEPICSpec{URL: url},
 	})
 }
 

@@ -26,21 +26,21 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
-// EGWPool represents an IP address pool on the Acnodal Enterprise
+// EPICPool represents an IP address pool on the Acnodal Enterprise
 // GateWay.
-type EGWPool struct {
+type EPICPool struct {
 	log              log.Logger
-	egw              acnodal.EGW
+	epic             acnodal.EPIC
 	createServiceURL string
 	clusterURLCache  map[string]string // map from service key to cluster url
 }
 
-// NewEGWPool initializes a new instance of EGWPool. If error is
-// non-nil then the returned EGWPool should not be used.
-func NewEGWPool(log log.Logger, egw acnodal.EGW, _ string) (*EGWPool, error) {
-	return &EGWPool{
+// NewEPICPool initializes a new instance of EPICPool. If error is
+// non-nil then the returned EPICPool should not be used.
+func NewEPICPool(log log.Logger, epic acnodal.EPIC, _ string) (*EPICPool, error) {
+	return &EPICPool{
 		log:             log,
-		egw:             egw,
+		epic:            epic,
 		clusterURLCache: map[string]string{},
 	}, nil
 }
@@ -49,40 +49,40 @@ func NewEGWPool(log log.Logger, egw acnodal.EGW, _ string) (*EGWPool, error) {
 // depends on whether another service is using the address, and if so,
 // whether this service can share the address with it. error will be
 // nil if the ip is available, and will contain an explanation if not.
-func (p EGWPool) Available(ip net.IP, service *v1.Service) error {
+func (p EPICPool) Available(ip net.IP, service *v1.Service) error {
 	// We haven't yet implemented address sharing
 	return nil
 }
 
 // AssignNext assigns a service to the next available IP.
-func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
+func (p EPICPool) AssignNext(service *v1.Service) (net.IP, error) {
 	nsName := service.Namespace + "/" + service.Name
 
-	// Lazily look up the EGW group (which gives us the URL to create
+	// Lazily look up the EPIC group (which gives us the URL to create
 	// services)
 	if p.createServiceURL == "" {
-		group, err := p.egw.GetGroup()
+		group, err := p.epic.GetGroup()
 		if err != nil {
 			return nil, err
 		}
 		p.createServiceURL = group.Links["create-service"]
 	}
 
-	// Announce the service to the EGW
-	egwsvc, err := p.egw.AnnounceService(p.createServiceURL, service.Name, service.Spec.Ports)
+	// Announce the service to the EPIC
+	epicsvc, err := p.epic.AnnounceService(p.createServiceURL, service.Name, service.Spec.Ports)
 	if err != nil {
 		return nil, err
 	}
-	ip := net.ParseIP(egwsvc.Service.Spec.Address)
+	ip := net.ParseIP(epicsvc.Service.Spec.Address)
 	if ip == nil {
-		return nil, fmt.Errorf("invalid IP returned by EGW: %s", egwsvc.Service.Spec.Address)
+		return nil, fmt.Errorf("invalid IP returned by EPIC: %s", epicsvc.Service.Spec.Address)
 	}
 
-	service.Annotations[purelbv1.GroupAnnotation] = egwsvc.Links["group"]
-	service.Annotations[purelbv1.ServiceAnnotation] = egwsvc.Links["self"]
-	service.Annotations[purelbv1.EndpointAnnotation] = egwsvc.Links["create-endpoint"]
+	service.Annotations[purelbv1.GroupAnnotation] = epicsvc.Links["group"]
+	service.Annotations[purelbv1.ServiceAnnotation] = epicsvc.Links["self"]
+	service.Annotations[purelbv1.EndpointAnnotation] = epicsvc.Links["create-endpoint"]
 
-	epicCluster, err := p.egw.AddCluster(egwsvc.Links["create-cluster"], nsName)
+	epicCluster, err := p.epic.AddCluster(epicsvc.Links["create-cluster"], nsName)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func (p EGWPool) AssignNext(service *v1.Service) (net.IP, error) {
 }
 
 // Assign assigns a service to an IP.
-func (p EGWPool) Assign(ip net.IP, service *v1.Service) error {
+func (p EPICPool) Assign(ip net.IP, service *v1.Service) error {
 	// Grab the service URL to warm up our cache
 	url, exists := service.Annotations[purelbv1.ClusterAnnotation]
 	if exists {
@@ -109,25 +109,25 @@ func (p EGWPool) Assign(ip net.IP, service *v1.Service) error {
 // Release releases an IP so it can be assigned again. "service"
 // should be a namespaced name, i.e., the output of
 // namespacedName(service)).
-func (p EGWPool) Release(ip net.IP, service string) error {
+func (p EPICPool) Release(ip net.IP, service string) error {
 
 	// Attempt to remove our cluster from the service, but don't fail if
 	// something goes wrong
-	cluster, err := p.egw.FetchCluster(p.clusterURLCache[service])
+	cluster, err := p.epic.FetchCluster(p.clusterURLCache[service])
 	if err != nil {
 		p.log.Log("op", "FetchCluster", "result", err.Error())
 		return nil
 	}
 
 	// Remove ourselves (i.e., our cluster) from the service
-	if err := p.egw.Delete(cluster.Links["self"]); err != nil {
+	if err := p.epic.Delete(cluster.Links["self"]); err != nil {
 		p.log.Log("op", "DeleteCluster", "result", err.Error())
 	}
 
 	// Now try to delete the cluster, which will fail if any other
 	// clusters are still attached to it, but we don't need to error
 	// when that happens
-	if err := p.egw.Delete(cluster.Links["service"]); err != nil {
+	if err := p.epic.Delete(cluster.Links["service"]); err != nil {
 		p.log.Log("op", "DeleteService", "result", err.Error())
 	}
 
@@ -136,42 +136,42 @@ func (p EGWPool) Release(ip net.IP, service string) error {
 
 // InUse returns the count of addresses that currently have services
 // assigned.
-func (p EGWPool) InUse() int {
+func (p EPICPool) InUse() int {
 	return -1
 }
 
 // SharingKey returns the "sharing key" for the specified address.
-func (p EGWPool) SharingKey(ip net.IP) *Key {
+func (p EPICPool) SharingKey(ip net.IP) *Key {
 	return nil
 }
 
 // First returns the first (i.e., lowest-valued) net.IP within this
 // Pool, or nil if the pool has no addresses.
-func (p EGWPool) First() net.IP {
+func (p EPICPool) First() net.IP {
 	return nil
 }
 
 // Next returns the next net.IP within this Pool, or nil if the
 // provided net.IP is the last address in the range.
-func (p EGWPool) Next(ip net.IP) net.IP {
+func (p EPICPool) Next(ip net.IP) net.IP {
 	return nil
 }
 
 // Size returns the total number of addresses in this pool if it's a
 // local pool, or 0 if it's a remote pool.
-func (p EGWPool) Size() uint64 {
+func (p EPICPool) Size() uint64 {
 	return uint64(0)
 }
 
 // Overlaps indicates whether the other Pool overlaps with this one
 // (i.e., has any addresses in common).  It returns true if there are
 // any common addresses and false if there aren't.
-func (p EGWPool) Overlaps(other Pool) bool {
+func (p EPICPool) Overlaps(other Pool) bool {
 	return false
 }
 
 // Contains indicates whether the provided net.IP represents an
 // address within this Pool.  It returns true if so, false otherwise.
-func (p EGWPool) Contains(ip net.IP) bool {
+func (p EPICPool) Contains(ip net.IP) bool {
 	return false
 }

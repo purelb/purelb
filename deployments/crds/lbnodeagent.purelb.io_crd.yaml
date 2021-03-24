@@ -17,7 +17,7 @@ spec:
               type: object
               oneOf:
               - required: ["local"]
-              - required: ["egw"]
+              - required: ["epic"]
               properties:
                 local:
                   type: object
@@ -28,7 +28,7 @@ spec:
                     extlbint:
                       type: string
                       default: "kube-lb0"
-                egw:
+                epic:
                   type: object
   scope: Namespaced
   names:

@@ -6,8 +6,8 @@ SUFFIX = dev
 MANIFEST_SUFFIX = ${SUFFIX}
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
-EGW_WS_USERNAME = no-op
-EGW_WS_PASSWORD = no-op
+EPIC_WS_USERNAME = no-op
+EPIC_WS_PASSWORD = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
 
 ##@ Default Goal
@@ -29,7 +29,7 @@ all: check $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) ## Build it all!
 .PHONY: check
 check:	## Run "short" tests
 	go vet ./...
-	EGW_WS_USERNAME=${EGW_WS_USERNAME} EGW_WS_PASSWORD=${EGW_WS_PASSWORD} NETBOX_BASE_URL=${NETBOX_BASE_URL} NETBOX_USER_TOKEN=${NETBOX_USER_TOKEN} go test -race -short ./...
+	EPIC_WS_USERNAME=${EPIC_WS_USERNAME} EPIC_WS_PASSWORD=${EPIC_WS_PASSWORD} NETBOX_BASE_URL=${NETBOX_BASE_URL} NETBOX_USER_TOKEN=${NETBOX_USER_TOKEN} go test -race -short ./...
 
 .PHONY: image-%
 image-%: CMD=$(subst image-,,$@)

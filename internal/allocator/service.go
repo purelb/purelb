@@ -148,7 +148,7 @@ func (c *controller) addIngress(svc *v1.Service, address net.IP) {
 	// kube-proxy to add the address to the kube-ipvs0 bridge
 	// interface. This is needed for proper packet forwarding.
 	//
-	// If the address was allocated from the Acnodal EGW, though, then
+	// If the address was allocated from the Acnodal EPIC, though, then
 	// it should not be added to kube-ipvs0 because that would interfere
 	// with proper packet forwarding to the endpoints after the packets
 	// have been decapsulated. To do that we add the address to the

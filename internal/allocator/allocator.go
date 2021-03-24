@@ -315,19 +315,19 @@ func (a *Allocator) parseGroup(myCluster string, group purelbv1.ServiceGroupSpec
 			return nil, err
 		}
 		return *ret, nil
-	} else if group.EGW != nil {
-		// Initialize the EGW proxy
-		egw, err := acnodal.NewEGW(myCluster, *group.EGW)
+	} else if group.EPIC != nil {
+		// Initialize the EPIC proxy
+		epic, err := acnodal.NewEPIC(myCluster, *group.EPIC)
 		if err != nil {
 			return nil, err
 		}
 
-		ret, err := NewEGWPool(a.logger, egw, group.EGW.Aggregation)
+		ret, err := NewEPICPool(a.logger, epic, group.EPIC.Aggregation)
 		if err != nil {
 			return nil, err
 		}
 		return *ret, nil
 	}
 
-	return nil, fmt.Errorf("Pool is not local or EGW")
+	return nil, fmt.Errorf("Pool is not local or EPIC")
 }

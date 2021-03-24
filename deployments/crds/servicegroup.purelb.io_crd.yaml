@@ -17,7 +17,7 @@ spec:
               type: object
               oneOf:
               - required: ["local"]
-              - required: ["egw"]
+              - required: ["epic"]
               - required: ["netbox"]
               properties:
                 local:
@@ -41,7 +41,7 @@ spec:
                     aggregation:
                       type: string
                       default: default
-                egw:
+                epic:
                   type: object
                   properties:
                     url:

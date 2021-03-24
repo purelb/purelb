@@ -45,21 +45,21 @@ func TestMain(m *testing.M) {
 	flag.Parse()
 
 	if testing.Short() {
-		fmt.Println("Skipping egw tests because short testing was requested.")
+		fmt.Println("Skipping epic tests because short testing was requested.")
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
 }
 
-func MustEGW(t *testing.T) EGW {
-	e, err := NewEGW("", purelbv1.ServiceGroupEGWSpec{})
+func MustEPIC(t *testing.T) EPIC {
+	e, err := NewEPIC("", purelbv1.ServiceGroupEPICSpec{})
 	if err != nil {
-		t.Fatal("initializing EGW", err)
+		t.Fatal("initializing EPIC", err)
 	}
 	return e
 }
 
-func GetGroup(t *testing.T, e EGW, url string) EGWGroupResponse {
+func GetGroup(t *testing.T, e EPIC, url string) GroupResponse {
 	g, err := e.GetGroup()
 	if err != nil {
 		t.Fatal("getting group", err)
@@ -68,14 +68,14 @@ func GetGroup(t *testing.T, e EGW, url string) EGWGroupResponse {
 }
 
 func TestGetGroup(t *testing.T) {
-	e := MustEGW(t)
+	e := MustEPIC(t)
 	g := GetGroup(t, e, GroupURL)
 	gotName := g.Group.ObjectMeta.Name
 	assert.Equal(t, gotName, GroupName, "group name mismatch")
 }
 
 func TestAnnouncements(t *testing.T) {
-	e := MustEGW(t)
+	e := MustEPIC(t)
 	g := GetGroup(t, e, GroupURL)
 
 	// announce a service

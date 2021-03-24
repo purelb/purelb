@@ -34,12 +34,12 @@ type ServiceGroup struct {
 
 // ServiceGroupSpec configures the allocator.  It will have one of
 // either a Local configuration (to allocate service addresses from a
-// local pool) or an EGW configuration (to get addresses from
-// Acnodal's EGW). For examples, see the "config/" directory in the
+// local pool) or an EPIC configuration (to get addresses from
+// Acnodal's EPIC). For examples, see the "config/" directory in the
 // PureLB source tree.
 type ServiceGroupSpec struct {
 	Local  *ServiceGroupLocalSpec  `json:"local"`
-	EGW    *ServiceGroupEGWSpec    `json:"egw"`
+	EPIC   *ServiceGroupEPICSpec   `json:"epic"`
 	Netbox *ServiceGroupNetboxSpec `json:"netbox"`
 }
 
@@ -56,10 +56,10 @@ type ServiceGroupLocalSpec struct {
 	Aggregation string `json:"aggregation"`
 }
 
-// ServiceGroupEGWSpec configures the allocator to work with the
+// ServiceGroupEPICSpec configures the allocator to work with the
 // Acnodal Enterprise GateWay. The URL is the base URL of the service
-// group on the EGW. Aggregation is currently unused.
-type ServiceGroupEGWSpec struct {
+// group on the EPIC. Aggregation is currently unused.
+type ServiceGroupEPICSpec struct {
 	URL         string `json:"url"`
 	Aggregation string `json:"aggregation"`
 	WSUsername  string `json:"ws-username"`
@@ -94,12 +94,12 @@ type LBNodeAgent struct {
 
 // LBNodeAgentSpec configures the node agents.  It will have one of
 // either a Local configuration (to announce service addresses
-// locally) or an EGW configuration (to announce service addresses to
-// Acnodal's EGW). For examples, see the "config/" directory in the
+// locally) or an EPIC configuration (to announce service addresses to
+// Acnodal's EPIC). For examples, see the "config/" directory in the
 // PureLB source tree.
 type LBNodeAgentSpec struct {
 	Local *LBNodeAgentLocalSpec `json:"local"`
-	EGW   *LBNodeAgentEGWSpec   `json:"egw"`
+	EPIC  *LBNodeAgentEPICSpec  `json:"epic"`
 }
 
 // LBNodeAgentLocalSpec configures the announcers to announce service
@@ -121,10 +121,10 @@ type LBNodeAgentLocalSpec struct {
 	ExtLBInterface string `json:"extlbint"`
 }
 
-// LBNodeAgentEGWSpec configures the announcers to announce service
+// LBNodeAgentEPICSpec configures the announcers to announce service
 // addresses to the Acnodal Enterprise GateWay. It doesn't have any
 // data but acts as a flag.
-type LBNodeAgentEGWSpec struct {
+type LBNodeAgentEPICSpec struct {
 }
 
 // LBNodeAgentStatus is currently unused.

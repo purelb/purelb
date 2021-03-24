@@ -49,13 +49,13 @@ type announcer struct {
 	logger     log.Logger
 	myNode     string
 	myNodeAddr string
-	groups     map[string]*purelbv1.ServiceGroupEGWSpec // groupURL -> ServiceGroupEGWSpec
+	groups     map[string]*purelbv1.ServiceGroupEPICSpec // groupURL -> ServiceGroupEPICSpec
 	pinger     *exec.Cmd
 	sweeper    *exec.Cmd
 	groupID    uint16
 	myCluster  string
 
-	// announcements is a map of services, keyed by the EGW service
+	// announcements is a map of services, keyed by the EPIC service
 	// URL. The value is a pseudo-set of that service's endpoints that
 	// we have announced.
 	announcements map[string]map[string]struct{} // key: service's namespaced name, value: pseudo-set of key: endpoint URL, value: none
@@ -67,7 +67,7 @@ type announcer struct {
 	servicesGroups map[string]string
 }
 
-// NewAnnouncer returns a new Acnodal EGW Announcer.
+// NewAnnouncer returns a new Acnodal EPIC Announcer.
 func NewAnnouncer(l log.Logger, node string, nodeAddr string) lbnodeagent.Announcer {
 	return &announcer{logger: l, myNode: node, myNodeAddr: nodeAddr, announcements: map[string]map[string]struct{}{}, servicesGroups: map[string]string{}}
 }
@@ -83,20 +83,20 @@ func (a *announcer) SetClient(client *k8s.Client) {
 func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	a.myCluster = cfg.MyCluster
 
-	// we'll announce for any an "EGW" *service groups*. At this point
-	// there's no egw node agent-specific config so we don't require an
-	// EGW LBNodeAgent resource, just one or more EGW ServiceGroup.
+	// we'll announce for any an "EPIC" *service groups*. At this point
+	// there's no epic node agent-specific config so we don't require an
+	// EPIC LBNodeAgent resource, just one or more EPIC ServiceGroup.
 	haveConfig := false
-	groups := map[string]*purelbv1.ServiceGroupEGWSpec{}
+	groups := map[string]*purelbv1.ServiceGroupEPICSpec{}
 	for _, group := range cfg.Groups {
-		if spec := group.Spec.EGW; spec != nil {
+		if spec := group.Spec.EPIC; spec != nil {
 			a.logger.Log("op", "setConfig", "name", group.Name, "config", spec)
 			groups[group.Name] = spec
 			haveConfig = true
 		}
 	}
 
-	// if we don't have any EGW configs then we can return
+	// if we don't have any EPIC configs then we can return
 	if !haveConfig {
 		a.logger.Log("event", "noConfig")
 		return nil
@@ -168,15 +168,15 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	}
 	a.servicesGroups[nsName] = groupName
 
-	// connect to the EGW
-	egw, err := NewEGW(a.myCluster, *group)
+	// connect to the EPIC
+	epic, err := NewEPIC(a.myCluster, *group)
 	if err != nil {
-		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
-		return fmt.Errorf("Connection init to EGW failed")
+		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EPIC failed")
+		return fmt.Errorf("Connection init to EPIC failed")
 	}
 
 	// get the group's owning account
-	account, err := egw.GetAccount()
+	account, err := epic.GetAccount()
 	if err != nil {
 		l.Log("op", "SetBalancer", "error", err, "msg", "can't get owning account")
 		return fmt.Errorf("can't get owning account")
@@ -186,15 +186,15 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 	announcements := map[string]struct{}{} // pseudo-set: key: endpoint URLs, value: struct{}
 
-	// For each port in each endpoint address in each subset on this node, contact the EGW
+	// For each port in each endpoint address in each subset on this node, contact the EPIC
 	for _, ep := range endpoints.Subsets {
 		for _, address := range ep.Addresses {
 			for _, port := range ep.Ports {
 				if address.NodeName != nil && *address.NodeName == a.myNode {
 
-					// Announce this endpoint to the EGW and add it to the
+					// Announce this endpoint to the EPIC and add it to the
 					// announcements list
-					epResponse, err := egw.AnnounceEndpoint(createUrl, nsName, address.IP, port, a.myNodeAddr)
+					epResponse, err := epic.AnnounceEndpoint(createUrl, nsName, address.IP, port, a.myNodeAddr)
 					if err != nil {
 						l.Log("op", "AnnounceEndpoint", "error", err)
 						return fmt.Errorf("announcement failed")
@@ -219,7 +219,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	tries := 10
 	err = fmt.Errorf("")
 	for retry := true; err != nil && retry && tries > 0; tries-- {
-		err, retry = a.setupTunnels(account.Account.Spec.GroupID, svc, endpoints, l, egw)
+		err, retry = a.setupTunnels(account.Account.Spec.GroupID, svc, endpoints, l, epic)
 		if err != nil && tries > 1 {
 			time.Sleep(3 * time.Second)
 		}
@@ -234,7 +234,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	for epURL := range a.announcements[nsName] {
 		if _, announcedThisTime := announcements[epURL]; !announcedThisTime {
 			l.Log("op", "DeleteEndpoint", "ep-url", epURL)
-			if err := egw.Delete(epURL); err != nil {
+			if err := epic.Delete(epURL); err != nil {
 				l.Log("op", "DeleteEndpoint", "error", err)
 			}
 			if err := a.cleanupPFC(); err != nil {
@@ -251,11 +251,11 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	return err
 }
 
-func (a *announcer) setupTunnels(groupID uint16, svc *v1.Service, endpoints *v1.Endpoints, l log.Logger, egw EGW) (err error, retry bool) {
+func (a *announcer) setupTunnels(groupID uint16, svc *v1.Service, endpoints *v1.Endpoints, l log.Logger, epic EPIC) (err error, retry bool) {
 	// Get the service that owns this endpoint. This endpoint
 	// will either re-use an existing tunnel or set up a new one
 	// for this node. Tunnels belong to the service.
-	svcResponse, err := egw.FetchService(svc.Annotations[purelbv1.ServiceAnnotation])
+	svcResponse, err := epic.FetchService(svc.Annotations[purelbv1.ServiceAnnotation])
 	if err != nil {
 		l.Log("op", "AnnounceEndpoint", "error", err)
 		return fmt.Errorf("service not found"), false
@@ -270,9 +270,9 @@ func (a *announcer) setupTunnels(groupID uint16, svc *v1.Service, endpoints *v1.
 					// See if the tunnel is there (it might not be yet since it
 					// sometimes takes a while to set up). If it's not there
 					// then return an error which will cause a retry.
-					myTunnel, exists := svcResponse.Service.Status.EGWTunnelEndpoints[a.myNodeAddr]
+					myTunnel, exists := svcResponse.Service.Status.TunnelEndpoints[a.myNodeAddr]
 					if !exists {
-						l.Log("op", "fetchTunnelConfig", "endpoints", svcResponse.Service.Status.EGWTunnelEndpoints)
+						l.Log("op", "fetchTunnelConfig", "endpoints", svcResponse.Service.Status.TunnelEndpoints)
 
 						//  Back off a bit so we don't hammer EPIC
 						time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond)
@@ -312,17 +312,17 @@ func (a *announcer) DeleteBalancer(name, reason string, _ *v1.LoadBalancerIngres
 		return nil
 	}
 
-	// connect to the EGW
-	egw, err := NewEGW(a.myCluster, *group)
+	// connect to the EPIC
+	epic, err := NewEPIC(a.myCluster, *group)
 	if err != nil {
-		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EGW failed")
-		return fmt.Errorf("Connection init to EGW failed")
+		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EPIC failed")
+		return fmt.Errorf("Connection init to EPIC failed")
 	}
 
 	// Delete any endpoints that belong to this service
 	for epURL := range a.announcements[name] {
 		l.Log("op", "DeleteEndpoint", "ep-url", epURL)
-		if err := egw.Delete(epURL); err != nil {
+		if err := epic.Delete(epURL); err != nil {
 			l.Log("op", "DeleteEndpoint", "error", err)
 		}
 		if err := a.cleanupPFC(); err != nil {
@@ -345,7 +345,7 @@ func (a *announcer) Shutdown() {
 }
 
 // setupPFC sets up the Acnodal PFC components and GUE tunnel to
-// communicate with the Acnodal EGW.
+// communicate with the Acnodal EPIC.
 func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, groupID uint16, serviceID uint16, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
 	// cni0 is easy - its name is hard-coded
 	pfc.SetupNIC(a.logger, CNI_INTERFACE, "encap", "ingress", 0, 20)
@@ -358,7 +358,7 @@ func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, groupI
 		a.logger.Log("op", "AnnounceEndpoint", "error", err)
 	}
 
-	// set up the GUE tunnel to the EGW
+	// set up the GUE tunnel to the EPIC
 	err = pfc.SetTunnel(a.logger, tunnelID, tunnelAddr, myAddr, tunnelPort)
 	if err != nil {
 		a.logger.Log("op", "SetTunnel", "error", err)
