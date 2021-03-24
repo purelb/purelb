@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-resty/resty/v2"
 	v1 "k8s.io/api/core/v1"
@@ -217,6 +218,8 @@ func NewEGW(myCluster string, group purelbv1.ServiceGroupEGWSpec) (EGW, error) {
 			"accept":       "application/json",
 		}).
 		SetBasicAuth(group.WSUsername, group.WSPassword).
+		SetRetryCount(2).
+		SetRetryWaitTime(time.Second).
 		SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}). // FIXME: figure out how to *not* disable cert checks
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 
