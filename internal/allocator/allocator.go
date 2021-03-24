@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
@@ -25,6 +26,7 @@ import (
 
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
+	logger    log.Logger
 	pools     map[string]Pool
 	allocated map[string]*alloc // svc -> alloc
 }
@@ -35,8 +37,9 @@ type alloc struct {
 }
 
 // New returns an Allocator managing no pools.
-func New() *Allocator {
+func New(log log.Logger) *Allocator {
 	return &Allocator{
+		logger:    log,
 		pools:     map[string]Pool{},
 		allocated: map[string]*alloc{},
 	}
@@ -44,7 +47,7 @@ func New() *Allocator {
 
 // SetPools updates the set of address pools that the allocator owns.
 func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
-	pools, err := parseConfig(groups)
+	pools, err := a.parseConfig(groups)
 	if err != nil {
 		return err
 	}
@@ -196,11 +199,11 @@ func poolFor(pools map[string]Pool, ip net.IP) string {
 	return ""
 }
 
-func parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
+func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
 	pools := map[string]Pool{}
 
 	for i, group := range groups {
-		pool, err := parseGroup(group.Name, group.Spec)
+		pool, err := a.parseGroup(group.Name, group.Spec)
 		if err != nil {
 			return nil, fmt.Errorf("parsing address pool #%d: %s", i+1, err)
 		}
@@ -224,7 +227,7 @@ func parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
 	return pools, nil
 }
 
-func parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
+func (a *Allocator) parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
 		ret, err := NewLocalPool(group.Local.Pool)
 		if err != nil {

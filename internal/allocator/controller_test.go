@@ -66,10 +66,11 @@ func (s *testK8S) reset() {
 }
 
 func TestControllerConfig(t *testing.T) {
+	l := log.NewNopLogger()
 	k := &testK8S{t: t}
 	c := &controller{
-		logger: log.NewNopLogger(),
-		ips:    New(),
+		logger: l,
+		ips:    New(l),
 		client: k,
 	}
 
@@ -137,10 +138,11 @@ func TestControllerConfig(t *testing.T) {
 }
 
 func TestDeleteRecyclesIP(t *testing.T) {
+	l := log.NewNopLogger()
 	k := &testK8S{t: t}
 	c := &controller{
-		logger: log.NewNopLogger(),
-		ips:    New(),
+		logger: l,
+		ips:    New(l),
 		client: k,
 	}
 
@@ -199,7 +201,7 @@ func TestSpecificAddress(t *testing.T) {
 	k := &testK8S{t: t}
 	c := &controller{
 		logger: log.NewNopLogger(),
-		ips:    New(),
+		ips:    New(allocatorTestLogger),
 		client: k,
 	}
 
@@ -270,7 +272,7 @@ func TestSharingSimple(t *testing.T) {
 	k := &testK8S{t: t}
 	c := &controller{
 		logger: log.NewNopLogger(),
-		ips:    New(),
+		ips:    New(allocatorTestLogger),
 		client: k,
 	}
 

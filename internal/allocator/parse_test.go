@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/go-kit/kit/log"
 	"github.com/google/go-cmp/cmp"
 
 	v1 "purelb.io/pkg/apis/v1"
@@ -83,9 +84,11 @@ func TestParse(t *testing.T) {
 		},
 	}
 
+	alloc := New(log.NewNopLogger())
+
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
-			got, err := parseConfig(test.raw)
+			got, err := alloc.parseConfig(test.raw)
 			if err != nil && test.want != nil {
 				t.Errorf("%q: parse failed: %s", test.desc, err)
 				return

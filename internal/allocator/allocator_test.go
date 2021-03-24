@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-kit/kit/log"
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,8 +28,12 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
+var (
+	allocatorTestLogger = log.NewNopLogger()
+)
+
 func TestAssignment(t *testing.T) {
-	alloc := New()
+	alloc := New(allocatorTestLogger)
 	alloc.pools = map[string]Pool{
 		"test0": mustLocalPool(t, "1.2.3.4/31"),
 		"test1": mustLocalPool(t, "1000::4/127"),
@@ -280,7 +285,7 @@ func TestAssignment(t *testing.T) {
 }
 
 func TestPoolAllocation(t *testing.T) {
-	alloc := New()
+	alloc := New(allocatorTestLogger)
 	// This test only allocates from the "test" and "testV6" pools, so
 	// it will run out of IPs quickly even though there are tons
 	// available in other pools.
@@ -528,7 +533,7 @@ func TestPoolAllocation(t *testing.T) {
 }
 
 func TestAllocation(t *testing.T) {
-	alloc := New()
+	alloc := New(allocatorTestLogger)
 	alloc.pools = map[string]Pool{
 		"default": mustLocalPool(t, "1.2.3.4/30"),
 		"test1V6": mustLocalPool(t, "1000::4/127"),
@@ -705,7 +710,7 @@ func TestAllocation(t *testing.T) {
 }
 
 func TestPoolMetrics(t *testing.T) {
-	alloc := New()
+	alloc := New(allocatorTestLogger)
 	alloc.pools = map[string]Pool{
 		"test": mustLocalPool(t, "1.2.3.4/30"),
 	}
