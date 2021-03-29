@@ -20,6 +20,8 @@ import (
 	"math"
 	"net"
 	"strings"
+
+	go_cidr "github.com/apparentlymart/go-cidr/cidr"
 )
 
 type IPRange struct {
@@ -47,8 +49,8 @@ func NewIPRange(raw string) (IPRange, error) {
 // (i.e., has any addresses in common).  It returns true if there are
 // any common addresses and false if there aren't.
 func (r IPRange) Overlaps(other IPRange) bool {
-	if (bytes.Compare(other.from, r.from) >= 0 && bytes.Compare(other.from, r.to) <= 0) ||
-		(bytes.Compare(other.to, r.from) >= 0 && bytes.Compare(other.to, r.to) <= 0) {
+	if (bytes.Compare(other.from.To16(), r.from.To16()) >= 0 && bytes.Compare(other.from.To16(), r.to.To16()) <= 0) ||
+		(bytes.Compare(other.to.To16(), r.from.To16()) >= 0 && bytes.Compare(other.to.To16(), r.to.To16()) <= 0) {
 		return true
 	}
 
@@ -59,7 +61,7 @@ func (r IPRange) Overlaps(other IPRange) bool {
 // address within this IPRange.  It returns true if so, false
 // otherwise.
 func (r IPRange) Contains(ip net.IP) bool {
-	if bytes.Compare(ip, r.from) >= 0 && bytes.Compare(ip, r.to) <= 0 {
+	if bytes.Compare(ip.To16(), r.from.To16()) >= 0 && bytes.Compare(ip.To16(), r.to.To16()) <= 0 {
 		return true
 	}
 
@@ -75,7 +77,7 @@ func (r IPRange) First() net.IP {
 // Next returns the next net.IP within this IPRange, or nil if the
 // provided net.IP is the last address in the range.
 func (r IPRange) Next(ip net.IP) net.IP {
-	if bytes.Compare(ip, r.to) >= 0 {
+	if bytes.Compare(ip.To16(), r.to.To16()) >= 0 {
 		return nil
 	}
 	next := dup(ip)
@@ -105,23 +107,21 @@ func (r IPRange) Size() uint64 {
 	// We add 1 because the range is inclusive, i.e., the addresses at
 	// both ends are available for allocation.  So, for example, if the
 	// IPRange is 1.1.1.1/32 there's one address available.
-	return 1 + toInt(r.to) - toInt(r.from)
+	return 1 + toInt(r.to.To16()) - toInt(r.from.To16())
 }
 
 func parseCIDR(cidr string) (IPRange, error) {
-	from, n, err := net.ParseCIDR(cidr)
+	var (
+		err     error
+		sn      *net.IPNet
+		iprange = IPRange{}
+	)
+	iprange.from, sn, err = net.ParseCIDR(cidr)
 	if err != nil {
-		return IPRange{}, fmt.Errorf("invalid CIDR %q", cidr)
+		return iprange, fmt.Errorf("invalid CIDR %q", cidr)
 	}
+	_, iprange.to = go_cidr.AddressRange(sn)
 
-	iprange := IPRange{}
-
-	iprange.from = dup(from)
-	for to := from; n.Contains(to); inc(to) {
-		// BUG(toby) this is inefficient.  Is there a better way to find
-		// the last address of a CIDR?
-		iprange.to = dup(to)
-	}
 	return iprange, nil
 }
 
