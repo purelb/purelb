@@ -97,10 +97,10 @@ type ServiceSpec struct {
 // TunnelEndpoint is an Endpoint on the EPIC.
 type TunnelEndpoint struct {
 	// Address is the IP address for this endpoint.
-	Address string `json:"egw-address"`
+	Address string `json:"epic-address"`
 
 	// Port is the port on which this endpoint listens.
-	Port v1.EndpointPort `json:"egw-port"`
+	Port v1.EndpointPort `json:"epic-port"`
 
 	// TunnelID distinguishes the traffic using this tunnel from the
 	// traffic using other tunnels that end on the same host.

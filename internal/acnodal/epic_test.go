@@ -38,7 +38,7 @@ const (
 	ServiceAddress  = "192.168.1.27"
 	EndpointName    = "test-endpoint"
 	EndpointAddress = "10.42.27.42"
-	GroupURL        = "/api/egw/accounts/sample/groups/sample"
+	GroupURL        = "/api/epic/accounts/sample/groups/sample"
 )
 
 func TestMain(m *testing.M) {

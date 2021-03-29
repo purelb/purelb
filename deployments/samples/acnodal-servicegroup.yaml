@@ -6,4 +6,4 @@ metadata:
   namespace: purelb
 spec:
   epic:
-    url: http://192.168.1.40:30080/api/egw/accounts/sample/groups/sample
+    url: http://epic-ctl/api/epic/accounts/sample/groups/sample
