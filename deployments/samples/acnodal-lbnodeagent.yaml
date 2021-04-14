@@ -1,0 +1,16 @@
+---
+apiVersion: "purelb.io/v1"
+kind: LBNodeAgent
+metadata:
+  name: default
+  namespace: purelb
+spec:
+  epic:
+    encapAttachment:
+      interface: cni0
+      direction: ingress
+      flags: 20
+    decapAttachment:
+      interface: default
+      direction: ingress
+      flags: 1

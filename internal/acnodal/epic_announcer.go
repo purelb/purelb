@@ -36,10 +36,6 @@ import (
 	"github.com/vishvananda/netlink/nl"
 )
 
-const (
-	CNI_INTERFACE = "cni0"
-)
-
 var (
 	rfc1123Cleaner = strings.NewReplacer(".", "-", ":", "-", "/", "-")
 )
@@ -50,6 +46,7 @@ type announcer struct {
 	myNode     string
 	myNodeAddr string
 	groups     map[string]*purelbv1.ServiceGroupEPICSpec // groupURL -> ServiceGroupEPICSpec
+	pfcspec    *purelbv1.LBNodeAgentEPICSpec
 	pinger     *exec.Cmd
 	sweeper    *exec.Cmd
 	groupID    uint16
@@ -81,11 +78,25 @@ func (a *announcer) SetClient(client *k8s.Client) {
 func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	a.myCluster = cfg.MyCluster
 
-	// we'll announce for any an "EPIC" *service groups*. At this point
-	// there's no epic node agent-specific config so we don't require an
-	// EPIC LBNodeAgent resource, just one or more EPIC ServiceGroup.
+	// Scan the node agent configs to find the EPIC config (if present)
 	haveConfig := false
+	for _, agent := range cfg.Agents {
+		if spec := agent.Spec.EPIC; spec != nil {
+			a.logger.Log("op", "setConfig", "name", agent.Name, "config", spec)
+			a.pfcspec = spec
+			haveConfig = true
+		}
+	}
+
+	// if we don't have any EPIC configs then we can return
+	if !haveConfig {
+		a.logger.Log("event", "noConfig")
+		return nil
+	}
+
+	// We also need a service group config to tell us how to reach EPIC
 	groups := map[string]*purelbv1.ServiceGroupEPICSpec{}
+	haveConfig = false
 	for _, group := range cfg.Groups {
 		if spec := group.Spec.EPIC; spec != nil {
 			a.logger.Log("op", "setConfig", "name", group.Name, "config", spec)
@@ -104,7 +115,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	a.groups = groups
 
 	// Ensure that we re-load the PFC components
-	a.resetPFC(CNI_INTERFACE)
+	a.resetPFC(a.pfcspec.EncapAttachment.Interface)
 
 	// We might have been notified of some services before we got this
 	// config notification and so were unable to announce, so trigger a
@@ -221,7 +232,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	tries := 10
 	err = fmt.Errorf("")
 	for retry := true; err != nil && retry && tries > 0; tries-- {
-		err, retry = a.setupTunnels(CNI_INTERFACE, account.Account.Spec.GroupID, svc, endpoints, l, epic)
+		err, retry = a.setupTunnels(*a.pfcspec, account.Account.Spec.GroupID, svc, endpoints, l, epic)
 		if err != nil && tries > 1 {
 			time.Sleep(3 * time.Second)
 		}
@@ -253,7 +264,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	return err
 }
 
-func (a *announcer) setupTunnels(intName string, groupID uint16, svc *v1.Service, endpoints *v1.Endpoints, l log.Logger, epic EPIC) (err error, retry bool) {
+func (a *announcer) setupTunnels(spec purelbv1.LBNodeAgentEPICSpec, groupID uint16, svc *v1.Service, endpoints *v1.Endpoints, l log.Logger, epic EPIC) (err error, retry bool) {
 	// Get the service that owns this endpoint. This endpoint
 	// will either re-use an existing tunnel or set up a new one
 	// for this node. Tunnels belong to the service.
@@ -284,7 +295,7 @@ func (a *announcer) setupTunnels(intName string, groupID uint16, svc *v1.Service
 
 					// Now that we've got the service response we have enough
 					// info to set up the tunnel
-					err = a.setupPFC(intName, address, myTunnel.TunnelID, groupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
+					err = a.setupPFC(*a.pfcspec, address, myTunnel.TunnelID, groupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
 					if err != nil {
 						l.Log("op", "SetupPFC", "error", err)
 					}
@@ -348,14 +359,14 @@ func (a *announcer) Shutdown() {
 
 // setupPFC sets up the Acnodal PFC components and GUE tunnel to
 // communicate with the Acnodal EPIC.
-func (a *announcer) setupPFC(cniIntName string, address v1.EndpointAddress, tunnelID uint32, groupID uint16, serviceID uint16, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
+func (a *announcer) setupPFC(spec purelbv1.LBNodeAgentEPICSpec, address v1.EndpointAddress, tunnelID uint32, groupID uint16, serviceID uint16, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
 	// cni0 is easy - its name is hard-coded
-	pfc.SetupNIC(a.logger, cniIntName, "encap", "ingress", 0, 20)
+	pfc.SetupNIC(a.logger, spec.EncapAttachment.Interface, "encap", spec.EncapAttachment.Direction, spec.EncapAttachment.QID, spec.EncapAttachment.Flags)
 
 	// figure out which interface is the default and set that up, too
 	defaultNIC, err := local.DefaultInterface(local.AddrFamily(net.ParseIP(address.IP)))
 	if err == nil {
-		pfc.SetupNIC(a.logger, defaultNIC.Attrs().Name, "decap", "ingress", 0, 1)
+		pfc.SetupNIC(a.logger, defaultNIC.Attrs().Name, "decap", spec.DecapAttachment.Direction, spec.DecapAttachment.QID, spec.DecapAttachment.Flags)
 	} else {
 		a.logger.Log("op", "AnnounceEndpoint", "error", err)
 	}

@@ -121,10 +121,32 @@ type LBNodeAgentLocalSpec struct {
 	ExtLBInterface string `json:"extlbint"`
 }
 
+// PFCAttachment contains the configuration data that lets us attach
+// our packet forwarding components to a network interface.
+type PFCAttachment struct {
+	// Interface is the name of the interface.
+	Interface string `json:"interface"`
+
+	// Direction is either "ingress" or "egress".
+	Direction string `json:"direction"`
+
+	// Flags configure the PFC component's behavior.
+	Flags int `json:"flags"`
+
+	// QID is a magic parameter that the PFC needs.
+	QID int `json:"qid"`
+}
+
 // LBNodeAgentEPICSpec configures the announcers to announce service
-// addresses to the Acnodal Enterprise GateWay. It doesn't have any
-// data but acts as a flag.
+// addresses to the Acnodal Enterprise GateWay.
 type LBNodeAgentEPICSpec struct {
+	// EncapAttachment configures how the agent will attach the Packet
+	// Forwarding Components for packet encapsulation.
+	EncapAttachment PFCAttachment `json:"encapAttachment"`
+
+	// DecapAttachment configures how the agent will attach the Packet
+	// Forwarding Components for packet decapsulation.
+	DecapAttachment PFCAttachment `json:"decapAttachment"`
 }
 
 // LBNodeAgentStatus is currently unused.
