@@ -75,8 +75,6 @@ func NewAnnouncer(l log.Logger, node string, nodeAddr string) lbnodeagent.Announ
 // SetClient configures this announcer to use the provided client.
 func (a *announcer) SetClient(client *k8s.Client) {
 	a.client = client
-
-	a.resetPFC()
 }
 
 // SetConfig responds to configuration changes.
@@ -105,9 +103,13 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	// update our configuration
 	a.groups = groups
 
+	// Ensure that we re-load the PFC components
+	a.resetPFC(CNI_INTERFACE)
+
 	// We might have been notified of some services before we got this
 	// config notification and so were unable to announce, so trigger a
-	// resync.
+	// resync. This also ensures that we set up the PFC which we reset
+	// above.
 	a.client.ForceSync()
 
 	// Start the GUE pinger if it's not running
@@ -219,7 +221,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	tries := 10
 	err = fmt.Errorf("")
 	for retry := true; err != nil && retry && tries > 0; tries-- {
-		err, retry = a.setupTunnels(account.Account.Spec.GroupID, svc, endpoints, l, epic)
+		err, retry = a.setupTunnels(CNI_INTERFACE, account.Account.Spec.GroupID, svc, endpoints, l, epic)
 		if err != nil && tries > 1 {
 			time.Sleep(3 * time.Second)
 		}
@@ -251,7 +253,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	return err
 }
 
-func (a *announcer) setupTunnels(groupID uint16, svc *v1.Service, endpoints *v1.Endpoints, l log.Logger, epic EPIC) (err error, retry bool) {
+func (a *announcer) setupTunnels(intName string, groupID uint16, svc *v1.Service, endpoints *v1.Endpoints, l log.Logger, epic EPIC) (err error, retry bool) {
 	// Get the service that owns this endpoint. This endpoint
 	// will either re-use an existing tunnel or set up a new one
 	// for this node. Tunnels belong to the service.
@@ -282,7 +284,7 @@ func (a *announcer) setupTunnels(groupID uint16, svc *v1.Service, endpoints *v1.
 
 					// Now that we've got the service response we have enough
 					// info to set up the tunnel
-					err = a.setupPFC(address, myTunnel.TunnelID, groupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
+					err = a.setupPFC(intName, address, myTunnel.TunnelID, groupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
 					if err != nil {
 						l.Log("op", "SetupPFC", "error", err)
 					}
@@ -346,9 +348,9 @@ func (a *announcer) Shutdown() {
 
 // setupPFC sets up the Acnodal PFC components and GUE tunnel to
 // communicate with the Acnodal EPIC.
-func (a *announcer) setupPFC(address v1.EndpointAddress, tunnelID uint32, groupID uint16, serviceID uint16, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
+func (a *announcer) setupPFC(cniIntName string, address v1.EndpointAddress, tunnelID uint32, groupID uint16, serviceID uint16, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
 	// cni0 is easy - its name is hard-coded
-	pfc.SetupNIC(a.logger, CNI_INTERFACE, "encap", "ingress", 0, 20)
+	pfc.SetupNIC(a.logger, cniIntName, "encap", "ingress", 0, 20)
 
 	// figure out which interface is the default and set that up, too
 	defaultNIC, err := local.DefaultInterface(local.AddrFamily(net.ParseIP(address.IP)))
@@ -374,14 +376,14 @@ func (a *announcer) cleanupPFC() error {
 	return nil
 }
 
-func (a *announcer) resetPFC() error {
+func (a *announcer) resetPFC(intName string) error {
 	// we want to ensure that we load the PFC filter programs and
 	// maps. Filters survive a pod restart, but maps don't, so we delete
 	// the filters so they'll get reloaded in SetBalancer() which will
 	// implicitly set up the maps.
-	pfc.CleanupFilter(a.logger, CNI_INTERFACE, "ingress")
-	pfc.CleanupFilter(a.logger, CNI_INTERFACE, "egress")
-	pfc.CleanupQueueDiscipline(a.logger, CNI_INTERFACE)
+	pfc.CleanupFilter(a.logger, intName, "ingress")
+	pfc.CleanupFilter(a.logger, intName, "egress")
+	pfc.CleanupQueueDiscipline(a.logger, intName)
 	// figure out which interface is the default and clean that up, too
 	default4, err := local.DefaultInterface(nl.FAMILY_V4)
 	if err == nil {
