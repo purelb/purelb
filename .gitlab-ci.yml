@@ -1,20 +1,28 @@
 image: docker:20.10.3
 services:
-  - docker:20.10.3-dind
+- docker:20.10.3-dind
 variables:
   PROJECT: $CI_PROJECT_NAME
-  ALLOCATOR_IMG: $CI_REGISTRY_IMAGE/allocator
-  LBNODEAGENT_IMG: $CI_REGISTRY_IMAGE/lbnodeagent
-  TAG_SPECIFIC: ci-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
-  TAG_LATEST: ci-${CI_COMMIT_REF_SLUG}-latest
+  REGISTRY_IMAGE: $CI_REGISTRY_IMAGE
   NETBOX_USER_TOKEN: no-op
   # https://docs.gitlab.com/12.10/ee/ci/docker/using_docker_build.html#tls-enabled
   DOCKER_TLS_CERTDIR: "/certs"
 before_script:
-- apk add make git
+- apk add make git wget
 - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
 - mkdir -p ~/.ssh && chmod 700 ~/.ssh
 - ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
+- |
+  if [ -n "${CI_COMMIT_TAG}" ] ; then
+    # If this build is from a git tag, use that as the docker tag.
+    export TAG_SPECIFIC="${CI_COMMIT_TAG}"
+  else
+    # If this build is from a branch, use the name and sha as the
+    # docker tag.
+    export TAG_SPECIFIC="${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}"
+    # Build both a commit-specific build and a branch-latest build.
+    export TAG_LATEST="${CI_COMMIT_REF_NAME}-latest"
+  fi
 
 stages:
   - test
@@ -24,7 +32,6 @@ stages:
 check:
   stage: test
   image: golang:1.15.8-buster
-  services: []
   before_script:
   - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
   script: make check
@@ -40,10 +47,18 @@ lbnodeagentamd:
 manifest:
   stage: manifest
   script:
-    - wget --quiet -O - https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv4.0.1/kustomize_v4.0.1_linux_amd64.tar.gz | tar -C /usr/local/bin -xzf -
+    - wget --no-verbose -O - https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv4.0.1/kustomize_v4.0.1_linux_amd64.tar.gz | tar -C /usr/local/bin -xzf -
     - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} manifest docker-manifest
-    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} manifest
-    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} docker-manifest
+    - |
+      if [ -n "${TAG_LATEST}" ] ; then
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} docker-manifest
+      else
+        # to make our documention more stable we upload a "latest"
+        # deployment manifest to a fixed location. This means that we
+        # don't need to update the docs for every release.
+        wget --no-verbose --header "JOB-TOKEN: $CI_JOB_TOKEN" --method=PUT --body-file=deployments/purelb-${TAG_SPECIFIC}.yaml "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/manifest/0.0.1/purelb-complete.yaml"
+      fi
 
   artifacts:
     paths:
