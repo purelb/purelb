@@ -4,6 +4,10 @@ kind: Kustomization
 bases:
 - ../default
 
+resources:
+- acnodal-servicegroup.yaml
+- acnodal-lbnodeagent.yaml
+
 patches:
 - gitlab_image_pull_secret.yaml
 - local_dev_hostaliases.yaml
