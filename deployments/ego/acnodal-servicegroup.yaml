@@ -6,6 +6,6 @@ metadata:
   namespace: purelb
 spec:
   epic:
-    url: http://epic-ctl/api/epic/accounts/sample/groups/sample
+    url: https://epic-ctl/api/epic/accounts/sample/groups/sample
     ws-username: user1
     ws-password: password1
