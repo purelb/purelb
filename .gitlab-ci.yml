@@ -48,16 +48,24 @@ manifest:
   stage: manifest
   script:
     - wget --no-verbose -O - https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv4.0.1/kustomize_v4.0.1_linux_amd64.tar.gz | tar -C /usr/local/bin -xzf -
-    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} manifest docker-manifest
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=default manifest docker-manifest
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=epic manifest docker-manifest
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=local manifest docker-manifest
     - |
       if [ -n "${TAG_LATEST}" ] ; then
-        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} manifest
-        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} docker-manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} CONFIG_BASE=default manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=default docker-manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} CONFIG_BASE=epic manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=epic docker-manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} CONFIG_BASE=local manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=local docker-manifest
       else
         # to make our documention more stable we upload a "latest"
         # deployment manifest to a fixed location. This means that we
         # don't need to update the docs for every release.
-        wget --no-verbose --header "JOB-TOKEN: $CI_JOB_TOKEN" --method=PUT --body-file=deployments/${CI_PROJECT_NAME}-${TAG_SPECIFIC}.yaml "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/manifest/0.0.1/${CI_PROJECT_NAME}-complete.yaml"
+        wget --no-verbose --header "JOB-TOKEN: $CI_JOB_TOKEN" --method=PUT --body-file=deployments/${CI_PROJECT_NAME}-default-${TAG_SPECIFIC}.yaml "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/manifest/0.0.1/${CI_PROJECT_NAME}-default.yaml"
+        wget --no-verbose --header "JOB-TOKEN: $CI_JOB_TOKEN" --method=PUT --body-file=deployments/${CI_PROJECT_NAME}-epic-${TAG_SPECIFIC}.yaml "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/manifest/0.0.1/${CI_PROJECT_NAME}-epic.yaml"
+        wget --no-verbose --header "JOB-TOKEN: $CI_JOB_TOKEN" --method=PUT --body-file=deployments/${CI_PROJECT_NAME}-local-${TAG_SPECIFIC}.yaml "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/manifest/0.0.1/${CI_PROJECT_NAME}-local.yaml"
       fi
 
   artifacts:

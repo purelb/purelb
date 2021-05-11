@@ -4,11 +4,13 @@ PREFIX ?= ${PROJECT}
 REGISTRY_IMAGE ?= ${REPO}/${PREFIX}
 SUFFIX = dev
 MANIFEST_SUFFIX = ${SUFFIX}
+CONFIG_BASE ?= default
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 EPIC_WS_USERNAME = no-op
 EPIC_WS_PASSWORD = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
+DEPLOYMENT_ROOT ?= deployments/${CONFIG_BASE}
 
 ##@ Default Goal
 .PHONY: help
@@ -67,11 +69,11 @@ generate:  ## Generate client-side stubs for our custom resources
 .PHONY: manifest
 manifest: CACHE != mktemp
 manifest:  ## Generate deployment manifest
-	cd deployments/${PROJECT}
+	cd ${DEPLOYMENT_ROOT}
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
 	kustomize edit set image registry.gitlab.com/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} registry.gitlab.com/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
-	kustomize build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
+	kustomize build . > ../${PROJECT}-${CONFIG_BASE}-${MANIFEST_SUFFIX}.yaml
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml
 

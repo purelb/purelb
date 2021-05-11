@@ -1,0 +1,9 @@
+---
+apiVersion: purelb.io/v1
+kind: ServiceGroup
+metadata:
+  name: acnodal
+  namespace: purelb
+spec:
+  epic:
+    url: http://epic-ctl/api/epic/accounts/sample/groups/sample2

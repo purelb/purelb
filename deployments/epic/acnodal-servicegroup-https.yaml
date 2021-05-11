@@ -1,0 +1,11 @@
+---
+apiVersion: purelb.io/v1
+kind: ServiceGroup
+metadata:
+  name: https
+  namespace: purelb
+spec:
+  epic:
+    url: https://epic-ctl/api/epic/accounts/sample/groups/https
+    ws-password: password1
+    ws-username: user1
