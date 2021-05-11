@@ -10,3 +10,6 @@ bases:
 resources:
 - namespace.yaml
 - purelb.yaml
+
+patches:
+- gitlab_image_pull_secret.yaml
