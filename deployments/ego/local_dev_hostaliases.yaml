@@ -8,7 +8,7 @@ spec:
   template:
     spec:
       hostAliases:
-      - ip: EPIC_CTL_IP
+      - ip: 192.168.66.1
         hostnames:
         - epic-ctl
       - ip: 172.30.66.1
@@ -24,7 +24,7 @@ spec:
   template:
     spec:
       hostAliases:
-      - ip: EPIC_CTL_IP
+      - ip: 192.168.66.1
         hostnames:
         - epic-ctl
       - ip: 172.30.66.1
