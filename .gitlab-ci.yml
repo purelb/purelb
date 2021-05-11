@@ -57,7 +57,7 @@ manifest:
         # to make our documention more stable we upload a "latest"
         # deployment manifest to a fixed location. This means that we
         # don't need to update the docs for every release.
-        wget --no-verbose --header "JOB-TOKEN: $CI_JOB_TOKEN" --method=PUT --body-file=deployments/purelb-${TAG_SPECIFIC}.yaml "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/manifest/0.0.1/purelb-complete.yaml"
+        wget --no-verbose --header "JOB-TOKEN: $CI_JOB_TOKEN" --method=PUT --body-file=deployments/${CI_PROJECT_NAME}-${TAG_SPECIFIC}.yaml "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/manifest/0.0.1/${CI_PROJECT_NAME}-complete.yaml"
       fi
 
   artifacts:
