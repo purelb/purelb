@@ -31,36 +31,36 @@ spec:
                 epic:
                   type: object
                   properties:
-                    encapAttachment:
-                      type: object
-                      properties:
-                        interface:
-                          type: string
-                          default: "cni0"
-                        direction:
-                          type: string
-                          default: "ingress"
-                        flags:
-                          type: integer
-                          default: 20
-                        qid:
-                          type: integer
-                          default: 0
                     decapAttachment:
                       type: object
                       properties:
-                        interface:
-                          type: string
-                          default: "default"
                         direction:
                           type: string
                           default: "ingress"
                         flags:
                           type: integer
                           default: 1
+                        interface:
+                          type: string
+                          default: "default"
                         qid:
                           type: integer
                           default: 0
+                    encapAttachment:
+                      type: object
+                      properties:
+                        direction:
+                          type: string
+                          default: "egress"
+                        flags:
+                          type: integer
+                          default: 16
+                        interface:
+                          type: string
+                          default: "default"
+                        qid:
+                          type: integer
+                          default: 1
   scope: Namespaced
   names:
     plural: lbnodeagents

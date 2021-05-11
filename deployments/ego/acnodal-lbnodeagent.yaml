@@ -6,11 +6,13 @@ metadata:
   namespace: purelb
 spec:
   epic:
-    encapAttachment:
-      interface: cni0
-      direction: ingress
-      flags: 20
     decapAttachment:
-      interface: default
       direction: ingress
+      interface: default
       flags: 1
+      qid: 0
+    encapAttachment:
+      direction: egress
+      interface: default
+      flags: 16
+      qid: 1
