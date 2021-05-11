@@ -1,0 +1,7 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: purelb
+  annotations:
+    acnodal.io/cluster-prefix: ego

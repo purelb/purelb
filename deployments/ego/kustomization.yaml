@@ -11,3 +11,4 @@ resources:
 patches:
 - gitlab_image_pull_secret.yaml
 - local_dev_hostaliases.yaml
+- ns_annotations.yaml
