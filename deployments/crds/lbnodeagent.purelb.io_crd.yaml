@@ -15,7 +15,7 @@ spec:
           properties:
             spec:
               type: object
-              oneOf:
+              anyOf:
               - required: ["local"]
               - required: ["epic"]
               properties:
