@@ -111,7 +111,7 @@ Describing the service displays the address provided by PureLB, in addition Pure
 
 
 ```yaml
-piVersion: v1
+apiVersion: v1
 kind: Service
 metadata:
   annotations:
