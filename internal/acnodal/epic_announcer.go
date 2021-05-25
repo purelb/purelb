@@ -33,6 +33,7 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 
 	"github.com/go-kit/kit/log"
+	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 )
 
@@ -115,7 +116,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	a.groups = groups
 
 	// Ensure that we re-load the PFC components
-	a.resetPFC(a.pfcspec.EncapAttachment.Interface)
+	a.resetPFC(a.pfcspec.EncapAttachment.Interface, a.pfcspec.DecapAttachment.Interface)
 
 	// We might have been notified of some services before we got this
 	// config notification and so were unable to announce, so trigger a
@@ -360,16 +361,19 @@ func (a *announcer) Shutdown() {
 // setupPFC sets up the Acnodal PFC components and GUE tunnel to
 // communicate with the Acnodal EPIC.
 func (a *announcer) setupPFC(spec purelbv1.LBNodeAgentEPICSpec, address v1.EndpointAddress, tunnelID uint32, groupID uint16, serviceID uint16, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
-	// cni0 is easy - its name is hard-coded
-	pfc.SetupNIC(a.logger, spec.EncapAttachment.Interface, "encap", spec.EncapAttachment.Direction, spec.EncapAttachment.QID, spec.EncapAttachment.Flags)
-
-	// figure out which interface is the default and set that up, too
-	defaultNIC, err := local.DefaultInterface(local.AddrFamily(net.ParseIP(address.IP)))
-	if err == nil {
-		pfc.SetupNIC(a.logger, defaultNIC.Attrs().Name, "decap", spec.DecapAttachment.Direction, spec.DecapAttachment.QID, spec.DecapAttachment.Flags)
-	} else {
-		a.logger.Log("op", "AnnounceEndpoint", "error", err)
+	// Determine the interface to which to attach the Encap PFC
+	encapIntf, err := interfaceOrDefault(spec.EncapAttachment.Interface, address)
+	if err != nil {
+		return err
 	}
+	pfc.SetupNIC(a.logger, encapIntf.Attrs().Name, "encap", spec.EncapAttachment.Direction, spec.EncapAttachment.QID, spec.EncapAttachment.Flags)
+
+	// Determine the interface to which to attach the Decap PFC
+	decapIntf, err := interfaceOrDefault(spec.DecapAttachment.Interface, address)
+	if err != nil {
+		return err
+	}
+	pfc.SetupNIC(a.logger, decapIntf.Attrs().Name, "decap", spec.DecapAttachment.Direction, spec.DecapAttachment.QID, spec.DecapAttachment.Flags)
 
 	// set up the GUE tunnel to the EPIC
 	err = pfc.SetTunnel(a.logger, tunnelID, tunnelAddr, myAddr, tunnelPort)
@@ -387,15 +391,25 @@ func (a *announcer) cleanupPFC() error {
 	return nil
 }
 
-func (a *announcer) resetPFC(intName string) error {
+func (a *announcer) resetPFC(encapName string, decapName string) error {
 	// we want to ensure that we load the PFC filter programs and
 	// maps. Filters survive a pod restart, but maps don't, so we delete
 	// the filters so they'll get reloaded in SetBalancer() which will
 	// implicitly set up the maps.
-	pfc.CleanupFilter(a.logger, intName, "ingress")
-	pfc.CleanupFilter(a.logger, intName, "egress")
-	pfc.CleanupQueueDiscipline(a.logger, intName)
-	// figure out which interface is the default and clean that up, too
+
+	// Cleanup any explicitly-specified interfaces (i.e., not "default")
+	if encapName != "default" {
+		pfc.CleanupFilter(a.logger, encapName, "ingress")
+		pfc.CleanupFilter(a.logger, encapName, "egress")
+		pfc.CleanupQueueDiscipline(a.logger, encapName)
+	}
+	if decapName != "default" {
+		pfc.CleanupFilter(a.logger, decapName, "ingress")
+		pfc.CleanupFilter(a.logger, decapName, "egress")
+		pfc.CleanupQueueDiscipline(a.logger, decapName)
+	}
+
+	// Clean up the default interfaces, too
 	default4, err := local.DefaultInterface(nl.FAMILY_V4)
 	if err == nil {
 		pfc.CleanupFilter(a.logger, default4.Attrs().Name, "ingress")
@@ -412,4 +426,21 @@ func (a *announcer) resetPFC(intName string) error {
 	}
 
 	return nil
+}
+
+// interfaceOrDefault returns info about an interface. If intName is
+// "default" then the interface will be whichever interface has the
+// least-cost default route. Otherwise, it will be the interface whose
+// name is "intName". The address family to which "address" belongs is
+// used to determine the default interface.
+//
+// If the error returned is non-nil then the netlink.Link is
+// undefined.
+func interfaceOrDefault(intName string, address v1.EndpointAddress) (netlink.Link, error) {
+	if intName == "default" {
+		// figure out which interface is the default
+		return local.DefaultInterface(local.AddrFamily(net.ParseIP(address.IP)))
+	}
+
+	return netlink.LinkByName(intName)
 }
