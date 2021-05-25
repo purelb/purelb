@@ -231,7 +231,7 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 		case (nl.FAMILY_V6):
 
-			_, poolaggr, _ := net.ParseCIDR("0.0.0.0" + aggregation)
+                        _, poolaggr, _ := net.ParseCIDR("::" + aggregation)
 
 			lbIPNet.Mask = poolaggr.Mask
 
