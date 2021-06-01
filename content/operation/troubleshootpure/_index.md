@@ -10,11 +10,11 @@ If PureLB isnt behaving the way you expect, its easy to figure out whats going o
 PureLB adds addresses to either the interface it identifies as the default interface by looking for the default route, unless this election was overridden in the custom resource _lbnodeagent_ or the virtual interface _kube-lb0_.
 
 
-Inspecting Linux interface and the Linux Routing table will show the load balancer addresses.  It is not necessary to log into the host to do this inspection.  Just like a CNI, the _lbnodeagent_ PODs are set to hostNetwork:true, the container is isolated but uses the host network namespace
+Inspecting Linux interface and the Linux Routing table will show the load balancer addresses.  It is not necessary to log into the host to do this inspection.  Just like a CNI, the _lbnodeagent_ PODs are set to hostNetwork:true, the container is isolated but uses the host network namespace.
 
 
 ```plaintext
-$ kubectl get pods -o wide
+$ kubectl get pods --namespace=purelb --output=wide
 NAME                        READY   STATUS    RESTARTS   AGE    IP               NODE        NOMINATED NODE   READINESS GATES
 allocator-5cb95b946-vmxqz   1/1     Running   0          106m   10.129.3.152     purelb2-4   <none>           <none>
 lbnodeagent-5vx7m           1/1     Running   0          106m   172.30.250.102   purelb2-4   <none>           <none>
@@ -23,7 +23,7 @@ lbnodeagent-bpj95           1/1     Running   0          106m   172.30.250.105  
 lbnodeagent-fkn89           1/1     Running   1          106m   172.30.250.103   purelb2-2   <none>           <none>
 lbnodeagent-ssblg           1/1     Running   1          106m   172.30.250.104   purelb2-1   <none>           <none>
 
-$ kubectl exec -it lbnodeagent-ssblg -- ip route show
+$ kubectl exec -it --namespace=purelb lbnodeagent-ssblg -- ip route show
 default via 172.30.250.1 dev enp1s0  src 172.30.250.104  metric 100 
 10.129.0.0/24 dev cni0 scope link  src 10.129.0.1 
 10.129.1.0/24 via 172.30.250.103 dev enp1s0 
@@ -41,7 +41,7 @@ default via 172.30.250.1 dev enp1s0  src 172.30.250.104  metric 100
 On this node PureLB would identify enp1s0 as the local interface as it has the default route.  Inspect the interface:
 
 ```plaintext
-$ kubectl exec -it lbnodeagent-ssblg -- ip addr show dev enp1s0
+$ kubectl exec -it --namespace=purelb lbnodeagent-ssblg -- ip addr show dev enp1s0
 2: enp1s0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP qlen 1000
     link/ether 52:54:00:76:05:b6 brd ff:ff:ff:ff:ff:ff
     inet 172.30.250.104/24 brd 172.30.250.255 scope global enp1s0
@@ -55,13 +55,13 @@ $ kubectl exec -it lbnodeagent-ssblg -- ip addr show dev enp1s0
     inet6 fe80::5054:ff:fe76:5b6/64 scope link 
        valid_lft forever preferred_lft forever
 ```
-The addresses added by Purelb are displayed using a iproute2 commands, the additional addresses are displayed as secondary
+The addresses added by Purelb are displayed using a iproute2 commands, the additional addresses are displayed as secondary.
 
 
 On the same node, addresses have been added to the virtual interface.  This caused routes to be added on the device kube-lb0 (above). To inspect kube-lb0:
 
 ```plaintext
-k exec -it lbnodeagent-ssblg -- ip addr show dev kube-lb0
+$ kubectl exec -it --namespace=purelb lbnodeagent-ssblg -- ip addr show dev kube-lb0
 44: kube-lb0: <BROADCAST,NOARP,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN qlen 1000
     link/ether ee:f0:22:7d:70:0d brd ff:ff:ff:ff:ff:ff
     inet 172.31.1.225/32 scope global kube-lb0
@@ -96,6 +96,6 @@ The maintainers consider logging primarily a developer tool (everybody has an op
 
 We don't believe that reading logs should be necessary on a day-to-day basis but if you're in a situation where logs can be helpful here's some info to help you use them:
 
-PureLB pods run in the `purelb` namespace. There are two PureLB executables: the allocator and the lbnodeagent. The allocator typically runs a single pod per cluster and the lbnodeagent runs a pod on each node so you might need to examine several lbnodeagent logs before you find the one you're looking for. The `kubectl get -n purelb pods -owide` command can be helpful as it shows you which lbnodeagent pod is running on which node.
+PureLB pods run in the `purelb` namespace. There are two PureLB executables: the allocator and the lbnodeagent. The allocator typically runs a single pod per cluster and the lbnodeagent runs a pod on each node so you might need to examine several lbnodeagent logs before you find the one you're looking for. The `kubectl get pods --namespace=purelb --output=wide` command can be helpful as it shows you which lbnodeagent pod is running on which node.
 
 We don't log timestamps since k8s adds them implicitly to all log messages. You can use `kubectl logs --timestamps` to see the k8s timestamps.

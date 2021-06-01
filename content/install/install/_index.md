@@ -66,7 +66,7 @@ PureLB will operate without making this change, however kubeproxy is set to IPVS
 PureLB should install a single instance of the allocator and an instance of lbnodeagent on each untainted node.
 
 ```plaintext
-$ kubectl get pods  -o wide
+$ kubectl get pods --namespace=purelb --output=wide
 NAME                        READY   STATUS    RESTARTS   AGE     IP               NODE        NOMINATED NODE   READINESS GATES
 allocator-5cb95b946-5wmsz   1/1     Running   1          5h28m   10.129.3.152     purelb2-4   <none>           <none>
 lbnodeagent-5689z           1/1     Running   2          5h28m   172.30.250.101   purelb2-3   <none>           <none>
