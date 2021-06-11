@@ -85,9 +85,10 @@ type Group struct {
 // LoadBalancer Service Spec (i.e., the part that defines what the LB
 // should look like).
 type ServiceSpec struct {
-	Address   string           `json:"public-address,omitempty"`
-	Ports     []v1.ServicePort `json:"public-ports"`
-	ServiceID uint16           `json:"service-id"`
+	DisplayName string           `json:"display-name"`
+	Address     string           `json:"public-address,omitempty"`
+	Ports       []v1.ServicePort `json:"public-ports"`
+	ServiceID   uint16           `json:"service-id"`
 
 	// TunnelKey authenticates the client with the EPIC. It must be a
 	// base64-encoded 128-bit value.
@@ -273,7 +274,7 @@ func (n *epic) AnnounceService(url string, name string, sPorts []v1.ServicePort)
 	// send the request
 	response, err := n.http.R().
 		SetBody(ServiceCreate{
-			Service: Service{ObjectMeta: ObjectMeta{Name: name}, Spec: ServiceSpec{Ports: sPorts}}}).
+			Service: Service{ObjectMeta: ObjectMeta{Name: name}, Spec: ServiceSpec{DisplayName: name, Ports: sPorts}}}).
 		SetResult(ServiceResponse{}).
 		Post(url)
 	if err != nil {
