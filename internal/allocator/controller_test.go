@@ -77,7 +77,12 @@ func TestControllerConfig(t *testing.T) {
 	// Create service that would need an IP allocation
 
 	svc := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test",
+			Annotations: map[string]string{
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
+			},
+		},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
@@ -100,7 +105,7 @@ func TestControllerConfig(t *testing.T) {
 	cfg := &purelbv1.Config{
 		DefaultAnnouncer: true,
 		Groups: []*purelbv1.ServiceGroup{
-			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
 						Pool: "1.2.3.0/24",
@@ -124,8 +129,9 @@ func TestControllerConfig(t *testing.T) {
 	wantSvc.ObjectMeta = metav1.ObjectMeta{
 		Name: "test",
 		Annotations: map[string]string{
-			purelbv1.BrandAnnotation: purelbv1.Brand,
-			purelbv1.PoolAnnotation:  "default",
+			purelbv1.DesiredGroupAnnotation: defaultPoolName,
+			purelbv1.BrandAnnotation:        purelbv1.Brand,
+			purelbv1.PoolAnnotation:         defaultPoolName,
 		},
 	}
 
@@ -149,7 +155,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	cfg := &purelbv1.Config{
 		DefaultAnnouncer: true,
 		Groups: []*purelbv1.ServiceGroup{
-			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
 						Pool: "1.2.3.0/32",
@@ -162,7 +168,13 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	c.MarkSynced()
 
 	svc1 := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "test"},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "test",
+			Name:      "test",
+			Annotations: map[string]string{
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
+			},
+		},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
@@ -176,7 +188,13 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	// Second service should converge correctly, but not allocate an
 	// IP because we have none left.
 	svc2 := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "test2"},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "test",
+			Name:      "test2",
+			Annotations: map[string]string{
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
+			},
+		},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",

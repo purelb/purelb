@@ -24,6 +24,10 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
+const (
+	defaultPoolName string = "default"
+)
+
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
 	logger    log.Logger
@@ -110,21 +114,15 @@ func (a *Allocator) NotifyExisting(svc *v1.Service, ip net.IP) error {
 	}
 }
 
+// AllocateAnyIP allocates an IP address for svc based on svc's
+// annotations and current configuration. If the user asks for a
+// specific IP then we'll attempt to use that, and if not we'll use
+// the pool specified in the purelbv1.DesiredGroupAnnotation
+// annotation. If neither is specified then we will attempt to
+// allocate from a pool named "default", if it exists.
 func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
-	desiredGroup := svc.Annotations[purelbv1.DesiredGroupAnnotation]
-
 	// If the user asked for a specific IP, try that.
 	if svc.Spec.LoadBalancerIP != "" {
-
-		// It doesn't make sense to use Spec.LoadBalancerIP *and*
-		// DesiredGroupAnnotation because Spec.LoadBalancerIP is more
-		// specific so DesiredGroupAnnotation can only cause problems. If
-		// you're using Spec.LoadBalancerIP then you don't need
-		// DesiredGroupAnnotation.
-		if desiredGroup != "" {
-			return "", nil, fmt.Errorf("spec.loadBalancerIP and DesiredGroupAnnotation are mutually exclusive, use Spec.LoadBalancerIP alone")
-		}
-
 		ip := net.ParseIP(svc.Spec.LoadBalancerIP)
 		if ip == nil {
 			return "", nil, fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
@@ -136,17 +134,18 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
 		return pool, ip, nil
 	}
 
-	// Otherwise, did the user ask for a specific pool?
-	if desiredGroup != "" {
-		ip, err := a.AllocateFromPool(svc, desiredGroup)
-		if err != nil {
-			return "", nil, err
-		}
-		return desiredGroup, ip, nil
+	// If no desiredGroup was specified, then we will try "default"
+	desiredGroup := svc.Annotations[purelbv1.DesiredGroupAnnotation]
+	if desiredGroup == "" {
+		desiredGroup = defaultPoolName
 	}
 
-	// Okay, in that case just bruteforce across all pools.
-	return a.Allocate(svc)
+	// Otherwise, allocate from the pool that the user specified
+	ip, err := a.AllocateFromPool(svc, desiredGroup)
+	if err != nil {
+		return "", nil, err
+	}
+	return desiredGroup, ip, nil
 }
 
 // AllocateSpecificIP assigns the requested ip to svc, if the assignment is
@@ -210,27 +209,6 @@ func (a *Allocator) AllocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 	}
 
 	return ip, nil
-}
-
-// Allocate any available and assignable IP to service.
-func (a *Allocator) Allocate(svc *v1.Service) (string, net.IP, error) {
-	var (
-		err error
-		ip  net.IP
-	)
-
-	// if we have already allocated an address for this service then
-	// return it
-	if alloc := a.allocated[svc.Name]; alloc != nil {
-		return alloc.pool, alloc.ip, nil
-	}
-
-	// we need an address but no pool was specified so it's either the
-	// "default" pool or nothing
-	if ip, err = a.AllocateFromPool(svc, "default"); err == nil {
-		return "default", ip, nil
-	}
-	return "", nil, err
 }
 
 // Unassign frees the IP associated with service, if any.
