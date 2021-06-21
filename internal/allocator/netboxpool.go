@@ -41,14 +41,11 @@ type NetboxPool struct {
 	sharingKeys map[string]*Key // ip.String() -> pointer to sharing key
 
 	portsInUse map[string]map[Port]string // ip.String() -> Port -> svc
-
-	subnetV4    string
-	aggregation string
 }
 
 // NewNetboxPool initializes a new instance of NetboxPool. If error is
 // non-nil then the returned NetboxPool should not be used.
-func NewNetboxPool(rawurl string, tenant string, aggregation string) (*NetboxPool, error) {
+func NewNetboxPool(rawurl string, tenant string) (*NetboxPool, error) {
 	// Make sure that we've got credentials for Netbox
 	userToken, ok := os.LookupEnv("NETBOX_USER_TOKEN")
 	if !ok {
@@ -68,7 +65,6 @@ func NewNetboxPool(rawurl string, tenant string, aggregation string) (*NetboxPoo
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
-		aggregation:    aggregation,
 	}, nil
 }
 

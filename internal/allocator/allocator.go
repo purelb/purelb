@@ -304,13 +304,13 @@ func (a *Allocator) parseConfig(myCluster string, groups []*purelbv1.ServiceGrou
 
 func (a *Allocator) parseGroup(myCluster string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
-		ret, err := NewLocalPool(group.Local.Pool, group.Local.Subnet, group.Local.Aggregation)
+		ret, err := NewLocalPool(group.Local.Pool)
 		if err != nil {
 			return nil, err
 		}
 		return *ret, nil
 	} else if group.Netbox != nil {
-		ret, err := NewNetboxPool(group.Netbox.URL, group.Netbox.Tenant, group.Netbox.Aggregation)
+		ret, err := NewNetboxPool(group.Netbox.URL, group.Netbox.Tenant)
 		if err != nil {
 			return nil, err
 		}
@@ -322,7 +322,7 @@ func (a *Allocator) parseGroup(myCluster string, group purelbv1.ServiceGroupSpec
 			return nil, err
 		}
 
-		ret, err := NewEPICPool(a.logger, epic, group.EPIC.Aggregation)
+		ret, err := NewEPICPool(a.logger, epic)
 		if err != nil {
 			return nil, err
 		}

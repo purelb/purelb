@@ -967,7 +967,7 @@ func assigned(a *Allocator, svc string) string {
 }
 
 func mustLocalPool(t *testing.T, r string) LocalPool {
-	p, err := NewLocalPool(r, "", "")
+	p, err := NewLocalPool(r)
 	if err != nil {
 		panic(err)
 	}
@@ -983,7 +983,7 @@ func mustEPICPool(t *testing.T, url string) EPICPool {
 		Return(acnodal.GroupResponse{}, nil).
 		AnyTimes()
 
-	p, err := NewEPICPool(l, epic, "")
+	p, err := NewEPICPool(l, epic)
 	if err != nil {
 		panic(err)
 	}

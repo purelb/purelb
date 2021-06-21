@@ -37,7 +37,7 @@ type EPICPool struct {
 
 // NewEPICPool initializes a new instance of EPICPool. If error is
 // non-nil then the returned EPICPool should not be used.
-func NewEPICPool(log log.Logger, epic acnodal.EPIC, _ string) (*EPICPool, error) {
+func NewEPICPool(log log.Logger, epic acnodal.EPIC) (*EPICPool, error) {
 	return &EPICPool{
 		log:             log,
 		epic:            epic,
