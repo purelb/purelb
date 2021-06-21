@@ -115,21 +115,28 @@ func (a *Allocator) NotifyExisting(svc *v1.Service, ip net.IP) error {
 	}
 }
 
+// AllocateAnyIP allocates an IP address for svc based on svc's
+// annotations and current configuration. If the user asks for a
+// specific IP then we'll attempt to use that, and if not we'll use
+// the pool specified in the purelbv1.DesiredGroupAnnotation
+// annotation. If neither is specified then we will *not* allocate -
+// this is how we
 func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
 	desiredGroup := svc.Annotations[purelbv1.DesiredGroupAnnotation]
+	// This ensures that we only act on LBs that the user wants us
+	// to. If we're running in a cloud provider then the user might want
+	// the cloud provider's controller to allocate certain LBs and they
+	// can indicate that by not setting purelbv1.DesiredGroupAnnotation
+	// and we'll ignore that LB so it will belong to the cloud provider.
+	//
+	// This will eventually need to change when the cloud providers
+	// support the standard LB annotation but that will be a while.
+	if desiredGroup == "" {
+		return "", nil, fmt.Errorf("annotation " + purelbv1.DesiredGroupAnnotation + " must be provided")
+	}
 
 	// If the user asked for a specific IP, try that.
 	if svc.Spec.LoadBalancerIP != "" {
-
-		// It doesn't make sense to use Spec.LoadBalancerIP *and*
-		// DesiredGroupAnnotation because Spec.LoadBalancerIP is more
-		// specific so DesiredGroupAnnotation can only cause problems. If
-		// you're using Spec.LoadBalancerIP then you don't need
-		// DesiredGroupAnnotation.
-		if desiredGroup != "" {
-			return "", nil, fmt.Errorf("spec.loadBalancerIP and DesiredGroupAnnotation are mutually exclusive, use Spec.LoadBalancerIP alone")
-		}
-
 		ip := net.ParseIP(svc.Spec.LoadBalancerIP)
 		if ip == nil {
 			return "", nil, fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
@@ -141,17 +148,12 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
 		return pool, ip, nil
 	}
 
-	// Otherwise, did the user ask for a specific pool?
-	if desiredGroup != "" {
-		ip, err := a.AllocateFromPool(svc, desiredGroup)
-		if err != nil {
-			return "", nil, err
-		}
-		return desiredGroup, ip, nil
+	// Otherwise, allocate from the pool that the user specified
+	ip, err := a.AllocateFromPool(svc, desiredGroup)
+	if err != nil {
+		return "", nil, err
 	}
-
-	// Okay, in that case just bruteforce across all pools.
-	return a.Allocate(svc)
+	return desiredGroup, ip, nil
 }
 
 // AllocateSpecificIP assigns the requested ip to svc, if the assignment is

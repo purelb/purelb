@@ -858,6 +858,11 @@ func TestSpecificAddress(t *testing.T) {
 	// Fail to allocate a specific address that's not in the default
 	// pool
 	svc1 := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				purelbv1.DesiredGroupAnnotation: "default",
+			},
+		},
 		Spec: v1.ServiceSpec{
 			LoadBalancerIP: "1.2.3.8",
 		},
@@ -871,21 +876,6 @@ func TestSpecificAddress(t *testing.T) {
 	assert.Nil(t, err, "error allocating address")
 	assert.Equal(t, "default", pool, "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.0", addr.String(), "incorrect address chosen")
-
-	// Fail to allocate a specific address from a specific pool (that's
-	// an illegal configuration)
-	svc2 := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: "alternate",
-			},
-		},
-		Spec: v1.ServiceSpec{
-			LoadBalancerIP: "3.2.1.0",
-		},
-	}
-	_, _, err = alloc.AllocateAnyIP(svc2)
-	assert.NotNil(t, err, "address allocated but shouldn't be")
 
 }
 
@@ -915,7 +905,8 @@ func TestSharingSimple(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "svc1",
 			Annotations: map[string]string{
-				purelbv1.SharingAnnotation: sharing,
+				purelbv1.DesiredGroupAnnotation: "default",
+				purelbv1.SharingAnnotation:      sharing,
 			},
 		},
 		Spec: spec,
@@ -930,7 +921,8 @@ func TestSharingSimple(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "svc2",
 			Annotations: map[string]string{
-				purelbv1.SharingAnnotation: "i-really-dont-care-do-u",
+				purelbv1.DesiredGroupAnnotation: "default",
+				purelbv1.SharingAnnotation:      "i-really-dont-care-do-u",
 			},
 		},
 		Spec: spec,
@@ -945,7 +937,8 @@ func TestSharingSimple(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "svc3",
 			Annotations: map[string]string{
-				purelbv1.SharingAnnotation: sharing,
+				purelbv1.DesiredGroupAnnotation: "default",
+				purelbv1.SharingAnnotation:      sharing,
 			},
 		},
 		Spec: spec,
