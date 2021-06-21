@@ -36,12 +36,9 @@ type LocalPool struct {
 	sharingKeys map[string]*Key // ip.String() -> pointer to sharing key
 
 	portsInUse map[string]map[Port]string // ip.String() -> Port -> svc
-
-	subnetV4    string
-	aggregation string
 }
 
-func NewLocalPool(rawrange string, subnet string, aggregation string) (*LocalPool, error) {
+func NewLocalPool(rawrange string) (*LocalPool, error) {
 	iprange, err := NewIPRange(rawrange)
 	if err != nil {
 		return nil, err
@@ -51,8 +48,6 @@ func NewLocalPool(rawrange string, subnet string, aggregation string) (*LocalPoo
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
-		subnetV4:       subnet,
-		aggregation:    aggregation,
 	}, nil
 }
 

@@ -830,7 +830,7 @@ func assigned(a *Allocator, svc string) string {
 }
 
 func mustLocalPool(t *testing.T, r string) LocalPool {
-	p, err := NewLocalPool(r, "", "")
+	p, err := NewLocalPool(r)
 	if err != nil {
 		panic(err)
 	}

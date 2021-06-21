@@ -226,13 +226,13 @@ func parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
 
 func parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
-		ret, err := NewLocalPool(group.Local.Pool, group.Local.Subnet, group.Local.Aggregation)
+		ret, err := NewLocalPool(group.Local.Pool)
 		if err != nil {
 			return nil, err
 		}
 		return *ret, nil
 	} else if group.Netbox != nil {
-		ret, err := NewNetboxPool(group.Netbox.URL, group.Netbox.Tenant, group.Netbox.Aggregation)
+		ret, err := NewNetboxPool(group.Netbox.URL, group.Netbox.Tenant)
 		if err != nil {
 			return nil, err
 		}

@@ -40,7 +40,7 @@ type NetboxPool struct {
 
 // NewNetboxPool initializes a new instance of NetboxPool. If error is
 // non-nil then the returned NetboxPool should not be used.
-func NewNetboxPool(rawurl string, tenant string, aggregation string) (*NetboxPool, error) {
+func NewNetboxPool(rawurl string, tenant string) (*NetboxPool, error) {
 	// Make sure that we've got credentials for Netbox
 	userToken, ok := os.LookupEnv("NETBOX_USER_TOKEN")
 	if !ok {
