@@ -89,6 +89,7 @@ type ServiceSpec struct {
 	Address     string           `json:"public-address,omitempty"`
 	Ports       []v1.ServicePort `json:"public-ports"`
 	ServiceID   uint16           `json:"service-id"`
+	TrueIngress bool             `json:"true-ingress"`
 
 	// TunnelKey authenticates the client with the EPIC. It must be a
 	// base64-encoded 128-bit value.
@@ -274,7 +275,7 @@ func (n *epic) AnnounceService(url string, name string, sPorts []v1.ServicePort)
 	// send the request
 	response, err := n.http.R().
 		SetBody(ServiceCreate{
-			Service: Service{ObjectMeta: ObjectMeta{Name: name}, Spec: ServiceSpec{DisplayName: name, Ports: sPorts}}}).
+			Service: Service{ObjectMeta: ObjectMeta{Name: name}, Spec: ServiceSpec{TrueIngress: true, DisplayName: name, Ports: sPorts}}}).
 		SetResult(ServiceResponse{}).
 		Post(url)
 	if err != nil {
