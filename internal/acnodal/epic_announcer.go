@@ -284,9 +284,9 @@ func (a *announcer) setupTunnels(spec purelbv1.LBNodeAgentEPICSpec, groupID uint
 					// See if the tunnel is there (it might not be yet since it
 					// sometimes takes a while to set up). If it's not there
 					// then return an error which will cause a retry.
-					myTunnel, exists := svcResponse.Service.Status.TunnelEndpoints[a.myNodeAddr]
+					myTunnels, exists := svcResponse.Service.Spec.TunnelEndpoints[a.myNodeAddr]
 					if !exists {
-						l.Log("op", "fetchTunnelConfig", "endpoints", svcResponse.Service.Status.TunnelEndpoints)
+						l.Log("op", "fetchTunnelConfig", "endpoints", svcResponse.Service.Spec.TunnelEndpoints)
 
 						//  Back off a bit so we don't hammer EPIC
 						time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond)
@@ -295,10 +295,12 @@ func (a *announcer) setupTunnels(spec purelbv1.LBNodeAgentEPICSpec, groupID uint
 					}
 
 					// Now that we've got the service response we have enough
-					// info to set up the tunnel
-					err = a.setupPFC(*a.pfcspec, address, myTunnel.TunnelID, groupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
-					if err != nil {
-						l.Log("op", "SetupPFC", "error", err)
+					// info to set up the tunnels
+					for _, myTunnel := range myTunnels.EPICEndpoints {
+						err = a.setupPFC(*a.pfcspec, address, myTunnel.TunnelID, groupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
+						if err != nil {
+							l.Log("op", "SetupPFC", "error", err)
+						}
 					}
 				} else {
 					l.Log("op", "DontAnnounceEndpoint", "ep-address", address.IP, "ep-port", port.Port, "node", "not me")

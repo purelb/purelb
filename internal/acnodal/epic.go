@@ -94,6 +94,22 @@ type ServiceSpec struct {
 	// TunnelKey authenticates the client with the EPIC. It must be a
 	// base64-encoded 128-bit value.
 	TunnelKey string `json:"tunnel-key,omitempty"`
+
+	// GUETunnelEndpoints is a map of maps. The outer map is from client
+	// node addresses to public GUE tunnel endpoints on the EPIC. The
+	// map key is a client node address and must be one of the node
+	// addresses in the Spec Endpoints slice. The value is a map
+	// containing TunnelEndpoints that describes the public IPs and
+	// ports to which the client can send tunnel ping packets. The key
+	// is the IP address of the EPIC node and the value is a
+	// TunnelEndpoint.
+	TunnelEndpoints map[string]EndpointMap `json:"gue-tunnel-endpoints"`
+}
+
+// EndpointMap contains a map of the EPIC endpoints that connect
+// to one PureLB endpoint, keyed by Node IP address.
+type EndpointMap struct {
+	EPICEndpoints map[string]TunnelEndpoint `json:"epic-endpoints,omitempty"`
 }
 
 // TunnelEndpoint is an Endpoint on the EPIC.
@@ -110,13 +126,6 @@ type TunnelEndpoint struct {
 }
 
 type ServiceStatus struct {
-	// GUETunnelEndpoints is a map from client node addresses to public
-	// GUE tunnel endpoints on the EPIC. The map key is a client node
-	// address and must be one of the node addresses in the Spec
-	// Endpoints slice. The value is a GUETunnelEndpoint that describes
-	// the public IP and port to which the client can send tunnel ping
-	// packets.
-	TunnelEndpoints map[string]TunnelEndpoint `json:"gue-tunnel-endpoints"`
 }
 
 // Service is the on-the-wire representation of one LoadBalancer
