@@ -57,6 +57,7 @@ A Manifest is simply a concatenated set of yaml files that install all of the co
 ```plaintext
 # kubectl apply -f https://gitlab.com/api/v4/projects/purelb%2Fpurelb/packages/generic/manifest/0.0.1/purelb-complete.yaml
 ```
+Please note that due to Kubernetes' eventually-consistent architecture the first application of this manifest can fail. This happens because the manifest both defines a Custom Resource Definition and creates a resource using that definition. If this happens then apply the manifest again and it should succeed because Kubernetes will have processed the definition in the mean time.
 
 ### Install using the Helm Chart
 
