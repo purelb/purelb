@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"purelb.io/internal/allocator"
 	"purelb.io/internal/k8s"
@@ -49,9 +50,10 @@ func main() {
 	c, _ := allocator.NewController(logger, allocator.New(logger))
 
 	client, err := k8s.New(&k8s.Config{
-		ProcessName: "purelb-allocator",
-		Logger:      logger,
-		Kubeconfig:  *kubeconfig,
+		ProcessName:  "purelb-allocator",
+		Logger:       logger,
+		Kubeconfig:   *kubeconfig,
+		PollInterval: 0 * time.Second,
 
 		ServiceChanged: c.SetBalancer,
 		ServiceDeleted: c.DeleteBalancer,

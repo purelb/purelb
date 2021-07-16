@@ -98,6 +98,7 @@ type Config struct {
 	ReadEndpoints bool
 	Logger        log.Logger
 	Kubeconfig    string
+	PollInterval  time.Duration
 
 	ServiceChanged func(*corev1.Service, *corev1.Endpoints) SyncState
 	ServiceDeleted func(string) SyncState
@@ -147,7 +148,7 @@ func New(cfg *Config) (*Client, error) {
 
 	// Custom Resource Watcher
 
-	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Second*0)
+	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, cfg.PollInterval)
 	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, c.ForceSync, clientset, crClient, c.crInformerFactory)
 
 	// Service Watcher

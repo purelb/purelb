@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	pfc "gitlab.com/acnodal/packet-forwarding-component/src/go/pfc"
 
@@ -73,6 +74,7 @@ func main() {
 		Logger:        logger,
 		Kubeconfig:    *kubeconfig,
 		ReadEndpoints: true,
+		PollInterval:  30 * time.Second,
 
 		ServiceChanged: ctrl.ServiceChanged,
 		ServiceDeleted: ctrl.DeleteBalancer,
