@@ -41,7 +41,7 @@ func TestParse(t *testing.T) {
 				localServiceGroup("pool2", "30.0.0.0/8"),
 				localServiceGroup("pool3", "40.0.0.0/25"),
 				localServiceGroup("pool4", "2001:db8::/126"),
-				epicServiceGroup("pool5", "http://test"),
+				epicServiceGroup("pool5", "test-host", "test-account", "test-group"),
 			},
 			want: map[string]Pool{
 				"pool1": mustLocalPool(t, "10.20.0.0/16"),

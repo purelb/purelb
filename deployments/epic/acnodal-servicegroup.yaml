@@ -6,6 +6,8 @@ metadata:
   namespace: purelb
 spec:
   epic:
-    url: https://epic-ctl/api/epic/accounts/root/groups/samplehttp
-    ws-username: user1
-    ws-password: password1
+    api-service-hostname: epic-ctl
+    user-namespace: root
+    lbservicegroup: samplehttp
+    api-service-username: user1
+    api-service-password: password1

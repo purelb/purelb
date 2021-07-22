@@ -15,6 +15,8 @@
 package v1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -60,10 +62,18 @@ type ServiceGroupLocalSpec struct {
 // Acnodal Enterprise GateWay. The URL is the base URL of the service
 // group on the EPIC. Aggregation is currently unused.
 type ServiceGroupEPICSpec struct {
-	URL         string `json:"url"`
-	Aggregation string `json:"aggregation"`
-	WSUsername  string `json:"ws-username"`
-	WSPassword  string `json:"ws-password"`
+	Aggregation    string `json:"aggregation"`
+	Hostname       string `json:"api-service-hostname"`
+	Username       string `json:"api-service-username"`
+	Password       string `json:"api-service-password"`
+	UserNamespace  string `json:"user-namespace"`
+	LBServiceGroup string `json:"lbservicegroup"`
+}
+
+// EPICAPIServiceURL returns the URL to connect to the EPIC instance
+// described by this ServiceGroupEPICSpec.
+func (s *ServiceGroupEPICSpec) EPICAPIServiceURL() string {
+	return fmt.Sprintf("https://%s/api/epic/accounts/%s/groups/%s", s.Hostname, s.UserNamespace, s.LBServiceGroup)
 }
 
 // ServiceGroupNetboxSpec configures the allocator to request

@@ -1006,9 +1006,13 @@ func localServiceGroup(name string, pool string) *purelbv1.ServiceGroup {
 	})
 }
 
-func epicServiceGroup(name string, url string) *purelbv1.ServiceGroup {
+func epicServiceGroup(name string, hostname string, account string, group string) *purelbv1.ServiceGroup {
 	return serviceGroup(name, purelbv1.ServiceGroupSpec{
-		EPIC: &purelbv1.ServiceGroupEPICSpec{URL: url},
+		EPIC: &purelbv1.ServiceGroupEPICSpec{
+			Hostname:       hostname,
+			UserNamespace:  account,
+			LBServiceGroup: group,
+		},
 	})
 }
 

@@ -44,15 +44,22 @@ spec:
                 epic:
                   type: object
                   properties:
-                    url:
-                      type: string
                     aggregation:
                       type: string
                       default: default
-                    ws-username:
+                    api-service-hostname:
                       type: string
-                    ws-password:
+                      default: epic-ctl
+                    api-service-username:
                       type: string
+                    api-service-password:
+                      type: string
+                    user-namespace:
+                      type: string
+                      default: root
+                    lbservicegroup:
+                      type: string
+                  required: ["lbservicegroup", "api-service-username", "api-service-password"]
             status:
               type: object
               properties:

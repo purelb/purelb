@@ -215,7 +215,7 @@ func NewEPIC(myCluster string, group purelbv1.ServiceGroupEPICSpec) (EPIC, error
 	// Use the hostname from the service group, but reset the path.  EPIC
 	// and Netbox each have their own API URL schemes so we only need
 	// the protocol, host, port, credentials, etc.
-	baseURL, err := url.Parse(group.URL)
+	baseURL, err := url.Parse(group.EPICAPIServiceURL())
 	if err != nil {
 		return nil, err
 	}
@@ -228,14 +228,14 @@ func NewEPIC(myCluster string, group purelbv1.ServiceGroupEPICSpec) (EPIC, error
 			"Content-Type": "application/json",
 			"accept":       "application/json",
 		}).
-		SetBasicAuth(group.WSUsername, group.WSPassword).
+		SetBasicAuth(group.Username, group.Password).
 		SetRetryCount(2).
 		SetRetryWaitTime(time.Second).
 		SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true}). // FIXME: figure out how to *not* disable cert checks
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 
 	// Initialize the EPIC instance
-	return &epic{http: *r, groupURL: group.URL, myCluster: myCluster}, nil
+	return &epic{http: *r, groupURL: group.EPICAPIServiceURL(), myCluster: myCluster}, nil
 }
 
 // GetAccount requests an account from the EPIC.
