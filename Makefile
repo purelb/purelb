@@ -2,7 +2,7 @@ PROJECT ?= purelb
 REPO ?= registry.gitlab.com/${PROJECT}
 PREFIX ?= ${PROJECT}
 REGISTRY_IMAGE ?= ${REPO}/${PREFIX}
-SUFFIX = dev
+SUFFIX = v0.0.0-dev
 MANIFEST_SUFFIX = ${SUFFIX}
 CONFIG_BASE ?= default
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
@@ -86,3 +86,7 @@ docker-manifest:  ## Generate and push Docker multiarch manifest
 	docker manifest push ${ALLOCATOR_IMG}:${MANIFEST_SUFFIX}
 	docker manifest create ${LBNODEAGENT_IMG}:${MANIFEST_SUFFIX} ${LBNODEAGENT_IMG}:amd64-${SUFFIX}
 	docker manifest push ${LBNODEAGENT_IMG}:${MANIFEST_SUFFIX}
+
+.PHONY: helm
+helm:  ## Package PureLB using Helm
+	helm package --version ${SUFFIX} build/helm/purelb

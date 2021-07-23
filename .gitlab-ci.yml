@@ -14,14 +14,15 @@ before_script:
 - ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
 - |
   if [ -n "${CI_COMMIT_TAG}" ] ; then
-    # If this build is from a git tag, use that as the docker tag.
+    # If this build is from a git tag, use that as the docker tag. The
+    # git tag must be acceptable to Helm's semver validator!
     export TAG_SPECIFIC="${CI_COMMIT_TAG}"
   else
     # If this build is from a branch, use the name and sha as the
     # docker tag.
-    export TAG_SPECIFIC="${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}"
+    export TAG_SPECIFIC="v0.0.0-${CI_COMMIT_REF_NAME}-${CI_COMMIT_SHORT_SHA}"
     # Build both a commit-specific build and a branch-latest build.
-    export TAG_LATEST="${CI_COMMIT_REF_NAME}-latest"
+    export TAG_LATEST="v0.0.0-${CI_COMMIT_REF_NAME}-latest"
   fi
 
 stages:
@@ -47,10 +48,17 @@ lbnodeagentamd:
 manifest:
   stage: manifest
   script:
+    # Install curl
+    - apk add curl
+    # Install kustomize
     - wget --no-verbose -O - https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv4.0.1/kustomize_v4.0.1_linux_amd64.tar.gz | tar -C /usr/local/bin -xzf -
+    # Install helm
+    - wget --no-verbose -O - https://get.helm.sh/helm-v3.6.3-linux-amd64.tar.gz | tar -C /usr/local/bin -xzf - --strip-components=1 linux-amd64/helm
     - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=default manifest docker-manifest
     - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=epic manifest docker-manifest
     - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=local manifest docker-manifest
+    - make SUFFIX=${TAG_SPECIFIC} helm
+    - curl --request POST --form "chart=@purelb-${TAG_SPECIFIC}.tgz" --user gitlab-ci-token:${CI_JOB_TOKEN} "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/helm/api/stable/charts"
     - |
       if [ -n "${TAG_LATEST}" ] ; then
         make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} CONFIG_BASE=default manifest
@@ -59,6 +67,8 @@ manifest:
         make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=epic docker-manifest
         make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} CONFIG_BASE=local manifest
         make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=local docker-manifest
+        make SUFFIX=${TAG_LATEST} helm
+        curl --request POST --form "chart=@purelb-${TAG_LATEST}.tgz" --user gitlab-ci-token:${CI_JOB_TOKEN} "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/helm/api/stable/charts"
       else
         # to make our documention more stable we upload a "latest"
         # deployment manifest to a fixed location. This means that we
@@ -72,3 +82,4 @@ manifest:
     paths:
       - deployments/*
       - configs/*
+      - purelb-v*.tgz
