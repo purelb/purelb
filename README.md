@@ -75,7 +75,8 @@ Verify that the runner is listed on your project's CI Settings page.
 
 * [Commands](cmd) - if you're a "top-down" learner then start here
 * [Internal Code](internal) - if you're a "bottom-up" learner then start here
-* [Packaging](build/package)
+* [Docker Packaging](build/package)
+* [Helm Packaging](build/helm)
 * [Sample Configurations](configs)
 * [K8s Deployment Files](deployments)
 
