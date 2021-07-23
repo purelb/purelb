@@ -8,7 +8,7 @@ require (
 	github.com/go-resty/resty/v2 v2.3.0
 	github.com/google/go-cmp v0.5.2
 	github.com/googleapis/gnostic v0.2.0 // indirect
-	github.com/hashicorp/memberlist v0.2.2
+	github.com/hashicorp/memberlist v0.2.4
 	github.com/imdario/mergo v0.3.6 // indirect
 	github.com/prometheus/client_golang v1.0.0
 	github.com/stretchr/testify v1.4.0
