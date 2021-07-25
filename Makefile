@@ -84,4 +84,15 @@ docker-manifest:  ## Generate and push Docker multiarch manifest
 
 .PHONY: helm
 helm:  ## Package PureLB using Helm
-	helm package --version ${SUFFIX} build/helm/purelb
+	rm -rf build/build
+	mkdir -p build/build
+	cp -r build/helm/purelb build/build/
+
+	sed \
+	--expression="s~DEFAULT_REPO~${REGISTRY_IMAGE}~" \
+	--expression="s~DEFAULT_TAG~${SUFFIX}~" \
+	build/helm/purelb/values.yaml > build/build/purelb/values.yaml
+
+	helm package \
+	--version "${SUFFIX}" --app-version "${SUFFIX}" \
+	build/build/purelb

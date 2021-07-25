@@ -1,61 +1,59 @@
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "purelb.fullname" . }}
   labels:
     {{- include "purelb.labels" . | nindent 4 }}
+    app.kubernetes.io/component: allocator
+  name: allocator
+  namespace: purelb
 spec:
-{{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
-{{- end }}
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       {{- include "purelb.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: allocator
   template:
     metadata:
-    {{- with .Values.podAnnotations }}
       annotations:
-        {{- toYaml . | nindent 8 }}
-    {{- end }}
+        prometheus.io/port: '7472'
+        prometheus.io/scrape: 'true'
       labels:
-        {{- include "purelb.selectorLabels" . | nindent 8 }}
+        {{- include "purelb.labels" . | nindent 8 }}
+        app.kubernetes.io/component: allocator
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
+      {{- toYaml . | nindent 6 }}
       {{- end }}
-      serviceAccountName: {{ include "purelb.serviceAccountName" . }}
-      securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: {{ .Chart.Name }}
-          securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          ports:
-            - name: http
-              containerPort: 80
-              protocol: TCP
-          livenessProbe:
-            httpGet:
-              path: /
-              port: http
-          readinessProbe:
-            httpGet:
-              path: /
-              port: http
-          resources:
-            {{- toYaml .Values.resources | nindent 12 }}
-      {{- with .Values.nodeSelector }}
+      - env:
+        - name: NETBOX_USER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: netbox-client
+              key: user-token
+              optional: true
+        image: "{{ .Values.image.repository }}/allocator:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        name: allocator
+        ports:
+        - containerPort: 7472
+          name: monitoring
+        resources:
+          limits:
+            cpu: 500m
+            memory: 100Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - all
+          readOnlyRootFilesystem: true
       nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+        beta.kubernetes.io/os: linux
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      serviceAccountName: allocator
+      terminationGracePeriodSeconds: 0
