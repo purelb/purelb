@@ -1,0 +1,38 @@
+---
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+  name: lbnodeagent
+  namespace: {{ .Release.Namespace }}
+spec:
+  allowPrivilegeEscalation: false
+  allowedCapabilities:
+  - NET_ADMIN
+  - NET_RAW
+  - SYS_ADMIN
+  allowedHostPaths: []
+  defaultAddCapabilities: []
+  defaultAllowPrivilegeEscalation: false
+  fsGroup:
+    rule: RunAsAny
+  hostIPC: false
+  hostNetwork: true
+  hostPID: false
+  hostPorts:
+  - max: 7472
+    min: 7472
+  privileged: true
+  readOnlyRootFilesystem: false
+  requiredDropCapabilities:
+  - ALL
+  runAsUser:
+    rule: RunAsAny
+  seLinux:
+    rule: RunAsAny
+  supplementalGroups:
+    rule: RunAsAny
+  volumes:
+  - secret
+  - emptyDir

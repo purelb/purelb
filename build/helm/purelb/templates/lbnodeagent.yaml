@@ -1,0 +1,12 @@
+---
+apiVersion: purelb.io/v1
+kind: LBNodeAgent
+metadata:
+  name: default
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+spec:
+spec:
+  local:
+    localint: default

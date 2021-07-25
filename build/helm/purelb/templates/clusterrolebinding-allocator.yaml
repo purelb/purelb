@@ -1,0 +1,15 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+  name: purelb:allocator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: purelb:allocator
+subjects:
+- kind: ServiceAccount
+  name: allocator
+  namespace: {{ .Release.Namespace }}
