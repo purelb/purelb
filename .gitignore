@@ -1,3 +1,5 @@
 .envrc
 deployments/purelb-*.yaml
 configs/my-servicegroup.yaml
+build/build/*
+*.tgz
