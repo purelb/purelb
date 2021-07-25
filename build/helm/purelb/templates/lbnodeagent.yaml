@@ -1,0 +1,20 @@
+---
+apiVersion: purelb.io/v1
+kind: LBNodeAgent
+metadata:
+  name: default
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+spec:
+  epic:
+    decapAttachment:
+      direction: ingress
+      flags: 1
+      interface: default
+      qid: 0
+    encapAttachment:
+      direction: egress
+      flags: 16
+      interface: default
+      qid: 1

@@ -1,0 +1,13 @@
+---
+apiVersion: purelb.io/v1
+kind: ServiceGroup
+metadata:
+  name: {{ .Values.initialUserNamespace }}-samplehttp
+  namespace: {{ .Release.Namespace }}
+spec:
+  epic:
+    api-service-hostname: {{ .Values.apiServiceHostname }}
+    api-service-password: {{ .Values.apiServicePassword }}
+    api-service-username: {{ .Values.apiServiceUsername }}
+    lbservicegroup: samplehttp
+    user-namespace: {{ .Values.initialUserNamespace }}
