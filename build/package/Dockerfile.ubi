@@ -37,6 +37,11 @@ COPY --from=builder ${bin} ${bin}
 
 RUN yum install -y bzip2 wget curl
 
+# Install tcpdump in a weird way because UBI doesn't have it in their repo
+RUN wget --no-verbose https://dl.rockylinux.org/pub/rocky/8/AppStream/x86_64/os/Packages/tcpdump-4.9.3-1.el8.x86_64.rpm
+RUN yum install -y shadow-utils
+RUN rpm -i tcpdump-4.9.3-1.el8.x86_64.rpm
+
 # copy the packet forwarding components from the pfc project
 WORKDIR /opt/acnodal
 RUN curl -L -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
