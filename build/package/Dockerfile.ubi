@@ -21,7 +21,7 @@ RUN go build -tags 'osusergo netgo' -o ${bin} \
 -ldflags "-X purelb.io/internal/logging.release=${release} -X purelb.io/internal/logging.commit=${commit} -X purelb.io/internal/logging.branch=${branch}" \
 ./cmd/${cmd}/
 
-FROM ubuntu:20.04 as runtime
+FROM registry.access.redhat.com/ubi8/ubi:8.4 as runtime
 ARG GITLAB_TOKEN
 ARG cmd
 ARG branch
@@ -35,7 +35,7 @@ LABEL command=${cmd}
 
 COPY --from=builder ${bin} ${bin}
 
-RUN apt-get update && apt-get install -y curl libelf1 iproute2
+RUN yum install -y bzip2 wget curl
 
 # copy the packet forwarding components from the pfc project
 WORKDIR /opt/acnodal

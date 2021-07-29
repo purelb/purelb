@@ -94,16 +94,10 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 			if existingIP := parseIngress(log, svc.Status.LoadBalancer.Ingress[0]); existingIP != nil {
 
 				// The service has an IP so we'll attempt to formally allocate
-				// it. If something goes wrong then we'll release it which
-				// will cause a re-allocation attempt
+				// it. If something goes wrong then we'll log it but won't do
+				// anything else so we don't cause more trouble.
 				if err := c.ips.NotifyExisting(svc, existingIP); err != nil {
-					log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", err.Error())
-					c.client.Infof(svc, "IPReleased", err.Error())
-					if err := c.ips.Unassign(nsName); err != nil {
-						c.logger.Log("event", "unassign", "error", err)
-						return k8s.SyncStateError
-					}
-					svc.Status.LoadBalancer.Ingress = nil
+					log.Log("event", "notifyFailure", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", err.Error())
 				}
 			}
 		}

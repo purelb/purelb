@@ -115,9 +115,15 @@ func DefaultInterface(family int) (netlink.Link, error) {
 		}
 	}
 
+	// If none of our routes matched our criteria then we can't pick an
+	// interface
+	if defaultifindex == 0 {
+		return nil, fmt.Errorf("No default interface can be determined")
+	}
+
 	// there's only one default route
-	defaultint, _ := netlink.LinkByIndex(defaultifindex)
-	return defaultint, nil
+	defaultint, err := netlink.LinkByIndex(defaultifindex)
+	return defaultint, err
 }
 
 // addNetwork adds lbIPNet to link.
@@ -231,7 +237,7 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 		case (nl.FAMILY_V6):
 
-			_, poolaggr, _ := net.ParseCIDR("0.0.0.0" + aggregation)
+			_, poolaggr, _ := net.ParseCIDR("::" + aggregation)
 
 			lbIPNet.Mask = poolaggr.Mask
 

@@ -162,7 +162,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 			// we won the election so we'll add the service address to our
 			// node's default interface so linux will respond to ARP
 			// requests for it
-			l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName)
+			l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
 			a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, defaultif.Attrs().Name)
 
 			addNetwork(lbIPNet, defaultif)
@@ -176,7 +176,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		} else {
 			// We lost the election so we'll withdraw any announcement that
 			// we might have been making
-			l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName)
+			l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
 			return a.DeleteBalancer(nsName, "lostElection", &svc.Status.LoadBalancer.Ingress[0])
 		}
 	} else {
