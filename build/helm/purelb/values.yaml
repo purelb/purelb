@@ -20,10 +20,6 @@ image:
   # Overrides the image tag whose default is the chart appVersion.
   tag: DEFAULT_TAG
 
-# By default we deploy an echoserver but it can be overridden on the
-# helm command line to not deploy: "--set=deployEchoserver=no"
-deployEchoserver: yes
-
 imagePullSecrets:
 - name: gitlab
 
