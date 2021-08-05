@@ -46,7 +46,6 @@ spec:
           name: monitoring
         resources:
           limits:
-            cpu: 500m
             memory: 100Mi
         securityContext:
           allowPrivilegeEscalation: false
