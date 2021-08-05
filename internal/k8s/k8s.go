@@ -148,7 +148,7 @@ func New(cfg *Config) (*Client, error) {
 
 	// Custom Resource Watcher
 
-	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, cfg.PollInterval)
+	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, 0)
 	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, c.ForceSync, clientset, crClient, c.crInformerFactory)
 
 	// Service Watcher
@@ -174,7 +174,7 @@ func New(cfg *Config) (*Client, error) {
 		},
 	}
 	svcWatcher := cache.NewListWatchFromClient(c.client.CoreV1().RESTClient(), "services", corev1.NamespaceAll, fields.Everything())
-	c.svcIndexer, c.svcInformer = cache.NewIndexerInformer(svcWatcher, &corev1.Service{}, 0, svcHandlers, cache.Indexers{})
+	c.svcIndexer, c.svcInformer = cache.NewIndexerInformer(svcWatcher, &corev1.Service{}, cfg.PollInterval, svcHandlers, cache.Indexers{})
 
 	c.serviceChanged = cfg.ServiceChanged
 	c.serviceDeleted = cfg.ServiceDeleted
