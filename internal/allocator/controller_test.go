@@ -80,7 +80,7 @@ func TestControllerConfig(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test",
 			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: "default",
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
 			},
 		},
 		Spec: v1.ServiceSpec{
@@ -104,7 +104,7 @@ func TestControllerConfig(t *testing.T) {
 	// Set a config with some IPs. Still no allocation, not synced.
 	cfg := &purelbv1.Config{
 		Groups: []*purelbv1.ServiceGroup{
-			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
 						Pool: "1.2.3.0/24",
@@ -128,9 +128,9 @@ func TestControllerConfig(t *testing.T) {
 	wantSvc.ObjectMeta = metav1.ObjectMeta{
 		Name: "test",
 		Annotations: map[string]string{
-			purelbv1.DesiredGroupAnnotation: "default",
+			purelbv1.DesiredGroupAnnotation: defaultPoolName,
 			purelbv1.BrandAnnotation:        purelbv1.Brand,
-			purelbv1.PoolAnnotation:         "default",
+			purelbv1.PoolAnnotation:         defaultPoolName,
 		},
 	}
 
@@ -153,7 +153,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 
 	cfg := &purelbv1.Config{
 		Groups: []*purelbv1.ServiceGroup{
-			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
 						Pool: "1.2.3.0/32",
@@ -170,7 +170,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 			Namespace: "test",
 			Name:      "test",
 			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: "default",
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
 			},
 		},
 		Spec: v1.ServiceSpec{
@@ -190,7 +190,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 			Namespace: "test",
 			Name:      "test2",
 			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: "default",
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
 			},
 		},
 		Spec: v1.ServiceSpec{

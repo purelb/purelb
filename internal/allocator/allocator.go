@@ -25,6 +25,10 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
+const (
+	defaultPoolName string = "default"
+)
+
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
 	logger    log.Logger
@@ -119,22 +123,9 @@ func (a *Allocator) NotifyExisting(svc *v1.Service, ip net.IP) error {
 // annotations and current configuration. If the user asks for a
 // specific IP then we'll attempt to use that, and if not we'll use
 // the pool specified in the purelbv1.DesiredGroupAnnotation
-// annotation. If neither is specified then we will *not* allocate -
-// this is how we
+// annotation. If neither is specified then we will attempt to
+// allocate from a pool named "default", if it exists.
 func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
-	desiredGroup := svc.Annotations[purelbv1.DesiredGroupAnnotation]
-	// This ensures that we only act on LBs that the user wants us
-	// to. If we're running in a cloud provider then the user might want
-	// the cloud provider's controller to allocate certain LBs and they
-	// can indicate that by not setting purelbv1.DesiredGroupAnnotation
-	// and we'll ignore that LB so it will belong to the cloud provider.
-	//
-	// This will eventually need to change when the cloud providers
-	// support the standard LB annotation but that will be a while.
-	if desiredGroup == "" {
-		return "", nil, fmt.Errorf("annotation " + purelbv1.DesiredGroupAnnotation + " must be provided")
-	}
-
 	// If the user asked for a specific IP, try that.
 	if svc.Spec.LoadBalancerIP != "" {
 		ip := net.ParseIP(svc.Spec.LoadBalancerIP)
@@ -146,6 +137,12 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
 			return "", nil, err
 		}
 		return pool, ip, nil
+	}
+
+	// If no desiredGroup was specified, then we will try "default"
+	desiredGroup := svc.Annotations[purelbv1.DesiredGroupAnnotation]
+	if desiredGroup == "" {
+		desiredGroup = defaultPoolName
 	}
 
 	// Otherwise, allocate from the pool that the user specified
@@ -234,8 +231,8 @@ func (a *Allocator) Allocate(svc *v1.Service) (string, net.IP, error) {
 
 	// we need an address but no pool was specified so it's either the
 	// "default" pool or nothing
-	if ip, err = a.AllocateFromPool(svc, "default"); err == nil {
-		return "default", ip, nil
+	if ip, err = a.AllocateFromPool(svc, defaultPoolName); err == nil {
+		return defaultPoolName, ip, nil
 	}
 	return "", nil, err
 }

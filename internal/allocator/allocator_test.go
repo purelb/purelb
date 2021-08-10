@@ -538,8 +538,8 @@ func TestPoolAllocation(t *testing.T) {
 func TestAllocation(t *testing.T) {
 	alloc := New(allocatorTestLogger)
 	alloc.pools = map[string]Pool{
-		"default": mustLocalPool(t, "1.2.3.4/30"),
-		"test1V6": mustLocalPool(t, "1000::4/127"),
+		defaultPoolName: mustLocalPool(t, "1.2.3.4/30"),
+		"test1V6":       mustLocalPool(t, "1000::4/127"),
 	}
 
 	validIPs := map[string]bool{
@@ -712,6 +712,61 @@ func TestAllocation(t *testing.T) {
 	}
 }
 
+func TestAllocateAnyIP(t *testing.T) {
+	var svc v1.Service
+
+	alloc := New(allocatorTestLogger)
+	alloc.pools = map[string]Pool{
+		// Start suite with no "default" pool
+		"test1V6": mustLocalPool(t, "1000::4/127"),
+	}
+
+	// Allocate specific IP succeeds
+	svc = service("t1", ports("tcp/80"), "")
+	svc.Spec.LoadBalancerIP = "1000::4"
+	pool, addr, err := alloc.AllocateAnyIP(&svc)
+	assert.Nil(t, err, "specific IP allocation failed")
+	assert.Equal(t, "1000::4", addr.String(), "wrong IP allocated")
+	assert.Equal(t, "test1V6", pool, "IP allocated from wrong pool")
+
+	// Allocate specific IP fails if IP and pool disagree
+	svc = service("t2", ports("tcp/80"), "")
+	svc.Spec.LoadBalancerIP = "1000::4"
+	svc.ObjectMeta.Annotations[purelbv1.DesiredGroupAnnotation] = "not test1V6"
+	pool, addr, err = alloc.AllocateAnyIP(&svc)
+	assert.NotNil(t, err, "specific IP allocation should have failed")
+
+	// Allocate from specific pool succeeds
+	svc = service("t3", ports("tcp/80"), "")
+	svc.ObjectMeta.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
+	pool, addr, err = alloc.AllocateAnyIP(&svc)
+	assert.Nil(t, err, "specific IP allocation failed")
+	assert.Equal(t, "1000::5", addr.String(), "wrong IP allocated")
+	assert.Equal(t, "test1V6", pool, "IP allocated from wrong pool")
+
+	// Pool is empty so allocation fails
+	svc = service("t4", ports("tcp/80"), "")
+	svc.ObjectMeta.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
+	pool, addr, err = alloc.AllocateAnyIP(&svc)
+	assert.NotNil(t, err, "allocation from empty pool should have failed")
+
+	// There's no "default" pool so allocation fails if the pool isn't
+	// specified
+	svc = service("t5", ports("tcp/80"), "")
+	pool, addr, err = alloc.AllocateAnyIP(&svc)
+	assert.NotNil(t, err, "default pool IP allocation should have failed")
+
+	// Add a "default" pool
+	alloc.pools[defaultPoolName] = mustLocalPool(t, "1.2.3.4/30")
+
+	// Now that there's a "default" pool, allocation succeeds
+	svc = service("t6", ports("tcp/80"), "")
+	pool, addr, err = alloc.AllocateAnyIP(&svc)
+	assert.Nil(t, err, "default pool IP allocation failed")
+	assert.Equal(t, "1.2.3.4", addr.String(), "wrong IP allocated")
+	assert.Equal(t, defaultPoolName, pool, "IP allocated from wrong pool")
+}
+
 func TestPoolMetrics(t *testing.T) {
 	alloc := New(allocatorTestLogger)
 	alloc.pools = map[string]Pool{
@@ -834,7 +889,7 @@ func TestSpecificAddress(t *testing.T) {
 	alloc := New(allocatorTestLogger)
 
 	groups := []*purelbv1.ServiceGroup{
-		{ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 			Spec: purelbv1.ServiceGroupSpec{
 				Local: &purelbv1.ServiceGroupLocalSpec{
 					Pool: "1.2.3.0/31",
@@ -860,7 +915,7 @@ func TestSpecificAddress(t *testing.T) {
 	svc1 := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: "default",
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
 			},
 		},
 		Spec: v1.ServiceSpec{
@@ -874,7 +929,7 @@ func TestSpecificAddress(t *testing.T) {
 	svc1.Spec.LoadBalancerIP = "1.2.3.0"
 	pool, addr, err := alloc.AllocateAnyIP(svc1)
 	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, "default", pool, "incorrect pool chosen")
+	assert.Equal(t, defaultPoolName, pool, "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.0", addr.String(), "incorrect address chosen")
 
 }
@@ -888,7 +943,7 @@ func TestSharingSimple(t *testing.T) {
 	alloc := New(allocatorTestLogger)
 
 	groups := []*purelbv1.ServiceGroup{
-		{ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 			Spec: purelbv1.ServiceGroupSpec{
 				Local: &purelbv1.ServiceGroupLocalSpec{
 					Pool: "1.2.3.0/31",
@@ -905,7 +960,7 @@ func TestSharingSimple(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "svc1",
 			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: "default",
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
 				purelbv1.SharingAnnotation:      sharing,
 			},
 		},
@@ -913,7 +968,7 @@ func TestSharingSimple(t *testing.T) {
 	}
 	pool, addr, err := alloc.AllocateAnyIP(svc1)
 	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, "default", pool, "incorrect pool chosen")
+	assert.Equal(t, defaultPoolName, pool, "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.0", addr.String(), "incorrect address chosen")
 
 	// Mismatched SharingAnnotation so different address
@@ -921,7 +976,7 @@ func TestSharingSimple(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "svc2",
 			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: "default",
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
 				purelbv1.SharingAnnotation:      "i-really-dont-care-do-u",
 			},
 		},
@@ -929,7 +984,7 @@ func TestSharingSimple(t *testing.T) {
 	}
 	pool, addr, err = alloc.AllocateAnyIP(svc2)
 	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, "default", pool, "incorrect pool chosen")
+	assert.Equal(t, defaultPoolName, pool, "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.1", addr.String(), "incorrect address chosen")
 
 	// Matching SharingAnnotation so same address as svc1
@@ -937,7 +992,7 @@ func TestSharingSimple(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "svc3",
 			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: "default",
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
 				purelbv1.SharingAnnotation:      sharing,
 			},
 		},
@@ -945,7 +1000,7 @@ func TestSharingSimple(t *testing.T) {
 	}
 	pool, addr, err = alloc.AllocateAnyIP(svc3)
 	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, "default", pool, "incorrect pool chosen")
+	assert.Equal(t, defaultPoolName, pool, "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.0", addr.String(), "incorrect address chosen")
 }
 
