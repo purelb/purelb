@@ -1,6 +1,6 @@
 module purelb.io
 
-go 1.12
+go 1.15
 
 require (
 	github.com/apparentlymart/go-cidr v1.1.0
