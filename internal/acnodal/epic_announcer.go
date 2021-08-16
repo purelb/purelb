@@ -136,7 +136,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 
 	// Start the GUE sweeper if it's not running
 	if a.sweeper == nil {
-		a.sweeper = exec.Command("/opt/acnodal/bin/sweep_sessions", "10", "3")
+		a.sweeper = exec.Command("/opt/acnodal/bin/sweep_sessions", "60", "60")
 		err := a.sweeper.Start()
 		if err != nil {
 			a.logger.Log("event", "error starting sweeper", "error", err)
