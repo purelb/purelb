@@ -297,7 +297,7 @@ func (a *announcer) setupTunnels(spec purelbv1.LBNodeAgentEPICSpec, groupID uint
 					// Now that we've got the service response we have enough
 					// info to set up the tunnels
 					for _, myTunnel := range myTunnels.EPICEndpoints {
-						err = a.setupPFC(*a.pfcspec, address, myTunnel.TunnelID, groupID, svcResponse.Service.Spec.ServiceID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
+						err = a.setupPFC(*a.pfcspec, address, myTunnel.TunnelID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
 						if err != nil {
 							l.Log("op", "SetupPFC", "error", err)
 						}
@@ -362,7 +362,7 @@ func (a *announcer) Shutdown() {
 
 // setupPFC sets up the Acnodal PFC components and GUE tunnel to
 // communicate with the Acnodal EPIC.
-func (a *announcer) setupPFC(spec purelbv1.LBNodeAgentEPICSpec, address v1.EndpointAddress, tunnelID uint32, groupID uint16, serviceID uint16, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
+func (a *announcer) setupPFC(spec purelbv1.LBNodeAgentEPICSpec, address v1.EndpointAddress, tunnelID uint32, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
 	// Determine the interface to which to attach the Encap PFC
 	encapIntf, err := interfaceOrDefault(spec.EncapAttachment.Interface, address)
 	if err != nil {
@@ -386,7 +386,7 @@ func (a *announcer) setupPFC(spec purelbv1.LBNodeAgentEPICSpec, address v1.Endpo
 
 	// set up service forwarding to forward packets through the GUE
 	// tunnel
-	return pfc.SetService(a.logger, groupID, serviceID, tunnelAuth, tunnelID)
+	return pfc.SetService(a.logger, tunnelAuth, tunnelID)
 }
 
 func (a *announcer) cleanupPFC() error {
