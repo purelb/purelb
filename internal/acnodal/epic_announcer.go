@@ -49,7 +49,6 @@ type announcer struct {
 	groups     map[string]*purelbv1.ServiceGroupEPICSpec // groupURL -> ServiceGroupEPICSpec
 	pfcspec    *purelbv1.LBNodeAgentEPICSpec
 	pinger     *exec.Cmd
-	sweeper    *exec.Cmd
 	groupID    uint16
 	myCluster  string
 
@@ -131,16 +130,6 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 		if err != nil {
 			a.logger.Log("event", "error starting pinger", "error", err)
 			a.pinger = nil // retry next time we get a config announcement
-		}
-	}
-
-	// Start the GUE sweeper if it's not running
-	if a.sweeper == nil {
-		a.sweeper = exec.Command("/opt/acnodal/bin/sweep_sessions", "60", "60")
-		err := a.sweeper.Start()
-		if err != nil {
-			a.logger.Log("event", "error starting sweeper", "error", err)
-			a.sweeper = nil // retry next time we get a config announcement
 		}
 	}
 
