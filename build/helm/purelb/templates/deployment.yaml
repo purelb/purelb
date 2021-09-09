@@ -34,6 +34,8 @@ spec:
               name: netbox-client
               key: user-token
               optional: true
+        - name: DEFAULT_ANNOUNCER
+          value: "PureLB"
         image: "{{ .Values.image.repository }}/allocator:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         name: allocator

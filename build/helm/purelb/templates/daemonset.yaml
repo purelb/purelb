@@ -33,6 +33,8 @@ spec:
               name: netbox-client
               key: user-token
               optional: true
+        - name: DEFAULT_ANNOUNCER
+          value: "PureLB"
         - name: PURELB_NODE_NAME
           valueFrom:
             fieldRef:
