@@ -1,0 +1,59 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+    app.kubernetes.io/component: allocator
+  name: allocator
+  namespace: purelb
+spec:
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "purelb.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: allocator
+  template:
+    metadata:
+      annotations:
+        prometheus.io/port: '7472'
+        prometheus.io/scrape: 'true'
+      labels:
+        {{- include "purelb.labels" . | nindent 8 }}
+        app.kubernetes.io/component: allocator
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      containers:
+      - env:
+        - name: NETBOX_USER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: netbox-client
+              key: user-token
+              optional: true
+        image: "{{ .Values.image.repository }}/allocator:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        name: allocator
+        ports:
+        - containerPort: 7472
+          name: monitoring
+        resources:
+          limits:
+            cpu: 500m
+            memory: 100Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - all
+          readOnlyRootFilesystem: true
+      nodeSelector:
+        beta.kubernetes.io/os: linux
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      serviceAccountName: allocator
+      terminationGracePeriodSeconds: 0

@@ -2,7 +2,7 @@ PROJECT ?= purelb
 REPO ?= registry.gitlab.com/${PROJECT}
 PREFIX ?= ${PROJECT}
 REGISTRY_IMAGE ?= ${REPO}/${PREFIX}
-SUFFIX = dev
+SUFFIX = v0.0.0-dev
 MANIFEST_SUFFIX = ${SUFFIX}
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
@@ -81,3 +81,18 @@ docker-manifest:  ## Generate and push Docker multiarch manifest
 	docker manifest push ${ALLOCATOR_IMG}:${MANIFEST_SUFFIX}
 	docker manifest create ${LBNODEAGENT_IMG}:${MANIFEST_SUFFIX} ${LBNODEAGENT_IMG}:amd64-${SUFFIX} ${LBNODEAGENT_IMG}:arm64-${SUFFIX}
 	docker manifest push ${LBNODEAGENT_IMG}:${MANIFEST_SUFFIX}
+
+.PHONY: helm
+helm:  ## Package PureLB using Helm
+	rm -rf build/build
+	mkdir -p build/build
+	cp -r build/helm/purelb build/build/
+
+	sed \
+	--expression="s~DEFAULT_REPO~${REGISTRY_IMAGE}~" \
+	--expression="s~DEFAULT_TAG~${SUFFIX}~" \
+	build/helm/purelb/values.yaml > build/build/purelb/values.yaml
+
+	helm package \
+	--version "${SUFFIX}" --app-version "${SUFFIX}" \
+	build/build/purelb

@@ -1,0 +1,3 @@
+Thank you for using PureLB.
+
+Please see "Initial Configuration" at https://purelb.gitlab.io/docs/install/config/
