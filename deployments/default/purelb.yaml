@@ -358,6 +358,8 @@ spec:
               name: netbox-client
               key: user-token
               optional: true
+        - name: DEFAULT_ANNOUNCER
+          value: 'true'
         imagePullPolicy: Always
         name: allocator
         ports:
