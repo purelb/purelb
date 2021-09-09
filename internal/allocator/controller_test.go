@@ -103,6 +103,7 @@ func TestControllerConfig(t *testing.T) {
 
 	// Set a config with some IPs. Still no allocation, not synced.
 	cfg := &purelbv1.Config{
+		DefaultAnnouncer: true,
 		Groups: []*purelbv1.ServiceGroup{
 			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 				Spec: purelbv1.ServiceGroupSpec{
@@ -152,6 +153,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	}
 
 	cfg := &purelbv1.Config{
+		DefaultAnnouncer: true,
 		Groups: []*purelbv1.ServiceGroup{
 			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 				Spec: purelbv1.ServiceGroupSpec{

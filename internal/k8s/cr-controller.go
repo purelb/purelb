@@ -18,6 +18,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/go-kit/kit/log"
@@ -250,6 +251,11 @@ func (c *Controller) syncHandler() error {
 	if err != nil {
 		c.logger.Log("error listing node agents", err)
 		return err
+	}
+
+	// Check whether we should be the default service announcer
+	if os.Getenv("DEFAULT_ANNOUNCER") == purelbv1.Brand {
+		cfg.DefaultAnnouncer = true
 	}
 
 	switch c.configCB(&cfg) {

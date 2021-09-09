@@ -372,6 +372,8 @@ spec:
               name: netbox-client
               key: user-token
               optional: true
+        - name: DEFAULT_ANNOUNCER
+          value: "PureLB"
         imagePullPolicy: Always
         name: allocator
         ports:

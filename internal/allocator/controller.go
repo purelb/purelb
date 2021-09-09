@@ -36,10 +36,12 @@ type Controller interface {
 }
 
 type controller struct {
-	client k8s.ServiceEvent
-	synced bool
-	ips    *Allocator
-	logger log.Logger
+	client    k8s.ServiceEvent
+	synced    bool
+	ips       *Allocator
+	groupURL  *string
+	logger    log.Logger
+	isDefault bool
 }
 
 // NewController configures a new controller. If error is non-nil then
@@ -79,6 +81,10 @@ func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
 		c.logger.Log("op", "setConfig", "error", err)
 		return k8s.SyncStateError
 	}
+
+	// Cache the config that indicates if we are the default Service
+	// announcer.
+	c.isDefault = cfg.DefaultAnnouncer
 
 	return k8s.SyncStateReprocessAll
 }

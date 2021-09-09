@@ -25,3 +25,10 @@ imagePullSecrets:
 
 nameOverride: ""
 fullnameOverride: ""
+
+# PureLB will act as the default service announcer if this value is
+# "PureLB". This means that PureLB will handle services that do not
+# have a Spec.LoadBalancerClass field. If this is other than "PureLB"
+# then PureLB will handle only those services that have a
+# Spec.LoadBalancerClass explictly set to "purelb.io/purelb".
+defaultAnnouncer: "PureLB"
