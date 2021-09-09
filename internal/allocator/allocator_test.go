@@ -838,14 +838,6 @@ func mustLocalPool(t *testing.T, r string) LocalPool {
 	return *p
 }
 
-func mustEGWPool(t *testing.T, url string) EGWPool {
-	p, err := NewEGWPool(url, "")
-	if err != nil {
-		panic(err)
-	}
-	return *p
-}
-
 func ports(ports ...string) []v1.ServicePort {
 	var ret []v1.ServicePort
 	for _, s := range ports {
@@ -866,12 +858,6 @@ func ports(ports ...string) []v1.ServicePort {
 func localServiceGroup(name string, pool string) *purelbv1.ServiceGroup {
 	return serviceGroup(name, purelbv1.ServiceGroupSpec{
 		Local: &purelbv1.ServiceGroupLocalSpec{Pool: pool},
-	})
-}
-
-func egwServiceGroup(name string, url string) *purelbv1.ServiceGroup {
-	return serviceGroup(name, purelbv1.ServiceGroupSpec{
-		EGW: &purelbv1.ServiceGroupEGWSpec{URL: url},
 	})
 }
 

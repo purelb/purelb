@@ -16,8 +16,6 @@
 package allocator
 
 import (
-	"net/url"
-
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/k8s"
@@ -41,7 +39,6 @@ type controller struct {
 	client   k8s.ServiceEvent
 	synced   bool
 	ips      *Allocator
-	baseURL  *url.URL
 	groupURL *string
 	logger   log.Logger
 }
@@ -79,26 +76,6 @@ func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
 	if err := c.ips.SetPools(cfg.Groups); err != nil {
 		c.logger.Log("op", "setConfig", "error", err)
 		return k8s.SyncStateError
-	}
-
-	// see if there's an EGW config. if so then we'll announce new
-	// services to the EGW
-	c.groupURL = nil
-	c.baseURL = nil
-	for _, group := range cfg.Groups {
-		if group.Spec.EGW != nil {
-			c.groupURL = &group.Spec.EGW.URL
-			// Use the hostname from the service group, but reset the path.  EGW
-			// and Netbox each have their own API URL schemes so we only need
-			// the protocol, host, port, credentials, etc.
-			url, err := url.Parse(*c.groupURL)
-			if err != nil {
-				c.logger.Log("op", "setConfig", "error", err)
-				return k8s.SyncStateError
-			}
-			url.Path = ""
-			c.baseURL = url
-		}
 	}
 
 	return k8s.SyncStateReprocessAll

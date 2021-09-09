@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
 	v1 "purelb.io/pkg/apis/v1"
 )
 
@@ -39,14 +40,12 @@ func TestParse(t *testing.T) {
 				localServiceGroup("pool2", "30.0.0.0/8"),
 				localServiceGroup("pool3", "40.0.0.0/25"),
 				localServiceGroup("pool4", "2001:db8::/126"),
-				egwServiceGroup("pool5", "url"),
 			},
 			want: map[string]Pool{
 				"pool1": mustLocalPool(t, "10.20.0.0/16"),
 				"pool2": mustLocalPool(t, "30.0.0.0/8"),
 				"pool3": mustLocalPool(t, "40.0.0.0/25"),
 				"pool4": mustLocalPool(t, "2001:db8::/126"),
-				"pool5": mustEGWPool(t, "url"),
 			},
 		},
 
@@ -95,13 +94,10 @@ func TestParse(t *testing.T) {
 				t.Errorf("%q: parse succeeded but should have failed", test.desc)
 				return
 			}
-			egwComparer := cmp.Comparer(func(x, y EGWPool) bool {
-				return reflect.DeepEqual(x.url, y.url)
-			})
 			iprangeComparer := cmp.Comparer(func(x, y IPRange) bool {
 				return reflect.DeepEqual(x.from, y.from) && reflect.DeepEqual(x.to, y.to)
 			})
-			if diff := cmp.Diff(test.want, got, iprangeComparer, egwComparer, cmp.AllowUnexported(LocalPool{})); diff != "" {
+			if diff := cmp.Diff(test.want, got, iprangeComparer, cmp.AllowUnexported(LocalPool{})); diff != "" {
 				t.Errorf("%q: parse returned wrong result (-want, +got)\n%s", test.desc, diff)
 			}
 		})

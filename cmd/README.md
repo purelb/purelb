@@ -6,8 +6,8 @@ managing IP addresses. Node agents run in a daemon set (i.e., on each
 node in the cluster) and manage per-node activities like configuring
 the node network when a service is created.
 
-The allocator can allocate addresses from local pools and from an
-Acnodal EGW instance.
+The allocator can allocate addresses from local pools and from a
+Netbox instance.
 
 * [allocator](allocator)
 

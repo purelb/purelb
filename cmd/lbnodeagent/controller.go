@@ -18,7 +18,6 @@ package main
 import (
 	"net"
 
-	"purelb.io/internal/acnodal"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
@@ -45,7 +44,6 @@ func NewController(l log.Logger, myNode string) (*controller, error) {
 		myNode: myNode,
 		announcers: []lbnodeagent.Announcer{
 			local.NewAnnouncer(l, myNode),
-			acnodal.NewAnnouncer(l, myNode),
 		},
 		svcIP: map[string]net.IP{},
 	}
