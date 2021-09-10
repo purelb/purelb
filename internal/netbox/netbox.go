@@ -1,4 +1,4 @@
-// Copyright 2020 Acnodal Inc.
+// Copyright 2020,2021 Acnodal Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,9 +23,13 @@ import (
 	"net/url"
 )
 
-// Netbox represents a connection to a
+type Netbox interface {
+	Fetch() (string, error)
+}
+
+// netbox represents a connection to a
 // [Netbox](https://netbox.readthedocs.io/) IPAM system.
-type Netbox struct {
+type netbox struct {
 	http http.Client
 	// The base URL of the Netbox system.
 	base string
@@ -45,11 +49,11 @@ type addressQueryResponse struct {
 }
 
 // NewNetbox configures a new connection to a Netbox system.
-func NewNetbox(base string, tenant string, token string) *Netbox {
-	return &Netbox{http: http.Client{}, base: base, tenant: tenant, token: token}
+func NewNetbox(base string, tenant string, token string) Netbox {
+	return &netbox{http: http.Client{}, base: base, tenant: tenant, token: token}
 }
 
-func (n *Netbox) newRequest(verb string, url string) (*http.Request, error) {
+func (n *netbox) newRequest(verb string, url string) (*http.Request, error) {
 	req, err := http.NewRequest(verb, n.base+url, nil)
 	if err != nil {
 		return nil, err
@@ -60,11 +64,11 @@ func (n *Netbox) newRequest(verb string, url string) (*http.Request, error) {
 	return req, nil
 }
 
-func (n *Netbox) newGetRequest(url string) (*http.Request, error) {
+func (n *netbox) newGetRequest(url string) (*http.Request, error) {
 	return n.newRequest(http.MethodGet, url)
 }
 
-func (n *Netbox) newPatchRequest(url string, body []byte) (*http.Request, error) {
+func (n *netbox) newPatchRequest(url string, body []byte) (*http.Request, error) {
 	req, err := n.newRequest(http.MethodPatch, url)
 	if err != nil {
 		return nil, err
@@ -76,7 +80,7 @@ func (n *Netbox) newPatchRequest(url string, body []byte) (*http.Request, error)
 // fetchAddrs finds out if Netbox has any available addresses. An
 // address is available if it belongs to our tenant and its status
 // matches the status parameter.
-func (n *Netbox) fetchAddrs(tenant string, status string) ([]address, error) {
+func (n *netbox) fetchAddrs(tenant string, status string) ([]address, error) {
 	req, err := n.newGetRequest("api/ipam/ip-addresses/")
 	if err != nil {
 		return nil, err
@@ -105,7 +109,7 @@ func (n *Netbox) fetchAddrs(tenant string, status string) ([]address, error) {
 	return body.Results, nil
 }
 
-func (n *Netbox) allocateAddr(addr address) error {
+func (n *netbox) allocateAddr(addr address) error {
 	// mark the address as "in use" by sending an HTTP PATCH request to
 	// set the Netbox address status to "active"
 	url := fmt.Sprintf("api/ipam/ip-addresses/%d/", addr.ID)
@@ -125,7 +129,7 @@ func (n *Netbox) allocateAddr(addr address) error {
 // Fetch fetches an address from Netbox. If the fetch is successful
 // then error will be nil and the returned string will describe an
 // address.
-func (n *Netbox) Fetch() (string, error) {
+func (n *netbox) Fetch() (string, error) {
 	var (
 		ipStatus string = "reserved"
 	)
