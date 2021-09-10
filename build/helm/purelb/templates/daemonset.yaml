@@ -10,7 +10,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      {{- include "purelb.labels" . | nindent 6 }}
+      {{- include "purelb.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: lbnodeagent
   template:
     metadata:

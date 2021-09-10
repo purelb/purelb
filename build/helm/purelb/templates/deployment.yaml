@@ -11,7 +11,7 @@ spec:
   revisionHistoryLimit: 3
   selector:
     matchLabels:
-      {{- include "purelb.labels" . | nindent 6 }}
+      {{- include "purelb.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: allocator
   template:
     metadata:
