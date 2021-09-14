@@ -20,6 +20,11 @@ package v1
 // custom resource has changed, we read all of our resources, load
 // them into a Config struct, and pass it to the controllers.
 type Config struct {
+	// If true, then PureLB will handle Services when there's no
+	// Spec.LoadBalancerClass, i.e., PureLB will be the default
+	// announcer.
+	DefaultAnnouncer bool
+
 	// Service Groups from which to allocate load balancer IP addresses
 	Groups []*ServiceGroup
 	// Node agent configurations

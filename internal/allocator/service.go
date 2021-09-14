@@ -35,6 +35,20 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		return k8s.SyncStateError
 	}
 
+	// If the user has specified an LB class and it's not ours then we
+	// ignore the LB.
+	if svc.Spec.LoadBalancerClass != nil && *svc.Spec.LoadBalancerClass != purelbv1.ServiceLBClass {
+		log.Log("event", "ignore", "reason", "user has specified another class", "class", *svc.Spec.LoadBalancerClass)
+		return k8s.SyncStateSuccess
+	}
+
+	// If we are not configured to be the default announcer then we
+	// ignore services with no explicit LoadBalancerClass.
+	if !c.isDefault && svc.Spec.LoadBalancerClass == nil {
+		log.Log("event", "ignore", "reason", "service has no explicit LBClass and PureLB is not the default announcer")
+		return k8s.SyncStateSuccess
+	}
+
 	// If the service isn't a LoadBalancer then we might need to clean
 	// up. It might have been a load balancer before and the user might
 	// have changed it to tell us to release the address
