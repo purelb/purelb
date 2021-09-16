@@ -9,15 +9,9 @@ PureLB can be installed from:
 
 
 * Manifest
-* Helm Chart (coming soon)
+* Helm Chart
 * Source repository
-
-
-
-
-## Installation from Manifest
-
-A Manifest is simply a concatenated set of yaml files that install all of the components of PureLB.  The key installed components are:
+## Installed Components:
 
 
 1. PureLB Namespace.  A namespace is created and annotated for all of the Purelb components
@@ -56,11 +50,28 @@ sudo sysctl --system
 PureLB will operate without making this change, however kubeproxy is set to IPVS mode and arp_filter is set to 0, all nodes will respond to locally allocated addresses as kubeproxy adds these addresses to kube-ipvs0
 {{% /notice %}}
 
-### Installing PureLB
+### Installing PureLB using Manifest
+
+A Manifest is simply a concatenated set of yaml files that install all of the components of PureLB.
 
 ```plaintext
 # kubectl apply -f https://gitlab.com/api/v4/projects/purelb%2Fpurelb/packages/generic/manifest/0.0.1/purelb-complete.yaml
 ```
+
+### Install using the Helm Chart
+
+```plaintext
+$ helm repo add purelb https://gitlab.com/api/v4/projects/20400619/packages/helm/stable
+$ helm repo update
+$ helm install --create-namespace --namespace=purelb purelb purelb/purelb
+```
+
+### Install from Source.
+Installation from source is covered in the [PureLB gitlab repository](https://gitlab.com/purelb/purelb) readme.
+
+
+
+
 
 ### Verify Installation
 PureLB should install a single instance of the allocator and an instance of lbnodeagent on each untainted node.

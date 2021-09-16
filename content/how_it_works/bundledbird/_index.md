@@ -1,12 +1,12 @@
 ---
-title: "Using the bundled Bird Router"
+title: "Adding a Bird Router"
 description: "Describe Operation"
 weight: 45
 hide: toc, nextpage
 ---
 
 
-PureLB includes an optional packaged BIRD Router POD.  Instead of implementing routing protocols directly into the load balancer software, PureLB uses proven linux routing software.  This increases the functionality and reliability of PureLB, as well as simplifying the k8s network implementation.  Bird was selected because of its configuration model.  Bird is configured from a single file, and when dynamically loaded will update the current configuration with restarting the routing processes and impacting reachability.
+  A packaged BIRD Daemonset is located in the [PureLB Gitlab Repo](https://gitlab.com/purelb/bird_router).  Instead of implementing routing protocols directly into the load balancer software, PureLB uses proven linux routing software.  This increases the functionality and reliability of PureLB, as well as simplifying the k8s network implementation.  Bird was selected because of its configuration model.  Bird is configured from a single file, and when dynamically loaded will update the current configuration with restarting the routing processes and impacting reachability.
 
 {{<mermaid align="center">}}
 
@@ -37,7 +37,7 @@ PureLB includes an optional packaged BIRD Router POD.  Instead of implementing r
 
 {{</mermaid>}}
 
-## Bundled Bird POD
+## Bird POD
 For simplicity, the repo packages the bird router container, daemonset configuration and sample configmap.  This can either be loaded with simple configuration changes or used as a template for more complex network configurations.  A key component of the operation of k8s infrastructure networking is the use of _hostNetwork: true_ in the POD configuration.  This combined with securityContext capabilities enables the POD to access the host network namespace. Using this technique, the Bird router process is isolated but has access to access to the host network.  PureLB relies on the same functionality.
 
 Bird POD's read their configuration from a configmap projected into the BIRD container in the same namespace.  Ionotify watches the projected file and reloads the bird router process on change.  The container also includes the birdc, the bird command line, useful for troubleshooting.

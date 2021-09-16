@@ -18,7 +18,8 @@ Service Load Balancers are key component in the K8s developer workflow.  They al
 
 </br>
 
-
+## _Going to KubeCon NA 2021_  
+## _Meet the PureLB developers at the Acnodal Booth #SU75_
 
 ### Features
 
