@@ -51,20 +51,4 @@ const (
 	// IntAnnotation is the key for the annotation that indicates which
 	// interface is announcing this service's IP address.
 	IntAnnotation string = "purelb.io/announcing-interface"
-
-	// Internal annotations that probably aren't useful to users.
-
-	// GroupAnnotation describes the URL of the EGW service group to
-	// which this service belongs. It's used internally by PureLB and is
-	// unlikely to be useful to the user.
-	GroupAnnotation string = "acnodal.io/groupURL"
-
-	// ServiceAnnotation describes this service's EGW URL. It's used
-	// internally by PureLB and is unlikely to be useful to the user.
-	ServiceAnnotation string = "acnodal.io/serviceURL"
-
-	// EndpointAnnotation describes the EGW URL used to create endpoints
-	// for this service. It's used internally by PureLB and is unlikely
-	// to be useful to the user.
-	EndpointAnnotation string = "acnodal.io/endpointcreateURL"
 )

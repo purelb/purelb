@@ -34,12 +34,11 @@ type ServiceGroup struct {
 
 // ServiceGroupSpec configures the allocator.  It will have one of
 // either a Local configuration (to allocate service addresses from a
-// local pool) or an EGW configuration (to get addresses from
-// Acnodal's EGW). For examples, see the "config/" directory in the
+// local pool) or a Netbox configuration (to get addresses from the
+// Netbox IPAM). For examples, see the "config/" directory in the
 // PureLB source tree.
 type ServiceGroupSpec struct {
 	Local  *ServiceGroupLocalSpec  `json:"local"`
-	EGW    *ServiceGroupEGWSpec    `json:"egw"`
 	Netbox *ServiceGroupNetboxSpec `json:"netbox"`
 }
 
@@ -53,14 +52,6 @@ type ServiceGroupSpec struct {
 type ServiceGroupLocalSpec struct {
 	Subnet      string `json:"subnet"`
 	Pool        string `json:"pool"`
-	Aggregation string `json:"aggregation"`
-}
-
-// ServiceGroupEGWSpec configures the allocator to work with the
-// Acnodal Enterprise GateWay. The URL is the base URL of the service
-// group on the EGW. Aggregation is currently unused.
-type ServiceGroupEGWSpec struct {
-	URL         string `json:"url"`
 	Aggregation string `json:"aggregation"`
 }
 
@@ -90,14 +81,11 @@ type LBNodeAgent struct {
 	Status LBNodeAgentStatus `json:"status"`
 }
 
-// LBNodeAgentSpec configures the node agents.  It will have one of
-// either a Local configuration (to announce service addresses
-// locally) or an EGW configuration (to announce service addresses to
-// Acnodal's EGW). For examples, see the "config/" directory in the
-// PureLB source tree.
+// LBNodeAgentSpec configures the node agents.  It will have one Local
+// configuration to announce service addresses locally. For examples,
+// see the "config/" directory in the PureLB source tree.
 type LBNodeAgentSpec struct {
 	Local *LBNodeAgentLocalSpec `json:"local"`
-	EGW   *LBNodeAgentEGWSpec   `json:"egw"`
 }
 
 // LBNodeAgentLocalSpec configures the announcers to announce service
@@ -117,12 +105,6 @@ type LBNodeAgentLocalSpec struct {
 	// announcement of non-local routes. This field is optional - the
 	// default is "kube-lb0" which works in most cases.
 	ExtLBInterface string `json:"extlbint"`
-}
-
-// LBNodeAgentEGWSpec configures the announcers to announce service
-// addresses to the Acnodal Enterprise GateWay. It doesn't have any
-// data but acts as a flag.
-type LBNodeAgentEGWSpec struct {
 }
 
 // LBNodeAgentStatus is currently unused.

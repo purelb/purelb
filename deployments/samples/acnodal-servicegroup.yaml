@@ -1,9 +1,0 @@
----
-apiVersion: purelb.io/v1
-kind: ServiceGroup
-metadata:
-  name: acnodal
-  namespace: purelb
-spec:
-  egw:
-    url: http://192.168.1.40:30080/api/egw/groups/b321256d-31b7-4209-bd76-28dec3c77c25
