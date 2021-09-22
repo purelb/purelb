@@ -319,7 +319,7 @@ spec:
           readOnlyRootFilesystem: true
       hostNetwork: true
       nodeSelector:
-        beta.kubernetes.io/os: linux
+        kubernetes.io/os: linux
       serviceAccountName: lbnodeagent
       terminationGracePeriodSeconds: 2
       tolerations:
@@ -376,7 +376,7 @@ spec:
             - all
           readOnlyRootFilesystem: true
       nodeSelector:
-        beta.kubernetes.io/os: linux
+        kubernetes.io/os: linux
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534
