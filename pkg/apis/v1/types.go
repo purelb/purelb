@@ -38,8 +38,10 @@ type ServiceGroup struct {
 // Netbox IPAM). For examples, see the "config/" directory in the
 // PureLB source tree.
 type ServiceGroupSpec struct {
-	Local  *ServiceGroupLocalSpec  `json:"local"`
-	Netbox *ServiceGroupNetboxSpec `json:"netbox"`
+	// +optional
+	Local *ServiceGroupLocalSpec `json:"local,omitempty"`
+	// +optional
+	Netbox *ServiceGroupNetboxSpec `json:"netbox,omitempty"`
 }
 
 // ServiceGroupLocalSpec configures the allocator to manage a pool of

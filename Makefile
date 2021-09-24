@@ -22,7 +22,7 @@ help: ## Display help message
 
 ##@ Development Goals
 .PHONY: all
-all: check $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) ## Build it all!
+all: check crd $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) ## Build it all!
 
 .PHONY: check
 check:	## Run "short" tests
@@ -59,6 +59,11 @@ clean-gen:  ## Delete generated files
 .PHONY: generate
 generate:  ## Generate client-side stubs for our custom resources
 	hack/update-codegen.sh
+
+.PHONY: crd
+crd: ## Generate CRDs from golang api structs
+	controller-gen crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
+	cp deployments/crds/purelb.io_*.yaml build/helm/purelb/crds
 
 .ONESHELL:
 .PHONY: manifest

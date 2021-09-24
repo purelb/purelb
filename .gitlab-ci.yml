@@ -84,7 +84,7 @@ manifest:
     - wget --no-verbose -O - https://get.helm.sh/helm-v3.6.3-linux-amd64.tar.gz | tar -C /usr/local/bin -xzf - --strip-components=1 linux-amd64/helm
     # Install controller-gen
     - go get sigs.k8s.io/controller-tools/cmd/controller-gen@v0.7.0
-    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} manifest
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} crd manifest
     - make SUFFIX=${TAG_SPECIFIC} helm
     - curl --request POST --form "chart=@purelb-${TAG_SPECIFIC}.tgz" --user gitlab-ci-token:${CI_JOB_TOKEN} "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/helm/api/stable/charts"
     - |
