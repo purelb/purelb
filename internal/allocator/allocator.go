@@ -103,8 +103,10 @@ func (a *Allocator) assign(service *v1.Service, poolName string, ip net.IP) erro
 
 // NotifyExisting notifies the allocator of an existing IP assignment,
 // for example, at startup time.
-func (a *Allocator) NotifyExisting(svc *v1.Service, ip net.IP) error {
+func (a *Allocator) NotifyExisting(svc *v1.Service) error {
 	nsName := namespacedName(svc)
+
+	existingIP := parseIngress(a.logger, svc.Status.LoadBalancer.Ingress[0])
 
 	// Get the pool name from our annotation
 	poolName, exists := svc.Annotations[purelbv1.PoolAnnotation]
@@ -116,8 +118,8 @@ func (a *Allocator) NotifyExisting(svc *v1.Service, ip net.IP) error {
 	if _, havePool := a.pools[poolName]; !havePool {
 		return nil
 	} else {
-		fmt.Println("notify", poolName, nsName, ip.String())
-		return a.assign(svc, poolName, ip)
+		a.logger.Log("allocator", "notify-existing", "pool", poolName, "namespace", nsName, "ip", existingIP)
+		return a.assign(svc, poolName, existingIP)
 	}
 }
 
@@ -134,7 +136,7 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
 		if ip == nil {
 			return "", nil, fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
 		}
-		pool, err := a.AllocateSpecificIP(svc, ip)
+		pool, err := a.allocateSpecificIP(svc, ip)
 		if err != nil {
 			return "", nil, err
 		}
@@ -148,16 +150,21 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
 	}
 
 	// Otherwise, allocate from the pool that the user specified
-	ip, err := a.AllocateFromPool(svc, desiredGroup)
+	ip, err := a.allocateFromPool(svc, desiredGroup)
 	if err != nil {
 		return "", nil, err
 	}
+
+	// we have an IP selected somehow, so program the data plane
+	addIngress(a.logger, svc, ip)
+	a.logger.Log("event", "ipAllocated", "ip", ip, "pool", desiredGroup)
+
 	return desiredGroup, ip, nil
 }
 
-// AllocateSpecificIP assigns the requested ip to svc, if the assignment is
+// allocateSpecificIP assigns the requested ip to svc, if the assignment is
 // permissible by sharingKey.
-func (a *Allocator) AllocateSpecificIP(svc *v1.Service, ip net.IP) (string, error) {
+func (a *Allocator) allocateSpecificIP(svc *v1.Service, ip net.IP) (string, error) {
 	// Check that the address belongs to a pool
 	pool := poolFor(a.pools, ip)
 	if pool == "" {
@@ -192,7 +199,7 @@ func (a *Allocator) AllocateSpecificIP(svc *v1.Service, ip net.IP) (string, erro
 }
 
 // AllocateFromPool assigns an available IP from pool to service.
-func (a *Allocator) AllocateFromPool(svc *v1.Service, poolName string) (net.IP, error) {
+func (a *Allocator) allocateFromPool(svc *v1.Service, poolName string) (net.IP, error) {
 	var ip net.IP
 
 	pool := a.pools[poolName]
