@@ -216,27 +216,6 @@ func (a *Allocator) AllocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 	return ip, nil
 }
 
-// Allocate any available and assignable IP to service.
-func (a *Allocator) Allocate(svc *v1.Service) (string, net.IP, error) {
-	var (
-		err error
-		ip  net.IP
-	)
-
-	// if we have already allocated an address for this service then
-	// return it
-	if alloc := a.allocated[svc.Name]; alloc != nil {
-		return alloc.pool, alloc.ip, nil
-	}
-
-	// we need an address but no pool was specified so it's either the
-	// "default" pool or nothing
-	if ip, err = a.AllocateFromPool(svc, defaultPoolName); err == nil {
-		return defaultPoolName, ip, nil
-	}
-	return "", nil, err
-}
-
 // Unassign frees the IP associated with service, if any.
 func (a *Allocator) Unassign(svc string) error {
 	al := a.allocated[svc]
