@@ -60,7 +60,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 			// If it has an address then release it
 			if len(svc.Status.LoadBalancer.Ingress) > 0 {
 				log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", "type is not LoadBalancer")
-				c.client.Infof(svc, "IPReleased", fmt.Sprintf("Service is %s, not a LoadBalancer", svc.Spec.Type))
+				c.client.Infof(svc, "AddressReleased", fmt.Sprintf("Service is %s, not a LoadBalancer", svc.Spec.Type))
 				if err := c.ips.Unassign(nsName); err != nil {
 					c.logger.Log("event", "unassign", "error", err)
 					return k8s.SyncStateError
@@ -100,14 +100,11 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		// twice. another example is when the user edits a service,
 		// although that would be better handled in a webhook.
 		if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
-			if existingIP := parseIngress(log, svc.Status.LoadBalancer.Ingress[0]); existingIP != nil {
-
-				// The service has an IP so we'll attempt to formally allocate
-				// it. If something goes wrong then we'll release it which
-				// will cause a re-allocation attempt
-				if err := c.ips.NotifyExisting(svc, existingIP); err != nil {
-					log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", err.Error())
-				}
+			// The service has an IP so we'll attempt to formally allocate
+			// it. If something goes wrong then we'll log it but won't do
+			// anything else so we don't cause more trouble.
+			if err := c.ips.NotifyExisting(svc); err != nil {
+				log.Log("event", "notifyFailure", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", err.Error())
 			}
 		}
 
@@ -116,17 +113,13 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		return k8s.SyncStateSuccess
 	}
 
-	pool, lbIP, err := c.ips.AllocateAnyIP(svc)
+	pool, _, err := c.ips.AllocateAnyIP(svc)
 	if err != nil {
 		log.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", nsName, err)
 		return k8s.SyncStateSuccess
 	}
-	log.Log("event", "ipAllocated", "ip", lbIP, "pool", pool)
-	c.client.Infof(svc, "IPAllocated", "Assigned IP %s from pool %s", lbIP, pool)
-
-	// we have an IP selected somehow, so program the data plane
-	addIngress(log, svc, lbIP)
+	c.client.Infof(svc, "AddressAssigned", "Assigned %+v from pool %s", svc.Status.LoadBalancer, pool)
 
 	// annotate the service as "ours" and annotate the pool from which
 	// the address came
