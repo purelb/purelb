@@ -265,7 +265,7 @@ func TestAssignment(t *testing.T) {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
 		alreadyHasIP := assigned(alloc, namespacedName(&service)) == test.ip
-		_, err := alloc.AllocateSpecificIP(&service, ip)
+		_, err := alloc.allocateSpecificIP(&service, ip)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%q should have caused an error, but did not", test.desc)
@@ -506,7 +506,7 @@ func TestPoolAllocation(t *testing.T) {
 		if test.isIPv6 {
 			pool = "testV6"
 		}
-		ip, err := alloc.AllocateFromPool(&service, pool)
+		ip, err := alloc.allocateFromPool(&service, pool)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%s: should have caused an error, but did not", test.desc)
@@ -528,7 +528,7 @@ func TestPoolAllocation(t *testing.T) {
 
 	alloc.Unassign("unit/s5")
 	service := service("s5", []v1.ServicePort{}, "")
-	if _, err := alloc.AllocateFromPool(&service, "nonexistentpool"); err == nil {
+	if _, err := alloc.allocateFromPool(&service, "nonexistentpool"); err == nil {
 		t.Error("Allocating from non-existent pool succeeded")
 	}
 }
@@ -689,7 +689,7 @@ func TestPoolMetrics(t *testing.T) {
 		if ip == nil {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
-		_, err := alloc.AllocateSpecificIP(&service, ip)
+		_, err := alloc.allocateSpecificIP(&service, ip)
 
 		if err != nil {
 			t.Errorf("%q: Assign(%q, %q): %v", test.desc, test.svc, test.ip, err)
