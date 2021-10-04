@@ -81,6 +81,9 @@ func (p EPICPool) AssignNext(service *v1.Service) (net.IP, error) {
 	service.Annotations[purelbv1.GroupAnnotation] = epicsvc.Links["group"]
 	service.Annotations[purelbv1.ServiceAnnotation] = epicsvc.Links["self"]
 	service.Annotations[purelbv1.EndpointAnnotation] = epicsvc.Links["create-endpoint"]
+	if len(epicsvc.Service.Spec.Endpoints) > 0 {
+		service.Annotations[purelbv1.HostnameAnnotation] = epicsvc.Service.Spec.Endpoints[0].DNSName
+	}
 
 	epicCluster, err := p.epic.AddCluster(epicsvc.Links["create-cluster"], nsName)
 	if err != nil {

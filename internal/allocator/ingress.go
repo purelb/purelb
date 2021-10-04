@@ -15,7 +15,6 @@ package allocator
 
 import (
 	"net"
-	"strings"
 
 	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
@@ -25,7 +24,7 @@ import (
 
 // addIngress adds "address" to the Spec.Ingress field of "svc".
 func addIngress(log log.Logger, svc *v1.Service, address net.IP) {
-	var ingress []v1.LoadBalancerIngress
+	var ingress []v1.LoadBalancerIngress = svc.Status.LoadBalancer.Ingress
 
 	// We program the service differently depending on where the address
 	// came from.
@@ -43,13 +42,12 @@ func addIngress(log log.Logger, svc *v1.Service, address net.IP) {
 	// but it's also done by cloud providers.
 	//
 	// More info: https://github.com/kubernetes/kubernetes/pull/79976
-	if _, hasServiceAnnotation := svc.Annotations[purelbv1.ServiceAnnotation]; hasServiceAnnotation {
-		hostName := strings.Replace(address.String(), ".", "-", -1) + EPICIngressDomain
+	if hostName, hasAnnotation := svc.Annotations[purelbv1.HostnameAnnotation]; hasAnnotation {
 		ingress = append(ingress, v1.LoadBalancerIngress{Hostname: hostName})
-		log.Log("event", "programmed ingress address", "dest", "Hostname", "address", hostName)
+		log.Log("event", "programmed ingress", "dest", "hostname", "hostname", hostName)
 	} else {
 		ingress = append(ingress, v1.LoadBalancerIngress{IP: address.String()})
-		log.Log("programmed ingress address", "dest", "IP", "address", address.String())
+		log.Log("event", "programmed ingress", "dest", "IP", "IP", address.String())
 	}
 
 	svc.Status.LoadBalancer.Ingress = ingress
@@ -58,8 +56,8 @@ func addIngress(log log.Logger, svc *v1.Service, address net.IP) {
 // parseIngress parses the contents of a service Spec.Ingress
 // field. The contents can be either a hostname or an IP address. If
 // it's an IP then we'll return that, but if it's a hostname then it
-// was formatted by addIngress() and we need to parse it
-// ourselves. The returned IP will be valid only if it is not nil.
+// was formatted by EPIC and we probably can't get the IP address from
+// it. The returned IP will be valid only if it is not nil.
 func parseIngress(log log.Logger, raw v1.LoadBalancerIngress) net.IP {
 	// This is the easy case. It's an IP address so net.ParseIP will do
 	// the work for us.
@@ -67,15 +65,5 @@ func parseIngress(log log.Logger, raw v1.LoadBalancerIngress) net.IP {
 		return ip
 	}
 
-	// See if it's a hostname that we formatted.
-	if strings.HasSuffix(raw.Hostname, EPICIngressDomain) {
-		host_ := strings.ReplaceAll(raw.Hostname, EPICIngressDomain, "")
-		host := strings.Replace(host_, "-", ".", -1)
-		if ip := net.ParseIP(host); ip != nil {
-			return ip
-		}
-	}
-
-	log.Log("error", "can't parse address as either IP or EPIC hostname", "rawAddress", raw)
 	return nil
 }

@@ -81,6 +81,11 @@ type Group struct {
 	ObjectMeta ObjectMeta `json:"metadata"`
 }
 
+type DNSEndpoint struct {
+	// The hostname of the DNS record
+	DNSName string `json:"dnsName,omitempty"`
+}
+
 // ServiceSpec is the on-the-wire representation of one
 // LoadBalancer Service Spec (i.e., the part that defines what the LB
 // should look like).
@@ -90,6 +95,11 @@ type ServiceSpec struct {
 	Ports       []v1.ServicePort `json:"public-ports"`
 	ServiceID   uint16           `json:"service-id"`
 	TrueIngress bool             `json:"true-ingress"`
+
+	// Endpoints are the objects that EPIC uses to trigger external-dns
+	// to write DNS records. We also get the EPIC-assigned hostname from
+	// them.
+	Endpoints []*DNSEndpoint `json:"endpoints,omitempty"`
 
 	// TunnelKey authenticates the client with the EPIC. It must be a
 	// base64-encoded 128-bit value.

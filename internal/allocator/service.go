@@ -26,10 +26,6 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
-const (
-	EPICIngressDomain = ".client.acnodal.io"
-)
-
 func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
 	nsName := svc.Namespace + "/" + svc.Name
 	log := log.With(c.logger, "svc-name", nsName)
@@ -75,7 +71,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 			// "Un-own" the service. Remove PureLB's internal Annotations so
 			// we'll re-allocate if the user flips this service back to a
 			// LoadBalancer
-			for _, a := range []string{purelbv1.BrandAnnotation, purelbv1.PoolAnnotation, purelbv1.ServiceAnnotation, purelbv1.GroupAnnotation, purelbv1.EndpointAnnotation, purelbv1.IntAnnotation, purelbv1.NodeAnnotation} {
+			for _, a := range []string{purelbv1.BrandAnnotation, purelbv1.PoolAnnotation, purelbv1.ServiceAnnotation, purelbv1.GroupAnnotation, purelbv1.EndpointAnnotation, purelbv1.IntAnnotation, purelbv1.NodeAnnotation, purelbv1.HostnameAnnotation} {
 				delete(svc.Annotations, a)
 			}
 		}

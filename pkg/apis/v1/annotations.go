@@ -79,4 +79,9 @@ const (
 	// Namespace. If the annotation is not present, the purelb Namespace
 	// will be used.
 	ClusterPrefixAnnotation string = "acnodal.io/cluster-prefix"
+
+	// HostnameAnnotation caches the DNS hostname that was assigned to
+	// this LB by EPIC. This allows us to use this name for the
+	// Service's Ingress.
+	HostnameAnnotation string = "acnodal.io/epic-hostname"
 )
