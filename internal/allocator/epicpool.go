@@ -49,7 +49,7 @@ func NewEPICPool(log log.Logger, epic acnodal.EPIC) (*EPICPool, error) {
 // depends on whether another service is using the address, and if so,
 // whether this service can share the address with it. error will be
 // nil if the ip is available, and will contain an explanation if not.
-func (p EPICPool) Available(ip net.IP, service *v1.Service) error {
+func (p EPICPool) Available(_ net.IP, _ *v1.Service) error {
 	// We haven't yet implemented address sharing
 	return nil
 }
@@ -96,7 +96,7 @@ func (p EPICPool) AssignNext(service *v1.Service) (net.IP, error) {
 }
 
 // Assign assigns a service to an IP.
-func (p EPICPool) Assign(ip net.IP, service *v1.Service) error {
+func (p EPICPool) Assign(_ net.IP, service *v1.Service) error {
 	// Grab the service URL to warm up our cache
 	url, exists := service.Annotations[purelbv1.ClusterAnnotation]
 	if exists {
@@ -109,7 +109,7 @@ func (p EPICPool) Assign(ip net.IP, service *v1.Service) error {
 // Release releases an IP so it can be assigned again. "service"
 // should be a namespaced name, i.e., the output of
 // namespacedName(service)).
-func (p EPICPool) Release(ip net.IP, service string) error {
+func (p EPICPool) Release(_ net.IP, service string) error {
 
 	// Attempt to remove our cluster from the service, but don't fail if
 	// something goes wrong
@@ -141,7 +141,7 @@ func (p EPICPool) InUse() int {
 }
 
 // SharingKey returns the "sharing key" for the specified address.
-func (p EPICPool) SharingKey(ip net.IP) *Key {
+func (p EPICPool) SharingKey(_ net.IP) *Key {
 	return nil
 }
 
@@ -153,7 +153,7 @@ func (p EPICPool) First() net.IP {
 
 // Next returns the next net.IP within this Pool, or nil if the
 // provided net.IP is the last address in the range.
-func (p EPICPool) Next(ip net.IP) net.IP {
+func (p EPICPool) Next(_ net.IP) net.IP {
 	return nil
 }
 
@@ -166,12 +166,12 @@ func (p EPICPool) Size() uint64 {
 // Overlaps indicates whether the other Pool overlaps with this one
 // (i.e., has any addresses in common).  It returns true if there are
 // any common addresses and false if there aren't.
-func (p EPICPool) Overlaps(other Pool) bool {
+func (p EPICPool) Overlaps(_ Pool) bool {
 	return false
 }
 
 // Contains indicates whether the provided net.IP represents an
 // address within this Pool.  It returns true if so, false otherwise.
-func (p EPICPool) Contains(ip net.IP) bool {
+func (p EPICPool) Contains(_ net.IP) bool {
 	return false
 }
