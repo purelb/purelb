@@ -97,7 +97,7 @@ func (p LocalPool) Available(ip net.IP, service *v1.Service) error {
 
 // AssignNext assigns a service to the next available IP.
 func (p LocalPool) AssignNext(service *v1.Service) (net.IP, error) {
-	for pos := p.First(); pos != nil; pos = p.Next(pos) {
+	for pos := p.first(); pos != nil; pos = p.next(pos) {
 		if err := p.Assign(pos, service); err == nil {
 			// we found an available address
 			return pos, err
@@ -179,18 +179,18 @@ func (p LocalPool) SharingKey(ip net.IP) *Key {
 	return p.sharingKeys[ip.String()]
 }
 
-// First returns the first (i.e., lowest-valued) net.IP within this
+// first returns the first (i.e., lowest-valued) net.IP within this
 // Pool, or nil if the pool has no addresses.
-func (p LocalPool) First() net.IP {
+func (p LocalPool) first() net.IP {
 	if p.addresses != nil {
 		return p.addresses.First()
 	}
 	return nil
 }
 
-// Next returns the next net.IP within this Pool, or nil if the
+// next returns the next net.IP within this Pool, or nil if the
 // provided net.IP is the last address in the range.
-func (p LocalPool) Next(ip net.IP) net.IP {
+func (p LocalPool) next(ip net.IP) net.IP {
 	if p.addresses != nil {
 		return p.addresses.Next(ip)
 	}
