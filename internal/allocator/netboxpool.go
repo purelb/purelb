@@ -76,7 +76,7 @@ func (p NetboxPool) Available(ip net.IP, service *v1.Service) error {
 	// Does the IP already have allocs? If so, needs to be the same
 	// sharing key, and have non-overlapping ports. If not, the
 	// proposed IP needs to be allowed by configuration.
-	if existingSK := p.SharingKey(ip); existingSK != nil {
+	if existingSK := p.sharingKey(ip); existingSK != nil {
 		if err := sharingOK(existingSK, key); err != nil {
 
 			// Sharing key is incompatible. However, if the owner is
@@ -159,20 +159,8 @@ func (p NetboxPool) servicesOnIP(ip net.IP) []string {
 	return []string{}
 }
 
-// SharingKey returns the "sharing key" for the specified address.
-func (p NetboxPool) SharingKey(ip net.IP) *Key {
-	return nil
-}
-
-// First returns the first (i.e., lowest-valued) net.IP within this
-// Pool, or nil if the pool has no addresses.
-func (p NetboxPool) First() net.IP {
-	return nil
-}
-
-// Next returns the next net.IP within this Pool, or nil if the
-// provided net.IP is the last address in the range.
-func (p NetboxPool) Next(ip net.IP) net.IP {
+// sharingKey returns the "sharing key" for the specified address.
+func (p NetboxPool) sharingKey(ip net.IP) *Key {
 	return nil
 }
 
