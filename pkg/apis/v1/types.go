@@ -46,17 +46,33 @@ type ServiceGroupSpec struct {
 	Netbox *ServiceGroupNetboxSpec `json:"netbox,omitempty"`
 }
 
-// ServiceGroupLocalSpec configures the allocator to manage a pool of
-// IP addresses locally. The Pool can be specified as a CIDR or as a
+// ServiceGroupLocalSpec configures the allocator to manage pools of
+// IP addresses locally. Pools can be specified as a CIDR or as a
 // from-to range of addresses,
 // e.g. 'fd53:9ef0:8683::-fd53:9ef0:8683::3'. The subnet is specified
 // with CIDR notation, e.g., 'fd53:9ef0:8683::/120'. All of the
 // addresses in the Pool must be contained within the
 // Subnet. Aggregation is currently unused.
+//
+// The Subnet, Pool, and Aggregation fields are a legacy from the
+// pre-dualStack days when a service could have only one IP
+// address. If you're running a single-stack environment then they're
+// still valid, but V4Pool and V6Pool are preferred. The V4Pool and
+// V6Pool fields allow you to configure pools of both IPV4 and IPV6
+// addresses to support dual-stack and you can also use them in a
+// single-stack environment.
 type ServiceGroupLocalSpec struct {
-	Subnet      string `json:"subnet"`
-	Pool        string `json:"pool"`
+	// +optional
+	Subnet string `json:"subnet"`
+	// +optional
+	Pool string `json:"pool"`
+	// +optional
 	Aggregation string `json:"aggregation"`
+
+	// +optional
+	V4Pool *ServiceGroupAddressPool `json:"v4pool,omitempty"`
+	// +optional
+	V6Pool *ServiceGroupAddressPool `json:"v6pool,omitempty"`
 }
 
 // ServiceGroupNetboxSpec configures the allocator to request
@@ -64,6 +80,26 @@ type ServiceGroupLocalSpec struct {
 type ServiceGroupNetboxSpec struct {
 	URL         string `json:"url"`
 	Tenant      string `json:"tenant"`
+	Aggregation string `json:"aggregation"`
+}
+
+// ServiceGroupAddressPool specifies a pool of addresses that belong
+// to a ServiceGroupLocalSpec.
+type ServiceGroupAddressPool struct {
+	// Pool specifies a pool of addresses that PureLB manages. It can be
+	// a CIDR or a from-to range of addresses, e.g.,
+	// 'fd53:9ef0:8683::-fd53:9ef0:8683::3'.
+	Pool string `json:"pool"`
+
+	// Subnet specifies the subnet that contains all of the addresses in
+	// the Pool. It's specified with CIDR notation, e.g.,
+	// 'fd53:9ef0:8683::/120'. All of the addresses in the Pool must be
+	// contained within the Subnet.
+	Subnet string `json:"subnet"`
+
+	// Aggregation changes the address mask of the allocated address
+	// from the subnet mask to the specified mask. It can be "default"
+	// or an integer in the range 8-128.
 	Aggregation string `json:"aggregation"`
 }
 
