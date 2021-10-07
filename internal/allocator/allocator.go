@@ -295,13 +295,13 @@ func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Poo
 
 func (a *Allocator) parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
-		ret, err := NewLocalPool(group.Local.Pool)
+		ret, err := NewLocalPool(*group.Local)
 		if err != nil {
 			return nil, err
 		}
 		return *ret, nil
 	} else if group.Netbox != nil {
-		ret, err := NewNetboxPool(group.Netbox.URL, group.Netbox.Tenant)
+		ret, err := NewNetboxPool(*group.Netbox)
 		if err != nil {
 			return nil, err
 		}

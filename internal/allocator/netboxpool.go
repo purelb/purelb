@@ -25,6 +25,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/netbox"
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 // NetboxPool is the IP address pool that requests IP addresses from a
@@ -40,7 +41,7 @@ type NetboxPool struct {
 
 // NewNetboxPool initializes a new instance of NetboxPool. If error is
 // non-nil then the returned NetboxPool should not be used.
-func NewNetboxPool(rawurl string, tenant string) (*NetboxPool, error) {
+func NewNetboxPool(spec purelbv1.ServiceGroupNetboxSpec) (*NetboxPool, error) {
 	// Make sure that we've got credentials for Netbox
 	userToken, ok := os.LookupEnv("NETBOX_USER_TOKEN")
 	if !ok {
@@ -48,15 +49,15 @@ func NewNetboxPool(rawurl string, tenant string) (*NetboxPool, error) {
 	}
 
 	// Validate the url from the service group
-	url, err := url.Parse(rawurl)
+	url, err := url.Parse(spec.URL)
 	if err != nil {
 		return nil, fmt.Errorf("Netbox URL invalid")
 	}
 
 	return &NetboxPool{
-		url:            rawurl,
+		url:            url.String(),
 		userToken:      userToken,
-		netbox:         netbox.NewNetbox(url.String(), tenant, userToken),
+		netbox:         netbox.NewNetbox(url.String(), spec.Tenant, userToken),
 		addressesInUse: map[string]map[string]bool{},
 	}, nil
 }
