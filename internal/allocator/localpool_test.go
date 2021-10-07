@@ -20,6 +20,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
+
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 var (
@@ -28,6 +30,50 @@ var (
 	http = Port{Proto: v1.ProtocolTCP, Port: 80}
 	smtp = Port{Proto: v1.ProtocolTCP, Port: 25}
 )
+
+func TestNewLocalPool(t *testing.T) {
+	ip4 := net.ParseIP("192.168.1.1")
+	ip6 := net.ParseIP("2001:470:1f07:98e:d62a:159b:41a3:93d3")
+
+	// Test old-fashioned config (i.e., using the top-level Pool)
+	p, err := NewLocalPool(purelbv1.ServiceGroupLocalSpec{
+		Pool: "192.168.1.1/32",
+	})
+	assert.Nil(t, err, "Pool instantiation failed")
+	addr, err := p.AssignNext(&v1.Service{})
+	assert.Nil(t, err, "Address allocation failed")
+	assert.Equal(t, ip4, addr, "AssignNext failed")
+
+	// Test IPV4 config
+	p, err = NewLocalPool(purelbv1.ServiceGroupLocalSpec{
+		Pool: "10.0.0.1/32",
+		V4Pool: &purelbv1.ServiceGroupAddressPool{
+			Pool: "192.168.1.1/32",
+		},
+	})
+	assert.Nil(t, err, "Pool instantiation failed")
+	addr, err = p.AssignNext(&v1.Service{})
+	assert.Nil(t, err, "Address allocation failed")
+	// We specified the top-level Pool and the V4Pool so the V4Pool
+	// should take precedence
+	assert.Equal(t, ip4, addr, "AssignNext failed")
+
+	// Test IPV6 config
+	p, err = NewLocalPool(purelbv1.ServiceGroupLocalSpec{
+		Pool: "10.0.0.1/32",
+		V4Pool: &purelbv1.ServiceGroupAddressPool{
+			Pool: "192.168.1.1/32",
+		},
+		V6Pool: &purelbv1.ServiceGroupAddressPool{
+			Pool: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+		},
+	})
+	assert.Nil(t, err, "Pool instantiation failed")
+	addr, err = p.AssignNext(&v1.Service{})
+	assert.Nil(t, err, "Address allocation failed")
+	// We specified all three pools so the V6Pool should take precedence
+	assert.Equal(t, ip6, addr, "AssignNext failed")
+}
 
 func TestInUse(t *testing.T) {
 	ip := net.ParseIP("192.168.1.1")

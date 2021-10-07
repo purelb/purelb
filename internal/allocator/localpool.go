@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
+
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 // Pool is the configuration of an IP address pool.
@@ -38,8 +40,8 @@ type LocalPool struct {
 	portsInUse map[string]map[Port]string // ip.String() -> Port -> svc
 }
 
-func NewLocalPool(rawrange string) (*LocalPool, error) {
-	iprange, err := NewIPRange(rawrange)
+func NewLocalPool(spec purelbv1.ServiceGroupLocalSpec) (*LocalPool, error) {
+	iprange, err := NewIPRange(spec.BestPool())
 	if err != nil {
 		return nil, err
 	}
