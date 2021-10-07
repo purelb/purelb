@@ -38,6 +38,8 @@ type Key struct {
 	Sharing string
 }
 
+// Pool describes the interface to code that manages pools of
+// addresses.
 type Pool interface {
 	Available(net.IP, *v1.Service) error
 	AssignNext(*v1.Service) (net.IP, error)

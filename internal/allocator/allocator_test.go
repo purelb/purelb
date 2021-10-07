@@ -847,7 +847,7 @@ func assigned(a *Allocator, svc string) string {
 }
 
 func mustLocalPool(t *testing.T, r string) LocalPool {
-	p, err := NewLocalPool(r)
+	p, err := NewLocalPool(purelbv1.ServiceGroupLocalSpec{Pool: r})
 	if err != nil {
 		panic(err)
 	}
