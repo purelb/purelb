@@ -139,24 +139,24 @@ func TestAvailable(t *testing.T) {
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
 
 	// no assignment, should be available
-	assert.Nil(t, p.Available(ip, &svc1))
+	assert.Nil(t, p.available(ip, &svc1))
 
 	p.Assign(ip, &svc1)
 
 	// same service can "share" with or without the key
-	assert.Nil(t, p.Available(ip, &svc1))
+	assert.Nil(t, p.available(ip, &svc1))
 	svc1X := service("svc1", ports("tcp/80"), "XshareX")
-	assert.Nil(t, p.Available(ip, &svc1X))
+	assert.Nil(t, p.available(ip, &svc1X))
 
 	svc2 := service("svc2", ports("tcp/80"), "")
 	// other service, no key: no share
-	assert.NotNil(t, p.Available(ip, &svc2))
+	assert.NotNil(t, p.available(ip, &svc2))
 	// other service, has key, same port: no share
 	svc2 = service("svc2", ports("tcp/80"), "sharing1")
-	assert.NotNil(t, p.Available(ip, &svc2))
+	assert.NotNil(t, p.available(ip, &svc2))
 	// other service, has key, different port: share
 	svc2 = service("svc2", ports("tcp/25"), "sharing1")
-	assert.Nil(t, p.Available(ip, &svc2))
+	assert.Nil(t, p.available(ip, &svc2))
 }
 
 func TestAssignNext(t *testing.T) {
