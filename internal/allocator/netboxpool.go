@@ -35,6 +35,13 @@ type NetboxPool struct {
 	userToken string
 	netbox    netbox.Netbox
 
+	// services caches the addresses that we've allocated to a specific
+	// service. It's used so we can release addresses when we're given
+	// only the service name. The key is the service's namespaced name,
+	// and the value is an array of the addresses assigned to that
+	// service.
+	services map[string][]net.IP
+
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
 }
@@ -58,6 +65,7 @@ func NewNetboxPool(spec purelbv1.ServiceGroupNetboxSpec) (*NetboxPool, error) {
 		url:            url.String(),
 		userToken:      userToken,
 		netbox:         netbox.NewNetbox(url.String(), spec.Tenant, userToken),
+		services:       map[string][]net.IP{},
 		addressesInUse: map[string]map[string]bool{},
 	}, nil
 }
@@ -118,20 +126,26 @@ func (p NetboxPool) AssignNext(service *v1.Service) (net.IP, error) {
 
 // Assign assigns a service to an IP.
 func (p NetboxPool) Assign(ip net.IP, service *v1.Service) error {
-	nsName := service.Namespace + "/" + service.Name
+	nsName := namespacedName(service)
 	ipstr := ip.String()
 
 	if p.addressesInUse[ipstr] == nil {
 		p.addressesInUse[ipstr] = map[string]bool{}
 	}
 	p.addressesInUse[ipstr][nsName] = true
+	p.services[nsName] = append(p.services[nsName], ip)
 
 	return nil
 }
 
 // Release releases an IP so it can be assigned again.
-func (p NetboxPool) Release(ip net.IP, service string) error {
-	ipstr := ip.String()
+func (p NetboxPool) Release(service string) error {
+	ip, haveIp := p.services[service]
+	if !haveIp {
+		return fmt.Errorf("trying to release an IP from unknown service %s", service)
+	}
+	delete(p.services, service)
+	ipstr := ip[0].String()
 	delete(p.addressesInUse[ipstr], service)
 	if len(p.addressesInUse[ipstr]) == 0 {
 		delete(p.addressesInUse, ipstr)
