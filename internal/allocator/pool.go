@@ -44,7 +44,7 @@ type Pool interface {
 	Available(net.IP, *v1.Service) error
 	AssignNext(*v1.Service) (net.IP, error)
 	Assign(net.IP, *v1.Service) error
-	Release(net.IP, string) error
+	Release(string) error
 	InUse() int
 	Overlaps(Pool) bool
 	Contains(net.IP) bool // FIXME: I'm not sure that we need this. It might be the case that we can always rely on the service's pool annotation to find to which pool an address belongs
