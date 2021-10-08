@@ -41,7 +41,6 @@ type Key struct {
 // Pool describes the interface to code that manages pools of
 // addresses.
 type Pool interface {
-	Available(net.IP, *v1.Service) error
 	AssignNext(*v1.Service) (net.IP, error)
 	Assign(net.IP, *v1.Service) error
 	Release(string) error
