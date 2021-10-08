@@ -34,6 +34,6 @@ func TestNetboxContains(t *testing.T) {
 
 	assert.True(t, nbp.Contains(ip1), "address should have been contained in pool but wasn't")
 
-	nbp.Release(ip1, nsName)
+	nbp.Release(nsName)
 	assert.False(t, nbp.Contains(ip1), "address should not have been contained in pool but was")
 }

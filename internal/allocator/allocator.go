@@ -39,7 +39,7 @@ type Allocator struct {
 
 type alloc struct {
 	pool string
-	ip   net.IP
+	ip   net.IP // FIXME: this is used only by the unit tests - figure out how to get rid of it
 }
 
 // New returns an Allocator managing no pools.
@@ -93,7 +93,7 @@ func (a *Allocator) assign(service *v1.Service, poolName string, ip net.IP) erro
 	a.allocated[svc] = alloc
 
 	pool := a.pools[alloc.pool]
-	pool.Assign(alloc.ip, service)
+	pool.Assign(ip, service)
 
 	poolCapacity.WithLabelValues(alloc.pool).Set(float64(a.pools[alloc.pool].Size()))
 	poolActive.WithLabelValues(alloc.pool).Set(float64(pool.InUse()))
@@ -240,7 +240,7 @@ func (a *Allocator) Unassign(svc string) error {
 	// addresses from one pool to another
 	pool, tracked := a.pools[al.pool]
 	if tracked {
-		if err := pool.Release(al.ip, svc); err != nil {
+		if err := pool.Release(svc); err != nil {
 			return err
 		}
 		poolActive.WithLabelValues(al.pool).Set(float64(pool.InUse()))
