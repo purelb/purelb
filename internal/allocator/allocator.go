@@ -30,21 +30,15 @@ const (
 
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
-	logger    log.Logger
-	pools     map[string]Pool
-	allocated map[string]*alloc // svc -> alloc
-}
-
-type alloc struct {
-	ip net.IP // FIXME: this is used only by the unit tests - figure out how to get rid of it
+	logger log.Logger
+	pools  map[string]Pool
 }
 
 // New returns an Allocator managing no pools.
 func New(log log.Logger) *Allocator {
 	return &Allocator{
-		logger:    log,
-		pools:     map[string]Pool{},
-		allocated: map[string]*alloc{},
+		logger: log,
+		pools:  map[string]Pool{},
 	}
 }
 
@@ -73,16 +67,9 @@ func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
 	return nil
 }
 
-// assign unconditionally updates internal state to reflect svc's
+// updateStats unconditionally updates internal state to reflect svc's
 // allocation of alloc. Caller must ensure that this call is safe.
-func (a *Allocator) assign(service *v1.Service, poolName string, ip net.IP) error {
-	svc := namespacedName(service)
-
-	alloc := &alloc{
-		ip: ip,
-	}
-	a.allocated[svc] = alloc
-
+func (a *Allocator) updateStats(service *v1.Service, poolName string, ip net.IP) error {
 	pool := a.pools[poolName]
 	poolCapacity.WithLabelValues(poolName).Set(float64(pool.Size()))
 	poolActive.WithLabelValues(poolName).Set(float64(pool.InUse()))
@@ -109,7 +96,7 @@ func (a *Allocator) NotifyExisting(svc *v1.Service) error {
 		if err != nil {
 			return err
 		}
-		return a.assign(svc, poolName, existingIP)
+		return a.updateStats(svc, poolName, existingIP)
 	}
 }
 
@@ -126,8 +113,8 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
 		err      error
 	)
 
-	// If the user asked for a specific IP, try that.
 	if svc.Spec.LoadBalancerIP != "" {
+		// The user asked for a specific IP, so try that.
 		if ip = net.ParseIP(svc.Spec.LoadBalancerIP); ip == nil {
 			return "", nil, fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
 		}
@@ -148,6 +135,10 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
 		if ip, err = a.allocateFromPool(svc, poolName); err != nil {
 			return "", nil, err
 		}
+	}
+
+	if err := a.updateStats(svc, poolName, ip); err != nil {
+		return "", nil, err
 	}
 
 	// we have an IP selected somehow, so program the data plane
@@ -185,11 +176,6 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service, ip net.IP) (string, erro
 		return "", err
 	}
 
-	// Either the IP is entirely unused, or the requested use is
-	// compatible with existing uses. Assign!
-	if err := a.assign(svc, pool, ip); err != nil {
-		return "", err
-	}
 	return pool, nil
 }
 
@@ -213,10 +199,6 @@ func (a *Allocator) allocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 		return nil, err
 	}
 
-	if err := a.assign(svc, poolName, ip); err != nil {
-		return nil, err
-	}
-
 	return ip, nil
 }
 
@@ -230,7 +212,6 @@ func (a *Allocator) Unassign(svc string) error {
 	for pname, p := range a.pools {
 		if err = p.Release(svc); err == nil {
 			// This pool released the address
-			delete(a.allocated, svc)
 			poolActive.WithLabelValues(pname).Set(float64(p.InUse()))
 		}
 	}
