@@ -61,11 +61,11 @@ func NewLocalPool(spec purelbv1.ServiceGroupLocalSpec) (*LocalPool, error) {
 	}, nil
 }
 
-// Available determines whether an address is available. The decision
+// available determines whether an address is available. The decision
 // depends on whether another service is using the address, and if so,
 // whether this service can share the address with it. error will be
 // nil if the ip is available, and will contain an explanation if not.
-func (p LocalPool) Available(ip net.IP, service *v1.Service) error {
+func (p LocalPool) available(ip net.IP, service *v1.Service) error {
 	nsName := namespacedName(service)
 	key := &Key{Sharing: SharingKey(service)}
 	ports := Ports(service)
@@ -125,7 +125,7 @@ func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
 	sharingKey := &Key{Sharing: SharingKey(service)}
 	ports := Ports(service)
 
-	if err := p.Available(ip, service); err != nil {
+	if err := p.available(ip, service); err != nil {
 		return err
 	}
 

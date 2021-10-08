@@ -38,8 +38,7 @@ type Allocator struct {
 }
 
 type alloc struct {
-	pool string
-	ip   net.IP // FIXME: this is used only by the unit tests - figure out how to get rid of it
+	ip net.IP // FIXME: this is used only by the unit tests - figure out how to get rid of it
 }
 
 // New returns an Allocator managing no pools.
@@ -87,16 +86,13 @@ func (a *Allocator) assign(service *v1.Service, poolName string, ip net.IP) erro
 	svc := namespacedName(service)
 
 	alloc := &alloc{
-		pool: poolName,
-		ip:   ip,
+		ip: ip,
 	}
 	a.allocated[svc] = alloc
 
-	pool := a.pools[alloc.pool]
-	pool.Assign(ip, service)
-
-	poolCapacity.WithLabelValues(alloc.pool).Set(float64(a.pools[alloc.pool].Size()))
-	poolActive.WithLabelValues(alloc.pool).Set(float64(pool.InUse()))
+	pool := a.pools[poolName]
+	poolCapacity.WithLabelValues(poolName).Set(float64(pool.Size()))
+	poolActive.WithLabelValues(poolName).Set(float64(pool.InUse()))
 
 	return nil
 }
@@ -104,21 +100,22 @@ func (a *Allocator) assign(service *v1.Service, poolName string, ip net.IP) erro
 // NotifyExisting notifies the allocator of an existing IP assignment,
 // for example, at startup time.
 func (a *Allocator) NotifyExisting(svc *v1.Service) error {
-	nsName := namespacedName(svc)
-
-	existingIP := parseIngress(a.logger, svc.Status.LoadBalancer.Ingress[0])
-
 	// Get the pool name from our annotation
 	poolName, exists := svc.Annotations[purelbv1.PoolAnnotation]
 	if !exists {
-		return fmt.Errorf("Service %s no pool", nsName)
+		return fmt.Errorf("Service %s no pool", namespacedName(svc))
 	}
 
 	// Tell the pool about the assignment
-	if _, havePool := a.pools[poolName]; !havePool {
+	if pool, havePool := a.pools[poolName]; !havePool {
 		return nil
 	} else {
-		a.logger.Log("allocator", "notify-existing", "pool", poolName, "namespace", nsName, "ip", existingIP)
+		existingIP := parseIngress(a.logger, svc.Status.LoadBalancer.Ingress[0])
+		a.logger.Log("allocator", "notify-existing", "pool", poolName, "name", namespacedName(svc), "ip", existingIP)
+		err := pool.Assign(existingIP, svc)
+		if err != nil {
+			return err
+		}
 		return a.assign(svc, poolName, existingIP)
 	}
 }
@@ -130,36 +127,41 @@ func (a *Allocator) NotifyExisting(svc *v1.Service) error {
 // annotation. If neither is specified then we will attempt to
 // allocate from a pool named "default", if it exists.
 func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, net.IP, error) {
+	var (
+		poolName string
+		ip       net.IP
+		err      error
+	)
+
 	// If the user asked for a specific IP, try that.
 	if svc.Spec.LoadBalancerIP != "" {
-		ip := net.ParseIP(svc.Spec.LoadBalancerIP)
-		if ip == nil {
+		if ip = net.ParseIP(svc.Spec.LoadBalancerIP); ip == nil {
 			return "", nil, fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
 		}
-		pool, err := a.allocateSpecificIP(svc, ip)
-		if err != nil {
+
+		if poolName, err = a.allocateSpecificIP(svc, ip); err != nil {
 			return "", nil, err
 		}
-		return pool, ip, nil
-	}
+	} else {
+		// The user didn't ask for a specific IP so we can allocate one
+		// ourselves
 
-	// If no desiredGroup was specified, then we will try "default"
-	desiredGroup := svc.Annotations[purelbv1.DesiredGroupAnnotation]
-	if desiredGroup == "" {
-		desiredGroup = defaultPoolName
-	}
+		// If no desiredGroup was specified, then we will try "default"
+		if poolName = svc.Annotations[purelbv1.DesiredGroupAnnotation]; poolName == "" {
+			poolName = defaultPoolName
+		}
 
-	// Otherwise, allocate from the pool that the user specified
-	ip, err := a.allocateFromPool(svc, desiredGroup)
-	if err != nil {
-		return "", nil, err
+		// Otherwise, allocate from the pool that the user specified
+		if ip, err = a.allocateFromPool(svc, poolName); err != nil {
+			return "", nil, err
+		}
 	}
 
 	// we have an IP selected somehow, so program the data plane
 	addIngress(a.logger, svc, ip)
-	a.logger.Log("event", "ipAllocated", "ip", ip, "pool", desiredGroup)
+	a.logger.Log("event", "ipAllocated", "ip", ip, "pool", poolName)
 
-	return desiredGroup, ip, nil
+	return poolName, ip, nil
 }
 
 // allocateSpecificIP assigns the requested ip to svc, if the assignment is
@@ -177,16 +179,16 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service, ip net.IP) (string, erro
 		return "", fmt.Errorf("%q belongs to group %s but desired group is %s", ip, pool, desiredGroup)
 	}
 
-	// Does the IP already have allocs? If so, needs to be the same
-	// sharing key, and have non-overlapping ports. If not, the proposed
-	// IP needs to be allowed by configuration.
-	err := a.pools[pool].Available(ip, svc) // FIXME: this should Assign() here, not check Available.  Might need to iterate over pools rather than do poolFor
-	if err != nil {
+	// If the service had an IP before, release it
+	if err := a.Unassign(namespacedName(svc)); err != nil {
 		return "", err
 	}
 
-	// If the service had an IP before, release it
-	if err := a.Unassign(namespacedName(svc)); err != nil {
+	// Does the IP already have allocs? If so, needs to be the same
+	// sharing key, and have non-overlapping ports. If not, the proposed
+	// IP needs to be allowed by configuration.
+	err := a.pools[pool].Assign(ip, svc)
+	if err != nil {
 		return "", err
 	}
 
@@ -207,14 +209,14 @@ func (a *Allocator) allocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 		return nil, fmt.Errorf("unknown pool %q", poolName)
 	}
 
-	ip, err := pool.AssignNext(svc)
-	if err != nil {
-		// Woops, no IPs :( Fail.
+	// If the service had an IP before, release it
+	if err := a.Unassign(namespacedName(svc)); err != nil {
 		return nil, err
 	}
 
-	// If the service had an IP before, release it
-	if err := a.Unassign(namespacedName(svc)); err != nil {
+	ip, err := pool.AssignNext(svc)
+	if err != nil {
+		// Woops, no IPs :( Fail.
 		return nil, err
 	}
 
@@ -227,26 +229,18 @@ func (a *Allocator) allocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 
 // Unassign frees the IP associated with service, if any.
 func (a *Allocator) Unassign(svc string) error {
-	al := a.allocated[svc]
-	if al == nil {
-		// not much we can do here, but if we don't know about svc then it
-		// doesn't have an address so we don't need to do anything
-		fmt.Println("don't know about service", svc)
-		return nil
-	}
+	var err error
 
-	// tell the pool that the address has been released. there might not
-	// be a pool, e.g., in the case of a config change that moves
+	// tell the pools that the address has been released. there might
+	// not be a pool, e.g., in the case of a config change that moves
 	// addresses from one pool to another
-	pool, tracked := a.pools[al.pool]
-	if tracked {
-		if err := pool.Release(svc); err != nil {
-			return err
+	for pname, p := range a.pools {
+		if err = p.Release(svc); err == nil {
+			// This pool released the address
+			delete(a.allocated, svc)
+			poolActive.WithLabelValues(pname).Set(float64(p.InUse()))
 		}
-		poolActive.WithLabelValues(al.pool).Set(float64(pool.InUse()))
 	}
-
-	delete(a.allocated, svc)
 
 	return nil
 }
