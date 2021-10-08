@@ -264,23 +264,15 @@ func TestAssignment(t *testing.T) {
 		if ip == nil {
 			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
 		}
-		alreadyHasIP := assigned(alloc, namespacedName(&service)) == test.ip
 		_, err := alloc.allocateSpecificIP(&service, ip)
 		if test.wantErr {
 			if err == nil {
 				t.Errorf("%q should have caused an error, but did not", test.desc)
-			} else if a := assigned(alloc, namespacedName(&service)); !alreadyHasIP && a == test.ip {
-				t.Errorf("%q: Assign(%q, %q) failed, but allocator did record allocation", test.desc, test.svc, test.ip)
 			}
-
-			continue
-		}
-
-		if err != nil {
-			t.Errorf("%q: Assign(%q, %q): %s", test.desc, test.svc, test.ip, err)
-		}
-		if a := assigned(alloc, namespacedName(&service)); a != test.ip {
-			t.Errorf("%q: ran Assign(%q, %q), but allocator has recorded allocation of %q", test.desc, test.svc, test.ip, a)
+		} else {
+			if err != nil {
+				t.Errorf("%q: Assign(%q, %q): %s", test.desc, test.svc, test.ip, err)
+			}
 		}
 	}
 }
@@ -695,17 +687,10 @@ func TestPoolMetrics(t *testing.T) {
 			continue
 		}
 
-		ip := net.ParseIP(test.ip)
-		if ip == nil {
-			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
-		}
-		_, err := alloc.allocateSpecificIP(&service, ip)
-
+		service.Spec.LoadBalancerIP = test.ip
+		_, _, err := alloc.AllocateAnyIP(&service)
 		if err != nil {
 			t.Errorf("%q: Assign(%q, %q): %v", test.desc, test.svc, test.ip, err)
-		}
-		if a := assigned(alloc, namespacedName(&service)); a != test.ip {
-			t.Errorf("%q: ran Assign(%q, %q), but allocator has recorded allocation of %q", test.desc, test.svc, test.ip, a)
 		}
 		value := ptu.ToFloat64(poolActive.WithLabelValues("test"))
 		if value != test.ipsInUse {
@@ -838,13 +823,6 @@ func TestSharingSimple(t *testing.T) {
 }
 
 // Some helpers
-
-func assigned(a *Allocator, svc string) string {
-	if alloc := a.allocated[svc]; alloc != nil {
-		return alloc.ip.String()
-	}
-	return ""
-}
 
 func mustLocalPool(t *testing.T, r string) LocalPool {
 	p, err := NewLocalPool(purelbv1.ServiceGroupLocalSpec{Pool: r})
