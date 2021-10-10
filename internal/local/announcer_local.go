@@ -158,7 +158,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 	} else {
 		// The user wants us to determine the "default" interface
-		announceInt, err := defaultInterface(addrFamily(lbIP))
+		announceInt, err := defaultInterface(AddrFamily(lbIP))
 		if err != nil {
 			l.Log("event", "announceError", "err", err)
 			return err
