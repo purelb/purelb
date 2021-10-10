@@ -22,6 +22,8 @@ import (
 	"strings"
 
 	go_cidr "github.com/apparentlymart/go-cidr/cidr"
+
+	"purelb.io/internal/local"
 )
 
 type IPRange struct {
@@ -66,6 +68,13 @@ func (r IPRange) Contains(ip net.IP) bool {
 	}
 
 	return false
+}
+
+// Family returns the IP family of the addresses in this range. The
+// return value will be nl.FAMILY_V6 if this is an IPV6 range,
+// nl.FAMILY_V4 if it's IPV4, or 0 if the family can't be determined.
+func (r IPRange) Family() int {
+	return local.AddrFamily(r.from)
 }
 
 // First returns the first (i.e., lowest-valued) net.IP within this
