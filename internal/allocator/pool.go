@@ -21,6 +21,8 @@ import (
 	"net"
 
 	v1 "k8s.io/api/core/v1"
+
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 // Port represents one port in use by a service.
@@ -61,4 +63,22 @@ func sharingOK(existing, new *Key) error {
 		return fmt.Errorf("sharing key %q does not match existing sharing key %q", new.Sharing, existing.Sharing)
 	}
 	return nil
+}
+
+func parsePool(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
+	if group.Local != nil {
+		ret, err := NewLocalPool(*group.Local)
+		if err != nil {
+			return nil, err
+		}
+		return *ret, nil
+	} else if group.Netbox != nil {
+		ret, err := NewNetboxPool(*group.Netbox)
+		if err != nil {
+			return nil, err
+		}
+		return *ret, nil
+	}
+
+	return nil, fmt.Errorf("Pool is not local or Netbox")
 }
