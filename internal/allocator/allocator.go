@@ -240,7 +240,7 @@ func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Poo
 	pools := map[string]Pool{}
 
 	for i, group := range groups {
-		pool, err := a.parseGroup(group.Name, group.Spec)
+		pool, err := parsePool(group.Name, group.Spec)
 		if err != nil {
 			a.client.Errorf(group, "ParseFailed", "Failed to parse: %s", err)
 			return nil, fmt.Errorf("parsing address pool #%d: %s", i+1, err)
@@ -266,22 +266,4 @@ func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Poo
 	}
 
 	return pools, nil
-}
-
-func (a *Allocator) parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
-	if group.Local != nil {
-		ret, err := NewLocalPool(*group.Local)
-		if err != nil {
-			return nil, err
-		}
-		return *ret, nil
-	} else if group.Netbox != nil {
-		ret, err := NewNetboxPool(*group.Netbox)
-		if err != nil {
-			return nil, err
-		}
-		return *ret, nil
-	}
-
-	return nil, fmt.Errorf("Pool is not local or Netbox")
 }
