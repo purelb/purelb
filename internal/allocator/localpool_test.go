@@ -18,6 +18,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/go-kit/kit/log"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 
@@ -25,10 +26,11 @@ import (
 )
 
 var (
-	key1 = Key{Sharing: "sharing1"}
-	key2 = Key{Sharing: "sharing2"}
-	http = Port{Proto: v1.ProtocolTCP, Port: 80}
-	smtp = Port{Proto: v1.ProtocolTCP, Port: 25}
+	key1                = Key{Sharing: "sharing1"}
+	key2                = Key{Sharing: "sharing2"}
+	http                = Port{Proto: v1.ProtocolTCP, Port: 80}
+	smtp                = Port{Proto: v1.ProtocolTCP, Port: 25}
+	localPoolTestLogger = log.NewNopLogger()
 )
 
 func TestNewLocalPool(t *testing.T) {
@@ -36,7 +38,7 @@ func TestNewLocalPool(t *testing.T) {
 	ip6 := net.ParseIP("2001:470:1f07:98e:d62a:159b:41a3:93d3")
 
 	// Test old-fashioned config (i.e., using the top-level Pool)
-	p, err := NewLocalPool(purelbv1.ServiceGroupLocalSpec{
+	p, err := NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		Pool: "192.168.1.1/32",
 	})
 	assert.Nil(t, err, "Pool instantiation failed")
@@ -45,7 +47,7 @@ func TestNewLocalPool(t *testing.T) {
 	assert.Equal(t, ip4, addr, "AssignNext failed")
 
 	// Test IPV4 config
-	p, err = NewLocalPool(purelbv1.ServiceGroupLocalSpec{
+	p, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		Pool: "10.0.0.1/32",
 		V4Pool: &purelbv1.ServiceGroupAddressPool{
 			Pool: "192.168.1.1/32",
@@ -59,7 +61,7 @@ func TestNewLocalPool(t *testing.T) {
 	assert.Equal(t, ip4, addr, "AssignNext failed")
 
 	// Test IPV6 config
-	p, err = NewLocalPool(purelbv1.ServiceGroupLocalSpec{
+	p, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		Pool: "10.0.0.1/32",
 		V4Pool: &purelbv1.ServiceGroupAddressPool{
 			Pool: "192.168.1.1/32",
@@ -73,6 +75,25 @@ func TestNewLocalPool(t *testing.T) {
 	assert.Nil(t, err, "Address allocation failed")
 	// We specified all three pools so the V6Pool should take precedence
 	assert.Equal(t, ip6, addr, "AssignNext failed")
+}
+
+func TestNotify(t *testing.T) {
+	ip1 := net.ParseIP("192.168.1.2")
+	ip2 := net.ParseIP("192.168.1.3")
+	p := mustLocalPool(t, "192.168.1.2/31")
+
+	svc1 := service("svc1", ports("tcp/80"), "")
+	svc2 := service("svc2", ports("tcp/80"), "")
+
+	// Tell the pool that ip1 is in use
+	addIngress(localPoolTestLogger, &svc1, ip1)
+	assert.Nil(t, p.Notify(&svc1), "Notify failed")
+
+	// Allocate an address to svc2 - it should get ip2 since ip1 is in
+	// use by svc1
+	actualIp2, err := p.AssignNext(&svc2)
+	assert.Nil(t, err, "Assigning an address failed")
+	assert.Equal(t, ip2, actualIp2, "svc2 was assigned the wrong address")
 }
 
 func TestInUse(t *testing.T) {
