@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/vishvananda/netlink/nl"
 )
 
 func TestParseCIDR(t *testing.T) {
@@ -87,6 +88,14 @@ func TestNext(t *testing.T) {
 	assert.Equal(t, "1.1.1.1", ip.String())
 	ip = ipr1.Next(ip)
 	assert.Nil(t, ip)
+}
+
+func TestFamily(t *testing.T) {
+	iprV4 := mustIPRange(t, "1.1.1.0/31")
+	assert.Equal(t, nl.FAMILY_V4, iprV4.Family(), "wrong family")
+
+	iprV6 := mustIPRange(t, "2001:db8::68/124")
+	assert.Equal(t, nl.FAMILY_V6, iprV6.Family(), "wrong family")
 }
 
 func TestContains(t *testing.T) {

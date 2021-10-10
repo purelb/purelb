@@ -136,7 +136,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	// otherwise figure out a default
 	announceInt := a.announceInt
 	if announceInt == nil {
-		announceInt, err = defaultInterface(addrFamily(lbIP))
+		announceInt, err = defaultInterface(AddrFamily(lbIP))
 		if err != nil {
 			l.Log("event", "announceError", "err", err)
 			return err
