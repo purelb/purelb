@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
@@ -43,6 +44,9 @@ type Key struct {
 // Pool describes the interface to code that manages pools of
 // addresses.
 type Pool interface {
+	// Notify notifies the pool of an existing address assignment, for
+	// example, at startup time.
+	Notify(*v1.Service) error
 	AssignNext(*v1.Service) (net.IP, error)
 	Assign(net.IP, *v1.Service) error
 	Release(string) error
@@ -65,15 +69,15 @@ func sharingOK(existing, new *Key) error {
 	return nil
 }
 
-func parsePool(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
+func parsePool(log log.Logger, name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
-		ret, err := NewLocalPool(*group.Local)
+		ret, err := NewLocalPool(log, *group.Local)
 		if err != nil {
 			return nil, err
 		}
 		return *ret, nil
 	} else if group.Netbox != nil {
-		ret, err := NewNetboxPool(*group.Netbox)
+		ret, err := NewNetboxPool(log, *group.Netbox)
 		if err != nil {
 			return nil, err
 		}

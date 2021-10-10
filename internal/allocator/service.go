@@ -113,7 +113,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		return k8s.SyncStateSuccess
 	}
 
-	pool, _, err := c.ips.AllocateAnyIP(svc)
+	pool, err := c.ips.AllocateAnyIP(svc)
 	if err != nil {
 		log.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", nsName, err)

@@ -15,17 +15,22 @@ package allocator
 import (
 	"testing"
 
+	"github.com/go-kit/kit/log"
 	"github.com/stretchr/testify/assert"
 
 	"purelb.io/internal/netbox/fake"
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
+var (
+	netboxPoolTestLogger = log.NewNopLogger()
+)
+
 func TestNetboxContains(t *testing.T) {
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
 	nsName := svc1.Namespace + "/" + svc1.Name
 
-	nbp, err := NewNetboxPool(purelbv1.ServiceGroupNetboxSpec{URL: "url", Tenant: "tenant"})
+	nbp, err := NewNetboxPool(netboxPoolTestLogger, purelbv1.ServiceGroupNetboxSpec{URL: "url", Tenant: "tenant"})
 	assert.Nil(t, err, "NewNetboxPool()")
 	nbp.netbox = fake.NewNetbox("base", "tenant", "token") // patch the pool with a fake Netbox client
 
