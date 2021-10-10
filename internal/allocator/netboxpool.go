@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 
+	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/netbox"
@@ -30,6 +31,8 @@ import (
 // NetboxPool is the IP address pool that requests IP addresses from a
 // Netbox IPAM system.
 type NetboxPool struct {
+	logger log.Logger
+
 	url       string
 	userToken string
 	netbox    netbox.Netbox
@@ -47,7 +50,7 @@ type NetboxPool struct {
 
 // NewNetboxPool initializes a new instance of NetboxPool. If error is
 // non-nil then the returned NetboxPool should not be used.
-func NewNetboxPool(spec purelbv1.ServiceGroupNetboxSpec) (*NetboxPool, error) {
+func NewNetboxPool(log log.Logger, spec purelbv1.ServiceGroupNetboxSpec) (*NetboxPool, error) {
 	// Make sure that we've got credentials for Netbox
 	userToken, ok := os.LookupEnv("NETBOX_USER_TOKEN")
 	if !ok {
@@ -61,12 +64,30 @@ func NewNetboxPool(spec purelbv1.ServiceGroupNetboxSpec) (*NetboxPool, error) {
 	}
 
 	return &NetboxPool{
+		logger:         log,
 		url:            url.String(),
 		userToken:      userToken,
 		netbox:         netbox.NewNetbox(url.String(), spec.Tenant, userToken),
 		services:       map[string][]net.IP{},
 		addressesInUse: map[string]map[string]bool{},
 	}, nil
+}
+
+func (p NetboxPool) Notify(service *v1.Service) error {
+	ipstr := service.Status.LoadBalancer.Ingress[0].IP
+	ip := net.ParseIP(ipstr)
+	if ip == nil {
+		return fmt.Errorf("Service %s has unparseable IP %s", namespacedName(service), service.Status.LoadBalancer.Ingress[0].IP)
+	}
+	nsName := namespacedName(service)
+
+	if p.addressesInUse[ipstr] == nil {
+		p.addressesInUse[ipstr] = map[string]bool{}
+	}
+	p.addressesInUse[ipstr][nsName] = true
+	p.services[nsName] = append(p.services[nsName], ip)
+
+	return nil
 }
 
 // AssignNext assigns a service to the next available IP.
@@ -89,16 +110,11 @@ func (p NetboxPool) AssignNext(service *v1.Service) (net.IP, error) {
 
 // Assign assigns a service to an IP.
 func (p NetboxPool) Assign(ip net.IP, service *v1.Service) error {
-	nsName := namespacedName(service)
-	ipstr := ip.String()
+	// we have an IP selected somehow, so program the data plane
+	addIngress(p.logger, service, ip)
 
-	if p.addressesInUse[ipstr] == nil {
-		p.addressesInUse[ipstr] = map[string]bool{}
-	}
-	p.addressesInUse[ipstr][nsName] = true
-	p.services[nsName] = append(p.services[nsName], ip)
-
-	return nil
+	// Update our internal allocation data structures
+	return p.Notify(service)
 }
 
 // Release releases an IP so it can be assigned again.
@@ -119,27 +135,7 @@ func (p NetboxPool) Release(service string) error {
 // InUse returns the count of addresses that currently have services
 // assigned.
 func (p NetboxPool) InUse() int {
-	return -1
-}
-
-// servicesOnIP returns the names of the services who are assigned to
-// the address.
-func (p NetboxPool) servicesOnIP(ip net.IP) []string {
-	ipstr := ip.String()
-	svcs, has := p.addressesInUse[ipstr]
-	if has {
-		keys := make([]string, 0, len(svcs))
-		for k := range svcs {
-			keys = append(keys, k)
-		}
-		return keys
-	}
-	return []string{}
-}
-
-// sharingKey returns the "sharing key" for the specified address.
-func (p NetboxPool) sharingKey(ip net.IP) *Key {
-	return nil
+	return len(p.addressesInUse)
 }
 
 // Size returns the total number of addresses in this pool if it's a

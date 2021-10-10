@@ -20,6 +20,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
@@ -27,6 +28,8 @@ import (
 
 // Pool is the configuration of an IP address pool.
 type LocalPool struct {
+	logger log.Logger
+
 	// The addresses that are part of this pool. config.Parse guarantees
 	// that these are non-overlapping, both within and between pools.
 	addresses *IPRange
@@ -47,18 +50,48 @@ type LocalPool struct {
 	portsInUse map[string]map[Port]string // ip.String() -> Port -> svc
 }
 
-func NewLocalPool(spec purelbv1.ServiceGroupLocalSpec) (*LocalPool, error) {
+func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPool, error) {
 	iprange, err := NewIPRange(spec.BestPool())
 	if err != nil {
 		return nil, err
 	}
 	return &LocalPool{
+		logger:         log,
 		addresses:      &iprange,
 		services:       map[string][]net.IP{},
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
 	}, nil
+}
+
+func (p LocalPool) Notify(service *v1.Service) error {
+	nsName := namespacedName(service)
+
+	ipstr := service.Status.LoadBalancer.Ingress[0].IP
+	sharingKey := &Key{Sharing: SharingKey(service)}
+	ports := Ports(service)
+
+	ip := net.ParseIP(ipstr)
+	if ip == nil {
+		return fmt.Errorf("Service %s has unparseable IP %s", nsName, service.Status.LoadBalancer.Ingress[0].IP)
+	}
+	p.logger.Log("localpool", "notify-existing", "service", nsName, "ip", ip)
+
+	p.sharingKeys[ipstr] = sharingKey
+	if p.addressesInUse[ipstr] == nil {
+		p.addressesInUse[ipstr] = map[string]bool{}
+	}
+	p.addressesInUse[ipstr][nsName] = true
+	if p.portsInUse[ipstr] == nil {
+		p.portsInUse[ipstr] = map[Port]string{}
+	}
+	for _, port := range ports {
+		p.portsInUse[ipstr][port] = nsName
+	}
+	p.services[nsName] = append(p.services[nsName], ip)
+
+	return nil
 }
 
 // available determines whether an address is available. The decision
@@ -119,30 +152,15 @@ func (p LocalPool) AssignNext(service *v1.Service) (net.IP, error) {
 
 // Assign assigns a service to an IP.
 func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
-	nsName := namespacedName(service)
-
-	ipstr := ip.String()
-	sharingKey := &Key{Sharing: SharingKey(service)}
-	ports := Ports(service)
-
 	if err := p.available(ip, service); err != nil {
 		return err
 	}
 
-	p.sharingKeys[ipstr] = sharingKey
-	if p.addressesInUse[ipstr] == nil {
-		p.addressesInUse[ipstr] = map[string]bool{}
-	}
-	p.addressesInUse[ipstr][nsName] = true
-	if p.portsInUse[ipstr] == nil {
-		p.portsInUse[ipstr] = map[Port]string{}
-	}
-	for _, port := range ports {
-		p.portsInUse[ipstr][port] = nsName
-	}
-	p.services[nsName] = append(p.services[nsName], ip)
+	// we have an IP selected somehow, so program the data plane
+	addIngress(p.logger, service, ip)
 
-	return nil
+	// Update our internal allocation data structures
+	return p.Notify(service)
 }
 
 // Release releases an IP so it can be assigned again.
