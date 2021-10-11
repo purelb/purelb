@@ -28,7 +28,8 @@ type ServiceGroup struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ServiceGroupSpec   `json:"spec"`
+	Spec ServiceGroupSpec `json:"spec"`
+	// +optional
 	Status ServiceGroupStatus `json:"status"`
 }
 
@@ -79,7 +80,8 @@ type LBNodeAgent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   LBNodeAgentSpec   `json:"spec"`
+	Spec LBNodeAgentSpec `json:"spec"`
+	// +optional
 	Status LBNodeAgentStatus `json:"status"`
 }
 
@@ -98,14 +100,18 @@ type LBNodeAgentSpec struct {
 // also unimplemented.
 type LBNodeAgentLocalSpec struct {
 	// LocalInterface allows the user to specify the interface to use
-	// for announcement of local addresses. This field is optional -
-	// PureLB by default will use the interface that has the default
-	// route, which works in most cases.
+	// for announcement of local addresses. This field is optional but
+	// the default is "default" which will make PureLB use the interface
+	// that has the default route, which works in most cases.
+	// +kubebuilder:default="default"
+	// +optional
 	LocalInterface string `json:"localint"`
 
 	// ExtLBInterface specifies the name of the interface to use for
-	// announcement of non-local routes. This field is optional - the
+	// announcement of non-local routes. This field is optional but the
 	// default is "kube-lb0" which works in most cases.
+	// +kubebuilder:default="kube-lb0"
+	// +optional
 	ExtLBInterface string `json:"extlbint"`
 }
 
