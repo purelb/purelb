@@ -47,7 +47,7 @@ type Pool interface {
 	// Notify notifies the pool of an existing address assignment, for
 	// example, at startup time.
 	Notify(*v1.Service) error
-	AssignNext(*v1.Service) (net.IP, error)
+	AssignNext(*v1.Service) error
 	Assign(net.IP, *v1.Service) error
 	Release(string) error
 	InUse() int
