@@ -34,35 +34,51 @@ var (
 )
 
 func TestNewLocalPool(t *testing.T) {
-	ip4 := net.ParseIP("192.168.1.1")
-	ip6 := net.ParseIP("2001:470:1f07:98e:d62a:159b:41a3:93d3")
+	var svc v1.Service
+	ip4 := "192.168.1.1"
+	ip6 := "2001:470:1f07:98e:d62a:159b:41a3:93d3"
 
 	// Test old-fashioned config (i.e., using the top-level Pool)
 	p, err := NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		Pool: "192.168.1.1/32",
 	})
 	assert.Nil(t, err, "Pool instantiation failed")
-	addr, err := p.AssignNext(&v1.Service{})
+	svc = v1.Service{}
+	err = p.AssignNext(&svc)
 	assert.Nil(t, err, "Address allocation failed")
-	assert.Equal(t, ip4, addr, "AssignNext failed")
+	assert.Equal(t, ip4, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
 	// Test IPV4 config
 	p, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
-		Pool: "10.0.0.1/32",
 		V4Pool: &purelbv1.ServiceGroupAddressPool{
 			Pool: "192.168.1.1/32",
 		},
 	})
 	assert.Nil(t, err, "Pool instantiation failed")
-	addr, err = p.AssignNext(&v1.Service{})
+	svc = v1.Service{}
+	err = p.AssignNext(&svc)
 	assert.Nil(t, err, "Address allocation failed")
 	// We specified the top-level Pool and the V4Pool so the V4Pool
 	// should take precedence
-	assert.Equal(t, ip4, addr, "AssignNext failed")
+	assert.Equal(t, ip4, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
 	// Test IPV6 config
 	p, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
-		Pool: "10.0.0.1/32",
+		Pool: "192.168.1.1/32",
+		V6Pool: &purelbv1.ServiceGroupAddressPool{
+			Pool: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+		},
+	})
+	assert.Nil(t, err, "Pool instantiation failed")
+	svc = v1.Service{}
+	err = p.AssignNext(&svc)
+	assert.Nil(t, err, "Address allocation failed")
+	// We specified the top-level Pool and the V6Pool so the V6Pool
+	// should take precedence
+	assert.Equal(t, ip6, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
+
+	// Test IPV6 config
+	p, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		V4Pool: &purelbv1.ServiceGroupAddressPool{
 			Pool: "192.168.1.1/32",
 		},
@@ -71,10 +87,11 @@ func TestNewLocalPool(t *testing.T) {
 		},
 	})
 	assert.Nil(t, err, "Pool instantiation failed")
-	addr, err = p.AssignNext(&v1.Service{})
+	svc = v1.Service{}
+	err = p.AssignNext(&svc)
 	assert.Nil(t, err, "Address allocation failed")
-	// We specified all three pools so the V6Pool should take precedence
-	assert.Equal(t, ip6, addr, "AssignNext failed")
+	// We specified both pools so the V6Pool should take precedence
+	assert.Equal(t, ip6, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 }
 
 func TestNotify(t *testing.T) {
@@ -91,9 +108,9 @@ func TestNotify(t *testing.T) {
 
 	// Allocate an address to svc2 - it should get ip2 since ip1 is in
 	// use by svc1
-	actualIp2, err := p.AssignNext(&svc2)
+	err := p.AssignNext(&svc2)
 	assert.Nil(t, err, "Assigning an address failed")
-	assert.Equal(t, ip2, actualIp2, "svc2 was assigned the wrong address")
+	assert.Equal(t, ip2.String(), svc2.Status.LoadBalancer.Ingress[0].IP, "svc2 was assigned the wrong address")
 }
 
 func TestInUse(t *testing.T) {
@@ -187,21 +204,34 @@ func TestAssignNext(t *testing.T) {
 	svc3 := service("svc3", ports("tcp/80"), "sharing2")
 
 	// The pool has two addresses; allocate both of them
-	ip, err := p.AssignNext(&svc1)
+	err := p.AssignNext(&svc1)
 	assert.Nil(t, err)
-	assert.True(t, net.ParseIP("192.168.1.0").Equal(ip))
-	ip, err = p.AssignNext(&svc2)
+	assert.Equal(t, "192.168.1.0", svc1.Status.LoadBalancer.Ingress[0].IP, "svc1 was assigned the wrong address")
+	err = p.AssignNext(&svc2)
 	assert.Nil(t, err)
-	assert.True(t, net.ParseIP("192.168.1.1").Equal(ip))
+	assert.Equal(t, "192.168.1.1", svc2.Status.LoadBalancer.Ingress[0].IP, "svc2 was assigned the wrong address")
 
 	// Same port: should fail
-	_, err = p.AssignNext(&svc3)
+	err = p.AssignNext(&svc3)
 	assert.NotNil(t, err)
 
 	// Shared key, different ports: should succeed
 	svc3.Spec.Ports = ports("tcp/25")
-	_, err = p.AssignNext(&svc3)
+	err = p.AssignNext(&svc3)
 	assert.Nil(t, err)
+}
+
+func TestPoolSize(t *testing.T) {
+	p, err := NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+		V4Pool: &purelbv1.ServiceGroupAddressPool{
+			Pool: "192.168.1.0/31",
+		},
+		V6Pool: &purelbv1.ServiceGroupAddressPool{
+			Pool: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+		},
+	})
+	assert.Nil(t, err, "Pool instantiation failed")
+	assert.Equal(t, uint64(3), p.Size(), "Pool Size() failed")
 }
 
 func sameStrings(t *testing.T, want []string, got []string) {

@@ -74,38 +74,41 @@ func NewNetboxPool(log log.Logger, spec purelbv1.ServiceGroupNetboxSpec) (*Netbo
 }
 
 func (p NetboxPool) Notify(service *v1.Service) error {
-	ipstr := service.Status.LoadBalancer.Ingress[0].IP
-	ip := net.ParseIP(ipstr)
-	if ip == nil {
-		return fmt.Errorf("Service %s has unparseable IP %s", namespacedName(service), service.Status.LoadBalancer.Ingress[0].IP)
-	}
 	nsName := namespacedName(service)
 
-	if p.addressesInUse[ipstr] == nil {
-		p.addressesInUse[ipstr] = map[string]bool{}
+	for _, ingress := range service.Status.LoadBalancer.Ingress {
+		ipstr := ingress.IP
+		ip := net.ParseIP(ipstr)
+		if ip == nil {
+			return fmt.Errorf("Service %s has unparseable IP %s", namespacedName(service), ipstr)
+		}
+
+		if p.addressesInUse[ipstr] == nil {
+			p.addressesInUse[ipstr] = map[string]bool{}
+		}
+		p.addressesInUse[ipstr][nsName] = true
+		p.services[nsName] = append(p.services[nsName], ip)
 	}
-	p.addressesInUse[ipstr][nsName] = true
-	p.services[nsName] = append(p.services[nsName], ip)
 
 	return nil
 }
 
 // AssignNext assigns a service to the next available IP.
-func (p NetboxPool) AssignNext(service *v1.Service) (net.IP, error) {
+func (p NetboxPool) AssignNext(service *v1.Service) error {
 	// fetch from netbox
 	cidr, err := p.netbox.Fetch()
 	if err != nil {
-		return nil, fmt.Errorf("no available IPs in pool %q", err)
+		return fmt.Errorf("no available IPs in pool %q", err)
 	}
 	ip, _, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing CIDR %s", cidr)
+		return fmt.Errorf("error parsing CIDR %s", cidr)
 	}
 	if err := p.Assign(ip, service); err != nil {
-		return nil, err
+		return err
 	}
 
-	return ip, nil
+	return nil
 }
 
 // Assign assigns a service to an IP.
