@@ -68,7 +68,7 @@ type ServiceGroupLocalSpec struct {
 	V6Pool *ServiceGroupAddressPool `json:"v6pool,omitempty"`
 }
 
-// BestPool returns this Spec's address pool. The order of precendence
+// BestPool returns this Spec's address pool. The order of precedence
 // is V6, then V4, and the top-level Pool last
 func (s ServiceGroupLocalSpec) BestPool() (pool string) {
 	// Figure out which pool contains a useful range.
