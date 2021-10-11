@@ -191,8 +191,7 @@ func (a *Allocator) allocateFromPool(svc *v1.Service, poolName string) error {
 		return err
 	}
 
-	_, err := pool.AssignNext(svc)
-	if err != nil {
+	if err := pool.AssignNext(svc); err != nil {
 		// Woops, no IPs :( Fail.
 		return err
 	}
