@@ -61,11 +61,16 @@ type ServiceGroupSpec struct {
 // addresses to support dual-stack and you can also use them in a
 // single-stack environment.
 type ServiceGroupLocalSpec struct {
-	Subnet      string `json:"subnet"`
-	Pool        string `json:"pool"`
+	// +optional
+	Subnet string `json:"subnet"`
+	// +optional
+	Pool string `json:"pool"`
+	// +optional
 	Aggregation string `json:"aggregation"`
 
+	// +optional
 	V4Pool *ServiceGroupAddressPool `json:"v4pool,omitempty"`
+	// +optional
 	V6Pool *ServiceGroupAddressPool `json:"v6pool,omitempty"`
 }
 
