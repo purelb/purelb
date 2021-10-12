@@ -124,8 +124,16 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 }
 
 func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
-	l := log.With(a.logger, "service", svc.Name)
+	// retErr caches an error while we try other operations. Because we
+	// might have more than one interface to announce, if an error
+	// happens on the first one we still want to try the second. Instead
+	// of "return err" we'll stash the error in retErr and keep
+	// going. Once we're done we'll return any error that
+	// happened. Well, technically we'll return the most recent error.
+	var retErr error = nil
+
 	nsName := svc.Namespace + "/" + svc.Name
+	l := log.With(a.logger, "service", nsName)
 
 	// if we haven't been configured then we won't announce
 	if a.config == nil {
@@ -133,54 +141,58 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		return nil
 	}
 
-	// validate the allocated address
-	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
-	if lbIP == nil {
-		l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", svc.Status.LoadBalancer.Ingress[0].IP)
-		return nil
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		// validate the allocated address
+		lbIP := net.ParseIP(ingress.IP)
+		if lbIP == nil {
+			l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", svc.Status.LoadBalancer.Ingress[0].IP)
+			continue
+		}
+
+		if a.localNameRegex != nil {
+			// The user specified an announcement interface regex so use it to
+			// try to find a local interface, otherwise announce remote
+			lbIPNet, localif, err := findLocal(a.localNameRegex, lbIP)
+			if err == nil {
+				// We found a local interface, announce the address on it
+				if err := a.announceLocal(svc, localif, lbIP, lbIPNet); err != nil {
+					retErr = err
+				}
+			} else {
+				// lbIP isn't local to any interfaces so add it to dummyInt
+				if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+					retErr = err
+				}
+			}
+
+		} else {
+			// The user wants us to determine the "default" interface
+			announceInt, err := defaultInterface(AddrFamily(lbIP))
+			if err != nil {
+				l.Log("event", "announceError", "err", err)
+				retErr = err
+				continue
+			}
+			if lbIPNet, defaultif, err := checkLocal(announceInt, lbIP); err == nil {
+				// The default interface is a local interface, announce the
+				// address on it
+				if err := a.announceLocal(svc, defaultif, lbIP, lbIPNet); err != nil {
+					retErr = err
+				}
+			} else {
+				// The default interface is remote, so add lbIP to dummyInt
+				if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+					retErr = err
+				}
+			}
+		}
+
+		// add the address to our announcement database
+		a.svcAdvs[nsName] = lbIP
 	}
 
-	if a.localNameRegex != nil {
-		// The user specified an announcement interface regex so use it to
-		// try to find a local interface, otherwise announce remote
-		lbIPNet, localif, err := findLocal(a.localNameRegex, lbIP)
-		if err == nil {
-			// We found a local interface, announce the address on it
-			if err := a.announceLocal(svc, localif, lbIP, lbIPNet); err != nil {
-				return err
-			}
-		} else {
-			// lbIP isn't local to any interfaces so add it to dummyInt
-			if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
-				return err
-			}
-		}
-
-	} else {
-		// The user wants us to determine the "default" interface
-		announceInt, err := defaultInterface(AddrFamily(lbIP))
-		if err != nil {
-			l.Log("event", "announceError", "err", err)
-			return err
-		}
-		if lbIPNet, defaultif, err := checkLocal(announceInt, lbIP); err == nil {
-			// The default interface is a local interface, announce the
-			// address on it
-			if err := a.announceLocal(svc, defaultif, lbIP, lbIPNet); err != nil {
-				return err
-			}
-		} else {
-			// The default interface is remote, so add lbIP to dummyInt
-			if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
-				return err
-			}
-		}
-	}
-
-	// add the address to our announcement database
-	a.svcAdvs[nsName] = lbIP
-
-	return nil
+	// Return the most recent error
+	return retErr
 }
 
 func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbIP net.IP, lbIPNet net.IPNet) error {
@@ -248,7 +260,15 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 		allocPool := a.groups[poolName]
 		l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName)
 		a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (*a.dummyInt).Attrs().Name)
-		addVirtualInt(lbIP, *a.dummyInt, allocPool.Subnet, allocPool.Aggregation)
+		family := AddrFamily(lbIP)
+		subnet, err := allocPool.FamilySubnet(family)
+		if err != nil {
+		}
+		aggregation, err := allocPool.FamilyAggregation(family)
+		if err != nil {
+			return err
+		}
+		addVirtualInt(lbIP, *a.dummyInt, subnet, aggregation)
 		announcing.With(prometheus.Labels{
 			"service": nsName,
 			"node":    a.myNode,
