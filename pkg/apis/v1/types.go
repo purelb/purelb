@@ -15,6 +15,10 @@
 package v1
 
 import (
+	"fmt"
+	"net"
+
+	"github.com/vishvananda/netlink/nl"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -73,6 +77,94 @@ type ServiceGroupLocalSpec struct {
 	V4Pool *ServiceGroupAddressPool `json:"v4pool,omitempty"`
 	// +optional
 	V6Pool *ServiceGroupAddressPool `json:"v6pool,omitempty"`
+}
+
+// FamilyAggregation returns this Spec's aggregation value that
+// corresponds to family.
+func (s *ServiceGroupLocalSpec) FamilyAggregation(family int) (string, error) {
+	if family == nl.FAMILY_V4 {
+		if s.V4Pool != nil {
+			return s.V4Pool.Aggregation, nil
+		} else {
+			// If the legacy pool is V4 we can return that
+			ip, _, err := net.ParseCIDR(s.Subnet)
+			if err != nil {
+				return "", err
+			}
+			if addrFamily(ip) != nl.FAMILY_V4 {
+				return "", fmt.Errorf("no IPV4 aggregation has been configured")
+			}
+			return s.Aggregation, nil
+		}
+	}
+	if family == nl.FAMILY_V6 {
+		if s.V6Pool != nil {
+			return s.V6Pool.Aggregation, nil
+		} else {
+			// If the legacy pool is V6 we can return that
+			ip, _, err := net.ParseCIDR(s.Subnet)
+			if err != nil {
+				return "", err
+			}
+			if addrFamily(ip) != nl.FAMILY_V6 {
+				return "", fmt.Errorf("no IPV6 aggregation has been configured")
+			}
+			return s.Aggregation, nil
+		}
+	}
+	return "", fmt.Errorf("unable to find aggregation for family %d", family)
+}
+
+// FamilySubnet returns this Spec's subnet value that
+// corresponds to family.
+func (s *ServiceGroupLocalSpec) FamilySubnet(family int) (string, error) {
+	if family == nl.FAMILY_V4 {
+		if s.V4Pool != nil {
+			return s.V4Pool.Subnet, nil
+		} else {
+			// If the legacy pool is V4 we can return that
+			ip, _, err := net.ParseCIDR(s.Subnet)
+			if err != nil {
+				return "", err
+			}
+			if addrFamily(ip) != nl.FAMILY_V4 {
+				return "", fmt.Errorf("no IPV4 subnet has been configured")
+			}
+			return s.Subnet, nil
+		}
+	}
+	if family == nl.FAMILY_V6 {
+		if s.V6Pool != nil {
+			return s.V6Pool.Subnet, nil
+		} else {
+			// If the legacy pool is V6 we can return that
+			ip, _, err := net.ParseCIDR(s.Subnet)
+			if err != nil {
+				return "", err
+			}
+			if addrFamily(ip) != nl.FAMILY_V6 {
+				return "", fmt.Errorf("no IPV6 subnet has been configured")
+			}
+			return s.Subnet, nil
+		}
+	}
+	return "", fmt.Errorf("unable to find subnet for family %d", family)
+}
+
+// addrFamily returns whether lbIP is an IPV4 or IPV6 address.  The
+// return value will be nl.FAMILY_V6 if the address is an IPV6
+// address, nl.FAMILY_V4 if it's IPV4, or 0 if the family can't be
+// determined.
+func addrFamily(lbIP net.IP) (lbIPFamily int) {
+	if nil != lbIP.To16() {
+		lbIPFamily = nl.FAMILY_V6
+	}
+
+	if nil != lbIP.To4() {
+		lbIPFamily = nl.FAMILY_V4
+	}
+
+	return
 }
 
 // ServiceGroupNetboxSpec configures the allocator to request
