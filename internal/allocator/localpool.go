@@ -193,10 +193,7 @@ func (p LocalPool) available(ip net.IP, service *v1.Service) error {
 
 // AssignNext assigns the next available IP to service.
 func (p LocalPool) AssignNext(service *v1.Service) error {
-	families, err := p.whichFamilies(service)
-	if err != nil {
-		return err
-	}
+	families := whichFamilies(service)
 
 	if len(families) == 0 {
 		// Any address is OK so try V6 first then V4 and assign the first
@@ -366,6 +363,32 @@ func (p LocalPool) Contains(ip net.IP) bool {
 // service. It returns an array of int containing nl.FAMILY_V? values,
 // one for each address to assign, in the order that they should be
 // assigned. An empty array means that any family is OK.
-func (p LocalPool) whichFamilies(service *v1.Service) ([]int, error) {
-	return []int{}, nil
+func whichFamilies(service *v1.Service) []int {
+	var families []int = []int{}
+
+	// If we don't have any familiy hints then anything will do
+	if len(service.Spec.IPFamilies) == 0 {
+		return families
+	}
+
+	// The first family is determined by the first entry in ipFamilies
+	families = append(families, famToFam(service.Spec.IPFamilies[0]))
+
+	// If the user wants dual-stack then decide which is the second
+	// family to use
+	if service.Spec.IPFamilyPolicy != nil &&
+		(*service.Spec.IPFamilyPolicy == v1.IPFamilyPolicyPreferDualStack ||
+			*service.Spec.IPFamilyPolicy == v1.IPFamilyPolicyRequireDualStack) {
+		families = append(families, famToFam(service.Spec.IPFamilies[1]))
+	}
+
+	return families
+}
+
+func famToFam(fam v1.IPFamily) int {
+	if fam == v1.IPv6Protocol {
+		return nl.FAMILY_V6
+	}
+
+	return nl.FAMILY_V4
 }

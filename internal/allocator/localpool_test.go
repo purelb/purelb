@@ -20,6 +20,7 @@ import (
 
 	"github.com/go-kit/kit/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/vishvananda/netlink/nl"
 	v1 "k8s.io/api/core/v1"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
@@ -232,6 +233,26 @@ func TestPoolSize(t *testing.T) {
 	})
 	assert.Nil(t, err, "Pool instantiation failed")
 	assert.Equal(t, uint64(3), p.Size(), "Pool Size() failed")
+}
+
+func TestWhichFamilies(t *testing.T) {
+	var preferDual v1.IPFamilyPolicyType = v1.IPFamilyPolicyPreferDualStack
+	svc := service("svc1", ports("tcp/80"), "sharing1")
+
+	assert.Equal(t, []int{}, whichFamilies(&svc))
+
+	// Single stack
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol}
+	assert.Equal(t, []int{nl.FAMILY_V6}, whichFamilies(&svc))
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	assert.Equal(t, []int{nl.FAMILY_V4}, whichFamilies(&svc))
+
+	// Dual stack
+	svc.Spec.IPFamilyPolicy = &preferDual
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol, v1.IPv4Protocol}
+	assert.Equal(t, []int{nl.FAMILY_V6, nl.FAMILY_V4}, whichFamilies(&svc))
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol}
+	assert.Equal(t, []int{nl.FAMILY_V4, nl.FAMILY_V6}, whichFamilies(&svc))
 }
 
 func sameStrings(t *testing.T, want []string, got []string) {
