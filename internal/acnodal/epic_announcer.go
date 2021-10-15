@@ -178,13 +178,6 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		return fmt.Errorf("Connection init to EPIC failed")
 	}
 
-	// get the group's owning account
-	account, err := epic.GetAccount()
-	if err != nil {
-		l.Log("op", "SetBalancer", "error", err, "msg", "can't get owning account")
-		return fmt.Errorf("can't get owning account")
-	}
-
 	createUrl := svc.Annotations[purelbv1.EndpointAnnotation]
 
 	announcements := map[string]struct{}{} // pseudo-set: key: endpoint URLs, value: struct{}
@@ -222,7 +215,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	tries := 10
 	err = fmt.Errorf("")
 	for retry := true; err != nil && retry && tries > 0; tries-- {
-		err, retry = a.setupTunnels(*a.pfcspec, account.Account.Spec.GroupID, svc, endpoints, l, epic)
+		err, retry = a.setupTunnels(*a.pfcspec, svc, endpoints, l, epic)
 		if err != nil && tries > 1 {
 			time.Sleep(3 * time.Second)
 		}
@@ -240,9 +233,6 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 			if err := epic.Delete(epURL); err != nil {
 				l.Log("op", "DeleteEndpoint", "error", err)
 			}
-			if err := a.cleanupPFC(); err != nil {
-				l.Log("op", "cleanupPFC", "error", err)
-			}
 		}
 	}
 
@@ -254,7 +244,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	return err
 }
 
-func (a *announcer) setupTunnels(spec purelbv1.LBNodeAgentEPICSpec, groupID uint16, svc *v1.Service, endpoints *v1.Endpoints, l log.Logger, epic EPIC) (err error, retry bool) {
+func (a *announcer) setupTunnels(spec purelbv1.LBNodeAgentEPICSpec, svc *v1.Service, endpoints *v1.Endpoints, l log.Logger, epic EPIC) (err error, retry bool) {
 	// Get the service that owns this endpoint. This endpoint
 	// will either re-use an existing tunnel or set up a new one
 	// for this node. Tunnels belong to the service.
@@ -330,9 +320,6 @@ func (a *announcer) DeleteBalancer(name, reason string, _ *v1.LoadBalancerIngres
 		if err := epic.Delete(epURL); err != nil {
 			l.Log("op", "DeleteEndpoint", "error", err)
 		}
-		if err := a.cleanupPFC(); err != nil {
-			l.Log("op", "cleanupPFC", "error", err)
-		}
 	}
 
 	// Empty this service's cache entries
@@ -376,10 +363,6 @@ func (a *announcer) setupPFC(spec purelbv1.LBNodeAgentEPICSpec, address v1.Endpo
 	// set up service forwarding to forward packets through the GUE
 	// tunnel
 	return pfc.SetService(a.logger, tunnelAuth, tunnelID)
-}
-
-func (a *announcer) cleanupPFC() error {
-	return nil
 }
 
 func (a *announcer) resetPFC(encapName string, decapName string) error {
