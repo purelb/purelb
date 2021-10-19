@@ -295,32 +295,7 @@ func (a *announcer) DeleteBalancer(name, reason string, _ *v1.LoadBalancerIngres
 	l := log.With(a.logger, "service", name)
 	l.Log("op", "DeleteBalancer", "reason", reason)
 
-	// Pull the things we need to clean up from the caches
-	groupName, haveGroupName := a.servicesGroups[name]
-	if !haveGroupName {
-		l.Log("msg", "No service to group mapping, can't clean up", "service", name)
-		return nil
-	}
-	group, haveGroup := a.groups[groupName]
-	if !haveGroup {
-		l.Log("msg", "No group cached, can't clean up", "service", name, "group", groupName)
-		return nil
-	}
-
-	// connect to the EPIC
-	epic, err := NewEPIC(a.myCluster, *group)
-	if err != nil {
-		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EPIC failed")
-		return fmt.Errorf("Connection init to EPIC failed")
-	}
-
-	// Delete any endpoints that belong to this service
-	for epURL := range a.announcements[name] {
-		l.Log("op", "DeleteEndpoint", "ep-url", epURL)
-		if err := epic.Delete(epURL); err != nil {
-			l.Log("op", "DeleteEndpoint", "error", err)
-		}
-	}
+	// FIXME: clean up PFC tunnels
 
 	// Empty this service's cache entries
 	delete(a.announcements, name)
