@@ -7,19 +7,16 @@ hide: toc
 
 PureLB can be installed from:
 
-
-* Manifest
 * Helm Chart
+* Manifest
 * Source repository
-## Installed Components:
 
-
-1. PureLB Namespace.  A namespace is created and annotated for all of the Purelb components
+## Installed Components
+1. PureLB Namespace.  A namespace is created and annotated for all of the PureLB components
 2. Custom Resource Definition.  PureLB uses two CRD's for configuration
-3. Sample/Default configuration.  The default Purelb configuration and one sample Service Group configuration are added
-4. Allocator deployment.  A deployment with a single instance of the allocator is installed on the cluster
-5. lbnodeagent daemonset.  By default lbnodeagent is installed on all nodes.
-
+3. Sample/Default configuration.  The default PureLB configuration and one sample Service Group configuration are added
+4. Allocator Deployment.  A deployment with a single instance of the allocator is installed on the cluster
+5. lbnodeagent Daemonset.  By default lbnodeagent is installed on all nodes
 
 ### Preparing the Cluster
 Prior to the installation of PureLB, the k8s cluster should be installed with an operating Container Network Interface.
@@ -34,9 +31,8 @@ If UDP/TCP 7934 is not open and a local network address is allocated, PureLB wil
 
 #### ARP Behavior
 {{% notice warning %}}
-It is recommended that the ARP behavior changed from the Linux kernel default.  This is necessary if your using kubeproxy in IPVS model and is also good security practice.  By default Linux will answer ARP requests for addresses on any interface irrespective of the source, we recommend changing this setting so Linux only answers ARP requests for addresses on the interface it receives the request.  Linux sets this default to increase the the chance of successful communication. This change is made in sysconfig.
+We recommend that you change the Linux kernel's ARP behavior from its default.  This is necessary if you're using kubeproxy in IPVS mode and is also good security practice.  By default Linux will answer ARP requests for addresses on any interface irrespective of the source. We recommend changing this setting so Linux only answers ARP requests for addresses on the interface it receives the request.  Linux sets this default to increase the the chance of successful communication. This change is made in sysconfig.
 {{% /notice %}}
-
 
 ```plaintext
 cat <<EOF | sudo tee /etc/sysctl.d/k8s_arp.conf
@@ -46,10 +42,10 @@ sudo sysctl --system
 
 ```
 {{% notice danger %}}
-PureLB will operate without making this change, however kubeproxy is set to IPVS mode and arp_filter is set to 0, all nodes will respond to locally allocated addresses as kubeproxy adds these addresses to kube-ipvs0
+PureLB will operate without making this change, however if kubeproxy is set to IPVS mode and arp_filter is set to 0, all nodes will respond to locally allocated addresses as kubeproxy adds these addresses to kube-ipvs0.
 {{% /notice %}}
 
-### Install using the Helm Chart
+### Install Using Helm
 
 ```plaintext
 $ helm repo add purelb https://gitlab.com/api/v4/projects/20400619/packages/helm/stable
@@ -57,7 +53,7 @@ $ helm repo update
 $ helm install --create-namespace --namespace=purelb purelb purelb/purelb
 ```
 
-### Install using the YAML Manifest
+### Install Using the YAML Manifest
 
 A Manifest is simply a concatenated set of yaml files that install all of the components of PureLB.
 
@@ -66,12 +62,8 @@ A Manifest is simply a concatenated set of yaml files that install all of the co
 ```
 Please note that due to Kubernetes' eventually-consistent architecture the first application of this manifest can fail. This happens because the manifest both defines a Custom Resource Definition and creates a resource using that definition. If this happens then apply the manifest again and it should succeed because Kubernetes will have processed the definition in the mean time.
 
-### Install from Source.
+### Install from Source
 Installation from source is covered in the [PureLB gitlab repository](https://gitlab.com/purelb/purelb) readme.
-
-
-
-
 
 ### Verify Installation
 PureLB should install a single instance of the allocator and an instance of lbnodeagent on each untainted node.
