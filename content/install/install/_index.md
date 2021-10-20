@@ -26,10 +26,10 @@ Preparing the cluster
 Prior to the installation of PureLB, the k8s cluster should be installed with an operating Container Network Interface.  
 
 #### Firewall Rules
-Purelb uses a library called Memberlist to provide local network address failover faster than standard k8s timeouts would require.  If you plan to use local network address and have applied firewalls to your nodes, it is necessary to add a rule to allow the memberlist election to occur. The port used by Memberlist in PureLB is **Port 7934 UDP/TCP**, memberlist uses both TCP and UDP, open both.
+PureLB uses a library called Memberlist to provide local network address failover faster than standard k8s timeouts would require.  If you plan to use local network address and have applied firewalls to your nodes, it is necessary to add a rule to allow the memberlist election to occur. The port used by Memberlist in PureLB is **Port 7934 UDP/TCP**, memberlist uses both TCP and UDP, open both.
 
 {{% notice danger %}}
-If UDP/TCP 7934 is not open and a local network address is allocated, Purelb will exhibit "split brain" behavior.  Each node will attempt to allocate the address where the local network addresses match and update v1/service.  This will cause the v1/service to continously update, the lbnodeagent logs show repeated attempts to register addresses and it it will appear that Purelb is unstable. 
+If UDP/TCP 7934 is not open and a local network address is allocated, PureLB will exhibit "split brain" behavior.  Each node will attempt to allocate the address where the local network addresses match and update v1/service.  This will cause the v1/service to continously update, the lbnodeagent logs show repeated attempts to register addresses and it it will appear that PureLB is unstable.
 {{% /notice %}}
 
 

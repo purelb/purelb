@@ -55,7 +55,7 @@ $ kubectl exec -it --namespace=purelb lbnodeagent-ssblg -- ip addr show dev enp1
     inet6 fe80::5054:ff:fe76:5b6/64 scope link 
        valid_lft forever preferred_lft forever
 ```
-The addresses added by Purelb are displayed using a iproute2 commands, the additional addresses are displayed as secondary.
+The addresses added by PureLB are displayed using a iproute2 commands, the additional addresses are displayed as secondary.
 
 
 On the same node, addresses have been added to the virtual interface.  This caused routes to be added on the device kube-lb0 (above). To inspect kube-lb0:

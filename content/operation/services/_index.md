@@ -164,7 +164,7 @@ Events:
   Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.225 from node node4 interface kube-lb0
 
 ```
-Describing the service shows that the requested address has been allocated by Purelb from the pool virtualsub.  PureLB scanned the configured service groups to confirm the address is in a service group and not in use prior to allocation.  
+Describing the service shows that the requested address has been allocated by PureLB from the pool virtualsub.  PureLB scanned the configured service groups to confirm the address is in a service group and not in use prior to allocation.  
 
 ```yaml
 apiVersion: v1
