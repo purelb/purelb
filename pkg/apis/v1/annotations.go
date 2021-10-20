@@ -73,13 +73,6 @@ const (
 	// to be useful to the user.
 	EndpointAnnotation string = "acnodal.io/endpointcreateURL"
 
-	// ClusterPrefixAnnotation is the cluster-level name that will be
-	// used as a prefix for cluster names sent to Acnodal's EPIC. This
-	// annotation is optional and should be applied to the purelb
-	// Namespace. If the annotation is not present, the purelb Namespace
-	// will be used.
-	ClusterPrefixAnnotation string = "acnodal.io/cluster-prefix"
-
 	// HostnameAnnotation caches the DNS hostname that was assigned to
 	// this LB by EPIC. This allows us to use this name for the
 	// Service's Ingress.

@@ -16,14 +16,12 @@
 package k8s
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/go-kit/kit/log"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -35,7 +33,6 @@ import (
 	"k8s.io/client-go/util/workqueue"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
-	v1 "purelb.io/pkg/apis/v1"
 	clientset "purelb.io/pkg/generated/clientset/versioned"
 	purelbscheme "purelb.io/pkg/generated/clientset/versioned/scheme"
 	"purelb.io/pkg/generated/informers/externalversions"
@@ -70,8 +67,6 @@ type Controller struct {
 	recorder record.EventRecorder
 
 	logger log.Logger
-
-	myCluster string
 }
 
 // NewCRController returns a new controller that watches for changes
@@ -142,20 +137,12 @@ func NewCRController(
 // workqueue and wait for workers to finish processing their current
 // work items.
 func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
-	var err error
 	defer utilruntime.HandleCrash()
 	defer c.workqueue.ShutDown()
 
 	// Wait for the caches to be synced before starting workers
 	if ok := cache.WaitForCacheSync(stopCh, c.sgsSynced, c.lbnasSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
-	}
-
-	// Get and cache the local cluster ID so we don't need to do it
-	// every time we get a config change
-	c.myCluster, err = c.ClusterPrefix()
-	if err != nil {
-		return err
 	}
 
 	// Launch workers to process ServiceGroup resources
@@ -239,7 +226,7 @@ func (c *Controller) processNextWorkItem() bool {
 func (c *Controller) syncHandler() error {
 	var (
 		err error
-		cfg purelbv1.Config = purelbv1.Config{MyCluster: c.myCluster}
+		cfg purelbv1.Config = purelbv1.Config{}
 	)
 
 	cfg.Groups, err = c.sgLister.ServiceGroups("").List(labels.Everything())
@@ -283,27 +270,4 @@ func (c *Controller) enqueueResource(thing string, obj interface{}) {
 		return
 	}
 	c.workqueue.Add(thing + "/" + key)
-}
-
-// ClusterPrefix returns the prefix of all cluster names to be sent to
-// Acnodal's EPIC. The default is the UID of the purelb namespace but
-// it can be overridden by the value of that Namespace's
-// ClusterPrefixAnnotation annotation.
-// https://groups.google.com/g/kubernetes-sig-architecture/c/mVGobfD4TpY/m/nkdbkX1iBwAJ
-func (c *Controller) ClusterPrefix() (string, error) {
-	// Fetch the purelb Namespace object
-	ns, err := c.kubeclientset.CoreV1().Namespaces().Get(context.TODO(), "purelb", metav1.GetOptions{})
-	if err != nil {
-		return "", err
-	}
-
-	// The ClusterPrefixAnnotation is an override; the default is the
-	// Namespace object's UID.
-	prefix, hasPrefix := ns.Annotations[v1.ClusterPrefixAnnotation]
-	if !hasPrefix {
-		prefix = string(ns.UID)
-	}
-
-	c.logger.Log("cluster name prefix", prefix)
-	return prefix, nil
 }

@@ -56,8 +56,6 @@ func (p EPICPool) Available(_ net.IP, _ *v1.Service) error {
 
 // AssignNext assigns a service to the next available IP.
 func (p EPICPool) AssignNext(service *v1.Service) (net.IP, error) {
-	nsName := service.Namespace + "/" + service.Name
-
 	// Lazily look up the EPIC group (which gives us the URL to create
 	// services)
 	if p.createServiceURL == "" {
@@ -85,7 +83,7 @@ func (p EPICPool) AssignNext(service *v1.Service) (net.IP, error) {
 		service.Annotations[purelbv1.HostnameAnnotation] = epicsvc.Service.Spec.Endpoints[0].DNSName
 	}
 
-	epicCluster, err := p.epic.AddCluster(epicsvc.Links["create-cluster"], nsName)
+	epicCluster, err := p.epic.AddCluster(epicsvc.Links["create-cluster"], string(service.ObjectMeta.UID))
 	if err != nil {
 		return nil, err
 	}

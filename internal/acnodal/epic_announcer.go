@@ -50,7 +50,6 @@ type announcer struct {
 	pfcspec    *purelbv1.LBNodeAgentEPICSpec
 	pinger     *exec.Cmd
 	groupID    uint16
-	myCluster  string
 
 	// announcements is a map of services, keyed by the EPIC service
 	// URL. The value is a pseudo-set of that service's endpoints that
@@ -76,8 +75,6 @@ func (a *announcer) SetClient(client *k8s.Client) {
 
 // SetConfig responds to configuration changes.
 func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
-	a.myCluster = cfg.MyCluster
-
 	// Scan the node agent configs to find the EPIC config (if present)
 	haveConfig := false
 	for _, agent := range cfg.Agents {
@@ -172,7 +169,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	a.servicesGroups[nsName] = groupName
 
 	// connect to the EPIC
-	epic, err := NewEPIC(a.myCluster, *group)
+	epic, err := NewEPIC(*group)
 	if err != nil {
 		l.Log("op", "SetBalancer", "error", err, "msg", "Connection init to EPIC failed")
 		return fmt.Errorf("Connection init to EPIC failed")
@@ -190,7 +187,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 					// Announce this endpoint to the EPIC and add it to the
 					// announcements list
-					epResponse, err := epic.AnnounceEndpoint(createUrl, nsName, address.IP, port, a.myNodeAddr)
+					epResponse, err := epic.AnnounceEndpoint(createUrl, string(svc.ObjectMeta.UID), address.IP, port, a.myNodeAddr)
 					if err != nil {
 						l.Log("op", "AnnounceEndpoint", "error", err)
 						return fmt.Errorf("announcement failed")

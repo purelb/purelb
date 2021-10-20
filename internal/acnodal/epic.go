@@ -42,7 +42,7 @@ type EPIC interface {
 	FetchService(url string) (ServiceResponse, error)
 	Delete(svcUrl string) error
 	AnnounceEndpoint(url string, nsName string, address string, port v1.EndpointPort, nodeAddress string) (*EndpointResponse, error)
-	AddCluster(createClusterURL string, nsName string) (ClusterResponse, error)
+	AddCluster(createClusterURL string, clusterID string) (ClusterResponse, error)
 	FetchCluster(clusterURL string) (ClusterResponse, error)
 }
 
@@ -51,7 +51,6 @@ type epic struct {
 	http      resty.Client
 	groupURL  string
 	authToken string
-	myCluster string
 }
 
 // Links holds a map of URL strings.
@@ -221,7 +220,7 @@ type ClusterResponse struct {
 
 // New initializes a new EPIC instance. If error is non-nil then the
 // instance shouldn't be used.
-func NewEPIC(myCluster string, group purelbv1.ServiceGroupEPICSpec) (EPIC, error) {
+func NewEPIC(group purelbv1.ServiceGroupEPICSpec) (EPIC, error) {
 	// Use the hostname from the service group, but reset the path.  EPIC
 	// and Netbox each have their own API URL schemes so we only need
 	// the protocol, host, port, credentials, etc.
@@ -245,7 +244,7 @@ func NewEPIC(myCluster string, group purelbv1.ServiceGroupEPICSpec) (EPIC, error
 		SetRedirectPolicy(resty.FlexibleRedirectPolicy(2))
 
 	// Initialize the EPIC instance
-	return &epic{http: *r, groupURL: group.EPICAPIServiceURL(), myCluster: myCluster}, nil
+	return &epic{http: *r, groupURL: group.EPICAPIServiceURL()}, nil
 }
 
 // GetAccount requests an account from the EPIC.
@@ -335,10 +334,10 @@ func (n *epic) FetchService(url string) (ServiceResponse, error) {
 // LoadBalancer. "createClusterURL" is the value of the
 // "create-cluster" key in the service's "link" object. name is the
 // cluster name.
-func (n *epic) AddCluster(createClusterURL string, svcName string) (ClusterResponse, error) {
+func (n *epic) AddCluster(createClusterURL string, clusterID string) (ClusterResponse, error) {
 	// send the request
 	response, err := n.http.R().
-		SetBody(ClusterCreate{ClusterID: clusterName(n.myCluster, svcName)}).
+		SetBody(ClusterCreate{ClusterID: clusterID}).
 		SetResult(ClusterResponse{}).
 		Post(createClusterURL)
 	if err != nil {
@@ -376,11 +375,11 @@ func (n *epic) FetchCluster(clusterURL string) (ClusterResponse, error) {
 }
 
 // AnnounceEndpoint announces an endpoint to the EPIC.
-func (n *epic) AnnounceEndpoint(url string, svcName string, address string, ePort v1.EndpointPort, nodeAddress string) (*EndpointResponse, error) {
+func (n *epic) AnnounceEndpoint(url string, svcID string, address string, ePort v1.EndpointPort, nodeAddress string) (*EndpointResponse, error) {
 
 	response, err := n.http.R().
 		SetBody(EndpointCreate{
-			Endpoint: Endpoint{Spec: EndpointSpec{Cluster: clusterName(n.myCluster, svcName), Address: address, Port: ePort, NodeAddress: nodeAddress}}}).
+			Endpoint: Endpoint{Spec: EndpointSpec{Cluster: svcID, Address: address, Port: ePort, NodeAddress: nodeAddress}}}).
 		SetError(EndpointResponse{}).
 		SetResult(EndpointResponse{}).
 		Post(url)
@@ -411,10 +410,4 @@ func (n *epic) Delete(url string) error {
 		return fmt.Errorf("%s DELETE response code %d status \"%s\"", url, response.StatusCode(), response.Status())
 	}
 	return nil
-}
-
-// clusterName returns a string that meets k8s' requirements for label
-// values.
-func clusterName(clusterID string, svcNSName string) string {
-	return rfc1123Cleaner.Replace(clusterID + "-" + svcNSName)
 }

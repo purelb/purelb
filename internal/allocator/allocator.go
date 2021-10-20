@@ -298,7 +298,7 @@ func (a *Allocator) parseGroup(myCluster string, group purelbv1.ServiceGroupSpec
 		return *ret, nil
 	} else if group.EPIC != nil {
 		// Initialize the EPIC proxy
-		epic, err := acnodal.NewEPIC(myCluster, *group.EPIC)
+		epic, err := acnodal.NewEPIC(*group.EPIC)
 		if err != nil {
 			return nil, err
 		}

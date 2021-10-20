@@ -52,7 +52,7 @@ func TestMain(m *testing.M) {
 }
 
 func MustEPIC(t *testing.T) EPIC {
-	e, err := NewEPIC("", purelbv1.ServiceGroupEPICSpec{})
+	e, err := NewEPIC(purelbv1.ServiceGroupEPICSpec{})
 	if err != nil {
 		t.Fatal("initializing EPIC", err)
 	}
