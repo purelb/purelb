@@ -22,8 +22,7 @@ PureLB can be installed from:
 
 
 ### Preparing the Cluster
-Preparing the cluster
-Prior to the installation of PureLB, the k8s cluster should be installed with an operating Container Network Interface.  
+Prior to the installation of PureLB, the k8s cluster should be installed with an operating Container Network Interface.
 
 #### Firewall Rules
 PureLB uses a library called Memberlist to provide local network address failover faster than standard k8s timeouts would require.  If you plan to use local network address and have applied firewalls to your nodes, it is necessary to add a rule to allow the memberlist election to occur. The port used by Memberlist in PureLB is **Port 7934 UDP/TCP**, memberlist uses both TCP and UDP, open both.
