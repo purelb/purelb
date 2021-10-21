@@ -297,7 +297,7 @@ spec:
               fieldPath: metadata.namespace
         - name: ML_GROUP
           value: 8sb7ikA5qHwQQqxc
-        image: registry.gitlab.com/purelb/purelb/lbnodeagent:latest
+        image: registry.gitlab.com/purelb/purelb/lbnodeagent:main-latest
         imagePullPolicy: Always
         name: lbnodeagent
         ports:
@@ -349,7 +349,7 @@ spec:
         component: allocator
     spec:
       containers:
-      - image: registry.gitlab.com/purelb/purelb/allocator:latest
+      - image: registry.gitlab.com/purelb/purelb/allocator:main-latest
         env:
         - name: NETBOX_USER_TOKEN
           valueFrom:
