@@ -10,11 +10,12 @@ https://purelb.gitlab.io/docs
 
 ## Quick Start
 
-Installation is easy:
+Installation is easy. For production systems we recommend installing using either Helm or a CI-built manifest file. These approaches use versioned image tags so they are stable. Instructions are on our install page at https://purelb.gitlab.io/docs/install/ .
+
+For development, you can install PureLB from the source tree. This isn't recommended for production because it will install PureLB using an unstable image tag that changes over time so you could have unintended upgrades.
 
 1. Deploy the PureLB components<br/>
-`kustomize build deployments/samples | kubectl apply -f -`
-
+`kustomize build deployments/samples | kubectl apply -f -`<br/>
 Now you can configure PureLB. PureLB's default node agent
 configuration usually "just works" so we loaded it above.  PureLB's
 allocator manages IP addresses so it needs a configuration that
@@ -25,7 +26,6 @@ configures the Linux OS to advertise them.  The easiest way to get
 started is to create a Service Group that uses the same IPNET as the
 host interface, PureLB will add the allocated addresses to the same
 network interface.
-
 1. Copy the default service group config to your custom version<br/>
 `cp configs/default-servicegroup.yaml configs/my-servicegroup.yaml`
 1. Edit `configs/my-servicegroup.yaml` so the `subnet` and `pool` are appropriate for your network
