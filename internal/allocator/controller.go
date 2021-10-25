@@ -57,6 +57,7 @@ func NewController(l log.Logger, ips *Allocator) (Controller, error) {
 
 func (c *controller) SetClient(client *k8s.Client) {
 	c.client = client
+	c.ips.SetClient(client)
 }
 
 func (c *controller) DeleteBalancer(name string) k8s.SyncState {

@@ -84,7 +84,9 @@ func TestParse(t *testing.T) {
 		},
 	}
 
+	k := &testK8S{t: t}
 	alloc := New(log.NewNopLogger())
+	alloc.client = k
 
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
