@@ -21,11 +21,13 @@ import (
 	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
+	"purelb.io/internal/k8s"
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
+	client    k8s.ServiceEvent
 	logger    log.Logger
 	pools     map[string]Pool
 	allocated map[string]*alloc // svc -> alloc
@@ -43,6 +45,11 @@ func New(log log.Logger) *Allocator {
 		pools:     map[string]Pool{},
 		allocated: map[string]*alloc{},
 	}
+}
+
+// SetClient sets this Allocator's client field.
+func (a *Allocator) SetClient(client k8s.ServiceEvent) {
+	a.client = client
 }
 
 // SetPools updates the set of address pools that the allocator owns.
@@ -213,11 +220,13 @@ func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Poo
 	for i, group := range groups {
 		pool, err := a.parseGroup(group.Name, group.Spec)
 		if err != nil {
+			a.client.Errorf(group, "ParseFailed", "Failed to parse: %s", err)
 			return nil, fmt.Errorf("parsing address pool #%d: %s", i+1, err)
 		}
 
 		// Check that the pool isn't already defined
 		if pools[group.Name] != nil {
+			a.client.Errorf(group, "ParseFailed", "Duplicate definition of pool %s", group.Name)
 			return nil, fmt.Errorf("duplicate definition of pool %q", group.Name)
 		}
 
@@ -225,11 +234,13 @@ func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Poo
 		// ones
 		for name, r := range pools {
 			if pool.Overlaps(r) {
+				a.client.Errorf(group, "ParseFailed", "Pool overlaps with already defined pool \"%s\"", name)
 				return nil, fmt.Errorf("pool %q overlaps with already defined pool %q", group.Name, name)
 			}
 		}
 
 		pools[group.Name] = pool
+		a.client.Infof(group, "Parsed", "ServiceGroup parsed successfully", group.Name)
 	}
 
 	return pools, nil

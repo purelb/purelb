@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -68,8 +69,8 @@ type Client struct {
 
 // ServiceEvent adds events to services.
 type ServiceEvent interface {
-	Infof(svc *corev1.Service, desc, msg string, args ...interface{})
-	Errorf(svc *corev1.Service, desc, msg string, args ...interface{})
+	Infof(obj runtime.Object, desc, msg string, args ...interface{})
+	Errorf(obj runtime.Object, desc, msg string, args ...interface{})
 	ForceSync()
 }
 
@@ -337,14 +338,14 @@ func (c *Client) maybeUpdateService(was, is *corev1.Service) error {
 	return nil
 }
 
-// Infof logs an informational event about svc to the Kubernetes cluster.
-func (c *Client) Infof(svc *corev1.Service, kind, msg string, args ...interface{}) {
-	c.events.Eventf(svc, corev1.EventTypeNormal, kind, msg, args...)
+// Infof logs an informational event about obj to the Kubernetes cluster.
+func (c *Client) Infof(obj runtime.Object, kind, msg string, args ...interface{}) {
+	c.events.Eventf(obj, corev1.EventTypeNormal, kind, msg, args...)
 }
 
-// Errorf logs an error event about svc to the Kubernetes cluster.
-func (c *Client) Errorf(svc *corev1.Service, kind, msg string, args ...interface{}) {
-	c.events.Eventf(svc, corev1.EventTypeWarning, kind, msg, args...)
+// Errorf logs an error event about obj to the Kubernetes cluster.
+func (c *Client) Errorf(obj runtime.Object, kind, msg string, args ...interface{}) {
+	c.events.Eventf(obj, corev1.EventTypeWarning, kind, msg, args...)
 }
 
 func (c *Client) sync(key interface{}) SyncState {

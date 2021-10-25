@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 func diffService(a, b *v1.Service) string {
@@ -50,11 +51,11 @@ type testK8S struct {
 	t             *testing.T
 }
 
-func (s *testK8S) Infof(_ *v1.Service, evtType string, msg string, args ...interface{}) {
+func (s *testK8S) Infof(_ runtime.Object, evtType string, msg string, args ...interface{}) {
 	s.t.Logf("k8s Info event %q: %s", evtType, fmt.Sprintf(msg, args...))
 }
 
-func (s *testK8S) Errorf(_ *v1.Service, evtType string, msg string, args ...interface{}) {
+func (s *testK8S) Errorf(_ runtime.Object, evtType string, msg string, args ...interface{}) {
 	s.t.Logf("k8s Warning event %q: %s", evtType, fmt.Sprintf(msg, args...))
 	s.loggedWarning = true
 }
@@ -68,9 +69,11 @@ func (s *testK8S) reset() {
 func TestControllerConfig(t *testing.T) {
 	l := log.NewNopLogger()
 	k := &testK8S{t: t}
+	a := New(l)
+	a.client = k
 	c := &controller{
 		logger: l,
-		ips:    New(l),
+		ips:    a,
 		client: k,
 	}
 
@@ -140,9 +143,11 @@ func TestControllerConfig(t *testing.T) {
 func TestDeleteRecyclesIP(t *testing.T) {
 	l := log.NewNopLogger()
 	k := &testK8S{t: t}
+	a := New(l)
+	a.client = k
 	c := &controller{
 		logger: l,
-		ips:    New(l),
+		ips:    a,
 		client: k,
 	}
 
@@ -199,9 +204,11 @@ func TestDeleteRecyclesIP(t *testing.T) {
 // requested
 func TestSpecificAddress(t *testing.T) {
 	k := &testK8S{t: t}
+	a := New(allocatorTestLogger)
+	a.client = k
 	c := &controller{
 		logger: log.NewNopLogger(),
-		ips:    New(allocatorTestLogger),
+		ips:    a,
 		client: k,
 	}
 
@@ -270,9 +277,11 @@ func TestSharingSimple(t *testing.T) {
 	spec := v1.ServiceSpec{}
 
 	k := &testK8S{t: t}
+	a := New(allocatorTestLogger)
+	a.client = k
 	c := &controller{
 		logger: log.NewNopLogger(),
-		ips:    New(allocatorTestLogger),
+		ips:    a,
 		client: k,
 	}
 
