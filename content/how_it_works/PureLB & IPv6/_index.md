@@ -6,13 +6,6 @@ hide: toc, nextpage
 ---
 IPv6 & IPv6 Dual Stack was recently enabled in k8s v1.21.  PureLB was developed while support for IPv6 was being undertaken in kubernetes, and during the development of PureLB IPv6 support was included.  The mechanism used to allocate addresses are similar between IPv4 and IPv6 in Linux therefore the logic was straight forward to implement.  This is good news as PureLB does support IPv6 and Dual Stack, however there are some caveats with the current release.  (We will remove these as we fix them)
 
-### IPv6 Local Address Allocation fails.  
-We have a bug for this, its probably a simple problem - should be fixed soon.  
-
-### IPv6 Virtual Address work correctly.
-IPv6 addresses can be allocated to _kube-lb0_ for distribution with routing protocols.  Its very likely that you will use this configuration.  The popular CNI's that support IPv6 do not support IPv6 in tunnels so a dual stack configuration is probably going to be a flat network.
-
-
 ### PureLB cannot create a Dual Stack Service.  
 Currently PureLB cannot create a Dual Stack Service, a single service that has both an IPv4 and IPv6 address.  When dual stack was implemented additional service parameters were added
 
