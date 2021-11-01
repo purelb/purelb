@@ -88,7 +88,7 @@ const (
 	SyncStateReprocessAll
 	// Labels used to select pods that should participate in Memberlist
 	// elections
-	mlLabels = "app=purelb,component=lbnodeagent"
+	mlLabels = "app.kubernetes.io/name=purelb,app.kubernetes.io/component=lbnodeagent"
 )
 
 // Config specifies the configuration of the Kubernetes
