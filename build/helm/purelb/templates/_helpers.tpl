@@ -44,6 +44,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
+     Memberlist label query
+*/}}
+{{- define "purelb.memberlistQuery" -}}app.kubernetes.io/name={{ include "purelb.name" . }},app.kubernetes.io/component=lbnodeagent{{- end }}
+
+{{/*
 Selector labels
 */}}
 {{- define "purelb.selectorLabels" -}}
