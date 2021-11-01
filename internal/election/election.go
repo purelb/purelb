@@ -29,6 +29,7 @@ import (
 // Config provides the configuration data that New() needs.
 type Config struct {
 	Namespace string
+	Labels    string
 	NodeName  string
 	BindAddr  string
 	BindPort  int
@@ -40,6 +41,7 @@ type Config struct {
 
 type Election struct {
 	namespace  string
+	labels     string
 	Memberlist *memberlist.Memberlist
 	logger     gokitlog.Logger
 	stopCh     chan struct{}
@@ -64,6 +66,7 @@ func New(cfg *Config) (Election, error) {
 	mconfig.Events = &memberlist.ChannelEventDelegate{Ch: eventCh}
 	election.eventCh = eventCh
 	election.namespace = cfg.Namespace
+	election.labels = cfg.Labels
 
 	mlist, err := memberlist.Create(mconfig)
 	election.Memberlist = mlist
@@ -99,7 +102,7 @@ func (e *Election) shutdown() error {
 // that will announce the service represented by "key".
 func (e *Election) Winner(key string) string {
 	members := e.Memberlist.Members()
-	pods, err := e.Client.GetPodsIPs(e.namespace)
+	pods, err := e.Client.GetPodsIPs(e.namespace, e.labels)
 	if err != nil {
 		e.logger.Log("op", "Election", "error", err, "msg", "failed to get Pod count")
 	}

@@ -30,11 +30,12 @@ func main() {
 	logger := logging.Init()
 
 	var (
-		memberlistNS = flag.String("memberlist-ns", os.Getenv("PURELB_ML_NAMESPACE"), "memberlist namespace (only needed when running outside of k8s)")
-		kubeconfig   = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file (only needed when running outside of k8s)")
-		host         = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
-		myNode       = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
-		port         = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
+		memberlistNS     = flag.String("memberlist-ns", os.Getenv("PURELB_ML_NAMESPACE"), "memberlist namespace (only needed when running outside of k8s)")
+		memberlistLabels = flag.String("memberlist-labels", os.Getenv("PURELB_ML_LABELS"), "Labels to match the lbnodeagent pods (for MemberList / fast dead node detection)")
+		kubeconfig       = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file (only needed when running outside of k8s)")
+		host             = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
+		myNode           = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
+		port             = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
 	)
 	flag.Parse()
 
@@ -85,6 +86,7 @@ func main() {
 
 	election, err := election.New(&election.Config{
 		Namespace: *memberlistNS,
+		Labels:    *memberlistLabels,
 		NodeName:  *myNode,
 		BindAddr:  os.Getenv("PURELB_HOST"),
 		BindPort:  7934,
@@ -100,7 +102,7 @@ func main() {
 
 	ctrl.SetElection(&election)
 
-	iplist, err := client.GetPodsIPs(*memberlistNS)
+	iplist, err := client.GetPodsIPs(*memberlistNS, *memberlistLabels)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to get PodsIPs")
 		os.Exit(1)
