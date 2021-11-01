@@ -83,7 +83,7 @@ func (e *Election) Join(iplist []string) error {
 	}
 
 	n, err := e.Memberlist.Join(iplist[0:podCount])
-	e.logger.Log("op", "startup", "msg", "Memberlist join", "hosts contacted", n, "error", err)
+	e.logger.Log("op", "startup", "msg", "Memberlist join", "hosts contacted", n)
 	return err
 }
 
