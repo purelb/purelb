@@ -50,7 +50,7 @@ spec:
         - name: PURELB_ML_LABELS
           value: "{{- include "purelb.memberlistLabels" . }}"
         - name: ML_GROUP
-          value: 8sb7ikA5qHwQQqxc
+          value: "{{ .Values.memberlistSecretKey }}"
         image: "{{ .Values.image.repository }}/lbnodeagent:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         name: lbnodeagent
