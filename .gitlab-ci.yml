@@ -26,12 +26,11 @@ before_script:
   fi
 
 stages:
-  - test
   - image
   - manifest
 
 check:
-  stage: test
+  stage: image
   image: golang:1.15.8-buster
   before_script:
   - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
