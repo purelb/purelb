@@ -42,7 +42,7 @@ PureLB uses annotations to configure functionality not native in the k8s API.
 Annotation | example | Description
 -----------|---------|--------------
 purelb.io/service-group | purelb.io/service-group: virtualsg |  Sets the Service Group that will be used to allocate the address
-purelb.io/allow-shared-ip | purelb.io/allow-shared-ip: sharingkey |  Allows the allocated address to be shared between multiple services in the same namespace
+purelb.io/allow-shared-ip | purelb.io/allow-shared-ip: sharingkey |  Allows the allocated address to be shared between multiple services as long as they expose different ports
 
 
 ### k8s configuration options

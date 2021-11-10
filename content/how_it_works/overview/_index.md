@@ -119,13 +119,5 @@ PureLB supports IPv6.  During the development of PureLB, the team made a specifi
  
  PureLB service behavior is consistent with k8s when setting _ExternalTrafficPolicy: Cluster_, the address is added irrespective of the state of the POD identified in the selector.  However, when set to _ExternalTrafficPolicy: Local_, PureLB must identify if there are any PODs on the node prior to adding addresses to the virtual interface, therefore if no PODs are present, no addresses are added to the nodes. 
 
- ### Address Sharing
- By adding a key to the service, multiple services can share a single IP address when each service is exposing different ports.  Services sharing a single IP must be in the same namespace.  External Traffic Policy is not supported and therefore ignored for shared addresses.  This is necessary as the combination of address sharing and POD locality can result in traffic being presented at a node where kubeproxy has not configured forwarding and traffic will be dropped.
-
- 
-
-
-
-
-
-
+### Address Sharing
+By adding a key to the service, multiple services can share a single IP address, as long as each service exposes different ports. External Traffic Policy is not supported and therefore ignored for shared addresses. This is necessary as the combination of address sharing and POD locality could result in traffic being presented at a node where kubeproxy had not configured forwarding which would cause traffic to be dropped.
