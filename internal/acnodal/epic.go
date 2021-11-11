@@ -32,6 +32,7 @@ import (
 
 const (
 	locationHeader = "Location"
+	errorMessageHeader = "x-epic-error-message"
 )
 
 // EPIC represents one connection to an Acnodal Enterprise Gateway.
@@ -307,7 +308,14 @@ func (n *epic) AnnounceService(url string, name string, sPorts []v1.ServicePort)
 			return n.FetchService(response.Header().Get(locationHeader))
 		}
 
-		return ServiceResponse{}, fmt.Errorf("%s POST response code %d status \"%s\"", url, response.StatusCode(), response.Status())
+		// Try to find a helpful error message header, but fall back to
+		// the HTTP status message
+		message := response.Header().Get(errorMessageHeader)
+		if message == "" {
+			message = response.Status()
+		}
+
+		return ServiceResponse{}, fmt.Errorf("%s POST response code %d message \"%s\"", url, response.StatusCode(), message)
 	}
 
 	srv := response.Result().(*ServiceResponse)
