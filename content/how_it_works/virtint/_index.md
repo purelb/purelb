@@ -5,12 +5,11 @@ weight: 20
 hide: toc, nextpage
 ---
 
-
 The Virtual Internet is important for clusters where a new IPNET is used for LoadBalancer services.  These addresses are added to the cluster and require routing to be accessed.  Use cases for this configuration are:
 
-1. Cluster is installed behind network routers.  Where the cluster is installed behind network routers, this mechanism can be used to have the addresses added to the virtual interface dynamically advertized using any network routing protocol.
-2. A CNI that uses a routing protocol, such as BGP to create the CNI network.  Larger clusters are often deployed over multiple networks with BGP routing used between nodes and Top-of-Rack switches.  There Virtual interface mechanism allows LoadBalancer addresses to be combined in advertisements used by the CNI to construct the network.
-3.  Scaling & Redundancy.  Unlike a local address, an allocated virtual address is added to every node and that node can be advertized as a nexthop to the allocated address.  By enabling load balancing in the upstream router(s) the router can distribute the traffic among the nodes advertizing the address increasing capacity and redundancy
+1. Cluster is installed behind network routers.  Where the cluster is installed behind network routers, this mechanism can be used to have the addresses added to the virtual interface dynamically advertised using any network routing protocol.
+2. A CNI that uses a routing protocol, such as BGP to create the CNI network.  Larger clusters are often deployed over multiple networks with BGP routing used between nodes and Top-of-Rack switches.  In this case, the Virtual interface mechanism allows LoadBalancer addresses to be combined in advertisements used by the CNI to construct the network.
+3.  Scaling & Redundancy.  Unlike a local address, an allocated virtual address is added to every node and that node can be advertised as a nexthop to the allocated address.  By enabling load balancing in the upstream router(s) the router can distribute the traffic among the nodes advertising the address which increases capacity and redundancy.
 
 When PureLB identifies that the address provided by the Service Group is not part of a local interface subnet, it undertakes the following steps:
 
@@ -23,21 +22,22 @@ When PureLB identifies that the address provided by the Service Group is not par
 apiVersion: "purelb.io/v1"
 kind: ServiceGroup
 metadata:
-  name: VirtualAddressRange
+  name: virtual-address-range
   namespace: purelb 
 spec:
-  subnet: '172.22.0.0/24'
-  pool: '172.22.0.10-172.22.0.25'
-  aggregation: 'default'
+  local:
+    subnet: '172.22.0.0/24'
+    pool: '172.22.0.10-172.22.0.25'
+    aggregation: 'default'
 ```
 ```plaintext
 $ k describe service echoserver-service22
 Name:                     echoserver-service22
 Namespace:                default
 Labels:                   app=echoserver1
-Annotations:              purelb.io/service-group: VirtualAddressRange
+Annotations:              purelb.io/service-group: virtual-address-range
                           purelb.io/allocated-by: PureLB
-                          purelb.io/allocated-from: VirtualAddressRange
+                          purelb.io/allocated-from: virtual-address-range
 Selector:                 app=echoserver1
 Type:                     LoadBalancer
 IP:                       10.105.255.29
@@ -51,7 +51,7 @@ External Traffic Policy:  Cluster
 Events:
  Type    Reason              Age                From                Message
   ----    ------              ----               ----                -------
-  Normal  IPAllocated         31m (x2 over 31m)  purelb-allocator    Assigned IP 172.22.0.11 from pool VirtualAddressRange
+  Normal  IPAllocated         31m (x2 over 31m)  purelb-allocator    Assigned IP 172.22.0.11 from pool virtual-address-range
   Normal  AnnouncingNonLocal  31m                purelb-lbnodeagent  Announcing 172.22.0.11 from node node1 interface kube-lb0
   Normal  AnnouncingNonLocal  10m                purelb-lbnodeagent  Announcing 172.22.0.11 from node node3 interface kube-lb0
 
@@ -65,10 +65,8 @@ node1# ip -4 addr show dev kube-lb0
 The configured aggregator is useful for providing additional address management functionality.  For example, multiple service groups with subnets that can be aggregated into a single single address advertisement can be defined.  By setting the aggregator, a single subnet can be added to multiple service groups resulting in a single route being advertised.  Conversely, a Service Group can be further subnetted into multiple networks that will be added to the virtual interface, including /32.   This functionality, when combined with Routing Software on the cluster enables complete routing address management and forwarding flexibility.
 
 
-### External Traffic Policy:  
-A Service Group with an address that is applied to the Virtual Interface supports External Traffic Policy.  When configured with _External Traffic Policy: Cluster_, PureLB adds the address to every node relying on k8s to send traffic to the destination PODs and load-balance as necessary. When configured for _External Traffic Policy: Local_  PureLB will only add the LoadBalancer address to the virtual interface (kube-lb0) when a POD is located on the node and remove the address if the POD is not longer on the node.  Unlike a Service Group with a local address, access to these addresses is via the routing.  Put simply, the next hop is the nodes local address resulting in a stable local network and the routed destination is changing, an expected behavior.  However, the forwarding behavior of the upstream routers depends upon how the address has been advertised, and therefore changing External Traffic Policy to Local can have no or adverse effects.  For example where a Service Group is using a address range where multiple addresses from the same range are added to the virtual interface a single routing advertisement will be made for the subnet containing both those addresses.  Should one of those services be configured for External Traffic Policy: Local and no POD present traffic reaching that POD will be discarded.  Configuring the aggregator to reduce the size of the the advertised subnet to /32(/128) will result in single route being advertized and withdrawn for that Service.  While this may seem like a simple solution, there are also other implications, for example many popular routers will not accept /32 routes over BGP.  When correctly used externalTrafficPolicy, Aggregators and nodeSelector can provide the complete flexibility of how external traffic is distributed.
+### External Traffic Policy
+A Service Group with an address that is applied to the Virtual Interface supports External Traffic Policy.  When configured with _External Traffic Policy: Cluster_, PureLB adds the address to every node relying on k8s to send traffic to the destination PODs and load-balance as necessary. When configured for _External Traffic Policy: Local_  PureLB will only add the LoadBalancer address to the virtual interface (kube-lb0) when a POD is located on the node and remove the address if the POD is not longer on the node.  Unlike a Service Group with a local address, access to these addresses is via the routing.  Put simply, the next hop is the node's local address resulting in a stable local network and the routed destination is changing, an expected behavior.  However, the forwarding behavior of the upstream routers depends upon how the address has been advertised, and therefore changing External Traffic Policy to Local can have no or adverse effects.  For example where a Service Group is using a address range where multiple addresses from the same range are added to the virtual interface a single routing advertisement will be made for the subnet containing both those addresses.  Should one of those services be configured for External Traffic Policy: Local and no POD present traffic reaching that POD will be discarded.  Configuring the aggregator to reduce the size of the the advertised subnet to /32(/128) will result in single routes being advertised and withdrawn for that Service.  While this may seem like a simple solution, there are also other implications, for example many popular routers will not accept /32 routes over BGP.  When correctly used, externalTrafficPolicy, Aggregators, and nodeSelector can provide complete control over how external traffic is distributed.
 
 #### Source Address Preservation
-_External Traffic Policy: Local_ has another useful side effect, because traffic does not transit the CNI, kubeproxy does not need to NAT, therefore the source client address is preserved and visible to the POD(s).  
-
-
+_External Traffic Policy: Local_ has another useful side effect: because traffic does not transit the CNI, kubeproxy does not need to NAT, therefore the source client address is preserved and visible to the POD(s).  
