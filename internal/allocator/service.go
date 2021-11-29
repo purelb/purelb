@@ -71,7 +71,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 			// "Un-own" the service. Remove PureLB's internal Annotations so
 			// we'll re-allocate if the user flips this service back to a
 			// LoadBalancer
-			for _, a := range []string{purelbv1.BrandAnnotation, purelbv1.PoolAnnotation, purelbv1.ServiceAnnotation, purelbv1.GroupAnnotation, purelbv1.EndpointAnnotation, purelbv1.IntAnnotation, purelbv1.NodeAnnotation, purelbv1.HostnameAnnotation, purelbv1.ClusterAnnotation} {
+			for _, a := range []string{purelbv1.BrandAnnotation, purelbv1.PoolAnnotation, purelbv1.IntAnnotation, purelbv1.NodeAnnotation, purelbv1.ServiceAnnotation, purelbv1.GroupAnnotation, purelbv1.EndpointAnnotation, purelbv1.HostnameAnnotation, purelbv1.ClusterAnnotation} {
 				delete(svc.Annotations, a)
 			}
 		}

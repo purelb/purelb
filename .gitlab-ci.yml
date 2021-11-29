@@ -1,17 +1,4 @@
-image: docker:20.10.3
-services:
-- docker:20.10.3-dind
-variables:
-  PROJECT: $CI_PROJECT_NAME
-  REGISTRY_IMAGE: $CI_REGISTRY_IMAGE
-  NETBOX_USER_TOKEN: no-op
-  # https://docs.gitlab.com/12.10/ee/ci/docker/using_docker_build.html#tls-enabled
-  DOCKER_TLS_CERTDIR: "/certs"
-before_script:
-- apk add make git wget
-- docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
-- mkdir -p ~/.ssh && chmod 700 ~/.ssh
-- ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
+.tag-setup: &tag-setup
 - |
   if [ -n "${CI_COMMIT_TAG}" ] ; then
     # If this build is from a git tag, use that as the docker tag. The
@@ -25,6 +12,30 @@ before_script:
     export TAG_LATEST="v0.0.0-${CI_COMMIT_REF_NAME}-latest"
   fi
 
+.docker-setup: &docker-setup
+- docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+- mkdir -p ~/.ssh && chmod 700 ~/.ssh
+- ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
+
+.alpine-setup: &alpine-setup
+- apk add make git wget
+
+.git-setup: &git-setup
+- git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
+
+image: docker:20.10.3
+services:
+- docker:20.10.3-dind
+variables:
+  PROJECT: $CI_PROJECT_NAME
+  REGISTRY_IMAGE: $CI_REGISTRY_IMAGE
+  NETBOX_USER_TOKEN: no-op
+  # https://docs.gitlab.com/12.10/ee/ci/docker/using_docker_build.html#tls-enabled
+  DOCKER_TLS_CERTDIR: "/certs"
+before_script:
+- *tag-setup
+- *docker-setup
+- *alpine-setup
 stages:
   - image
   - manifest
@@ -33,7 +44,7 @@ check:
   stage: image
   image: golang:1.15.8-buster
   before_script:
-  - git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/".insteadOf "https://gitlab.com/"
+  - *git-setup
   script: make check
 
 allocatoramd:
@@ -44,28 +55,45 @@ lbnodeagentamd:
   stage: image
   script: make SUFFIX=amd64-${TAG_SPECIFIC} image-lbnodeagent install-lbnodeagent
 
-manifest:
+docker-manifest:
   stage: manifest
   script:
-    # Install curl
-    - apk add curl
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=default docker-manifest
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=epic docker-manifest
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=local docker-manifest
+    - |
+      if [ -n "${TAG_LATEST}" ] ; then
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=default docker-manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=epic docker-manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=local docker-manifest
+      fi
+
+manifest:
+  stage: manifest
+  image: golang:1.15.8-buster
+  before_script:
+  - *tag-setup
+  - *git-setup
+  script:
     # Install kustomize
     - wget --no-verbose -O - https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv4.0.1/kustomize_v4.0.1_linux_amd64.tar.gz | tar -C /usr/local/bin -xzf -
     # Install helm
     - wget --no-verbose -O - https://get.helm.sh/helm-v3.6.3-linux-amd64.tar.gz | tar -C /usr/local/bin -xzf - --strip-components=1 linux-amd64/helm
-    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=default manifest docker-manifest
-    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=epic manifest docker-manifest
-    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=local manifest docker-manifest
+    # Install controller-gen
+    - go get sigs.k8s.io/controller-tools/cmd/controller-gen@v0.7.0
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=default manifest
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=epic manifest
+    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=local manifest
     - make SUFFIX=${TAG_SPECIFIC} helm
     - curl --request POST --form "chart=@purelb-${TAG_SPECIFIC}.tgz" --user gitlab-ci-token:${CI_JOB_TOKEN} "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/helm/api/stable/charts"
     - |
       if [ -n "${TAG_LATEST}" ] ; then
         make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} CONFIG_BASE=default manifest
-        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=default docker-manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=default manifest
         make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} CONFIG_BASE=epic manifest
-        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=epic docker-manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=epic manifest
         make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} CONFIG_BASE=local manifest
-        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=local docker-manifest
+        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} CONFIG_BASE=local manifest
         make SUFFIX=${TAG_LATEST} helm
         curl --request POST --form "chart=@purelb-${TAG_LATEST}.tgz" --user gitlab-ci-token:${CI_JOB_TOKEN} "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/helm/api/stable/charts"
       else

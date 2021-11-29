@@ -85,9 +85,6 @@ const (
 	// SyncStateReprocessAll indicates that the update succeeded but
 	// requires reprocessing all watched services.
 	SyncStateReprocessAll
-	// Labels used to select pods that should participate in Memberlist
-	// elections
-	mlLabels = "app=purelb,component=lbnodeagent"
 )
 
 // Config specifies the configuration of the Kubernetes
@@ -221,8 +218,8 @@ func New(cfg *Config) (*Client, error) {
 }
 
 // GetPods get the pods in the namespace matched by the labels string.
-func (c *Client) getPods(namespace string) (*corev1.PodList, error) {
-	pl, err := c.client.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: mlLabels})
+func (c *Client) getPods(namespace string, labels string) (*corev1.PodList, error) {
+	pl, err := c.client.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: labels})
 	if err != nil {
 		return nil, err
 	}
@@ -231,8 +228,8 @@ func (c *Client) getPods(namespace string) (*corev1.PodList, error) {
 
 // GetPodsIPs get the IPs from the pods in the namespace matched by
 // the labels string.
-func (c *Client) GetPodsIPs(namespace string) ([]string, error) {
-	pl, err := c.getPods(namespace)
+func (c *Client) GetPodsIPs(namespace string, labels string) ([]string, error) {
+	pl, err := c.getPods(namespace, labels)
 	if err != nil {
 		return nil, err
 	}
