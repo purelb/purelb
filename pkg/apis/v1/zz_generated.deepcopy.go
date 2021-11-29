@@ -340,6 +340,11 @@ func (in *ServiceGroupSpec) DeepCopyInto(out *ServiceGroupSpec) {
 		*out = new(ServiceGroupNetboxSpec)
 		**out = **in
 	}
+	if in.Netbox != nil {
+		in, out := &in.Netbox, &out.Netbox
+		*out = new(ServiceGroupNetboxSpec)
+		**out = **in
+	}
 	return
 }
 

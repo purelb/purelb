@@ -71,7 +71,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 			// "Un-own" the service. Remove PureLB's internal Annotations so
 			// we'll re-allocate if the user flips this service back to a
 			// LoadBalancer
-			for _, a := range []string{purelbv1.BrandAnnotation, purelbv1.PoolAnnotation, purelbv1.ServiceAnnotation, purelbv1.GroupAnnotation, purelbv1.EndpointAnnotation, purelbv1.IntAnnotation, purelbv1.NodeAnnotation, purelbv1.HostnameAnnotation, purelbv1.ClusterAnnotation, } {
+			for _, a := range []string{purelbv1.BrandAnnotation, purelbv1.PoolAnnotation, purelbv1.ServiceAnnotation, purelbv1.GroupAnnotation, purelbv1.EndpointAnnotation, purelbv1.IntAnnotation, purelbv1.NodeAnnotation, purelbv1.HostnameAnnotation, purelbv1.ClusterAnnotation} {
 				delete(svc.Annotations, a)
 			}
 		}
@@ -90,7 +90,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 
 	// Check if the service already has an address
 	if len(svc.Status.LoadBalancer.Ingress) > 0 {
-		log.Log("event", "hasIngress", "ingress", svc.Status.LoadBalancer.Ingress)
+		log.Log("event", "ipAlreadySet", "ingress-address", svc.Status.LoadBalancer.Ingress)
 
 		// if it's one of ours then we'll tell the allocator about it, in
 		// case it didn't know but needs to. one example of this is at

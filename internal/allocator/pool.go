@@ -1,5 +1,5 @@
 // Copyright 2017 Google Inc.
-// Copyright 2020 Acnodal Inc.
+// Copyright 2020,2021 Acnodal Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ type Pool interface {
 	InUse() int
 	SharingKey(net.IP) *Key
 	Overlaps(Pool) bool
-	Contains(net.IP) bool
+	Contains(net.IP) bool // FIXME: I'm not sure that we need this. It might be the case that we can always rely on the service's pool annotation to find to which pool an address belongs
 	Size() uint64
 }
 

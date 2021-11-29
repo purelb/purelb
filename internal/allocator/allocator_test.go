@@ -830,11 +830,10 @@ func TestSharingSimple(t *testing.T) {
 // Some helpers
 
 func assigned(a *Allocator, svc string) string {
-	alloc := a.allocated[svc]
-	if alloc == nil {
-		return ""
+	if alloc := a.allocated[svc]; alloc != nil {
+		return alloc.ip.String()
 	}
-	return alloc.ip.String()
+	return ""
 }
 
 func mustLocalPool(t *testing.T, r string) LocalPool {
