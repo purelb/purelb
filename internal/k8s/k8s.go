@@ -312,7 +312,6 @@ func (c *Client) maybeUpdateService(was, is *corev1.Service) error {
 	if !reflect.DeepEqual(was.Status, is.Status) {
 		svcUpdated, err = c.client.CoreV1().Services(is.Namespace).UpdateStatus(context.TODO(), is, metav1.UpdateOptions{})
 		if err != nil {
-			c.logger.Log("op", "updateServiceStatus", "error", err, "msg", "failed to update service status")
 			return err
 		}
 	}
@@ -327,7 +326,6 @@ func (c *Client) maybeUpdateService(was, is *corev1.Service) error {
 		is.Annotations = ann
 		spec.DeepCopyInto(&is.Spec)
 		if _, err = c.client.CoreV1().Services(is.Namespace).Update(context.TODO(), is, metav1.UpdateOptions{}); err != nil {
-			c.logger.Log("op", "updateService", "error", err, "msg", "failed to update service")
 			return err
 		}
 	}
@@ -406,7 +404,9 @@ func (c *Client) sync(key interface{}) SyncState {
 		if status == SyncStateSuccess {
 			err = c.maybeUpdateService(svcOriginal, svc)
 			if err != nil {
-				l.Log("op", "updateService", "error", err)
+				// We show this as a "warning" since it happens normally
+				// because of update conflicts
+				l.Log("op", "updateService", "warning", err)
 				status = SyncStateError
 			}
 		}
