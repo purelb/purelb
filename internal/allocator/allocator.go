@@ -195,7 +195,10 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service, ip net.IP) (string, erro
 
 // AllocateFromPool assigns an available IP from pool to service.
 func (a *Allocator) allocateFromPool(svc *v1.Service, poolName string) (net.IP, error) {
-	var ip net.IP
+	var (
+		ip      net.IP
+		svcName string = namespacedName(svc)
+	)
 
 	pool := a.pools[poolName]
 	if pool == nil {
@@ -208,10 +211,9 @@ func (a *Allocator) allocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 		return nil, err
 	}
 
-	// If the service had an IP before, release it
-	a.logger.Log("allocateFromPool service had IP, unassigning", svc.Name)
-	if err := a.Unassign(namespacedName(svc)); err != nil {
-		return nil, err
+	// Warn if the service had an IP before
+	if alloc := a.allocated[svcName]; alloc != nil && alloc.ip != nil {
+		a.logger.Log("warning", "internal state inconsistent with service", "service", svcName, "ingress", svc.Status.LoadBalancer.Ingress, "state", *alloc)
 	}
 
 	if err := a.assign(svc, poolName, ip); err != nil {
