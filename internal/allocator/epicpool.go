@@ -112,6 +112,8 @@ func (p EPICPool) Assign(_ net.IP, service *v1.Service) error {
 // namespacedName(service)).
 func (p EPICPool) Release(_ net.IP, service string) error {
 
+	p.log.Log("releasing", service)
+
 	// Attempt to remove our cluster from the service, but don't fail if
 	// something goes wrong
 	cluster, err := p.epic.FetchCluster(p.clusterURLCache[service])

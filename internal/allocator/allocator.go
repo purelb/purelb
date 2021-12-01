@@ -180,6 +180,7 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service, ip net.IP) (string, erro
 	}
 
 	// If the service had an IP before, release it
+	a.logger.Log("allocateSpecificIP service had IP, unassigning", svc.Name)
 	if err := a.Unassign(namespacedName(svc)); err != nil {
 		return "", err
 	}
@@ -208,6 +209,7 @@ func (a *Allocator) allocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 	}
 
 	// If the service had an IP before, release it
+	a.logger.Log("allocateFromPool service had IP, unassigning", svc.Name)
 	if err := a.Unassign(namespacedName(svc)); err != nil {
 		return nil, err
 	}
@@ -221,6 +223,8 @@ func (a *Allocator) allocateFromPool(svc *v1.Service, poolName string) (net.IP, 
 
 // Unassign frees the IP associated with service, if any.
 func (a *Allocator) Unassign(svc string) error {
+	a.logger.Log("unassigning", svc)
+
 	al := a.allocated[svc]
 	if al == nil {
 		// not much we can do here, but if we don't know about svc then it
