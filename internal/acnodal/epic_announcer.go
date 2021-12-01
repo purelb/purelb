@@ -273,7 +273,7 @@ func (a *announcer) setupTunnels(spec purelbv1.LBNodeAgentEPICSpec, svc *v1.Serv
 					// Now that we've got the service response we have enough
 					// info to set up the tunnels
 					for _, myTunnel := range myTunnels.EPICEndpoints {
-						err = a.setupPFC(*a.pfcspec, address, myTunnel.TunnelID, a.myNodeAddr, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
+						err = a.setupPFC(*a.pfcspec, address, myTunnel.TunnelID, myTunnel.Address, myTunnel.Port.Port, svcResponse.Service.Spec.TunnelKey)
 						if err != nil {
 							l.Log("op", "SetupPFC", "error", err)
 						}
@@ -310,7 +310,7 @@ func (a *announcer) Shutdown() {
 
 // setupPFC sets up the Acnodal PFC components and GUE tunnel to
 // communicate with the Acnodal EPIC.
-func (a *announcer) setupPFC(spec purelbv1.LBNodeAgentEPICSpec, address v1.EndpointAddress, tunnelID uint32, myAddr string, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
+func (a *announcer) setupPFC(spec purelbv1.LBNodeAgentEPICSpec, address v1.EndpointAddress, tunnelID uint32, tunnelAddr string, tunnelPort int32, tunnelAuth string) error {
 	// Determine the interface to which to attach the Encap PFC
 	encapIntf, err := interfaceOrDefault(spec.EncapAttachment.Interface, address)
 	if err != nil {
@@ -325,8 +325,20 @@ func (a *announcer) setupPFC(spec purelbv1.LBNodeAgentEPICSpec, address v1.Endpo
 	}
 	pfc.SetupNIC(a.logger, decapIntf.Attrs().Name, "decap", spec.DecapAttachment.Direction, spec.DecapAttachment.QID, spec.DecapAttachment.Flags)
 
+	// Determine the IP address to use for this end of the tunnel. It
+	// can be any address on the decap interface in the same family as
+	// the address on the other end of the tunnel.
+	tunnelIP := net.ParseIP(tunnelAddr)
+	if tunnelIP == nil {
+		return fmt.Errorf("cannot parse %s as an IP address", tunnelAddr)
+	}
+	addrs, err := netlink.AddrList(decapIntf, local.AddrFamily(tunnelIP))
+	if len(addrs) < 1 {
+		return fmt.Errorf("interface %s has no addresses in family %d", decapIntf.Attrs().Name, local.AddrFamily(tunnelIP))
+	}
+
 	// set up the GUE tunnel to the EPIC
-	err = pfc.SetTunnel(a.logger, tunnelID, tunnelAddr, myAddr, tunnelPort)
+	err = pfc.SetTunnel(a.logger, tunnelID, tunnelAddr, addrs[0].IP.String(), tunnelPort)
 	if err != nil {
 		a.logger.Log("op", "SetTunnel", "error", err)
 		return err
