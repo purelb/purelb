@@ -17,6 +17,7 @@ package local
 import (
 	"fmt"
 	"net"
+	"regexp"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -36,6 +37,37 @@ func addrFamily(lbIP net.IP) (lbIPFamily int) {
 	}
 
 	return
+}
+
+// findLocal tries to find a "local" network interface based on the
+// name of the interface and the IP addresses that are assigned to it.
+// A network interface is considered local if its name matches the
+// configuration regex and lbIP is within the same network as the
+// interface.  If both are true, then the netlink.Link return value
+// will be the default interface and error will be nil.  If error is
+// non-nil then no local interface was found.
+func findLocal(regex *regexp.Regexp, lbIP net.IP) (net.IPNet, netlink.Link, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return net.IPNet{}, nil, err
+	}
+
+	for _, intf := range interfaces {
+		if regex.Match([]byte(intf.Name)) {
+			// The interface name matches the local regex so check if the
+			// addresses also match
+			nlIntf, err := netlink.LinkByName(intf.Name)
+			if err != nil {
+				return net.IPNet{}, nil, err
+			}
+			if ipnet, link, err := checkLocal(&nlIntf, lbIP); err == nil {
+				// The addresses match so this is a local interface
+				return ipnet, link, nil
+			}
+		}
+	}
+
+	return net.IPNet{}, nil, fmt.Errorf("No local interface found")
 }
 
 // checkLocal determines whether lbIP belongs to the same network as

@@ -15,7 +15,9 @@
 package local
 
 import (
+	"fmt"
 	"net"
+	"regexp"
 
 	v1 "k8s.io/api/core/v1"
 
@@ -30,15 +32,18 @@ import (
 )
 
 type announcer struct {
-	client      k8s.ServiceEvent
-	logger      log.Logger
-	myNode      string
-	config      *purelbv1.LBNodeAgentLocalSpec
-	groups      map[string]*purelbv1.ServiceGroupLocalSpec // groupName -> ServiceGroupLocalSpec
-	svcAdvs     map[string]net.IP                          // svcName -> IP
-	election    *election.Election
-	announceInt *netlink.Link // for local announcements
-	dummyInt    *netlink.Link // for non-local announcements
+	client   k8s.ServiceEvent
+	logger   log.Logger
+	myNode   string
+	config   *purelbv1.LBNodeAgentLocalSpec
+	groups   map[string]*purelbv1.ServiceGroupLocalSpec // groupName -> ServiceGroupLocalSpec
+	svcAdvs  map[string]net.IP                          // svcName -> IP
+	election *election.Election
+	dummyInt *netlink.Link // for non-local announcements
+
+	// localNameRegex is the pattern that we use to determine if an
+	// interface is local or not.
+	localNameRegex *regexp.Regexp
 }
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -67,6 +72,7 @@ func (a *announcer) SetClient(client *k8s.Client) {
 }
 
 func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
+
 	// the default is nil which means that we don't announce
 	a.config = nil
 
@@ -84,21 +90,24 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 				}
 			}
 
-			// if the user specified an interface then we'll use that,
-			// otherwise we'll wait until we get an IP address so we can
-			// figure out the default interface
+			// if the user specified an interface regex then we'll compile
+			// that now, and use it (when we get an address) to find a local
+			// interface
 			if spec.LocalInterface != "default" {
-				link, err := netlink.LinkByName(spec.LocalInterface)
-				if err != nil {
-					return err
+				if regex, err := regexp.Compile(spec.LocalInterface); err != nil {
+					return fmt.Errorf("error compiling regex \"%s\": %s", spec.LocalInterface, err.Error())
+				} else {
+					a.localNameRegex = regex
 				}
-				a.announceInt = &link
+			} else {
+				a.localNameRegex = nil
+
 			}
 
 			// now that we've got a config we can create the dummy interface
 			var err error
 			if a.dummyInt, err = addDummyInterface(spec.ExtLBInterface); err != nil {
-				return err
+				return fmt.Errorf("error adding interface \"%s\": %s", spec.ExtLBInterface, err.Error())
 			}
 
 			// we've got our marching orders so we don't need to continue
@@ -115,7 +124,6 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 }
 
 func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
-	var err error
 	l := log.With(a.logger, "service", svc.Name)
 	nsName := svc.Namespace + "/" + svc.Name
 
@@ -132,84 +140,123 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		return nil
 	}
 
-	// If the user specified an announcement interface then use that,
-	// otherwise figure out a default
-	announceInt := a.announceInt
-	if announceInt == nil {
-		announceInt, err = defaultInterface(addrFamily(lbIP))
+	if a.localNameRegex != nil {
+		// The user specified an announcement interface regex so use it to
+		// try to find a local interface, otherwise announce remote
+		lbIPNet, localif, err := findLocal(a.localNameRegex, lbIP)
+		if err == nil {
+			// We found a local interface, announce the address on it
+			if err := a.announceLocal(svc, localif, lbIP, lbIPNet); err != nil {
+				return err
+			}
+		} else {
+			// lbIP isn't local to any interfaces so add it to dummyInt
+			if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+				return err
+			}
+		}
+
+	} else {
+		// The user wants us to determine the "default" interface
+		announceInt, err := defaultInterface(addrFamily(lbIP))
 		if err != nil {
 			l.Log("event", "announceError", "err", err)
 			return err
 		}
-	}
-
-	if lbIPNet, defaultif, err := checkLocal(announceInt, lbIP); err == nil {
-
-		// Local addresses do not support ExternalTrafficPolicyLocal
-		// Set the service back to ExternalTrafficPolicyCluster if adding to local interface
-
-		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal {
-			l.Log("op", "setBalancer", "error", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster")
-			svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
-			return a.DeleteBalancer(nsName, "ClusterLocal", lbIP)
-		}
-
-		// the service address is local, i.e., it's within the same subnet
-		// as our primary interface.  We can announce the address if we
-		// win the election
-		if winner := a.election.Winner(lbIP.String()); winner == a.myNode {
-
-			// we won the election so we'll add the service address to our
-			// node's default interface so linux will respond to ARP
-			// requests for it
-			l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
-			a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, defaultif.Attrs().Name)
-
-			addNetwork(lbIPNet, defaultif)
-			svc.Annotations[purelbv1.NodeAnnotation] = a.myNode
-			svc.Annotations[purelbv1.IntAnnotation] = defaultif.Attrs().Name
-			announcing.With(prometheus.Labels{
-				"service": nsName,
-				"node":    a.myNode,
-				"ip":      lbIP.String(),
-			}).Set(1)
+		if lbIPNet, defaultif, err := checkLocal(announceInt, lbIP); err == nil {
+			// The default interface is a local interface, announce the
+			// address on it
+			if err := a.announceLocal(svc, defaultif, lbIP, lbIPNet); err != nil {
+				return err
+			}
 		} else {
-			// We lost the election so we'll withdraw any announcement that
-			// we might have been making
-			l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
-			return a.DeleteBalancer(nsName, "lostElection", lbIP)
-		}
-	} else {
-
-		// The service address is non-local, i.e., it's not on the same
-		// subnet as our default interface.
-
-		// Should we announce?
-		// No, if externalTrafficPolicy is Local && there's no ready local endpoint
-		// Yes, in all other cases
-		if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, a.myNode) {
-			l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
-			return a.DeleteBalancer(nsName, "noEndpoints", lbIP)
-		}
-
-		// add this address to the "dummy" interface so routing software
-		// (e.g., bird) will announce routes for it
-		poolName, gotName := svc.Annotations[purelbv1.PoolAnnotation]
-		if gotName {
-			allocPool := a.groups[poolName]
-			l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "reason", err)
-			a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (*a.dummyInt).Attrs().Name)
-			addVirtualInt(lbIP, *a.dummyInt, allocPool.Subnet, allocPool.Aggregation)
-			announcing.With(prometheus.Labels{
-				"service": nsName,
-				"node":    a.myNode,
-				"ip":      lbIP.String(),
-			}).Set(1)
+			// The default interface is remote, so add lbIP to dummyInt
+			if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+				return err
+			}
 		}
 	}
 
 	// add the address to our announcement database
 	a.svcAdvs[nsName] = lbIP
+
+	return nil
+}
+
+func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbIP net.IP, lbIPNet net.IPNet) error {
+	l := log.With(a.logger, "service", svc.Name)
+	nsName := svc.Namespace + "/" + svc.Name
+
+	// Local addresses do not support ExternalTrafficPolicyLocal
+	// Set the service back to ExternalTrafficPolicyCluster if adding to local interface
+	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal {
+		l.Log("op", "setBalancer", "error", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster")
+		svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
+		if err := a.DeleteBalancer(nsName, "ClusterLocal", lbIP); err != nil {
+			return err
+		}
+	}
+
+	// We can announce the address if we win the election
+	if winner := a.election.Winner(lbIP.String()); winner == a.myNode {
+
+		// we won the election so we'll add the service address to our
+		// node's default interface so linux will respond to ARP
+		// requests for it
+		l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
+		a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
+
+		addNetwork(lbIPNet, announceInt)
+		svc.Annotations[purelbv1.NodeAnnotation] = a.myNode
+		svc.Annotations[purelbv1.IntAnnotation] = announceInt.Attrs().Name
+		announcing.With(prometheus.Labels{
+			"service": nsName,
+			"node":    a.myNode,
+			"ip":      lbIP.String(),
+		}).Set(1)
+
+	} else {
+
+		// We lost the election so we'll withdraw any announcement that
+		// we might have been making
+		l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
+		return a.DeleteBalancer(nsName, "lostElection", lbIP)
+	}
+
+	return nil
+}
+
+func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, announceInt *netlink.Link, lbIP net.IP) error {
+	l := log.With(a.logger, "service", svc.Name)
+	nsName := svc.Namespace + "/" + svc.Name
+
+	// The service address is non-local, i.e., it's not on the same
+	// subnet as our default interface.
+
+	// Should we announce?
+	// No, if externalTrafficPolicy is Local && there's no ready local endpoint
+	// Yes, in all other cases
+	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, a.myNode) {
+		l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
+		return a.DeleteBalancer(nsName, "noEndpoints", lbIP)
+	}
+
+	// add this address to the "dummy" interface so routing software
+	// (e.g., bird) will announce routes for it
+	poolName, gotName := svc.Annotations[purelbv1.PoolAnnotation]
+	if gotName {
+		allocPool := a.groups[poolName]
+		l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName)
+		a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (*a.dummyInt).Attrs().Name)
+		addVirtualInt(lbIP, *a.dummyInt, allocPool.Subnet, allocPool.Aggregation)
+		announcing.With(prometheus.Labels{
+			"service": nsName,
+			"node":    a.myNode,
+			"ip":      lbIP.String(),
+		}).Set(1)
+	} else {
+		return fmt.Errorf("PoolAnnotation missing from service %s", nsName)
+	}
 
 	return nil
 }
