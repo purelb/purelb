@@ -76,6 +76,7 @@ spec:
         kubernetes.io/os: linux
       serviceAccountName: lbnodeagent
       terminationGracePeriodSeconds: 2
+      {{- with .Values.lbnodeagent.tolerations }}
       tolerations:
-      - effect: NoSchedule
-        key: node-role.kubernetes.io/master
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
