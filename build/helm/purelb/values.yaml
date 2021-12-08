@@ -13,6 +13,19 @@ image:
 nameOverride: ""
 fullnameOverride: ""
 
+# You may define a valid spec and set create: true to create a ServiceGroup.
+# See https://purelb.gitlab.io/docs/install/config/
+serviceGroup:
+  create: false
+  # For example, to configure a "default" service group, comment the above line and uncomment the following lines:
+  # create: true
+  # name: "default"
+  # spec:
+  #   local:
+  #     subnet: '192.168.254.0/24'
+  #     pool: '192.168.254.200-192.168.254.201'
+  #     aggregation: default
+
 # PureLB will act as the default service announcer if this value is
 # "PureLB". This means that PureLB will handle services that do not
 # have a Spec.LoadBalancerClass field. If this is other than "PureLB"
