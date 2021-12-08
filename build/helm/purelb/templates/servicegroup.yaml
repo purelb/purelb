@@ -1,0 +1,12 @@
+{{- if .Values.serviceGroup.create }}
+---
+apiVersion: purelb.io/v1
+kind: ServiceGroup
+metadata:
+  name: {{ .Values.serviceGroup.name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- with .Values.serviceGroup.spec }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+{{- end }}
