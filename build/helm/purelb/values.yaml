@@ -52,11 +52,24 @@ defaultAnnouncer: "PureLB"
 # security you can replace it with your own value.
 memberlistSecretKey: "8sb7ikA5qHwQQqxc"
 
+# Optional priorityClass to use for both allocator and lbnodeagent pods.
+# https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/
+priorityClassName: ""
+
 # Configurable values specific to lbnodeagent.
 lbnodeagent:
+  resources:
+    limits:
+      memory: 100Mi
   # Tolerations: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
   tolerations: []
   # For example, to allow lbnodeagents to run on master nodes, comment the above line and uncomment the following lines:
   # tolerations:
   # - effect: NoSchedule
   #   key: node-role.kubernetes.io/master
+
+# Configurable values specific to allocator.
+allocator:
+  resources:
+    limits:
+      memory: 100Mi
