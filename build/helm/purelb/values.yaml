@@ -16,10 +16,10 @@ fullnameOverride: ""
 # You may define a valid spec and set create: true to create a ServiceGroup.
 # See https://purelb.gitlab.io/docs/install/config/
 serviceGroup:
+  name: "default"
   create: false
   # For example, to configure a "default" service group, comment the above line and uncomment the following lines:
   # create: true
-  # name: "default"
   # spec:
   #   local:
   #     subnet: '192.168.254.0/24'
