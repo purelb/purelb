@@ -240,7 +240,7 @@ func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Poo
 		}
 
 		pools[group.Name] = pool
-		a.client.Infof(group, "Parsed", "ServiceGroup parsed successfully", group.Name)
+		a.client.Infof(group, "Parsed", "ServiceGroup parsed successfully")
 	}
 
 	return pools, nil
