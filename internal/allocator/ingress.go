@@ -22,10 +22,6 @@ import (
 
 // addIngress adds "address" to the Spec.Ingress field of "svc".
 func addIngress(log log.Logger, svc *v1.Service, address net.IP) {
-	var ingress []v1.LoadBalancerIngress
-
-	ingress = append(ingress, v1.LoadBalancerIngress{IP: address.String()})
-	log.Log("programmed ingress address", "dest", "IP", "address", address.String())
-
-	svc.Status.LoadBalancer.Ingress = ingress
+	svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, v1.LoadBalancerIngress{IP: address.String()})
+	log.Log("op", "program ingress address", "dest", "IP", "address", address.String())
 }
