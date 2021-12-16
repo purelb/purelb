@@ -29,18 +29,3 @@ func addIngress(log log.Logger, svc *v1.Service, address net.IP) {
 
 	svc.Status.LoadBalancer.Ingress = ingress
 }
-
-// parseIngress parses the contents of a service Spec.Ingress
-// field. The contents can be either a hostname or an IP address. If
-// it's an IP then we'll return that, but if it's a hostname then it
-// was formatted by addIngress() and we need to parse it
-// ourselves. The returned IP will be valid only if it is not nil.
-func parseIngress(log log.Logger, raw v1.LoadBalancerIngress) net.IP {
-	// This is the easy case. It's an IP address so net.ParseIP will do
-	// the work for us.
-	if ip := net.ParseIP(raw.IP); ip != nil {
-		return ip
-	}
-
-	return nil
-}
