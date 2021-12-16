@@ -20,6 +20,7 @@ import (
 
 	"github.com/go-kit/kit/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/vishvananda/netlink/nl"
 	v1 "k8s.io/api/core/v1"
 
 	purelbv1 "purelb.io/pkg/apis/v1"
@@ -232,6 +233,30 @@ func TestPoolSize(t *testing.T) {
 	})
 	assert.Nil(t, err, "Pool instantiation failed")
 	assert.Equal(t, uint64(3), p.Size(), "Pool Size() failed")
+}
+
+func TestWhichFamilies(t *testing.T) {
+	var (
+		families []int
+		err      error
+	)
+	p := mustLocalPool(t, "2001:470:1f07:98e:d62a:159b:41a3:93d3/128")
+	svc := service("svc1", ports("tcp/80"), "sharing1")
+
+	svc.Spec.IPFamilies = []v1.IPFamily{}
+	families, err = p.whichFamilies(&svc)
+	assert.Nil(t, err, "whichFamilies() failed")
+	assert.ElementsMatch(t, []int{}, families, "incorrect empty families")
+
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	families, err = p.whichFamilies(&svc)
+	assert.Nil(t, err, "whichFamilies() failed")
+	assert.ElementsMatch(t, []int{nl.FAMILY_V4}, families, "incorrect empty families")
+
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol, v1.IPv4Protocol}
+	families, err = p.whichFamilies(&svc)
+	assert.Nil(t, err, "whichFamilies() failed")
+	assert.ElementsMatch(t, []int{nl.FAMILY_V6, nl.FAMILY_V4}, families, "incorrect empty families")
 }
 
 func sameStrings(t *testing.T, want []string, got []string) {

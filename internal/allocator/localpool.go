@@ -367,5 +367,20 @@ func (p LocalPool) Contains(ip net.IP) bool {
 // one for each address to assign, in the order that they should be
 // assigned. An empty array means that any family is OK.
 func (p LocalPool) whichFamilies(service *v1.Service) ([]int, error) {
-	return []int{}, nil
+	if len(service.Spec.IPFamilies) == 0 {
+		return []int{}, nil
+	}
+
+	families := []int{}
+	for _, family := range service.Spec.IPFamilies {
+		if family == v1.IPv6Protocol {
+			families = append(families, nl.FAMILY_V6)
+		} else if family == v1.IPv4Protocol {
+			families = append(families, nl.FAMILY_V4)
+		} else {
+			p.logger.Log("service %s unknown IP family %s", service.Name, family)
+		}
+	}
+
+	return families, nil
 }
