@@ -69,6 +69,10 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 
 	// See if there's an IPV6 range in the spec
 	if spec.V6Pool != nil {
+		// Validate that Subnet is at least well-formed
+		if _, _, err := net.ParseCIDR(spec.V6Pool.Subnet); err != nil {
+			return nil, err
+		}
 		iprange, err := NewIPRange(spec.V6Pool.Pool)
 		if err != nil {
 			return nil, err
@@ -78,6 +82,10 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 
 	// See if there's an IPV4 range in the spec
 	if spec.V4Pool != nil {
+		// Validate that Subnet is at least well-formed
+		if _, _, err := net.ParseCIDR(spec.V4Pool.Subnet); err != nil {
+			return nil, err
+		}
 		iprange, err := NewIPRange(spec.V4Pool.Pool)
 		if err != nil {
 			return nil, err
@@ -87,6 +95,10 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 
 	// See if there's a top-level range in the spec
 	if spec.Pool != "" {
+		// Validate that Subnet is at least well-formed
+		if _, _, err := net.ParseCIDR(spec.Subnet); err != nil {
+			return nil, err
+		}
 		iprange, err := NewIPRange(spec.Pool)
 		if err == nil {
 			// We have a legacy (i.e., top-level) range, let's see where it

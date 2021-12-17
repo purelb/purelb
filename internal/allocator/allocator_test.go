@@ -615,7 +615,8 @@ func TestPoolMetrics(t *testing.T) {
 			},
 			Spec: purelbv1.ServiceGroupSpec{
 				Local: &purelbv1.ServiceGroupLocalSpec{
-					Pool: "1.2.3.4/30",
+					Subnet: "1.2.3.4/30",
+					Pool:   "1.2.3.4/30",
 				},
 			},
 		},
@@ -734,7 +735,8 @@ func TestSpecificAddress(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 			Spec: purelbv1.ServiceGroupSpec{
 				Local: &purelbv1.ServiceGroupLocalSpec{
-					Pool: "1.2.3.0/31",
+					Subnet: "1.2.3.0/31",
+					Pool:   "1.2.3.0/31",
 				},
 			},
 		},
@@ -742,7 +744,8 @@ func TestSpecificAddress(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "alternate"},
 			Spec: purelbv1.ServiceGroupSpec{
 				Local: &purelbv1.ServiceGroupLocalSpec{
-					Pool: "3.2.1.0/31",
+					Subnet: "3.2.1.0/31",
+					Pool:   "3.2.1.0/31",
 				},
 			},
 		},
@@ -789,7 +792,8 @@ func TestSharingSimple(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 			Spec: purelbv1.ServiceGroupSpec{
 				Local: &purelbv1.ServiceGroupLocalSpec{
-					Pool: "1.2.3.0/31",
+					Subnet: "1.2.3.0/31",
+					Pool:   "1.2.3.0/31",
 				},
 			},
 		},
@@ -850,7 +854,7 @@ func TestSharingSimple(t *testing.T) {
 // Some helpers
 
 func mustLocalPool(t *testing.T, r string) LocalPool {
-	p, err := NewLocalPool(allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{Pool: r})
+	p, err := NewLocalPool(allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{Pool: r, Subnet: "0.0.0.0/0"})
 	if err != nil {
 		panic(err)
 	}
@@ -876,7 +880,7 @@ func ports(ports ...string) []v1.ServicePort {
 
 func localServiceGroup(name string, pool string) *purelbv1.ServiceGroup {
 	return serviceGroup(name, purelbv1.ServiceGroupSpec{
-		Local: &purelbv1.ServiceGroupLocalSpec{Pool: pool},
+		Local: &purelbv1.ServiceGroupLocalSpec{Pool: pool, Subnet: "0.0.0.0/0"},
 	})
 }
 
