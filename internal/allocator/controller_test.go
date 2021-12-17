@@ -111,7 +111,8 @@ func TestControllerConfig(t *testing.T) {
 			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
-						Pool: "1.2.3.0/24",
+						Subnet: "1.2.3.0/24",
+						Pool:   "1.2.3.0/24",
 					},
 				},
 			},
@@ -163,7 +164,8 @@ func TestDeleteRecyclesIP(t *testing.T) {
 			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
-						Pool: "1.2.3.0/32",
+						Subnet: "1.2.3.0/24",
+						Pool:   "1.2.3.0/32",
 					},
 				},
 			},

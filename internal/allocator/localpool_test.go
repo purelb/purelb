@@ -41,7 +41,8 @@ func TestNewLocalPool(t *testing.T) {
 
 	// Test old-fashioned config (i.e., using the top-level Pool)
 	p, err := NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
-		Pool: "192.168.1.1/32",
+		Pool:   "192.168.1.1/32",
+		Subnet: "192.168.1.1/32",
 	})
 	assert.Nil(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
@@ -52,7 +53,8 @@ func TestNewLocalPool(t *testing.T) {
 	// Test IPV4 config
 	p, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		V4Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool: "192.168.1.1/32",
+			Pool:   "192.168.1.1/32",
+			Subnet: "192.168.1.1/32",
 		},
 	})
 	assert.Nil(t, err, "Pool instantiation failed")
@@ -65,9 +67,11 @@ func TestNewLocalPool(t *testing.T) {
 
 	// Test IPV6 config
 	p, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
-		Pool: "192.168.1.1/32",
+		Pool:   "192.168.1.1/32",
+		Subnet: "192.168.1.1/32",
 		V6Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+			Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
 		},
 	})
 	assert.Nil(t, err, "Pool instantiation failed")
@@ -81,10 +85,12 @@ func TestNewLocalPool(t *testing.T) {
 	// Test IPV6 config
 	p, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		V4Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool: "192.168.1.1/32",
+			Pool:   "192.168.1.1/32",
+			Subnet: "192.168.1.1/32",
 		},
 		V6Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+			Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
 		},
 	})
 	assert.Nil(t, err, "Pool instantiation failed")
@@ -225,10 +231,12 @@ func TestAssignNext(t *testing.T) {
 func TestPoolSize(t *testing.T) {
 	p, err := NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		V4Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool: "192.168.1.0/31",
+			Pool:   "192.168.1.0/31",
+			Subnet: "192.168.1.0/31",
 		},
 		V6Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+			Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
 		},
 	})
 	assert.Nil(t, err, "Pool instantiation failed")
