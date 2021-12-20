@@ -16,8 +16,6 @@
 package main
 
 import (
-	"net"
-
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
@@ -33,7 +31,6 @@ type controller struct {
 	logger     log.Logger
 	myNode     string
 	announcers []lbnodeagent.Announcer
-	svcIP      map[string]net.IP // service "namespace/name" -> assigned IP
 }
 
 // NewController configures a new controller. If error is non-nil then
@@ -45,7 +42,6 @@ func NewController(l log.Logger, myNode string) (*controller, error) {
 		announcers: []lbnodeagent.Announcer{
 			local.NewAnnouncer(l, myNode),
 		},
-		svcIP: map[string]net.IP{},
 	}
 
 	return con, nil
@@ -63,17 +59,6 @@ func (c *controller) SetClient(client *k8s.Client) {
 func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {
 	nsName := svc.Namespace + "/" + svc.Name
 
-	if len(svc.Status.LoadBalancer.Ingress) != 1 {
-		c.logger.Log("event", "noAddress", "service", nsName)
-		return c.deleteBalancer(nsName, "noIPAllocated")
-	}
-
-	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
-	if lbIP == nil {
-		c.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP)
-		return c.deleteBalancer(nsName, "invalidIP")
-	}
-
 	// If we didn't allocate the address then we shouldn't announce it.
 	if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] != purelbv1.Brand {
 		c.logger.Log("msg", "notAllocatedByPureLB", "node", c.myNode, "service", nsName)
@@ -89,8 +74,6 @@ func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8
 		}
 	}
 
-	c.svcIP[nsName] = lbIP
-
 	return announceError
 }
 
@@ -98,26 +81,14 @@ func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8
 // nsName. nsName must be a namespaced name string, e.g.,
 // "purelb/example".
 func (c *controller) DeleteBalancer(nsName string) k8s.SyncState {
-	return c.deleteBalancer(nsName, "cluster event")
-}
-
-// deleteBalancer deletes any changes that we have made on behalf of
-// nsName. nsName must be a namespaced name string, e.g.,
-// "purelb/example".
-func (c *controller) deleteBalancer(nsName, reason string) k8s.SyncState {
-	ip, _ := c.svcIP[nsName]
 	retval := k8s.SyncStateSuccess
 
 	for _, announcer := range c.announcers {
-		if err := announcer.DeleteBalancer(nsName, reason, ip); err != nil {
+		if err := announcer.DeleteBalancer(nsName, "cluster event", nil); err != nil {
 			c.logger.Log("op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
 			retval = k8s.SyncStateError
 		}
 	}
-
-	delete(c.svcIP, nsName)
-	// Spamming the log, temporatly removed.
-	// c.logger.Log("event", "serviceWithdrawn", "ip", c.svcIP[name], "reason", reason, "msg", "withdrawing service announcement")
 
 	return retval
 }
