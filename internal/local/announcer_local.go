@@ -332,7 +332,7 @@ func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 	// want to withdraw it
 	for otherSvc, announcedAddrs := range a.svcIngresses {
 		for _, announcedAddr := range announcedAddrs {
-			if announcedAddr.IP == svcAddr.String() {
+			if announcedAddr.IP == svcAddr.String() && otherSvc != nsName {
 				a.logger.Log("event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by other service", "other", otherSvc)
 				return nil
 			}
