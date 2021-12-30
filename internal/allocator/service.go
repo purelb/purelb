@@ -55,26 +55,24 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 	if svc.Spec.Type != "LoadBalancer" {
 
 		// If it's ours then we need to clean up
-		if svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
+		if _, hasAnnotation := svc.Annotations[purelbv1.PoolAnnotation]; hasAnnotation {
 
 			// If it has an address then release it
 			if len(svc.Status.LoadBalancer.Ingress) > 0 {
 				log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", "type is not LoadBalancer")
-				c.client.Infof(svc, "AddressReleased", fmt.Sprintf("Service is %s, not a LoadBalancer", svc.Spec.Type))
+				c.client.Infof(svc, "AddressReleased", fmt.Sprintf("Service is Type %s, not LoadBalancer", svc.Spec.Type))
 				if err := c.ips.Unassign(nsName); err != nil {
 					c.logger.Log("event", "unassign", "error", err)
 					return k8s.SyncStateError
 				}
 				svc.Status.LoadBalancer.Ingress = nil
 			}
-
-			// "Un-own" the service. Remove PureLB's internal Annotations so
-			// we'll re-allocate if the user flips this service back to a
-			// LoadBalancer
-			for _, a := range []string{purelbv1.BrandAnnotation, purelbv1.PoolAnnotation, purelbv1.IntAnnotation, purelbv1.NodeAnnotation} {
-				delete(svc.Annotations, a)
-			}
 		}
+
+		// "Un-own" the service. Remove PureLB's Pool annotation so
+		// we'll re-allocate if the user flips this service back to a
+		// LoadBalancer
+		delete(svc.Annotations, purelbv1.PoolAnnotation)
 
 		// It's not a LoadBalancer so there's nothing more for us to do
 		return k8s.SyncStateSuccess

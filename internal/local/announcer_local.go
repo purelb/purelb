@@ -297,7 +297,8 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 	ingress, knowAboutIt := a.svcIngresses[nsName]
 	if !knowAboutIt {
-		return fmt.Errorf("Unknown LB %s, can't delete", nsName)
+		a.logger.Log("msg", "Unknown LB, can't delete", "name", nsName)
+		return nil
 	}
 
 	// delete this service from our announcement database
@@ -339,7 +340,7 @@ func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 		}
 	}
 
-	a.logger.Log("event", "withdrawAnnouncement", "msg", "Delete balancer", "service", nsName, "reason", reason)
+	a.logger.Log("event", "withdrawAddress", "ip", svcAddr, "service", nsName, "reason", reason)
 	deleteAddr(svcAddr)
 
 	return nil

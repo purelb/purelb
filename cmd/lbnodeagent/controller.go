@@ -59,6 +59,32 @@ func (c *controller) SetClient(client *k8s.Client) {
 func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {
 	nsName := svc.Namespace + "/" + svc.Name
 
+	// If the service isn't a LoadBalancer Type then we might need to
+	// clean up. It might have been a load balancer before and the user
+	// might have changed it (for example, to NodePort) to tell us to
+	// release the address.
+	if svc.Spec.Type != "LoadBalancer" && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
+		delete(svc.Annotations, purelbv1.BrandAnnotation)
+		delete(svc.Annotations, purelbv1.NodeAnnotation)
+		delete(svc.Annotations, purelbv1.IntAnnotation)
+
+		c.logger.Log("op", "withdraw", "reason", "notLoadBalancerType", "node", c.myNode, "service", nsName)
+		c.DeleteBalancer(nsName)
+
+		// This is a "best-effort" operation. If it fails there's not much
+		// point in retrying because it's unlikely that anything will
+		// change to allow the retry to succeed. We'll just end up
+		// spamming the logs.
+		return k8s.SyncStateSuccess
+	}
+
+	// If the service has no addresses assigned then there's nothing
+	// that we can do.
+	if len(svc.Status.LoadBalancer.Ingress) < 1 {
+		c.logger.Log("msg", "noAddressAllocated", "node", c.myNode, "service", nsName)
+		return k8s.SyncStateSuccess
+	}
+
 	// If we didn't allocate the address then we shouldn't announce it.
 	if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] != purelbv1.Brand {
 		c.logger.Log("msg", "notAllocatedByPureLB", "node", c.myNode, "service", nsName)
@@ -82,6 +108,8 @@ func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8
 // "purelb/example".
 func (c *controller) DeleteBalancer(nsName string) k8s.SyncState {
 	retval := k8s.SyncStateSuccess
+
+	c.logger.Log("op", "deleteBalancer", "name", nsName)
 
 	for _, announcer := range c.announcers {
 		if err := announcer.DeleteBalancer(nsName, "cluster event", nil); err != nil {
