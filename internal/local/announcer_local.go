@@ -225,8 +225,8 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 		a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
 		addNetwork(lbIPNet, announceInt)
-		svc.Annotations[purelbv1.NodeAnnotation] = a.myNode
-		svc.Annotations[purelbv1.IntAnnotation] = announceInt.Attrs().Name
+		svc.Annotations[purelbv1.NodeAnnotation+addrFamilyName(lbIP)] = a.myNode
+		svc.Annotations[purelbv1.IntAnnotation+addrFamilyName(lbIP)] = announceInt.Attrs().Name
 		announcing.With(prometheus.Labels{
 			"service": nsName,
 			"node":    a.myNode,
@@ -392,4 +392,21 @@ func nodeHasHealthyEndpoint(eps *v1.Endpoints, node string) bool {
 		}
 	}
 	return false
+}
+
+// addrFamilyName returns whether lbIP is an IPV4 or IPV6 address.
+// The return value will be "IPv6" if the address is an IPV6 address,
+// "IPv4" if it's IPV4, or "unknown" if the family can't be determined.
+func addrFamilyName(lbIP net.IP) (lbIPFamily string) {
+	lbIPFamily = "-unknown"
+
+	if nil != lbIP.To16() {
+		lbIPFamily = "-IPv6"
+	}
+
+	if nil != lbIP.To4() {
+		lbIPFamily = "-IPv4"
+	}
+
+	return
 }
