@@ -44,11 +44,9 @@ const (
 	// the PureLB ServiceGroup custom resource.
 	PoolAnnotation string = "purelb.io/allocated-from"
 
-	// NodeAnnotation is the key for the annotation that indicates which
-	// node is announcing this service's IP address.
-	NodeAnnotation string = "purelb.io/announcing-node"
-
-	// IntAnnotation is the key for the annotation that indicates which
-	// interface is announcing this service's IP address.
-	IntAnnotation string = "purelb.io/announcing-interface"
+	// AnnounceAnnotation is the key for the annotation that indicates
+	// which node/intf is announcing this service's IP address. The IP
+	// family name will be appended because in a dual-stack service we
+	// might announce different IP addresses on different hosts.
+	AnnounceAnnotation string = "purelb.io/announcing"
 )

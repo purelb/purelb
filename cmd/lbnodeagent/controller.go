@@ -64,9 +64,14 @@ func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8
 	// might have changed it (for example, to NodePort) to tell us to
 	// release the address.
 	if svc.Spec.Type != "LoadBalancer" && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
+
+		// Remove our annotations in case the user wants the service to be
+		// managed by something else
 		delete(svc.Annotations, purelbv1.BrandAnnotation)
-		delete(svc.Annotations, purelbv1.NodeAnnotation)
-		delete(svc.Annotations, purelbv1.IntAnnotation)
+		delete(svc.Annotations, purelbv1.AnnounceAnnotation)
+		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-IPv4")
+		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-IPv6")
+		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-unknown")
 
 		c.logger.Log("op", "withdraw", "reason", "notLoadBalancerType", "node", c.myNode, "service", nsName)
 		c.DeleteBalancer(nsName)
