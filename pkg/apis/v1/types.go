@@ -28,6 +28,7 @@ import (
 // ServiceGroup is the top-level custom resource for configuring
 // service groups. It contains the usual CRD metadata, and the service
 // group spec and status.
+// +kubebuilder:resource:shortName=sg;sgs
 type ServiceGroup struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -204,6 +205,7 @@ type ServiceGroupStatus struct {
 // LBNodeAgent is the top-level custom resource for configuring node
 // agents. It contains the usual CRD metadata, and the agent spec and
 // status.
+// +kubebuilder:resource:shortName=lbna;lbnas
 type LBNodeAgent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
