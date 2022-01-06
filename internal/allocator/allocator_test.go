@@ -853,14 +853,6 @@ func TestSharingSimple(t *testing.T) {
 
 // Some helpers
 
-func mustLocalPool(t *testing.T, r string) LocalPool {
-	p, err := NewLocalPool(allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{Pool: r, Subnet: "0.0.0.0/0"})
-	if err != nil {
-		panic(err)
-	}
-	return *p
-}
-
 func ports(ports ...string) []v1.ServicePort {
 	var ret []v1.ServicePort
 	for _, s := range ports {

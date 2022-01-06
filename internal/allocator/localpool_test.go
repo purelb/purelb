@@ -156,26 +156,35 @@ func TestServicesOn(t *testing.T) {
 	assert.Equal(t, []string{namespacedName(&svc2)}, p.servicesOnIP(ip2))
 }
 
-func TestSharingKeys(t *testing.T) {
-	ip := net.ParseIP("192.168.1.1")
-	p := mustLocalPool(t, "192.168.1.1/32")
-	svc1 := service("svc1", ports("tcp/80"), "sharing1")
-	svc2 := service("svc2", ports("tcp/81"), "sharing1")
-	svc3 := service("svc3", ports("tcp/81"), "sharing1")
+func TestSharing(t *testing.T) {
+	ip4 := net.ParseIP("192.168.1.1")
+	p := mustDualStackPool(t, "192.168.1.1/32", "192.168.1.0/31", "fc00::0042:0000/120", "fc00::/7")
+	svc1 := service("svc1", ports("tcp/80"), key1.Sharing)
+	svc1.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol, v1.IPv4Protocol}
+	svc2 := service("svc2", ports("tcp/81"), key1.Sharing)
+	svc2.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol, v1.IPv4Protocol}
+	svc3 := service("svc3", ports("tcp/81"), key1.Sharing)
+	svc3.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol, v1.IPv4Protocol}
 
 	p.Release(namespacedName(&svc3)) // releasing a not-assigned service should be OK
 
-	assert.Nil(t, p.Assign(ip, &svc1))
-	assert.Equal(t, &key1, p.SharingKey(ip))
-	assert.Nil(t, p.Assign(ip, &svc2))
+	// Allocate addresses to svc1 and svc2 and verify that they both
+	// have the same ones
+	assert.Nil(t, p.AssignNext(&svc1))
+	assert.Equal(t, 2, len(svc1.Status.LoadBalancer.Ingress))
+	assert.Equal(t, key1, *p.sharingKeys[svc1.Status.LoadBalancer.Ingress[0].IP])
+	assert.Equal(t, key1, *p.sharingKeys[svc1.Status.LoadBalancer.Ingress[1].IP])
+	assert.Nil(t, p.AssignNext(&svc2))
+	assert.EqualValues(t, svc1.Status.LoadBalancer.Ingress, svc2.Status.LoadBalancer.Ingress, "svc1 and svc2 have different addresses")
+
 	p.Release(namespacedName(&svc1))
-	// svc2 is still using the IP
-	assert.Equal(t, &key1, p.SharingKey(ip))
-	assert.NotNil(t, p.Assign(ip, &svc3)) // svc3 is blocked by svc2 (same port)
+	// svc2 is still using the IPs
+	assert.Equal(t, key1, *p.sharingKeys[svc2.Status.LoadBalancer.Ingress[1].IP])
+	assert.NotNil(t, p.Assign(ip4, &svc3)) // svc3 is blocked by svc2 (same port)
 	p.Release(namespacedName(&svc2))
 	// the IP is unused
-	assert.Nil(t, p.SharingKey(ip))
-	assert.Nil(t, p.Assign(ip, &svc3)) // svc2 is out of the picture so svc3 can use the address
+	assert.Nil(t, p.SharingKey(ip4))
+	assert.Nil(t, p.Assign(ip4, &svc3)) // svc2 is out of the picture so svc3 can use the address
 }
 
 func TestAvailable(t *testing.T) {
@@ -270,4 +279,20 @@ func TestWhichFamilies(t *testing.T) {
 func sameStrings(t *testing.T, want []string, got []string) {
 	sort.Strings(got)
 	assert.Equal(t, want, got)
+}
+
+func mustLocalPool(t *testing.T, r string) LocalPool {
+	p, err := NewLocalPool(allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{Pool: r, Subnet: "0.0.0.0/0"})
+	if err != nil {
+		panic(err)
+	}
+	return *p
+}
+
+func mustDualStackPool(t *testing.T, pool4 string, subnet4 string, pool6 string, subnet6 string) LocalPool {
+	p, err := NewLocalPool(allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{V4Pool: &purelbv1.ServiceGroupAddressPool{Pool: pool4, Subnet: subnet4}, V6Pool: &purelbv1.ServiceGroupAddressPool{Pool: pool6, Subnet: subnet6}})
+	if err != nil {
+		panic(err)
+	}
+	return *p
 }

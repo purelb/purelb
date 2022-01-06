@@ -42,13 +42,6 @@ type LocalPool struct {
 	// both within and between pools.
 	v6Range *IPRange
 
-	// services caches the addresses that we've allocated to a specific
-	// service. It's used so we can release addresses when we're given
-	// only the service name. The key is the service's namespaced name,
-	// and the value is an array of the addresses assigned to that
-	// service.
-	services map[string][]net.IP
-
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
 
@@ -61,7 +54,6 @@ type LocalPool struct {
 func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPool, error) {
 	pool := LocalPool{
 		logger:         log,
-		services:       map[string][]net.IP{},
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
@@ -153,7 +145,6 @@ func (p LocalPool) Notify(service *v1.Service) error {
 		for _, port := range ports {
 			p.portsInUse[ipstr][port] = nsName
 		}
-		p.services[nsName] = append(p.services[nsName], ip)
 	}
 
 	return nil
@@ -257,26 +248,20 @@ func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
 
 // Release releases an IP so it can be assigned again.
 func (p LocalPool) Release(service string) error {
-	// Determine if we have allocated an address for this service or not.
-	ip, haveIp := p.services[service]
-	if !haveIp {
-		return fmt.Errorf("trying to release an IP from unknown service %s", service)
-	}
-	delete(p.services, service)
-
-	ipstr := ip[0].String()
-	delete(p.addressesInUse[ipstr], service)
-	if len(p.addressesInUse[ipstr]) == 0 {
-		delete(p.addressesInUse, ipstr)
-		delete(p.sharingKeys, ipstr)
-	}
-	for port, svc := range p.portsInUse[ipstr] {
-		if svc == service {
-			delete(p.portsInUse[ipstr], port)
+	for ipstr, allocs := range p.addressesInUse {
+		delete(allocs, service)
+		if len(allocs) == 0 {
+			delete(p.addressesInUse, ipstr)
+			delete(p.sharingKeys, ipstr)
 		}
-	}
-	if len(p.portsInUse[ipstr]) == 0 {
-		delete(p.portsInUse, ipstr)
+		for port, svc := range p.portsInUse[ipstr] {
+			if svc == service {
+				delete(p.portsInUse[ipstr], port)
+			}
+		}
+		if len(p.portsInUse[ipstr]) == 0 {
+			delete(p.portsInUse, ipstr)
+		}
 	}
 	return nil
 }
