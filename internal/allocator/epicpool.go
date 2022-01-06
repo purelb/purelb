@@ -29,10 +29,9 @@ import (
 // EPICPool represents an IP address pool on the Acnodal Enterprise
 // GateWay.
 type EPICPool struct {
-	log              log.Logger
-	epic             acnodal.EPIC
-	createServiceURL string
-	clusterURLCache  map[string]string // map from service key to cluster url
+	log             log.Logger
+	epic            acnodal.EPIC
+	clusterURLCache map[string]string // map from service key to cluster url
 }
 
 // NewEPICPool initializes a new instance of EPICPool. If error is
@@ -56,18 +55,18 @@ func (p EPICPool) Available(_ net.IP, _ *v1.Service) error {
 
 // AssignNext assigns a service to the next available IP.
 func (p EPICPool) AssignNext(service *v1.Service) (net.IP, error) {
-	// Lazily look up the EPIC group (which gives us the URL to create
+
+	// Look up the EPIC group (which gives us the URL to create
 	// services)
-	if p.createServiceURL == "" {
-		group, err := p.epic.GetGroup()
-		if err != nil {
-			return nil, err
-		}
-		p.createServiceURL = group.Links["create-service"]
+	p.log.Log("op", "fetchGroup", "svc", service.Name)
+	group, err := p.epic.GetGroup()
+	if err != nil {
+		return nil, err
 	}
 
-	// Announce the service to the EPIC
-	epicsvc, err := p.epic.AnnounceService(p.createServiceURL, service.Name, service.Spec.Ports)
+	// Announce the service to EPIC
+	p.log.Log("op", "announceSvc", "url", group.Links["create-service"], "svc", service.Name)
+	epicsvc, err := p.epic.AnnounceService(group.Links["create-service"], service.Name, service.Spec.Ports)
 	if err != nil {
 		return nil, err
 	}
