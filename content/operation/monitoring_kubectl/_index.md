@@ -10,62 +10,68 @@ PureLB attempts to provide all of the information necessary to monitor and troub
 The simplest way to check the status of services if using the _kubectl describe_ command.
 
 ```plaintext
-$kubectl describe service specific-address2
-Name:                     specific-address2
+
+$ kubectl describe service kuard-svc-dual-remote 
+Name:                     kuard-svc-dual-remote
 Namespace:                adamd
-Labels:                   app=echoserver3
-Annotations:              purelb.io/service-group: virtualsg
-                          purelb.io/allocated-by: PureLB
-                          purelb.io/allocated-from: virtualsub
-Selector:                 app=echoserver3
+Labels:                   <none>
+Annotations:              purelb.io/allocated-by: PureLB
+                          purelb.io/allocated-from: remotedual
+                          purelb.io/service-group: remotedual
+Selector:                 app=kuard
 Type:                     LoadBalancer
-IP:                       10.104.193.121
-IP:                       172.31.1.225
-LoadBalancer Ingress:     172.31.1.225
+IP Family Policy:         RequireDualStack
+IP Families:              IPv4,IPv6
+IP:                       10.152.183.170
+IPs:                      10.152.183.170,fd98::4078
+LoadBalancer Ingress:     172.32.100.225, fc00:370:155:0:8000::
 Port:                     <unset>  80/TCP
 TargetPort:               8080/TCP
-NodePort:                 <unset>  31377/TCP
-Endpoints:                10.129.3.151:8080,10.129.4.33:8080
+Endpoints:                10.1.217.204:8080,10.1.217.205:8080,10.1.238.137:8080
 Session Affinity:         None
-External Traffic Policy:  Cluster
+External Traffic Policy:  Local
+HealthCheck NodePort:     30439
 Events:
   Type    Reason              Age                From                Message
   ----    ------              ----               ----                -------
-  Normal  AnnouncingNonLocal  52s (x2 over 22h)  purelb-lbnodeagent  Announcing 172.31.1.225 from node purelb2-4 interface kube-lb0
-  Normal  AnnouncingNonLocal  37s (x5 over 43s)  purelb-lbnodeagent  Announcing 172.31.1.225 from node purelb2-5 interface kube-lb0
-  Normal  AnnouncingNonLocal  37s (x4 over 41s)  purelb-lbnodeagent  Announcing 172.31.1.225 from node purelb2-3 interface kube-lb0
-  Normal  AnnouncingNonLocal  37s                purelb-lbnodeagent  Announcing 172.31.1.225 from node purelb2-2 interface kube-lb0
-  Normal  AnnouncingNonLocal  37s                purelb-lbnodeagent  Announcing 172.31.1.225 from node purelb2-4 interface kube-lb0
-  Normal  AnnouncingNonLocal  36s                purelb-lbnodeagent  Announcing 172.31.1.225 from node purelb2-1 interface kube-lb0
+  Normal  AddressAssigned     11s                purelb-allocator    Assigned {Ingress:[{IP:172.32.100.225 Hostname: Ports:[]} {IP:fc00:370:155:0:8000:: Hostname: Ports:[]}]} from pool remotedual
+  Normal  AnnouncingNonLocal  10s (x2 over 10s)  purelb-lbnodeagent  Announcing 172.32.100.225 from node mk8s3 interface kube-lb0
+  Normal  AnnouncingNonLocal  10s (x2 over 10s)  purelb-lbnodeagent  Announcing 172.32.100.225 from node mk8s1 interface kube-lb0
+  Normal  AnnouncingNonLocal  10s (x2 over 10s)  purelb-lbnodeagent  Announcing fc00:370:155:0:8000:: from node mk8s1 interface kube-lb0
+  Normal  AnnouncingNonLocal  10s (x2 over 10s)  purelb-lbnodeagent  Announcing fc00:370:155:0:8000:: from node mk8s3 interface kube-lb0
+
 
 ``` 
 
 The example above shows that PureLB allocated the address from the requested service group _virtualsg_, this information was added by the _allocator_.  The event messages are added by _lbnodeagent_ and show the nodes where the address was added.  As the address was added to multiple nodes, it is a virtual address as local addresses can only be added to a single node.
 
 ```plaintext
-$ kubectl describe service echoserver21 
-Name:                     echoserver21
-Namespace:                toby
-Labels:                   app=echoserver1
-Annotations:              purelb.io/service-group: default
-                          purelb.io/allocated-by: PureLB
+k describe service kuard-service 
+Name:                     kuard-service
+Namespace:                adamd
+Labels:                   app=kuard
+Annotations:              purelb.io/allocated-by: PureLB
                           purelb.io/allocated-from: default
-                          purelb.io/announcing-interface: enp1s0
-                          purelb.io/announcing-node: purelb2-1
-Selector:                 app=echoserver1
+                          purelb.io/announcing-IPv4: mk8s2,enp1s0
+Selector:                 app=kuard
 Type:                     LoadBalancer
-IP:                       10.110.8.48
-LoadBalancer Ingress:     172.30.250.53
+IP Family Policy:         SingleStack
+IP Families:              IPv4
+IP:                       10.152.183.155
+IPs:                      10.152.183.155
+LoadBalancer Ingress:     192.168.10.240
 Port:                     <unset>  80/TCP
 TargetPort:               8080/TCP
-NodePort:                 <unset>  32380/TCP
-Endpoints:                <none>
+NodePort:                 <unset>  30310/TCP
+Endpoints:                10.1.217.204:8080,10.1.217.205:8080,10.1.238.137:8080
 Session Affinity:         None
 External Traffic Policy:  Cluster
 Events:
   Type    Reason           Age                From                Message
   ----    ------           ----               ----                -------
-  Normal  AnnouncingLocal  19m                purelb-lbnodeagent  Node purelb2-4 announcing 172.30.250.53 on interface enp1s0
+  Normal  AddressAssigned  27m                purelb-allocator    Assigned {Ingress:[{IP:192.168.10.240 Hostname: Ports:[]}]} from pool default
+  Normal  AnnouncingLocal  27m (x4 over 27m)  purelb-lbnodeagent  Node mk8s2 announcing 192.168.10.240 on interface enp1s0
+
 ```
 
 This example shows that the default pool is part of the local address.  PureLB annotates these services with the node and interface where the address was announced as well us updating the event.  
@@ -74,9 +80,11 @@ This useful command command will show all nodes that are advertizing addresses l
 
 
 ```plaintext
- $ kubectl get services -A -o json | jq ' .items[].metadata.annotations' | grep announcing-node
-  "purelb.io/announcing-node": "purelb2-1"
-  "purelb.io/announcing-node": "purelb2-1"
+$ kubectl get services -A -o json | jq '.items[].metadata.annotations' | grep announcing
+  "purelb.io/announcing-IPv4": "mk8s2,enp1s0",
+  "purelb.io/announcing-IPv6": "mk8s2,enp1s0",
+  "purelb.io/announcing-IPv4": "mk8s2,enp1s0"
+
 ```
 
 

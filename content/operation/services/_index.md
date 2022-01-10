@@ -5,7 +5,7 @@ weight: 10
 hide: toc, nextpage
 ---
 
-PureLB uses the k8s services API and if a default service group has been defined, the following the  instructions provided in the k8s documentation will result in a load balancer service being created.  This command will create a service type LoadBalancer resource for the deployment echoserver using using the default service group.
+PureLB uses the k8s services API and if a default service group has been defined, the following the  instructions provided in the k8s documentation will result in a load balancer service with an IPv4 address being created.  This command will create a service type LoadBalancer resource for the deployment echoserver using using the default service group.
 
 ```plaintext
 $ kubectl expose deployment echoserver --name=echoserver-service --port=80 --target-port=8080 --type=LoadBalancer
@@ -16,11 +16,12 @@ Namespace:                test
 Labels:                   app=echoserver
 Annotations:              purelb.io/allocated-by: PureLB
                           purelb.io/allocated-from: default
-                          purelb.io/announcing-interface: enp1s0
-                          purelb.io/announcing-node: purelb2-1
+                          purelb.io/announcing-IPv4: purelb2-1, enp1s0
 Selector:                 app=echoserver
 Type:                     LoadBalancer
 IP:                       10.110.8.48
+IP Family Policy:         SingleStack
+IP Families:              IPv4
 LoadBalancer Ingress:     172.30.250.53
 Port:                     <unset>  80/TCP
 TargetPort:               8080/TCP
@@ -52,6 +53,11 @@ Parameter | example | description
 ----|----|----
 ExternalTrafficPolicy | ExternalTrafficPolicy: Cluster | Sets how purelb should add the service and kube-proxy forward traffic for the service
 loadBalancerIP| loadBalancerIP: 172.30.250.80 | Allows the IP address to be statically defined in the service
+allocateLoadBalancerNodePorts | allocateLoadBalancerNodePorts: false |  By default nodeports are added for loadbalancers but are seldom required
+loadBalancerClass | loadBalancerClass: purelb.io/purelb | When multiple loadbalancer controllers are present, select the specified controller
+ipFamilyPolicy | ipFamilyPolicy: PreferDualStack | Selects which address families should be added to the services, SingleStack, PreferDualStack, RequireDualStack
+ipFamilies | ipFamilies: | enumerates IPv6 and/or IPv6  
+
 
 
 ### Creating a Service
@@ -69,6 +75,9 @@ metadata:
   namespace: servicetest
 spec:
   externalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
   ports:
   - port: 80
     protocol: TCP
@@ -88,16 +97,17 @@ Labels:                   app=echoserver
 Annotations:              purelb.io/service-group: localaddr
                           purelb.io/allocated-by: PureLB
                           purelb.io/allocated-from: localaddr
-                          purelb.io/announcing-interface: enp1s0
-                          purelb.io/announcing-node: purelb2-1
+                          purelb.io/announcing-IPv4: pubelb2-1, enp1s0
 Selector:                 app=echoserver
 Type:                     LoadBalancer
+IP Family Policy:         SingleStack
+IP Families:              IPv4
 IP:                       10.110.8.48
 LoadBalancer Ingress:     172.30.250.53
 Port:                     <unset>  80/TCP
 TargetPort:               8080/TCP
 NodePort:                 <unset>  32380/TCP
-Endpoints:                <none>
+Endpoints:                10.1.217.204:8080,10.1.217.205:8080,10.1.238.137:8080
 Session Affinity:         None
 External Traffic Policy:  Cluster
 Events:Type    Reason           Age                From                Message
@@ -144,6 +154,8 @@ Annotations:              purelb.io/service-group: virtualsub
                           purelb.io/allocated-from: virtualsub
 Selector:                 app=echoserver3
 Type:                     LoadBalancer
+IP Family Policy:         SingleStack
+IP Families:              IPv4
 IP:                       10.104.193.121
 IP:                       172.31.1.225
 LoadBalancer Ingress:     172.31.1.225
@@ -178,6 +190,9 @@ metadata:
   namespace: servicetest
 spec:
   externalTrafficPolicy: Local
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
   ports:
   - port: 80
     protocol: TCP
@@ -193,9 +208,10 @@ metadata:
   name: virtualsub
 spec:
   local:
-    subnet: '172.31.1.0/24'
-    pool: '172.31.1.0/24'
-    aggregation: '/32'
+    ipv4pool:
+      subnet: '172.31.1.0/24'
+      pool: '172.31.1.0/24'
+      aggregation: '/32'
 
 ```
 
@@ -212,6 +228,8 @@ Annotations:              purelb.io/service-group: virtualsub
                           purelb.io/allocated-from: virtualsub
 Selector:                 app=echoserver
 Type:                     LoadBalancer
+IP Family Policy:         SingleStack
+IP Families:              IPv4
 IP:                       10.108.97.71
 LoadBalancer Ingress:     172.31.1.0
 Port:                     <unset>  80/TCP

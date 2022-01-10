@@ -31,18 +31,33 @@ If UDP/TCP 7934 is not open and a local network address is allocated, PureLB wil
 
 #### ARP Behavior
 {{% notice warning %}}
-We recommend that you change the Linux kernel's ARP behavior from its default.  This is necessary if you're using kubeproxy in IPVS mode and is also good security practice.  By default Linux will answer ARP requests for addresses on any interface irrespective of the source. We recommend changing this setting so Linux only answers ARP requests for addresses on the interface it receives the request.  Linux sets this default to increase the the chance of successful communication. This change is made in sysconfig.
+We recommend that you change the Linux kernel's ARP behavior from its default.  This is necessary if you're using kubeproxy in IPVS mode and is also good security practice.  By default Linux will answer ARP requests for addresses on any interface irrespective of the source. We recommend changing this setting so Linux only answers ARP requests for addresses on the interface it receives the request.  Linux sets this default to increase the the chance of successful communication. This change can be undertaken in sysconfig or in the kubeproxy configuration.  
 {{% /notice %}}
 
+Updating the kubeproxy configuration is dependent upon the Kubernetes packaging in use, refer to your distribution packaging information.  The following should be used to set IPVS and ARP behavior.
+
+
+Kubeproxy Configuration
+
+```plaintext
+
+--proxy-mode IPVS
+--ipvs-strict-arp
+
+```
+
+Sysctl configuration
 ```plaintext
 cat <<EOF | sudo tee /etc/sysctl.d/k8s_arp.conf
-net.ipv4.conf.all.arp_filter=1
+net.ipv4.conf.all.arp_ignore=1
+net.ipv4.conf.all.arp_announce=2
+
 EOF
 sudo sysctl --system
 
 ```
 {{% notice danger %}}
-PureLB will operate without making this change, however if kubeproxy is set to IPVS mode and arp_filter is set to 0, all nodes will respond to locally allocated addresses as kubeproxy adds these addresses to kube-ipvs0.
+PureLB will operate without making this change, however if kubeproxy is set to IPVS mode and ARP changes are not made, all nodes will respond to locally allocated addresses as kubeproxy adds these addresses to kube-ipvs0, the behavior is the same as duplicate IP addresses on the same subnet.
 {{% /notice %}}
 
 ### Install Using Helm
