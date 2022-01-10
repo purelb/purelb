@@ -28,7 +28,7 @@ host interface, PureLB will add the allocated addresses to the same
 network interface.
 1. Copy the default service group config to your custom version<br/>
 `cp configs/default-servicegroup.yaml configs/my-servicegroup.yaml`
-1. Edit `configs/my-servicegroup.yaml` so the `subnet` and `pool` are appropriate for your network
+1. Edit `configs/my-servicegroup.yaml` so the `subnet` and `pool` are appropriate for your network. The sample assumes a v4 pool but either v4, v6, or both can be configured
 1. Load your service group config<br/>
 `kubectl apply -f configs/my-servicegroup.yaml`
 
@@ -44,9 +44,9 @@ kubectl create deployment echoserver --image=k8s.gcr.io/echoserver:1.10
 kubectl expose deployment echoserver --name=echoserver-service --port=80 --target-port=8080 --type=LoadBalancer
 ```
 
-The PureLB allocator will allocate an address and assign it to the
+The PureLB allocator will allocate one or more addresses and assign them to the
 service. The PureLB node agents then configure the underlying
-operating system to advertise the address.
+operating system to advertise the addresses.
 
 ## Building
 
