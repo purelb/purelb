@@ -225,7 +225,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 		a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
 		addNetwork(lbIPNet, announceInt)
-		svc.Annotations[purelbv1.AnnounceAnnotation+addrFamilyName(lbIP)] = a.myNode + "/" + announceInt.Attrs().Name
+		svc.Annotations[purelbv1.AnnounceAnnotation+addrFamilyName(lbIP)] = a.myNode + "," + announceInt.Attrs().Name
 		announcing.With(prometheus.Labels{
 			"service": nsName,
 			"node":    a.myNode,
