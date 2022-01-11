@@ -80,7 +80,12 @@ func TestControllerConfig(t *testing.T) {
 	// Create service that would need an IP allocation
 
 	svc := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test",
+			Annotations: map[string]string{
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
+			},
+		},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
@@ -103,10 +108,11 @@ func TestControllerConfig(t *testing.T) {
 	cfg := &purelbv1.Config{
 		DefaultAnnouncer: true,
 		Groups: []*purelbv1.ServiceGroup{
-			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
-						Pool: "1.2.3.0/24",
+						Subnet: "1.2.3.0/24",
+						Pool:   "1.2.3.0/24",
 					},
 				},
 			},
@@ -127,8 +133,9 @@ func TestControllerConfig(t *testing.T) {
 	wantSvc.ObjectMeta = metav1.ObjectMeta{
 		Name: "test",
 		Annotations: map[string]string{
-			purelbv1.BrandAnnotation: purelbv1.Brand,
-			purelbv1.PoolAnnotation:  "default",
+			purelbv1.DesiredGroupAnnotation: defaultPoolName,
+			purelbv1.BrandAnnotation:        purelbv1.Brand,
+			purelbv1.PoolAnnotation:         defaultPoolName,
 		},
 	}
 
@@ -154,10 +161,11 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	cfg := &purelbv1.Config{
 		DefaultAnnouncer: true,
 		Groups: []*purelbv1.ServiceGroup{
-			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
 				Spec: purelbv1.ServiceGroupSpec{
 					Local: &purelbv1.ServiceGroupLocalSpec{
-						Pool: "1.2.3.0/32",
+						Subnet: "1.2.3.0/24",
+						Pool:   "1.2.3.0/32",
 					},
 				},
 			},
@@ -167,7 +175,13 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	c.MarkSynced()
 
 	svc1 := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "test"},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "test",
+			Name:      "test",
+			Annotations: map[string]string{
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
+			},
+		},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
@@ -181,7 +195,13 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	// Second service should converge correctly, but not allocate an
 	// IP because we have none left.
 	svc2 := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "test", Name: "test2"},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "test",
+			Name:      "test2",
+			Annotations: map[string]string{
+				purelbv1.DesiredGroupAnnotation: defaultPoolName,
+			},
+		},
 		Spec: v1.ServiceSpec{
 			Type:      "LoadBalancer",
 			ClusterIP: "1.2.3.4",
@@ -198,149 +218,4 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc2, nil), "SetBalancer svc2 failed")
 	assert.NotEmpty(t, svc2.Status.LoadBalancer.Ingress, "svc2 didn't get an IP")
 	assert.Equal(t, "1.2.3.0", svc2.Status.LoadBalancer.Ingress[0].IP, "svc2 got the wrong IP")
-}
-
-// TestSpecificAddress tests allocations when a specific address is
-// requested
-func TestSpecificAddress(t *testing.T) {
-	k := &testK8S{t: t}
-	a := New(allocatorTestLogger)
-	a.client = k
-	c := &controller{
-		logger: log.NewNopLogger(),
-		ips:    a,
-		client: k,
-	}
-
-	cfg := &purelbv1.Config{
-		DefaultAnnouncer: true,
-		Groups: []*purelbv1.ServiceGroup{
-			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
-				Spec: purelbv1.ServiceGroupSpec{
-					Local: &purelbv1.ServiceGroupLocalSpec{
-						Pool: "1.2.3.0/31",
-					},
-				},
-			},
-			&purelbv1.ServiceGroup{
-				ObjectMeta: metav1.ObjectMeta{Name: "alternate"},
-				Spec: purelbv1.ServiceGroupSpec{
-					Local: &purelbv1.ServiceGroupLocalSpec{
-						Pool: "3.2.1.0/31",
-					},
-				},
-			},
-		},
-	}
-	if c.SetConfig(cfg) == k8s.SyncStateError {
-		t.Fatal("SetConfig failed")
-	}
-
-	// Fail to allocate a specific address that's not in the default
-	// pool
-	svc1 := &v1.Service{
-		Spec: v1.ServiceSpec{
-			LoadBalancerIP: "1.2.3.8",
-		},
-	}
-	_, _, err := c.allocateIP("svc1", svc1)
-	assert.NotNil(t, err, "address allocated but shouldn't be")
-
-	// Allocate a specific address in the default pool
-	svc1.Spec.LoadBalancerIP = "1.2.3.0"
-	pool, addr, err := c.allocateIP("svc1", svc1)
-	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, "default", pool, "incorrect pool chosen")
-	assert.Equal(t, "1.2.3.0", addr.String(), "incorrect address chosen")
-
-	// Fail to allocate a specific address from a specific pool (that's
-	// an illegal configuration)
-	svc2 := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: "alternate",
-			},
-		},
-		Spec: v1.ServiceSpec{
-			LoadBalancerIP: "3.2.1.0",
-		},
-	}
-	_, _, err = c.allocateIP("svc2", svc2)
-	assert.NotNil(t, err, "address allocated but shouldn't be")
-
-}
-
-// TestSharingSimple tests address sharing with no address or pool
-// specified. Addresses should come from the "default" pool.
-func TestSharingSimple(t *testing.T) {
-	const sharing = "sharing-is-caring"
-	spec := v1.ServiceSpec{}
-
-	k := &testK8S{t: t}
-	a := New(allocatorTestLogger)
-	a.client = k
-	c := &controller{
-		logger: log.NewNopLogger(),
-		ips:    a,
-		client: k,
-	}
-
-	cfg := &purelbv1.Config{
-		Groups: []*purelbv1.ServiceGroup{
-			{ObjectMeta: metav1.ObjectMeta{Name: "default"},
-				Spec: purelbv1.ServiceGroupSpec{
-					Local: &purelbv1.ServiceGroupLocalSpec{
-						Pool: "1.2.3.0/31",
-					},
-				},
-			},
-		},
-	}
-	if c.SetConfig(cfg) == k8s.SyncStateError {
-		t.Fatal("SetConfig failed")
-	}
-
-	svc1 := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "svc1",
-			Annotations: map[string]string{
-				purelbv1.SharingAnnotation: sharing,
-			},
-		},
-		Spec: spec,
-	}
-	pool, addr, err := c.allocateIP("svc1", svc1)
-	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, "default", pool, "incorrect pool chosen")
-	assert.Equal(t, "1.2.3.0", addr.String(), "incorrect address chosen")
-
-	// Mismatched SharingAnnotation so different address
-	svc2 := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "svc2",
-			Annotations: map[string]string{
-				purelbv1.SharingAnnotation: "i-really-dont-care-do-u",
-			},
-		},
-		Spec: spec,
-	}
-	pool, addr, err = c.allocateIP("svc2", svc2)
-	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, "default", pool, "incorrect pool chosen")
-	assert.Equal(t, "1.2.3.1", addr.String(), "incorrect address chosen")
-
-	// Matching SharingAnnotation so same address as svc1
-	svc3 := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "svc3",
-			Annotations: map[string]string{
-				purelbv1.SharingAnnotation: sharing,
-			},
-		},
-		Spec: spec,
-	}
-	pool, addr, err = c.allocateIP("svc3", svc3)
-	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, "default", pool, "incorrect pool chosen")
-	assert.Equal(t, "1.2.3.0", addr.String(), "incorrect address chosen")
 }

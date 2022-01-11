@@ -13,26 +13,35 @@
 package allocator
 
 import (
+	"net"
 	"testing"
 
+	"github.com/go-kit/kit/log"
 	"github.com/stretchr/testify/assert"
 
 	"purelb.io/internal/netbox/fake"
+	purelbv1 "purelb.io/pkg/apis/v1"
+)
+
+var (
+	netboxPoolTestLogger = log.NewNopLogger()
 )
 
 func TestNetboxContains(t *testing.T) {
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
-	nsName := svc1.Namespace + "/" + svc1.Name
+	nsName := namespacedName(&svc1)
 
-	nbp, err := NewNetboxPool("url", "tenant")
+	nbp, err := NewNetboxPool(netboxPoolTestLogger, purelbv1.ServiceGroupNetboxSpec{URL: "url", Tenant: "tenant"})
 	assert.Nil(t, err, "NewNetboxPool()")
 	nbp.netbox = fake.NewNetbox("base", "tenant", "token") // patch the pool with a fake Netbox client
 
-	ip1, err := nbp.AssignNext(&svc1)
+	err = nbp.AssignNext(&svc1)
 	assert.Nil(t, err, "Netbox pool AssignNext() failed")
 
-	assert.True(t, nbp.Contains(ip1), "address should have been contained in pool but wasn't")
+	assigned := net.ParseIP(svc1.Status.LoadBalancer.Ingress[0].IP)
+	assert.NotNil(t, assigned, "service was assigned an unparseable IP")
+	assert.True(t, nbp.Contains(assigned), "address should have been contained in pool but wasn't")
 
-	nbp.Release(ip1, nsName)
-	assert.False(t, nbp.Contains(ip1), "address should not have been contained in pool but was")
+	nbp.Release(nsName)
+	assert.False(t, nbp.Contains(assigned), "address should not have been contained in pool but was")
 }

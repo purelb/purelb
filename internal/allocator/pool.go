@@ -20,7 +20,10 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
+
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 // Port represents one port in use by a service.
@@ -38,11 +41,15 @@ type Key struct {
 	Sharing string
 }
 
+// Pool describes the interface to code that manages pools of
+// addresses.
 type Pool interface {
-	Available(net.IP, *v1.Service) error
-	AssignNext(*v1.Service) (net.IP, error)
+	// Notify notifies the pool of an existing address assignment, for
+	// example, at startup time.
+	Notify(*v1.Service) error
+	AssignNext(*v1.Service) error
 	Assign(net.IP, *v1.Service) error
-	Release(net.IP, string) error
+	Release(string) error
 	InUse() int
 	Overlaps(Pool) bool
 	Contains(net.IP) bool // FIXME: I'm not sure that we need this. It might be the case that we can always rely on the service's pool annotation to find to which pool an address belongs
@@ -60,4 +67,22 @@ func sharingOK(existing, new *Key) error {
 		return fmt.Errorf("sharing key %q does not match existing sharing key %q", new.Sharing, existing.Sharing)
 	}
 	return nil
+}
+
+func parsePool(log log.Logger, name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
+	if group.Local != nil {
+		ret, err := NewLocalPool(log, *group.Local)
+		if err != nil {
+			return nil, err
+		}
+		return *ret, nil
+	} else if group.Netbox != nil {
+		ret, err := NewNetboxPool(log, *group.Netbox)
+		if err != nil {
+			return nil, err
+		}
+		return *ret, nil
+	}
+
+	return nil, fmt.Errorf("Pool is not local or Netbox")
 }

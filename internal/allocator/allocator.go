@@ -25,25 +25,22 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
+const (
+	defaultPoolName string = "default"
+)
+
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
-	client    k8s.ServiceEvent
-	logger    log.Logger
-	pools     map[string]Pool
-	allocated map[string]*alloc // svc -> alloc
-}
-
-type alloc struct {
-	pool string
-	ip   net.IP
+	client k8s.ServiceEvent
+	logger log.Logger
+	pools  map[string]Pool
 }
 
 // New returns an Allocator managing no pools.
 func New(log log.Logger) *Allocator {
 	return &Allocator{
-		logger:    log,
-		pools:     map[string]Pool{},
-		allocated: map[string]*alloc{},
+		logger: log,
+		pools:  map[string]Pool{},
 	}
 }
 
@@ -77,35 +74,87 @@ func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
 	return nil
 }
 
-// assign unconditionally updates internal state to reflect svc's
+// updateStats unconditionally updates internal state to reflect svc's
 // allocation of alloc. Caller must ensure that this call is safe.
-func (a *Allocator) assign(service *v1.Service, alloc *alloc) error {
-	svc := namespacedName(service)
-
-	a.Unassign(svc)
-	a.allocated[svc] = alloc
-
-	pool := a.pools[alloc.pool]
-	pool.Assign(alloc.ip, service)
-
-	poolCapacity.WithLabelValues(alloc.pool).Set(float64(a.pools[alloc.pool].Size()))
-	poolActive.WithLabelValues(alloc.pool).Set(float64(pool.InUse()))
+func (a *Allocator) updateStats(service *v1.Service, poolName string) error {
+	pool := a.pools[poolName]
+	poolCapacity.WithLabelValues(poolName).Set(float64(pool.Size()))
+	poolActive.WithLabelValues(poolName).Set(float64(pool.InUse()))
 
 	return nil
 }
 
-// Assign assigns the requested ip to svc, if the assignment is
-// permissible by sharingKey.
-func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
-	// Check that the address belongs to a pool. If we've got a pool
-	// annotation then we'll use that; otherwise we'll have to try to
-	// figure it out by querying the pools
-	pool, exists := svc.Annotations[purelbv1.PoolAnnotation]
+// NotifyExisting notifies the allocator of an existing IP assignment,
+// for example, at startup time.
+func (a *Allocator) NotifyExisting(svc *v1.Service) error {
+	// Get the pool name from our annotation
+	poolName, exists := svc.Annotations[purelbv1.PoolAnnotation]
 	if !exists {
-		pool = poolFor(a.pools, ip)
-		if pool == "" {
-			return "", fmt.Errorf("%q does not belong to any group", ip)
+		return fmt.Errorf("Service %s no pool", namespacedName(svc))
+	}
+
+	// Tell the pool about the assignment
+	if pool, havePool := a.pools[poolName]; !havePool {
+		return nil
+	} else {
+		if err := pool.Notify(svc); err != nil {
+			return err
 		}
+		return a.updateStats(svc, poolName)
+	}
+}
+
+// AllocateAnyIP allocates an IP address for svc based on svc's
+// annotations and current configuration. If the user asks for a
+// specific IP then we'll attempt to use that, and if not we'll use
+// the pool specified in the purelbv1.DesiredGroupAnnotation
+// annotation. If neither is specified then we will attempt to
+// allocate from a pool named "default", if it exists.
+func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, error) {
+	var (
+		poolName string
+		err      error
+	)
+
+	if svc.Spec.LoadBalancerIP != "" {
+		// The user asked for a specific IP, so try that.
+		if poolName, err = a.allocateSpecificIP(svc); err != nil {
+			return "", err
+		}
+	} else {
+		// The user didn't ask for a specific IP so we can allocate one
+		// ourselves
+
+		// If no desiredGroup was specified, then try "default"
+		if poolName = svc.Annotations[purelbv1.DesiredGroupAnnotation]; poolName == "" {
+			poolName = defaultPoolName
+		}
+
+		// Otherwise, allocate from the pool that the user specified
+		if err = a.allocateFromPool(svc, poolName); err != nil {
+			return "", err
+		}
+	}
+
+	if err = a.updateStats(svc, poolName); err != nil {
+		return "", err
+	}
+
+	return poolName, nil
+}
+
+// allocateSpecificIP assigns the requested ip to svc, if the assignment is
+// permissible by sharingKey.
+func (a *Allocator) allocateSpecificIP(svc *v1.Service) (string, error) {
+	ip := net.ParseIP(svc.Spec.LoadBalancerIP)
+	if ip == nil {
+		return "", fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
+	}
+
+	// Check that the address belongs to a pool
+	pool := poolFor(a.pools, ip)
+	if pool == "" {
+		return "", fmt.Errorf("%q does not belong to any group", ip)
 	}
 
 	// Check that the address belongs to the requested pool
@@ -114,94 +163,57 @@ func (a *Allocator) Assign(svc *v1.Service, ip net.IP) (string, error) {
 		return "", fmt.Errorf("%q belongs to group %s but desired group is %s", ip, pool, desiredGroup)
 	}
 
+	// If the service had an IP before, release it
+	if err := a.Unassign(namespacedName(svc)); err != nil {
+		return "", err
+	}
+
 	// Does the IP already have allocs? If so, needs to be the same
 	// sharing key, and have non-overlapping ports. If not, the proposed
 	// IP needs to be allowed by configuration.
-	err := a.pools[pool].Available(ip, svc) // FIXME: this should Assign() here, not check Available.  Might need to iterate over pools rather than do poolFor
+	err := a.pools[pool].Assign(ip, svc)
 	if err != nil {
 		return "", err
 	}
 
-	// Either the IP is entirely unused, or the requested use is
-	// compatible with existing uses. Assign!
-	alloc := &alloc{
-		pool: pool,
-		ip:   ip,
-	}
-	if err := a.assign(svc, alloc); err != nil {
-		return "", err
-	}
 	return pool, nil
 }
 
-// Unassign frees the IP associated with service, if any.
-func (a *Allocator) Unassign(svc string) error {
-	al := a.allocated[svc]
-	if al == nil {
-		return fmt.Errorf("unknown service name: %s", svc)
+// AllocateFromPool assigns an available IP from pool to service.
+func (a *Allocator) allocateFromPool(svc *v1.Service, poolName string) error {
+	pool := a.pools[poolName]
+	if pool == nil {
+		return fmt.Errorf("unknown pool %q", poolName)
 	}
 
-	// tell the pool that the address has been released. there might not
-	// be a pool, e.g., in the case of a config change that moves
-	// addresses from one pool to another
-	pool, tracked := a.pools[al.pool]
-	if tracked {
-		if err := pool.Release(al.ip, svc); err != nil {
-			return err
-		}
-		poolActive.WithLabelValues(al.pool).Set(float64(pool.InUse()))
+	// If the service had an IP before, release it
+	if err := a.Unassign(namespacedName(svc)); err != nil {
+		return err
 	}
 
-	delete(a.allocated, svc)
+	if err := pool.AssignNext(svc); err != nil {
+		// Woops, no IPs :( Fail.
+		return err
+	}
 
 	return nil
 }
 
-// AllocateFromPool assigns an available IP from pool to service.
-func (a *Allocator) AllocateFromPool(svc *v1.Service, poolName string) (net.IP, error) {
-	var ip net.IP
+// Unassign frees the IP associated with service, if any.
+func (a *Allocator) Unassign(svc string) error {
+	var err error
 
-	pool := a.pools[poolName]
-	if pool == nil {
-		return nil, fmt.Errorf("unknown pool %q", poolName)
+	// tell the pools that the address has been released. there might
+	// not be a pool, e.g., in the case of a config change that moves
+	// addresses from one pool to another
+	for pname, p := range a.pools {
+		if err = p.Release(svc); err == nil {
+			// This pool released the address
+			poolActive.WithLabelValues(pname).Set(float64(p.InUse()))
+		}
 	}
 
-	ip, err := pool.AssignNext(svc)
-	if err != nil {
-		// Woops, no IPs :( Fail.
-		return nil, err
-	}
-
-	alloc := &alloc{
-		pool: poolName,
-		ip:   ip,
-	}
-	if err := a.assign(svc, alloc); err != nil {
-		return nil, err
-	}
-
-	return ip, nil
-}
-
-// Allocate any available and assignable IP to service.
-func (a *Allocator) Allocate(svc *v1.Service) (string, net.IP, error) {
-	var (
-		err error
-		ip  net.IP
-	)
-
-	// if we have already allocated an address for this service then
-	// return it
-	if alloc := a.allocated[svc.Name]; alloc != nil {
-		return alloc.pool, alloc.ip, nil
-	}
-
-	// we need an address but no pool was specified so it's either the
-	// "default" pool or nothing
-	if ip, err = a.AllocateFromPool(svc, "default"); err == nil {
-		return "default", ip, nil
-	}
-	return "", nil, err
+	return nil
 }
 
 // poolFor returns the pool that owns the requested IP, or "" if none.
@@ -218,7 +230,7 @@ func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Poo
 	pools := map[string]Pool{}
 
 	for i, group := range groups {
-		pool, err := a.parseGroup(group.Name, group.Spec)
+		pool, err := parsePool(a.logger, group.Name, group.Spec)
 		if err != nil {
 			a.client.Errorf(group, "ParseFailed", "Failed to parse: %s", err)
 			return nil, fmt.Errorf("parsing address pool #%d: %s", i+1, err)
@@ -244,22 +256,4 @@ func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Poo
 	}
 
 	return pools, nil
-}
-
-func (a *Allocator) parseGroup(name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
-	if group.Local != nil {
-		ret, err := NewLocalPool(group.Local.Pool)
-		if err != nil {
-			return nil, err
-		}
-		return *ret, nil
-	} else if group.Netbox != nil {
-		ret, err := NewNetboxPool(group.Netbox.URL, group.Netbox.Tenant)
-		if err != nil {
-			return nil, err
-		}
-		return *ret, nil
-	}
-
-	return nil, fmt.Errorf("Pool is not local or Netbox")
 }

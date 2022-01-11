@@ -55,26 +55,24 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 	if svc.Spec.Type != "LoadBalancer" {
 
 		// If it's ours then we need to clean up
-		if svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
+		if _, hasAnnotation := svc.Annotations[purelbv1.PoolAnnotation]; hasAnnotation {
 
 			// If it has an address then release it
 			if len(svc.Status.LoadBalancer.Ingress) > 0 {
-				log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", "not a load balancer")
-				c.client.Infof(svc, "IPReleased", fmt.Sprintf("Service is %s, not a LoadBalancer", svc.Spec.Type))
+				log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", "type is not LoadBalancer")
+				c.client.Infof(svc, "AddressReleased", fmt.Sprintf("Service is Type %s, not LoadBalancer", svc.Spec.Type))
 				if err := c.ips.Unassign(nsName); err != nil {
 					c.logger.Log("event", "unassign", "error", err)
 					return k8s.SyncStateError
 				}
 				svc.Status.LoadBalancer.Ingress = nil
 			}
-
-			// "Un-own" the service. Remove PureLB's internal Annotations so
-			// we'll re-allocate if the user flips this service back to a
-			// LoadBalancer
-			for _, a := range []string{purelbv1.BrandAnnotation, purelbv1.PoolAnnotation, purelbv1.IntAnnotation, purelbv1.NodeAnnotation} {
-				delete(svc.Annotations, a)
-			}
 		}
+
+		// "Un-own" the service. Remove PureLB's Pool annotation so
+		// we'll re-allocate if the user flips this service back to a
+		// LoadBalancer
+		delete(svc.Annotations, purelbv1.PoolAnnotation)
 
 		// It's not a LoadBalancer so there's nothing more for us to do
 		return k8s.SyncStateSuccess
@@ -90,7 +88,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 
 	// Check if the service already has an address
 	if len(svc.Status.LoadBalancer.Ingress) > 0 {
-		log.Log("event", "ipAlreadySet", "ingress-address", svc.Status.LoadBalancer.Ingress)
+		log.Log("event", "hasIngress", "ingress", svc.Status.LoadBalancer.Ingress)
 
 		// if it's one of ours then we'll tell the allocator about it, in
 		// case it didn't know but needs to. one example of this is at
@@ -100,15 +98,11 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		// twice. another example is when the user edits a service,
 		// although that would be better handled in a webhook.
 		if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
-			if existingIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP); existingIP != nil {
-
-				// The service has an IP so we'll attempt to formally allocate
-				// it. If something goes wrong then we'll log it but won't do
-				// anything else so we don't cause more trouble.
-				_, err := c.ips.Assign(svc, existingIP)
-				if err != nil {
-					log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", err.Error())
-				}
+			// The service has an IP so we'll attempt to formally allocate
+			// it. If something goes wrong then we'll log it but won't do
+			// anything else so we don't cause more trouble.
+			if err := c.ips.NotifyExisting(svc); err != nil {
+				log.Log("event", "notifyFailure", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", err.Error())
 			}
 		}
 
@@ -117,17 +111,13 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		return k8s.SyncStateSuccess
 	}
 
-	pool, lbIP, err := c.allocateIP(nsName, svc)
+	pool, err := c.ips.AllocateAnyIP(svc)
 	if err != nil {
 		log.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", nsName, err)
 		return k8s.SyncStateSuccess
 	}
-	log.Log("event", "ipAllocated", "ip", lbIP, "pool", pool)
-	c.client.Infof(svc, "IPAllocated", "Assigned IP %s from pool %s", lbIP, pool)
-
-	// we have an IP selected somehow, so program the data plane
-	svc.Status.LoadBalancer.Ingress = []v1.LoadBalancerIngress{{IP: lbIP.String()}}
+	c.client.Infof(svc, "AddressAssigned", "Assigned %+v from pool %s", svc.Status.LoadBalancer, pool)
 
 	// annotate the service as "ours" and annotate the pool from which
 	// the address came
@@ -138,43 +128,4 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 	svc.Annotations[purelbv1.PoolAnnotation] = pool
 
 	return k8s.SyncStateSuccess
-}
-
-func (c *controller) allocateIP(key string, svc *v1.Service) (string, net.IP, error) {
-	desiredGroup := svc.Annotations[purelbv1.DesiredGroupAnnotation]
-
-	// If the user asked for a specific IP, try that.
-	if svc.Spec.LoadBalancerIP != "" {
-
-		// It doesn't make sense to use Spec.LoadBalancerIP *and*
-		// DesiredGroupAnnotation because Spec.LoadBalancerIP is more
-		// specific so DesiredGroupAnnotation can only cause problems. If
-		// you're using Spec.LoadBalancerIP then you don't need
-		// DesiredGroupAnnotation.
-		if desiredGroup != "" {
-			return "", nil, fmt.Errorf("spec.loadBalancerIP and DesiredGroupAnnotation are mutually exclusive, use Spec.LoadBalancerIP alone")
-		}
-
-		ip := net.ParseIP(svc.Spec.LoadBalancerIP)
-		if ip == nil {
-			return "", nil, fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
-		}
-		pool, err := c.ips.Assign(svc, ip)
-		if err != nil {
-			return "", nil, err
-		}
-		return pool, ip, nil
-	}
-
-	// Otherwise, did the user ask for a specific pool?
-	if desiredGroup != "" {
-		ip, err := c.ips.AllocateFromPool(svc, desiredGroup)
-		if err != nil {
-			return "", nil, err
-		}
-		return desiredGroup, ip, nil
-	}
-
-	// Okay, in that case just bruteforce across all pools.
-	return c.ips.Allocate(svc)
 }

@@ -6,6 +6,11 @@ metadata:
   namespace: purelb
 spec:
   local:
-    subnet: '192.168.254.100/24'
-    pool: '192.168.254.200-192.168.254.201'
-    aggregation: default
+    v4pool:
+      subnet: '192.168.254.0/24'
+      pool: '192.168.254.230-192.168.254.240'
+      aggregation: default
+    # v6pool:
+    #   subnet: 'fd53:9ef0:8683::/120'
+    #   pool: 'fd53:9ef0:8683::-fd53:9ef0:8683::3'
+    #   aggregation: default

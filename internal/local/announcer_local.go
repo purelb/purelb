@@ -37,9 +37,15 @@ type announcer struct {
 	myNode   string
 	config   *purelbv1.LBNodeAgentLocalSpec
 	groups   map[string]*purelbv1.ServiceGroupLocalSpec // groupName -> ServiceGroupLocalSpec
-	svcAdvs  map[string]net.IP                          // svcName -> IP
 	election *election.Election
 	dummyInt *netlink.Link // for non-local announcements
+
+	// svcIngresses is a map from svcName to that Service's
+	// Ingresses. Note that we may or may not advertise all of them
+	// because we might lose an election or not have any active
+	// endpoints, but in any case we need to ensure that we clean them
+	// up if the Service is deleted.
+	svcIngresses map[string][]v1.LoadBalancerIngress
 
 	// localNameRegex is the pattern that we use to determine if an
 	// interface is local or not.
@@ -63,7 +69,7 @@ func init() {
 
 // NewAnnouncer returns a new local Announcer.
 func NewAnnouncer(l log.Logger, node string) lbnodeagent.Announcer {
-	return &announcer{logger: l, myNode: node, svcAdvs: map[string]net.IP{}}
+	return &announcer{logger: l, myNode: node, svcIngresses: map[string][]v1.LoadBalancerIngress{}}
 }
 
 // SetClient configures this announcer to use the provided client.
@@ -124,8 +130,16 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 }
 
 func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
-	l := log.With(a.logger, "service", svc.Name)
+	// retErr caches an error while we try other operations. Because we
+	// might have more than one interface to announce, if an error
+	// happens on the first one we still want to try the second. Instead
+	// of "return err" we'll stash the error in retErr and keep
+	// going. Once we're done we'll return any error that
+	// happened. Well, technically we'll return the most recent error.
+	var retErr error = nil
+
 	nsName := svc.Namespace + "/" + svc.Name
+	l := log.With(a.logger, "service", nsName)
 
 	// if we haven't been configured then we won't announce
 	if a.config == nil {
@@ -133,54 +147,58 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		return nil
 	}
 
-	// validate the allocated address
-	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
-	if lbIP == nil {
-		l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", svc.Status.LoadBalancer.Ingress[0].IP)
-		return nil
-	}
-
-	if a.localNameRegex != nil {
-		// The user specified an announcement interface regex so use it to
-		// try to find a local interface, otherwise announce remote
-		lbIPNet, localif, err := findLocal(a.localNameRegex, lbIP)
-		if err == nil {
-			// We found a local interface, announce the address on it
-			if err := a.announceLocal(svc, localif, lbIP, lbIPNet); err != nil {
-				return err
-			}
-		} else {
-			// lbIP isn't local to any interfaces so add it to dummyInt
-			if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
-				return err
-			}
-		}
-
-	} else {
-		// The user wants us to determine the "default" interface
-		announceInt, err := defaultInterface(addrFamily(lbIP))
-		if err != nil {
-			l.Log("event", "announceError", "err", err)
-			return err
-		}
-		if lbIPNet, defaultif, err := checkLocal(announceInt, lbIP); err == nil {
-			// The default interface is a local interface, announce the
-			// address on it
-			if err := a.announceLocal(svc, defaultif, lbIP, lbIPNet); err != nil {
-				return err
-			}
-		} else {
-			// The default interface is remote, so add lbIP to dummyInt
-			if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
-				return err
-			}
-		}
-	}
-
 	// add the address to our announcement database
-	a.svcAdvs[nsName] = lbIP
+	a.svcIngresses[nsName] = svc.Status.LoadBalancer.Ingress
 
-	return nil
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		// validate the allocated address
+		lbIP := net.ParseIP(ingress.IP)
+		if lbIP == nil {
+			l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", svc.Status.LoadBalancer.Ingress[0].IP)
+			continue
+		}
+
+		if a.localNameRegex != nil {
+			// The user specified an announcement interface regex so use it to
+			// try to find a local interface, otherwise announce remote
+			lbIPNet, localif, err := findLocal(a.localNameRegex, lbIP)
+			if err == nil {
+				// We found a local interface, announce the address on it
+				if err := a.announceLocal(svc, localif, lbIP, lbIPNet); err != nil {
+					retErr = err
+				}
+			} else {
+				// lbIP isn't local to any interfaces so add it to dummyInt
+				if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+					retErr = err
+				}
+			}
+
+		} else {
+			// The user wants us to determine the "default" interface
+			announceInt, err := defaultInterface(AddrFamily(lbIP))
+			if err != nil {
+				l.Log("event", "announceError", "err", err)
+				retErr = err
+				continue
+			}
+			if lbIPNet, defaultif, err := checkLocal(announceInt, lbIP); err == nil {
+				// The default interface is a local interface, announce the
+				// address on it
+				if err := a.announceLocal(svc, defaultif, lbIP, lbIPNet); err != nil {
+					retErr = err
+				}
+			} else {
+				// The default interface is remote, so add lbIP to dummyInt
+				if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+					retErr = err
+				}
+			}
+		}
+	}
+
+	// Return the most recent error
+	return retErr
 }
 
 func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbIP net.IP, lbIPNet net.IPNet) error {
@@ -192,7 +210,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal {
 		l.Log("op", "setBalancer", "error", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster")
 		svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
-		if err := a.DeleteBalancer(nsName, "ClusterLocal", lbIP); err != nil {
+		if err := a.deleteAddress(nsName, "ClusterLocal", lbIP); err != nil {
 			return err
 		}
 	}
@@ -207,8 +225,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 		a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
 		addNetwork(lbIPNet, announceInt)
-		svc.Annotations[purelbv1.NodeAnnotation] = a.myNode
-		svc.Annotations[purelbv1.IntAnnotation] = announceInt.Attrs().Name
+		svc.Annotations[purelbv1.AnnounceAnnotation+addrFamilyName(lbIP)] = a.myNode + "," + announceInt.Attrs().Name
 		announcing.With(prometheus.Labels{
 			"service": nsName,
 			"node":    a.myNode,
@@ -220,7 +237,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 		// We lost the election so we'll withdraw any announcement that
 		// we might have been making
 		l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
-		return a.DeleteBalancer(nsName, "lostElection", lbIP)
+		return a.deleteAddress(nsName, "lostElection", lbIP)
 	}
 
 	return nil
@@ -238,7 +255,7 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 	// Yes, in all other cases
 	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, a.myNode) {
 		l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
-		return a.DeleteBalancer(nsName, "noEndpoints", lbIP)
+		return a.deleteAddress(nsName, "noEndpoints", lbIP)
 	}
 
 	// add this address to the "dummy" interface so routing software
@@ -248,7 +265,15 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 		allocPool := a.groups[poolName]
 		l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName)
 		a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (*a.dummyInt).Attrs().Name)
-		addVirtualInt(lbIP, *a.dummyInt, allocPool.Subnet, allocPool.Aggregation)
+		family := AddrFamily(lbIP)
+		subnet, err := allocPool.FamilySubnet(family)
+		if err != nil {
+		}
+		aggregation, err := allocPool.FamilyAggregation(family)
+		if err != nil {
+			return err
+		}
+		addVirtualInt(lbIP, *a.dummyInt, subnet, aggregation)
 		announcing.With(prometheus.Labels{
 			"service": nsName,
 			"node":    a.myNode,
@@ -262,32 +287,39 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 }
 
 // DeleteBalancer deletes the IP address associated with the
+// balancer. nsName is a namespaced name, e.g., "root/service42". The
+// addr parameter is optional and shouldn't be necessary but in some
+// cases (probably involving startup and/or shutdown) we have seen
+// calls to DeleteBalancer with services that weren't in the svcAdvs
+// map, so the service's address wasn't removed. For now, this is a
+// "belt and suspenders" double-check.
+func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
+	ingress, knowAboutIt := a.svcIngresses[nsName]
+	if !knowAboutIt {
+		a.logger.Log("msg", "Unknown LB, can't delete", "name", nsName)
+		return nil
+	}
+
+	// delete this service from our announcement database
+	delete(a.svcIngresses, nsName)
+
+	for _, ingress := range ingress {
+		lbIP := net.ParseIP(ingress.IP)
+		if lbIP == nil {
+			return fmt.Errorf("invalid LoadBalancer IP: %s, belongs to %s", ingress.IP, nsName)
+		}
+		a.deleteAddress(nsName, reason, lbIP)
+	}
+	return nil
+}
+
+// deleteAddress deletes the IP address associated with the
 // balancer. The addr parameter is optional and shouldn't be necessary
 // but in some cases (probably involving startup and/or shutdown) we
 // have seen calls to DeleteBalancer with services that weren't in the
 // svcAdvs map, so the service's address wasn't removed. For now, this
 // is a "belt and suspenders" double-check.
-func (a *announcer) DeleteBalancer(nsName, reason string, addr net.IP) error {
-
-	// if the service isn't in our database then we probably weren't
-	// announcing it so we can't withdraw it unless we were given an
-	// address, too
-	svcAddr, ok := a.svcAdvs[nsName]
-	if !ok {
-		// If we don't know about the named service and we weren't given
-		// an address then there's nothing we can do
-		if addr == nil {
-			return nil
-		}
-
-		// This is a corner case. We should always know about the services
-		// that we're asked to delete, but in this case we don't. Because
-		// the caller has provided an IP address, though, we can clean up
-		// by deleting the address.
-		a.logger.Log("event", "withdrawAnnouncement", "msg", "Not my service", "service", nsName, "reason", reason, "ip", addr, "knownServices", a.svcAdvs)
-		svcAddr = addr
-	}
-
+func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 	// delete the service from Prometheus, i.e., it won't show up in the
 	// metrics anymore
 	announcing.Delete(prometheus.Labels{
@@ -296,19 +328,18 @@ func (a *announcer) DeleteBalancer(nsName, reason string, addr net.IP) error {
 		"ip":      svcAddr.String(),
 	})
 
-	// delete this service from our announcement database
-	delete(a.svcAdvs, nsName)
-
 	// if any other service is still using that address then we don't
 	// want to withdraw it
-	for otherSvc, announcedAddr := range a.svcAdvs {
-		if announcedAddr.Equal(svcAddr) {
-			a.logger.Log("event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by other service", "other", otherSvc)
-			return nil
+	for otherSvc, announcedAddrs := range a.svcIngresses {
+		for _, announcedAddr := range announcedAddrs {
+			if announcedAddr.IP == svcAddr.String() && otherSvc != nsName {
+				a.logger.Log("event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by other service", "other", otherSvc)
+				return nil
+			}
 		}
 	}
 
-	a.logger.Log("event", "withdrawAnnouncement", "msg", "Delete balancer", "service", nsName, "reason", reason)
+	a.logger.Log("event", "withdrawAddress", "ip", svcAddr, "service", nsName, "reason", reason)
 	deleteAddr(svcAddr)
 
 	return nil
@@ -318,8 +349,10 @@ func (a *announcer) DeleteBalancer(nsName, reason string, addr net.IP) error {
 // configuration.
 func (a *announcer) Shutdown() {
 	// withdraw any announcements that we have made
-	for _, ip := range a.svcAdvs {
-		deleteAddr(ip)
+	for nsName := range a.svcIngresses {
+		if err := a.DeleteBalancer(nsName, "shutdown", nil); err != nil {
+			a.logger.Log("op", "shutdown", "error", err)
+		}
 	}
 
 	// remove the "dummy" interface
@@ -358,4 +391,21 @@ func nodeHasHealthyEndpoint(eps *v1.Endpoints, node string) bool {
 		}
 	}
 	return false
+}
+
+// addrFamilyName returns whether lbIP is an IPV4 or IPV6 address.
+// The return value will be "IPv6" if the address is an IPV6 address,
+// "IPv4" if it's IPV4, or "unknown" if the family can't be determined.
+func addrFamilyName(lbIP net.IP) (lbIPFamily string) {
+	lbIPFamily = "-unknown"
+
+	if nil != lbIP.To16() {
+		lbIPFamily = "-IPv6"
+	}
+
+	if nil != lbIP.To4() {
+		lbIPFamily = "-IPv4"
+	}
+
+	return
 }

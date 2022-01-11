@@ -16,8 +16,6 @@
 package main
 
 import (
-	"net"
-
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
@@ -33,7 +31,6 @@ type controller struct {
 	logger     log.Logger
 	myNode     string
 	announcers []lbnodeagent.Announcer
-	svcIP      map[string]net.IP // service "namespace/name" -> assigned IP
 }
 
 // NewController configures a new controller. If error is non-nil then
@@ -45,7 +42,6 @@ func NewController(l log.Logger, myNode string) (*controller, error) {
 		announcers: []lbnodeagent.Announcer{
 			local.NewAnnouncer(l, myNode),
 		},
-		svcIP: map[string]net.IP{},
 	}
 
 	return con, nil
@@ -63,15 +59,35 @@ func (c *controller) SetClient(client *k8s.Client) {
 func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {
 	nsName := svc.Namespace + "/" + svc.Name
 
-	if len(svc.Status.LoadBalancer.Ingress) != 1 {
-		c.logger.Log("event", "noAddress", "service", nsName)
-		return c.deleteBalancer(nsName, "noIPAllocated")
+	// If the service isn't a LoadBalancer Type then we might need to
+	// clean up. It might have been a load balancer before and the user
+	// might have changed it (for example, to NodePort) to tell us to
+	// release the address.
+	if svc.Spec.Type != "LoadBalancer" && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
+
+		// Remove our annotations in case the user wants the service to be
+		// managed by something else
+		delete(svc.Annotations, purelbv1.BrandAnnotation)
+		delete(svc.Annotations, purelbv1.AnnounceAnnotation)
+		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-IPv4")
+		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-IPv6")
+		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-unknown")
+
+		c.logger.Log("op", "withdraw", "reason", "notLoadBalancerType", "node", c.myNode, "service", nsName)
+		c.DeleteBalancer(nsName)
+
+		// This is a "best-effort" operation. If it fails there's not much
+		// point in retrying because it's unlikely that anything will
+		// change to allow the retry to succeed. We'll just end up
+		// spamming the logs.
+		return k8s.SyncStateSuccess
 	}
 
-	lbIP := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
-	if lbIP == nil {
-		c.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", svc.Status.LoadBalancer.Ingress[0].IP)
-		return c.deleteBalancer(nsName, "invalidIP")
+	// If the service has no addresses assigned then there's nothing
+	// that we can do.
+	if len(svc.Status.LoadBalancer.Ingress) < 1 {
+		c.logger.Log("msg", "noAddressAllocated", "node", c.myNode, "service", nsName)
+		return k8s.SyncStateSuccess
 	}
 
 	// If we didn't allocate the address then we shouldn't announce it.
@@ -89,8 +105,6 @@ func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8
 		}
 	}
 
-	c.svcIP[nsName] = lbIP
-
 	return announceError
 }
 
@@ -98,26 +112,16 @@ func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8
 // nsName. nsName must be a namespaced name string, e.g.,
 // "purelb/example".
 func (c *controller) DeleteBalancer(nsName string) k8s.SyncState {
-	return c.deleteBalancer(nsName, "cluster event")
-}
-
-// deleteBalancer deletes any changes that we have made on behalf of
-// nsName. nsName must be a namespaced name string, e.g.,
-// "purelb/example".
-func (c *controller) deleteBalancer(nsName, reason string) k8s.SyncState {
-	ip, _ := c.svcIP[nsName]
 	retval := k8s.SyncStateSuccess
 
+	c.logger.Log("op", "deleteBalancer", "name", nsName)
+
 	for _, announcer := range c.announcers {
-		if err := announcer.DeleteBalancer(nsName, reason, ip); err != nil {
+		if err := announcer.DeleteBalancer(nsName, "cluster event", nil); err != nil {
 			c.logger.Log("op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
 			retval = k8s.SyncStateError
 		}
 	}
-
-	delete(c.svcIP, nsName)
-	// Spamming the log, temporatly removed.
-	// c.logger.Log("event", "serviceWithdrawn", "ip", c.svcIP[name], "reason", reason, "msg", "withdrawing service announcement")
 
 	return retval
 }

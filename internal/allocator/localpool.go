@@ -20,14 +20,27 @@ import (
 	"net"
 	"strings"
 
+	"github.com/go-kit/kit/log"
+	"github.com/vishvananda/netlink/nl"
 	v1 "k8s.io/api/core/v1"
+
+	"purelb.io/internal/local"
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 // Pool is the configuration of an IP address pool.
 type LocalPool struct {
-	// The addresses that are part of this pool. config.Parse guarantees
-	// that these are non-overlapping, both within and between pools.
-	addresses *IPRange
+	logger log.Logger
+
+	// v4Range contains the IPV4 addresses that are part of this
+	// pool. config.Parse guarantees that these are non-overlapping,
+	// both within and between pools.
+	v4Range *IPRange
+
+	// v6Range contains the IPV6 addresses that are part of this
+	// pool. config.Parse guarantees that these are non-overlapping,
+	// both within and between pools.
+	v6Range *IPRange
 
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
@@ -38,24 +51,110 @@ type LocalPool struct {
 	portsInUse map[string]map[Port]string // ip.String() -> Port -> svc
 }
 
-func NewLocalPool(rawrange string) (*LocalPool, error) {
-	iprange, err := NewIPRange(rawrange)
-	if err != nil {
-		return nil, err
-	}
-	return &LocalPool{
-		addresses:      &iprange,
+func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPool, error) {
+	pool := LocalPool{
+		logger:         log,
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
-	}, nil
+	}
+
+	// See if there's an IPV6 range in the spec
+	if spec.V6Pool != nil {
+		// Validate that Subnet is at least well-formed
+		if _, _, err := net.ParseCIDR(spec.V6Pool.Subnet); err != nil {
+			return nil, err
+		}
+		iprange, err := NewIPRange(spec.V6Pool.Pool)
+		if err != nil {
+			return nil, err
+		}
+		pool.v6Range = &iprange
+	}
+
+	// See if there's an IPV4 range in the spec
+	if spec.V4Pool != nil {
+		// Validate that Subnet is at least well-formed
+		if _, _, err := net.ParseCIDR(spec.V4Pool.Subnet); err != nil {
+			return nil, err
+		}
+		iprange, err := NewIPRange(spec.V4Pool.Pool)
+		if err != nil {
+			return nil, err
+		}
+		pool.v4Range = &iprange
+	}
+
+	// See if there's a top-level range in the spec
+	if spec.Pool != "" {
+		// Validate that Subnet is at least well-formed
+		if _, _, err := net.ParseCIDR(spec.Subnet); err != nil {
+			return nil, err
+		}
+		iprange, err := NewIPRange(spec.Pool)
+		if err == nil {
+			// We have a legacy (i.e., top-level) range, let's see where it
+			// goes
+			if iprange.Family() == nl.FAMILY_V6 {
+				if pool.v6Range == nil {
+					pool.v6Range = &iprange
+				} else {
+					return nil, fmt.Errorf("Invalid Spec: both legacy Pool and V6Pool are IPV6")
+				}
+			} else if iprange.Family() == nl.FAMILY_V4 {
+				if pool.v4Range == nil {
+					pool.v4Range = &iprange
+				} else {
+					return nil, fmt.Errorf("Invalid Spec: both legacy Pool and V4Pool are IPV4")
+				}
+			}
+		}
+	}
+
+	// Last check: if we don't have *any* valid range then it's a bad
+	// Spec
+	if pool.v6Range == nil && pool.v4Range == nil {
+		return nil, fmt.Errorf("no valid address range found")
+	}
+
+	return &pool, nil
 }
 
-// Available determines whether an address is available. The decision
+func (p LocalPool) Notify(service *v1.Service) error {
+	nsName := namespacedName(service)
+	sharingKey := &Key{Sharing: SharingKey(service)}
+	ports := Ports(service)
+
+	for _, ingress := range service.Status.LoadBalancer.Ingress {
+		ipstr := ingress.IP
+		ip := net.ParseIP(ipstr)
+		if ip == nil {
+			p.logger.Log("localpool", "notify-failure", "service", nsName, "ip", ipstr)
+			continue
+		}
+		p.logger.Log("localpool", "notify-existing", "service", nsName, "ip", ipstr)
+
+		p.sharingKeys[ipstr] = sharingKey
+		if p.addressesInUse[ipstr] == nil {
+			p.addressesInUse[ipstr] = map[string]bool{}
+		}
+		p.addressesInUse[ipstr][nsName] = true
+		if p.portsInUse[ipstr] == nil {
+			p.portsInUse[ipstr] = map[Port]string{}
+		}
+		for _, port := range ports {
+			p.portsInUse[ipstr][port] = nsName
+		}
+	}
+
+	return nil
+}
+
+// available determines whether an address is available. The decision
 // depends on whether another service is using the address, and if so,
 // whether this service can share the address with it. error will be
 // nil if the ip is available, and will contain an explanation if not.
-func (p LocalPool) Available(ip net.IP, service *v1.Service) error {
+func (p LocalPool) available(ip net.IP, service *v1.Service) error {
 	nsName := namespacedName(service)
 	key := &Key{Sharing: SharingKey(service)}
 	ports := Ports(service)
@@ -95,60 +194,74 @@ func (p LocalPool) Available(ip net.IP, service *v1.Service) error {
 	return nil
 }
 
-// AssignNext assigns a service to the next available IP.
-func (p LocalPool) AssignNext(service *v1.Service) (net.IP, error) {
-	for pos := p.First(); pos != nil; pos = p.Next(pos) {
+// AssignNext assigns the next available IP to service.
+func (p LocalPool) AssignNext(service *v1.Service) error {
+	families, err := p.whichFamilies(service)
+	if err != nil {
+		return err
+	}
+
+	if len(families) == 0 {
+		// Any address is OK so try V6 first then V4 and assign the first
+		// one that succeeds
+		if err := p.assignFamily(nl.FAMILY_V6, service); err == nil {
+			return err
+		}
+		if err := p.assignFamily(nl.FAMILY_V4, service); err == nil {
+			return err
+		}
+		return fmt.Errorf("no available addresses in pool")
+	}
+
+	// We have a specific set of families to assign
+	for _, family := range families {
+		if err := p.assignFamily(family, service); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p LocalPool) assignFamily(family int, service *v1.Service) error {
+	for pos := p.first(family); pos != nil; pos = p.next(pos) {
 		if err := p.Assign(pos, service); err == nil {
 			// we found an available address
-			return pos, err
+			return err
 		}
 	}
 
-	return nil, fmt.Errorf("no available addresses in pool")
+	return fmt.Errorf("no available addresses for service %s in family %d", namespacedName(service), family)
 }
 
 // Assign assigns a service to an IP.
 func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
-	nsName := namespacedName(service)
-
-	ipstr := ip.String()
-	sharingKey := &Key{Sharing: SharingKey(service)}
-	ports := Ports(service)
-
-	if err := p.Available(ip, service); err != nil {
+	if err := p.available(ip, service); err != nil {
 		return err
 	}
 
-	p.sharingKeys[ipstr] = sharingKey
-	if p.addressesInUse[ipstr] == nil {
-		p.addressesInUse[ipstr] = map[string]bool{}
-	}
-	p.addressesInUse[ipstr][nsName] = true
-	if p.portsInUse[ipstr] == nil {
-		p.portsInUse[ipstr] = map[Port]string{}
-	}
-	for _, port := range ports {
-		p.portsInUse[ipstr][port] = nsName
-	}
+	// we have an IP selected somehow, so program the data plane
+	addIngress(p.logger, service, ip)
 
-	return nil
+	// Update our internal allocation data structures
+	return p.Notify(service)
 }
 
 // Release releases an IP so it can be assigned again.
-func (p LocalPool) Release(ip net.IP, service string) error {
-	ipstr := ip.String()
-	delete(p.addressesInUse[ipstr], service)
-	if len(p.addressesInUse[ipstr]) == 0 {
-		delete(p.addressesInUse, ipstr)
-		delete(p.sharingKeys, ip.String())
-	}
-	for port, svc := range p.portsInUse[ipstr] {
-		if svc == service {
-			delete(p.portsInUse[ipstr], port)
+func (p LocalPool) Release(service string) error {
+	for ipstr, allocs := range p.addressesInUse {
+		delete(allocs, service)
+		if len(allocs) == 0 {
+			delete(p.addressesInUse, ipstr)
+			delete(p.sharingKeys, ipstr)
 		}
-	}
-	if len(p.portsInUse[ipstr]) == 0 {
-		delete(p.portsInUse, ipstr)
+		for port, svc := range p.portsInUse[ipstr] {
+			if svc == service {
+				delete(p.portsInUse[ipstr], port)
+			}
+		}
+		if len(p.portsInUse[ipstr]) == 0 {
+			delete(p.portsInUse, ipstr)
+		}
 	}
 	return nil
 }
@@ -179,31 +292,40 @@ func (p LocalPool) SharingKey(ip net.IP) *Key {
 	return p.sharingKeys[ip.String()]
 }
 
-// First returns the first (i.e., lowest-valued) net.IP within this
+// first returns the first (i.e., lowest-valued) net.IP within this
 // Pool, or nil if the pool has no addresses.
-func (p LocalPool) First() net.IP {
-	if p.addresses != nil {
-		return p.addresses.First()
+func (p LocalPool) first(family int) net.IP {
+	if family == nl.FAMILY_V6 && p.v6Range != nil {
+		return p.v6Range.First()
+	}
+	if family == nl.FAMILY_V4 && p.v4Range != nil {
+		return p.v4Range.First()
 	}
 	return nil
 }
 
-// Next returns the next net.IP within this Pool, or nil if the
+// next returns the next net.IP within this Pool, or nil if the
 // provided net.IP is the last address in the range.
-func (p LocalPool) Next(ip net.IP) net.IP {
-	if p.addresses != nil {
-		return p.addresses.Next(ip)
+func (p LocalPool) next(ip net.IP) net.IP {
+	if local.AddrFamily(ip) == nl.FAMILY_V6 {
+		return p.v6Range.Next(ip)
+	}
+	if local.AddrFamily(ip) == nl.FAMILY_V4 {
+		return p.v4Range.Next(ip)
 	}
 	return nil
 }
 
 // Size returns the total number of addresses in this pool if it's a
 // local pool, or 0 if it's a remote pool.
-func (p LocalPool) Size() uint64 {
-	if p.addresses != nil {
-		return p.addresses.Size()
+func (p LocalPool) Size() (size uint64) {
+	if p.v6Range != nil {
+		size += p.v6Range.Size()
 	}
-	return uint64(0)
+	if p.v4Range != nil {
+		size += p.v4Range.Size()
+	}
+	return
 }
 
 // Overlaps indicates whether the other Pool overlaps with this one
@@ -214,14 +336,48 @@ func (p LocalPool) Overlaps(other Pool) bool {
 	if !ok {
 		return false
 	}
-	return p.addresses.Overlaps(*lpool.addresses)
+
+	if p.v4Range != nil && lpool.v4Range != nil && p.v4Range.Overlaps(*lpool.v4Range) {
+		return true
+	}
+	if p.v6Range != nil && lpool.v6Range != nil && p.v6Range.Overlaps(*lpool.v6Range) {
+		return true
+	}
+
+	return false
 }
 
 // Contains indicates whether the provided net.IP represents an
 // address within this Pool.  It returns true if so, false otherwise.
 func (p LocalPool) Contains(ip net.IP) bool {
-	if p.addresses != nil {
-		return p.addresses.Contains(ip)
+	if p.v4Range != nil {
+		return p.v4Range.Contains(ip)
+	}
+	if p.v6Range != nil {
+		return p.v6Range.Contains(ip)
 	}
 	return false
+}
+
+// whichFamilies determines which IP families to assign to this
+// service. It returns an array of int containing nl.FAMILY_V? values,
+// one for each address to assign, in the order that they should be
+// assigned. An empty array means that any family is OK.
+func (p LocalPool) whichFamilies(service *v1.Service) ([]int, error) {
+	if len(service.Spec.IPFamilies) == 0 {
+		return []int{}, nil
+	}
+
+	families := []int{}
+	for _, family := range service.Spec.IPFamilies {
+		if family == v1.IPv6Protocol {
+			families = append(families, nl.FAMILY_V6)
+		} else if family == v1.IPv4Protocol {
+			families = append(families, nl.FAMILY_V4)
+		} else {
+			p.logger.Log("service %s unknown IP family %s", service.Name, family)
+		}
+	}
+
+	return families, nil
 }

@@ -20,19 +20,29 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"strings"
 
+	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/netbox"
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 // NetboxPool is the IP address pool that requests IP addresses from a
 // Netbox IPAM system.
 type NetboxPool struct {
+	logger log.Logger
+
 	url       string
 	userToken string
 	netbox    netbox.Netbox
+
+	// services caches the addresses that we've allocated to a specific
+	// service. It's used so we can release addresses when we're given
+	// only the service name. The key is the service's namespaced name,
+	// and the value is an array of the addresses assigned to that
+	// service.
+	services map[string][]net.IP
 
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
@@ -40,7 +50,7 @@ type NetboxPool struct {
 
 // NewNetboxPool initializes a new instance of NetboxPool. If error is
 // non-nil then the returned NetboxPool should not be used.
-func NewNetboxPool(rawurl string, tenant string) (*NetboxPool, error) {
+func NewNetboxPool(log log.Logger, spec purelbv1.ServiceGroupNetboxSpec) (*NetboxPool, error) {
 	// Make sure that we've got credentials for Netbox
 	userToken, ok := os.LookupEnv("NETBOX_USER_TOKEN")
 	if !ok {
@@ -48,89 +58,76 @@ func NewNetboxPool(rawurl string, tenant string) (*NetboxPool, error) {
 	}
 
 	// Validate the url from the service group
-	url, err := url.Parse(rawurl)
+	url, err := url.Parse(spec.URL)
 	if err != nil {
 		return nil, fmt.Errorf("Netbox URL invalid")
 	}
 
 	return &NetboxPool{
-		url:            rawurl,
+		logger:         log,
+		url:            url.String(),
 		userToken:      userToken,
-		netbox:         netbox.NewNetbox(url.String(), tenant, userToken),
+		netbox:         netbox.NewNetbox(url.String(), spec.Tenant, userToken),
+		services:       map[string][]net.IP{},
 		addressesInUse: map[string]map[string]bool{},
 	}, nil
 }
 
-// Available determines whether an address is available. The decision
-// depends on whether another service is using the address, and if so,
-// whether this service can share the address with it. error will be
-// nil if the ip is available, and will contain an explanation if not.
-func (p NetboxPool) Available(ip net.IP, service *v1.Service) error {
-	key := &Key{Sharing: SharingKey(service)}
+func (p NetboxPool) Notify(service *v1.Service) error {
+	nsName := namespacedName(service)
 
-	// No key: no sharing
-	if key == nil {
-		key = &Key{}
-	}
-
-	// Does the IP already have allocs? If so, needs to be the same
-	// sharing key, and have non-overlapping ports. If not, the
-	// proposed IP needs to be allowed by configuration.
-	if existingSK := p.SharingKey(ip); existingSK != nil {
-		if err := sharingOK(existingSK, key); err != nil {
-
-			// Sharing key is incompatible. However, if the owner is
-			// the same service, and is the only user of the IP, we
-			// can just update its sharing key in place.
-			var otherSvcs []string
-			for _, otherSvc := range p.servicesOnIP(ip) {
-				if otherSvc != service.Name {
-					otherSvcs = append(otherSvcs, otherSvc)
-				}
-			}
-			if len(otherSvcs) > 0 {
-				return fmt.Errorf("can't change sharing key for %q, address also in use by %s", service, strings.Join(otherSvcs, ","))
-			}
+	for _, ingress := range service.Status.LoadBalancer.Ingress {
+		ipstr := ingress.IP
+		ip := net.ParseIP(ipstr)
+		if ip == nil {
+			return fmt.Errorf("Service %s has unparseable IP %s", namespacedName(service), ipstr)
 		}
+
+		if p.addressesInUse[ipstr] == nil {
+			p.addressesInUse[ipstr] = map[string]bool{}
+		}
+		p.addressesInUse[ipstr][nsName] = true
+		p.services[nsName] = append(p.services[nsName], ip)
 	}
 
 	return nil
 }
 
 // AssignNext assigns a service to the next available IP.
-func (p NetboxPool) AssignNext(service *v1.Service) (net.IP, error) {
+func (p NetboxPool) AssignNext(service *v1.Service) error {
 	// fetch from netbox
 	cidr, err := p.netbox.Fetch()
 	if err != nil {
-		return nil, fmt.Errorf("no available IPs in pool %q", err)
+		return fmt.Errorf("no available IPs in pool %q", err)
 	}
 	ip, _, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing CIDR %s", cidr)
+		return fmt.Errorf("error parsing CIDR %s", cidr)
 	}
 	if err := p.Assign(ip, service); err != nil {
-		return nil, err
+		return err
 	}
-
-	return ip, nil
-}
-
-// Assign assigns a service to an IP.
-func (p NetboxPool) Assign(ip net.IP, service *v1.Service) error {
-	nsName := service.Namespace + "/" + service.Name
-	ipstr := ip.String()
-
-	if p.addressesInUse[ipstr] == nil {
-		p.addressesInUse[ipstr] = map[string]bool{}
-	}
-	p.addressesInUse[ipstr][nsName] = true
 
 	return nil
 }
 
+// Assign assigns a service to an IP.
+func (p NetboxPool) Assign(ip net.IP, service *v1.Service) error {
+	// we have an IP selected somehow, so program the data plane
+	addIngress(p.logger, service, ip)
+
+	// Update our internal allocation data structures
+	return p.Notify(service)
+}
+
 // Release releases an IP so it can be assigned again.
-func (p NetboxPool) Release(ip net.IP, service string) error {
-	ipstr := ip.String()
+func (p NetboxPool) Release(service string) error {
+	ip, haveIp := p.services[service]
+	if !haveIp {
+		return fmt.Errorf("trying to release an IP from unknown service %s", service)
+	}
+	delete(p.services, service)
+	ipstr := ip[0].String()
 	delete(p.addressesInUse[ipstr], service)
 	if len(p.addressesInUse[ipstr]) == 0 {
 		delete(p.addressesInUse, ipstr)
@@ -141,39 +138,7 @@ func (p NetboxPool) Release(ip net.IP, service string) error {
 // InUse returns the count of addresses that currently have services
 // assigned.
 func (p NetboxPool) InUse() int {
-	return -1
-}
-
-// servicesOnIP returns the names of the services who are assigned to
-// the address.
-func (p NetboxPool) servicesOnIP(ip net.IP) []string {
-	ipstr := ip.String()
-	svcs, has := p.addressesInUse[ipstr]
-	if has {
-		keys := make([]string, 0, len(svcs))
-		for k := range svcs {
-			keys = append(keys, k)
-		}
-		return keys
-	}
-	return []string{}
-}
-
-// SharingKey returns the "sharing key" for the specified address.
-func (p NetboxPool) SharingKey(ip net.IP) *Key {
-	return nil
-}
-
-// First returns the first (i.e., lowest-valued) net.IP within this
-// Pool, or nil if the pool has no addresses.
-func (p NetboxPool) First() net.IP {
-	return nil
-}
-
-// Next returns the next net.IP within this Pool, or nil if the
-// provided net.IP is the last address in the range.
-func (p NetboxPool) Next(ip net.IP) net.IP {
-	return nil
+	return len(p.addressesInUse)
 }
 
 // Size returns the total number of addresses in this pool if it's a

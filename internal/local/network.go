@@ -23,11 +23,11 @@ import (
 	"github.com/vishvananda/netlink/nl"
 )
 
-// addrFamily returns whether lbIP is an IPV4 or IPV6 address.  The
+// AddrFamily returns whether lbIP is an IPV4 or IPV6 address.  The
 // return value will be nl.FAMILY_V6 if the address is an IPV6
 // address, nl.FAMILY_V4 if it's IPV4, or 0 if the family can't be
 // determined.
-func addrFamily(lbIP net.IP) (lbIPFamily int) {
+func AddrFamily(lbIP net.IP) (lbIPFamily int) {
 	if nil != lbIP.To16() {
 		lbIPFamily = nl.FAMILY_V6
 	}
@@ -77,7 +77,7 @@ func findLocal(regex *regexp.Regexp, lbIP net.IP) (net.IPNet, netlink.Link, erro
 func checkLocal(intf *netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	var lbIPNet net.IPNet = net.IPNet{IP: lbIP}
 
-	family := addrFamily(lbIP)
+	family := AddrFamily(lbIP)
 
 	defaddrs, _ := netlink.AddrList(*intf, family)
 
@@ -229,7 +229,7 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 	if aggregation == "default" {
 
-		switch addrFamily(lbIP) {
+		switch AddrFamily(lbIP) {
 		case (nl.FAMILY_V4):
 
 			_, poolipnet, _ := net.ParseCIDR(subnet)
@@ -255,7 +255,7 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 	} else {
 
-		switch addrFamily(lbIP) {
+		switch AddrFamily(lbIP) {
 		case (nl.FAMILY_V4):
 
 			_, poolaggr, _ := net.ParseCIDR("0.0.0.0" + aggregation)
@@ -269,7 +269,7 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 		case (nl.FAMILY_V6):
 
-                        _, poolaggr, _ := net.ParseCIDR("::" + aggregation)
+			_, poolaggr, _ := net.ParseCIDR("::" + aggregation)
 
 			lbIPNet.Mask = poolaggr.Mask
 
