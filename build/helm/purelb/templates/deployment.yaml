@@ -6,7 +6,7 @@ metadata:
     {{- include "purelb.labels" . | nindent 4 }}
     app.kubernetes.io/component: allocator
   name: allocator
-  namespace: purelb
+  namespace: {{ .Release.Namespace }}
 spec:
   revisionHistoryLimit: 3
   selector:
