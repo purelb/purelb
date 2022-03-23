@@ -1,0 +1,43 @@
+{{/*
+Copyright 2021 Christophe Caillet
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/}}
+
+{{- if and (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") .Values.Prometheus.allocator.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: allocator-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+    helm.sh/chart: {{ template "purelb.chart" . }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: allocator
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    {{- if .Values.Prometheus.allocator.serviceMonitor.extraLabels }}
+    {{ toYaml .Values.Prometheus.allocator.serviceMonitor.extraLabels | nindent 4 }}
+    {{- end }}
+spec:
+  endpoints:
+    {{ .Values.Prometheus.allocator.serviceMonitor.endpoints | toYaml | nindent 4 }}
+  namespaceSelector:
+    matchNames:
+    - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: allocator
+{{- end }}
