@@ -58,6 +58,8 @@ priorityClassName: ""
 
 # Configurable values specific to lbnodeagent.
 lbnodeagent:
+  extlbint: null
+  localint: null
   resources:
     limits:
       memory: 100Mi
