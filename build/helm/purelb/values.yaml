@@ -164,6 +164,8 @@ priorityClassName: ""
 lbnodeagent:
   extlbint: null
   localint: null
+  podSecurityPolicy:
+    enabled: true
   resources:
     limits:
       memory: 100Mi
@@ -176,6 +178,8 @@ lbnodeagent:
 
 # Configurable values specific to allocator.
 allocator:
+  podSecurityPolicy:
+    enabled: true
   resources:
     limits:
       memory: 100Mi

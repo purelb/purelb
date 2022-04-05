@@ -1,3 +1,4 @@
+{{- if .Values.lbnodeagent.podSecurityPolicy.enabled }}
 ---
 apiVersion: policy/v1beta1
 kind: PodSecurityPolicy
@@ -36,3 +37,4 @@ spec:
   volumes:
   - secret
   - emptyDir
+{{- end }}
