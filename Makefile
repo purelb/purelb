@@ -92,6 +92,7 @@ helm:  ## Package PureLB using Helm
 	rm -rf build/build
 	mkdir -p build/build
 	cp -r build/helm/purelb build/build/
+	cp README.md build/build/purelb
 
 	sed \
 	--expression="s~DEFAULT_REPO~${REGISTRY_IMAGE}~" \
