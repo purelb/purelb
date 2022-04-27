@@ -13,13 +13,6 @@ image:
 nameOverride: ""
 fullnameOverride: ""
 
-# You may define here the lbnodeagent interfaces for announcing addresses
-# See https://purelb.gitlab.io/docs/install/config/
-LBNodeAgent:
-  name: "default"
-  extlbint: "lo"
-  localint: default
-
 Prometheus:
   allocator:
     # Metrics service
@@ -161,9 +154,10 @@ memberlistSecretKey: "8sb7ikA5qHwQQqxc"
 priorityClassName: ""
 
 # Configurable values specific to lbnodeagent.
+# See https://purelb.gitlab.io/docs/install/config/
 lbnodeagent:
-  extlbint: null
-  localint: null
+  localint: default
+  extlbint: kube-lb0
   podSecurityPolicy:
     enabled: true
   resources:
