@@ -8,5 +8,5 @@ metadata:
     {{- include "purelb.labels" . | nindent 4 }}
 spec:
   local:
-    localint: {{ .Values.lbnodeagent.localint | default "default" }}
-    extlbint: {{ .Values.lbnodeagent.extlbint | default "kube-lb0" }}
+    localint: {{ .Values.lbnodeagent.localint }}
+    extlbint: {{ .Values.lbnodeagent.extlbint }}
