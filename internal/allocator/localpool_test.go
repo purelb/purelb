@@ -34,6 +34,15 @@ var (
 	localPoolTestLogger = log.NewNopLogger()
 )
 
+func TestEmptyPool(t *testing.T) {
+	var svc v1.Service
+	p := LocalPool{}
+	assert.Equal(t, uint64(0), p.Size(), "incorrect pool size")
+	assert.Error(t, p.assignFamily(nl.FAMILY_V6, &svc))
+	assert.Error(t, p.assignFamily(nl.FAMILY_V4, &svc))
+	assert.Error(t, p.AssignNext(&svc))
+}
+
 func TestNewLocalPool(t *testing.T) {
 	var svc v1.Service
 	ip4 := "192.168.1.1"
@@ -274,6 +283,25 @@ func TestWhichFamilies(t *testing.T) {
 	families, err = p.whichFamilies(&svc)
 	assert.Nil(t, err, "whichFamilies() failed")
 	assert.ElementsMatch(t, []int{nl.FAMILY_V6, nl.FAMILY_V4}, families, "incorrect empty families")
+}
+
+func TestPoolContains(t *testing.T) {
+	containedV4 := net.ParseIP("192.168.1.1")
+	containedV6 := net.ParseIP("fc00::0042:0000")
+	outsideV4 := net.ParseIP("192.168.1.2")
+	outsideV6 := net.ParseIP("fc00::0043:0000")
+
+	p := LocalPool{}
+	assert.False(t, p.Contains(outsideV4))
+	assert.False(t, p.Contains(outsideV6))
+	assert.False(t, p.Contains(containedV4))
+	assert.False(t, p.Contains(containedV6))
+
+	p = mustDualStackPool(t, "192.168.1.1/32", "192.168.1.0/31", "fc00::0042:0000/120", "fc00::/7")
+	assert.False(t, p.Contains(outsideV4))
+	assert.False(t, p.Contains(outsideV6))
+	assert.True(t, p.Contains(containedV4))
+	assert.True(t, p.Contains(containedV6))
 }
 
 func sameStrings(t *testing.T, want []string, got []string) {
