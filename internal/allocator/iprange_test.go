@@ -106,6 +106,15 @@ func TestContains(t *testing.T) {
 	assert.False(t, ipr1.Contains(net.ParseIP("1.1.1.2")))
 }
 
+func TestContainedBy(t *testing.T) {
+	_, sn, err := net.ParseCIDR("1.1.1.2/31")
+	assert.Nil(t, err)
+
+	assert.True(t, mustIPRange(t, "1.1.1.2-1.1.1.3").ContainedBy(*sn))
+	assert.False(t, mustIPRange(t, "1.1.1.1-1.1.1.3").ContainedBy(*sn))
+	assert.False(t, mustIPRange(t, "1.1.1.2-1.1.1.4").ContainedBy(*sn))
+}
+
 func TestInt(t *testing.T) {
 	// anything greater than 64 bits gets truncated
 	assert.Equal(t, uint64(0x68), toInt(net.ParseIP("2001:db8::68")))

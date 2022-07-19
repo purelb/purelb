@@ -70,6 +70,12 @@ func (r IPRange) Contains(ip net.IP) bool {
 	return false
 }
 
+// ContainedBy indicates whether this range's addresses are contained
+// by cidr.
+func (p IPRange) ContainedBy(cidr net.IPNet) bool {
+	return cidr.Contains(p.from) && cidr.Contains(p.to)
+}
+
 // Family returns the IP family of the addresses in this range. The
 // return value will be nl.FAMILY_V6 if this is an IPV6 range,
 // nl.FAMILY_V4 if it's IPV4, or 0 if the family can't be determined.
