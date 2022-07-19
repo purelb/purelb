@@ -108,6 +108,27 @@ func TestNewLocalPool(t *testing.T) {
 	assert.Nil(t, err, "Address allocation failed")
 	// We specified both pools so the V6Pool should take precedence
 	assert.Equal(t, ip6, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
+
+	// Test invalid ranges
+	_, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+		V4Pool: &purelbv1.ServiceGroupAddressPool{
+			Pool:   "192.168.1.0-192.168.1.1",
+			Subnet: "192.168.1.0/32",
+		},
+	})
+	assert.Error(t, err, "pool isn't contained in its subnet")
+	_, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+		V6Pool: &purelbv1.ServiceGroupAddressPool{
+			Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3-2001:470:1f07:98e:d62a:159b:41a3:93d4",
+			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+		},
+	})
+	assert.Error(t, err, "pool isn't contained in its subnet")
+	_, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+		Pool:   "192.168.1.0-192.168.1.1",
+		Subnet: "192.168.1.0/32",
+	})
+	assert.Error(t, err, "pool isn't contained in its subnet")
 }
 
 func TestNotify(t *testing.T) {
@@ -310,7 +331,7 @@ func sameStrings(t *testing.T, want []string, got []string) {
 }
 
 func mustLocalPool(t *testing.T, r string) LocalPool {
-	p, err := NewLocalPool(allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{Pool: r, Subnet: "0.0.0.0/0"})
+	p, err := NewLocalPool(allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{Pool: r, Subnet: r})
 	if err != nil {
 		panic(err)
 	}

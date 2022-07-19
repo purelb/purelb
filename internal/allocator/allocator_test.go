@@ -872,7 +872,7 @@ func ports(ports ...string) []v1.ServicePort {
 
 func localServiceGroup(name string, pool string) *purelbv1.ServiceGroup {
 	return serviceGroup(name, purelbv1.ServiceGroupSpec{
-		Local: &purelbv1.ServiceGroupLocalSpec{Pool: pool, Subnet: "0.0.0.0/0"},
+		Local: &purelbv1.ServiceGroupLocalSpec{Pool: pool, Subnet: pool},
 	})
 }
 

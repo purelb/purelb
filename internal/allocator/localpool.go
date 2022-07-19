@@ -61,38 +61,56 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 
 	// See if there's an IPV6 range in the spec
 	if spec.V6Pool != nil {
-		// Validate that Subnet is at least well-formed
-		if _, _, err := net.ParseCIDR(spec.V6Pool.Subnet); err != nil {
-			return nil, err
-		}
 		iprange, err := NewIPRange(spec.V6Pool.Pool)
 		if err != nil {
 			return nil, err
 		}
+
+		// Validate that the range is contained by the subnet.
+		_, subnet, err := net.ParseCIDR(spec.V6Pool.Subnet)
+		if err != nil {
+			return nil, err
+		}
+		if !iprange.ContainedBy(*subnet) {
+			return nil, fmt.Errorf("IPV6 range %s not contained by network %s", iprange, subnet)
+		}
+
 		pool.v6Range = &iprange
 	}
 
 	// See if there's an IPV4 range in the spec
 	if spec.V4Pool != nil {
-		// Validate that Subnet is at least well-formed
-		if _, _, err := net.ParseCIDR(spec.V4Pool.Subnet); err != nil {
-			return nil, err
-		}
 		iprange, err := NewIPRange(spec.V4Pool.Pool)
 		if err != nil {
 			return nil, err
 		}
+
+		// Validate that the range is contained by the subnet.
+		_, subnet, err := net.ParseCIDR(spec.V4Pool.Subnet)
+		if err != nil {
+			return nil, err
+		}
+		if !iprange.ContainedBy(*subnet) {
+			return nil, fmt.Errorf("IPV4 range %s not contained by network %s", iprange, subnet)
+		}
+
 		pool.v4Range = &iprange
 	}
 
 	// See if there's a top-level range in the spec
 	if spec.Pool != "" {
 		// Validate that Subnet is at least well-formed
-		if _, _, err := net.ParseCIDR(spec.Subnet); err != nil {
-			return nil, err
-		}
 		iprange, err := NewIPRange(spec.Pool)
 		if err == nil {
+			// Validate that the range is contained by the subnet.
+			_, subnet, err := net.ParseCIDR(spec.Subnet)
+			if err != nil {
+				return nil, err
+			}
+			if !iprange.ContainedBy(*subnet) {
+				return nil, fmt.Errorf("Legacy range %s not contained by network %s", iprange, subnet)
+			}
+
 			// We have a legacy (i.e., top-level) range, let's see where it
 			// goes
 			if iprange.Family() == nl.FAMILY_V6 {

@@ -125,6 +125,11 @@ func (r IPRange) Size() uint64 {
 	return 1 + toInt(r.to.To16()) - toInt(r.from.To16())
 }
 
+// String returns a human-readable representation of this range.
+func (r IPRange) String() string {
+	return fmt.Sprintf("(%s - %s)", r.from.String(), r.to.String())
+}
+
 func parseCIDR(cidr string) (IPRange, error) {
 	var (
 		err     error
