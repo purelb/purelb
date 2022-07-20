@@ -32,15 +32,15 @@ import (
 type LocalPool struct {
 	logger log.Logger
 
-	// v4Range contains the IPV4 addresses that are part of this
+	// v4Ranges contains the IPV4 addresses that are part of this
 	// pool. config.Parse guarantees that these are non-overlapping,
 	// both within and between pools.
-	v4Range *IPRange
+	v4Ranges []*IPRange
 
-	// v6Range contains the IPV6 addresses that are part of this
+	// v6Ranges contains the IPV6 addresses that are part of this
 	// pool. config.Parse guarantees that these are non-overlapping,
 	// both within and between pools.
-	v6Range *IPRange
+	v6Ranges []*IPRange
 
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
@@ -59,15 +59,23 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 		portsInUse:     map[string]map[Port]string{},
 	}
 
-	// See if there's an IPV6 range in the spec
+	// If there ranges in the "legacy" slots, add them to the slices.
 	if spec.V6Pool != nil {
-		iprange, err := NewIPRange(spec.V6Pool.Pool)
+		spec.V6Pools = append(spec.V6Pools, spec.V6Pool)
+	}
+	if spec.V4Pool != nil {
+		spec.V4Pools = append(spec.V4Pools, spec.V4Pool)
+	}
+
+	// See if there's an IPV6 range in the spec
+	for _, v6pool := range spec.V6Pools {
+		iprange, err := NewIPRange(v6pool.Pool)
 		if err != nil {
 			return nil, err
 		}
 
 		// Validate that the range is contained by the subnet.
-		_, subnet, err := net.ParseCIDR(spec.V6Pool.Subnet)
+		_, subnet, err := net.ParseCIDR(v6pool.Subnet)
 		if err != nil {
 			return nil, err
 		}
@@ -75,18 +83,18 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 			return nil, fmt.Errorf("IPV6 range %s not contained by network %s", iprange, subnet)
 		}
 
-		pool.v6Range = &iprange
+		pool.v6Ranges = append(pool.v6Ranges, &iprange)
 	}
 
 	// See if there's an IPV4 range in the spec
-	if spec.V4Pool != nil {
-		iprange, err := NewIPRange(spec.V4Pool.Pool)
+	for _, v4pool := range spec.V4Pools {
+		iprange, err := NewIPRange(v4pool.Pool)
 		if err != nil {
 			return nil, err
 		}
 
 		// Validate that the range is contained by the subnet.
-		_, subnet, err := net.ParseCIDR(spec.V4Pool.Subnet)
+		_, subnet, err := net.ParseCIDR(v4pool.Subnet)
 		if err != nil {
 			return nil, err
 		}
@@ -94,7 +102,7 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 			return nil, fmt.Errorf("IPV4 range %s not contained by network %s", iprange, subnet)
 		}
 
-		pool.v4Range = &iprange
+		pool.v4Ranges = append(pool.v4Ranges, &iprange)
 	}
 
 	// See if there's a top-level range in the spec
@@ -114,14 +122,14 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 			// We have a legacy (i.e., top-level) range, let's see where it
 			// goes
 			if iprange.Family() == nl.FAMILY_V6 {
-				if pool.v6Range == nil {
-					pool.v6Range = &iprange
+				if pool.v6Ranges == nil {
+					pool.v6Ranges = append(pool.v6Ranges, &iprange)
 				} else {
 					return nil, fmt.Errorf("Invalid Spec: both legacy Pool and V6Pool are IPV6")
 				}
 			} else if iprange.Family() == nl.FAMILY_V4 {
-				if pool.v4Range == nil {
-					pool.v4Range = &iprange
+				if pool.v4Ranges == nil {
+					pool.v4Ranges = append(pool.v4Ranges, &iprange)
 				} else {
 					return nil, fmt.Errorf("Invalid Spec: both legacy Pool and V4Pool are IPV4")
 				}
@@ -131,7 +139,7 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 
 	// Last check: if we don't have *any* valid range then it's a bad
 	// Spec
-	if pool.v6Range == nil && pool.v4Range == nil {
+	if pool.v6Ranges == nil && pool.v4Ranges == nil {
 		return nil, fmt.Errorf("no valid address range found")
 	}
 
@@ -222,13 +230,10 @@ func (p LocalPool) AssignNext(service *v1.Service) error {
 	if len(families) == 0 {
 		// Any address is OK so try V6 first then V4 and assign the first
 		// one that succeeds
-		if err := p.assignFamily(nl.FAMILY_V6, service); err == nil {
+		if err = p.assignFamily(nl.FAMILY_V6, service); err == nil {
 			return err
 		}
-		if err := p.assignFamily(nl.FAMILY_V4, service); err == nil {
-			return err
-		}
-		return fmt.Errorf("no available addresses in pool")
+		return p.assignFamily(nl.FAMILY_V4, service)
 	}
 
 	// We have a specific set of families to assign
@@ -310,15 +315,19 @@ func (p LocalPool) SharingKey(ip net.IP) *Key {
 	return p.sharingKeys[ip.String()]
 }
 
-// first returns the first (i.e., lowest-valued) net.IP within this
-// Pool, or nil if the pool has no addresses.
+// first returns the first net.IP within this Pool, or nil if the pool
+// has no addresses. The "first" address is the lowest address in the
+// first range, although it might not be the lowest in the entire
+// pool.
 func (p LocalPool) first(family int) net.IP {
-	if family == nl.FAMILY_V6 && p.v6Range != nil {
-		return p.v6Range.First()
+	if family == nl.FAMILY_V6 && len(p.v6Ranges) > 0 {
+		return p.v6Ranges[0].First()
 	}
-	if family == nl.FAMILY_V4 && p.v4Range != nil {
-		return p.v4Range.First()
+	if family == nl.FAMILY_V4 && len(p.v4Ranges) > 0 {
+		return p.v4Ranges[0].First()
 	}
+
+	// We found neither V6 nor V4.
 	return nil
 }
 
@@ -326,22 +335,62 @@ func (p LocalPool) first(family int) net.IP {
 // provided net.IP is the last address in the range.
 func (p LocalPool) next(ip net.IP) net.IP {
 	if local.AddrFamily(ip) == nl.FAMILY_V6 {
-		return p.v6Range.Next(ip)
+		for i, v6 := range p.v6Ranges {
+			// If this range contains the current address, and has another
+			// address available then return that.
+			if v6.Contains(ip) {
+				next := v6.Next(ip)
+				if next != nil {
+					return next
+				}
+
+				// We've exhausted this range so let's see if there's another.
+				if i+1 >= len(p.v6Ranges) {
+					// There are no more ranges so we're done.
+					return nil
+				} else {
+					// This range is exhausted so the "next" address is the next
+					// range's "first".
+					return p.v6Ranges[i+1].First()
+				}
+			}
+		}
 	}
+
 	if local.AddrFamily(ip) == nl.FAMILY_V4 {
-		return p.v4Range.Next(ip)
+		for i, v4 := range p.v4Ranges {
+			// If this range contains the current address, and has another
+			// address available then return that.
+			if v4.Contains(ip) {
+				next := v4.Next(ip)
+				if next != nil {
+					return next
+				}
+
+				// We've exhausted this range so let's see if there's another.
+				if i+1 >= len(p.v4Ranges) {
+					// There are no more ranges so we're done.
+					return nil
+				} else {
+					// This range is exhausted so the "next" address is the next
+					// range's "first".
+					return p.v4Ranges[i+1].First()
+				}
+			}
+		}
 	}
+
 	return nil
 }
 
 // Size returns the total number of addresses in this pool if it's a
 // local pool, or 0 if it's a remote pool.
 func (p LocalPool) Size() (size uint64) {
-	if p.v6Range != nil {
-		size += p.v6Range.Size()
+	for _, v6 := range p.v6Ranges {
+		size += v6.Size()
 	}
-	if p.v4Range != nil {
-		size += p.v4Range.Size()
+	for _, v4 := range p.v4Ranges {
+		size += v4.Size()
 	}
 	return
 }
@@ -355,11 +404,19 @@ func (p LocalPool) Overlaps(other Pool) bool {
 		return false
 	}
 
-	if p.v4Range != nil && lpool.v4Range != nil && p.v4Range.Overlaps(*lpool.v4Range) {
-		return true
+	for _, v4 := range p.v4Ranges {
+		for _, otherV4 := range lpool.v4Ranges {
+			if v4.Overlaps(*otherV4) {
+				return true
+			}
+		}
 	}
-	if p.v6Range != nil && lpool.v6Range != nil && p.v6Range.Overlaps(*lpool.v6Range) {
-		return true
+	for _, v6 := range p.v6Ranges {
+		for _, otherV6 := range lpool.v6Ranges {
+			if v6.Overlaps(*otherV6) {
+				return true
+			}
+		}
 	}
 
 	return false
@@ -368,12 +425,17 @@ func (p LocalPool) Overlaps(other Pool) bool {
 // Contains indicates whether the provided net.IP represents an
 // address within this Pool.  It returns true if so, false otherwise.
 func (p LocalPool) Contains(ip net.IP) bool {
-	if p.v4Range != nil && ip.To4() != nil {
-		return p.v4Range.Contains(ip.To4())
+	for _, v4 := range p.v4Ranges {
+		if v4.Contains(ip) {
+			return true
+		}
 	}
-	if p.v6Range != nil && p.v6Range.Contains(ip) {
-		return true
+	for _, v6 := range p.v6Ranges {
+		if v6.Contains(ip) {
+			return true
+		}
 	}
+
 	return false
 }
 
