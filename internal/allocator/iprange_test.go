@@ -81,11 +81,12 @@ func TestFirst(t *testing.T) {
 }
 
 func TestNext(t *testing.T) {
-	ipr1 := mustIPRange(t, "1.1.1.0/31")
+	ipr1 := mustIPRange(t, "1.1.1.2/31")
+	assert.Nil(t, ipr1.Next(net.ParseIP("1.1.1.1")))
 	ip := ipr1.First()
-	assert.Equal(t, "1.1.1.0", ip.String())
+	assert.Equal(t, "1.1.1.2", ip.String())
 	ip = ipr1.Next(ip)
-	assert.Equal(t, "1.1.1.1", ip.String())
+	assert.Equal(t, "1.1.1.3", ip.String())
 	ip = ipr1.Next(ip)
 	assert.Nil(t, ip)
 }
