@@ -572,7 +572,7 @@ func TestAllocateAnyIP(t *testing.T) {
 	svc.Spec.LoadBalancerIP = "1000::4"
 	svc.ObjectMeta.Annotations[purelbv1.DesiredGroupAnnotation] = "not test1V6"
 	_, err = alloc.AllocateAnyIP(&svc)
-	assert.NotNil(t, err, "specific IP allocation should have failed")
+	assert.Error(t, err, "specific IP allocation should have failed")
 
 	// Allocate from specific pool succeeds
 	svc = service("t3", ports("tcp/80"), "")
@@ -586,13 +586,13 @@ func TestAllocateAnyIP(t *testing.T) {
 	svc = service("t4", ports("tcp/80"), "")
 	svc.ObjectMeta.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
 	_, err = alloc.AllocateAnyIP(&svc)
-	assert.NotNil(t, err, "allocation from empty pool should have failed")
+	assert.Error(t, err, "allocation from exhausted pool should have failed")
 
 	// There's no "default" pool so allocation fails if the pool isn't
 	// specified
 	svc = service("t5", ports("tcp/80"), "")
 	_, err = alloc.AllocateAnyIP(&svc)
-	assert.NotNil(t, err, "default pool IP allocation should have failed")
+	assert.Error(t, err, "default pool IP allocation should have failed")
 
 	// Add a "default" pool
 	alloc.pools[defaultPoolName] = mustLocalPool(t, "1.2.3.4/30")
@@ -768,7 +768,7 @@ func TestSpecificAddress(t *testing.T) {
 		},
 	}
 	_, err := alloc.AllocateAnyIP(svc1)
-	assert.NotNil(t, err, "address allocated but shouldn't be")
+	assert.Error(t, err, "address allocated but shouldn't be")
 
 	// Allocate a specific address in the default pool
 	svc1.Spec.LoadBalancerIP = "1.2.3.0"

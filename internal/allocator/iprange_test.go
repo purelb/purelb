@@ -25,9 +25,9 @@ import (
 
 func TestParseCIDR(t *testing.T) {
 	_, error := parseCIDR("1.1.1.1")
-	assert.NotNil(t, error, "1.1.1.1 should have failed to parse but didn't")
+	assert.Error(t, error, "1.1.1.1 should have failed to parse but didn't")
 	_, error = parseCIDR("1.1.X.1")
-	assert.NotNil(t, error, "1.1.X.1 should have failed to parse but didn't")
+	assert.Error(t, error, "1.1.X.1 should have failed to parse but didn't")
 
 	assertCIDR(t, "1.1.1.1/32", "1.1.1.1", "1.1.1.1")
 	assertCIDR(t, "1.1.1.0/31", "1.1.1.0", "1.1.1.1")
@@ -40,11 +40,11 @@ func TestParseCIDR(t *testing.T) {
 
 func TestParseRange(t *testing.T) {
 	_, error := parseFromTo("1.1.1.1")
-	assert.NotNil(t, error, "1.1.1.1 should have failed to parse but didn't")
+	assert.Error(t, error, "1.1.1.1 should have failed to parse but didn't")
 	_, error = parseFromTo("1.1.1.foo-1.1.1.2")
-	assert.NotNil(t, error, "1.1.1.foo-1.1.1.2 should have failed to parse but didn't")
+	assert.Error(t, error, "1.1.1.foo-1.1.1.2 should have failed to parse but didn't")
 	_, error = parseFromTo("1.1.1.1-1.1.1.foo")
-	assert.NotNil(t, error, "1.1.1.1-1.1.1.foo should have failed to parse but didn't")
+	assert.Error(t, error, "1.1.1.1-1.1.1.foo should have failed to parse but didn't")
 
 	assertFromTo(t, "1.1.1.0-1.1.1.1", "1.1.1.0", "1.1.1.1")
 	assertFromTo(t, " 1.1.1.1 - 1.1.1.1 ", "1.1.1.1", "1.1.1.1")

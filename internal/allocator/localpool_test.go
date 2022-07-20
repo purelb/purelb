@@ -53,10 +53,9 @@ func TestNewLocalPool(t *testing.T) {
 		Pool:   "192.168.1.1/32",
 		Subnet: "192.168.1.1/32",
 	})
-	assert.Nil(t, err, "Pool instantiation failed")
+	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
-	err = p.AssignNext(&svc)
-	assert.Nil(t, err, "Address allocation failed")
+	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
 	assert.Equal(t, ip4, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
 	// Test IPV4 config
@@ -66,10 +65,9 @@ func TestNewLocalPool(t *testing.T) {
 			Subnet: "192.168.1.1/32",
 		},
 	})
-	assert.Nil(t, err, "Pool instantiation failed")
+	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
-	err = p.AssignNext(&svc)
-	assert.Nil(t, err, "Address allocation failed")
+	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
 	// We specified the top-level Pool and the V4Pool so the V4Pool
 	// should take precedence
 	assert.Equal(t, ip4, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
@@ -83,10 +81,9 @@ func TestNewLocalPool(t *testing.T) {
 			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
 		},
 	})
-	assert.Nil(t, err, "Pool instantiation failed")
+	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
-	err = p.AssignNext(&svc)
-	assert.Nil(t, err, "Address allocation failed")
+	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
 	// We specified the top-level Pool and the V6Pool so the V6Pool
 	// should take precedence
 	assert.Equal(t, ip6, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
@@ -102,10 +99,9 @@ func TestNewLocalPool(t *testing.T) {
 			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
 		},
 	})
-	assert.Nil(t, err, "Pool instantiation failed")
+	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
-	err = p.AssignNext(&svc)
-	assert.Nil(t, err, "Address allocation failed")
+	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
 	// We specified both pools so the V6Pool should take precedence
 	assert.Equal(t, ip6, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
@@ -141,12 +137,11 @@ func TestNotify(t *testing.T) {
 
 	// Tell the pool that ip1 is in use
 	addIngress(localPoolTestLogger, &svc1, ip1)
-	assert.Nil(t, p.Notify(&svc1), "Notify failed")
+	assert.NoError(t, p.Notify(&svc1), "Notify failed")
 
 	// Allocate an address to svc2 - it should get ip2 since ip1 is in
 	// use by svc1
-	err := p.AssignNext(&svc2)
-	assert.Nil(t, err, "Assigning an address failed")
+	assert.NoError(t, p.AssignNext(&svc2), "Assigning an address failed")
 	assert.Equal(t, ip2.String(), svc2.Status.LoadBalancer.Ingress[0].IP, "svc2 was assigned the wrong address")
 }
 
@@ -200,21 +195,21 @@ func TestSharing(t *testing.T) {
 
 	// Allocate addresses to svc1 and svc2 and verify that they both
 	// have the same ones
-	assert.Nil(t, p.AssignNext(&svc1))
+	assert.NoError(t, p.AssignNext(&svc1))
 	assert.Equal(t, 2, len(svc1.Status.LoadBalancer.Ingress))
 	assert.Equal(t, key1, *p.sharingKeys[svc1.Status.LoadBalancer.Ingress[0].IP])
 	assert.Equal(t, key1, *p.sharingKeys[svc1.Status.LoadBalancer.Ingress[1].IP])
-	assert.Nil(t, p.AssignNext(&svc2))
+	assert.NoError(t, p.AssignNext(&svc2))
 	assert.EqualValues(t, svc1.Status.LoadBalancer.Ingress, svc2.Status.LoadBalancer.Ingress, "svc1 and svc2 have different addresses")
 
 	p.Release(namespacedName(&svc1))
 	// svc2 is still using the IPs
 	assert.Equal(t, key1, *p.sharingKeys[svc2.Status.LoadBalancer.Ingress[1].IP])
-	assert.NotNil(t, p.Assign(ip4, &svc3)) // svc3 is blocked by svc2 (same port)
+	assert.Error(t, p.Assign(ip4, &svc3)) // svc3 is blocked by svc2 (same port)
 	p.Release(namespacedName(&svc2))
 	// the IP is unused
 	assert.Nil(t, p.SharingKey(ip4))
-	assert.Nil(t, p.Assign(ip4, &svc3)) // svc2 is out of the picture so svc3 can use the address
+	assert.NoError(t, p.Assign(ip4, &svc3)) // svc2 is out of the picture so svc3 can use the address
 }
 
 func TestAvailable(t *testing.T) {
@@ -223,24 +218,24 @@ func TestAvailable(t *testing.T) {
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
 
 	// no assignment, should be available
-	assert.Nil(t, p.available(ip, &svc1))
+	assert.NoError(t, p.available(ip, &svc1))
 
 	p.Assign(ip, &svc1)
 
 	// same service can "share" with or without the key
-	assert.Nil(t, p.available(ip, &svc1))
+	assert.NoError(t, p.available(ip, &svc1))
 	svc1X := service("svc1", ports("tcp/80"), "XshareX")
-	assert.Nil(t, p.available(ip, &svc1X))
+	assert.NoError(t, p.available(ip, &svc1X))
 
 	svc2 := service("svc2", ports("tcp/80"), "")
 	// other service, no key: no share
-	assert.NotNil(t, p.available(ip, &svc2))
+	assert.Error(t, p.available(ip, &svc2))
 	// other service, has key, same port: no share
 	svc2 = service("svc2", ports("tcp/80"), "sharing1")
-	assert.NotNil(t, p.available(ip, &svc2))
+	assert.Error(t, p.available(ip, &svc2))
 	// other service, has key, different port: share
 	svc2 = service("svc2", ports("tcp/25"), "sharing1")
-	assert.Nil(t, p.available(ip, &svc2))
+	assert.NoError(t, p.available(ip, &svc2))
 }
 
 func TestAssignNext(t *testing.T) {
@@ -250,21 +245,17 @@ func TestAssignNext(t *testing.T) {
 	svc3 := service("svc3", ports("tcp/80"), "sharing2")
 
 	// The pool has two addresses; allocate both of them
-	err := p.AssignNext(&svc1)
-	assert.Nil(t, err)
+	assert.NoError(t, p.AssignNext(&svc1))
 	assert.Equal(t, "192.168.1.0", svc1.Status.LoadBalancer.Ingress[0].IP, "svc1 was assigned the wrong address")
-	err = p.AssignNext(&svc2)
-	assert.Nil(t, err)
+	assert.NoError(t, p.AssignNext(&svc2))
 	assert.Equal(t, "192.168.1.1", svc2.Status.LoadBalancer.Ingress[0].IP, "svc2 was assigned the wrong address")
 
 	// Same port: should fail
-	err = p.AssignNext(&svc3)
-	assert.NotNil(t, err)
+	assert.Error(t, p.AssignNext(&svc3))
 
 	// Shared key, different ports: should succeed
 	svc3.Spec.Ports = ports("tcp/25")
-	err = p.AssignNext(&svc3)
-	assert.Nil(t, err)
+	assert.NoError(t, p.AssignNext(&svc3))
 }
 
 func TestPoolSize(t *testing.T) {
@@ -278,7 +269,7 @@ func TestPoolSize(t *testing.T) {
 			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
 		},
 	})
-	assert.Nil(t, err, "Pool instantiation failed")
+	assert.NoError(t, err, "Pool instantiation failed")
 	assert.Equal(t, uint64(3), p.Size(), "Pool Size() failed")
 }
 
@@ -292,17 +283,17 @@ func TestWhichFamilies(t *testing.T) {
 
 	svc.Spec.IPFamilies = []v1.IPFamily{}
 	families, err = p.whichFamilies(&svc)
-	assert.Nil(t, err, "whichFamilies() failed")
+	assert.NoError(t, err, "whichFamilies() failed")
 	assert.ElementsMatch(t, []int{}, families, "incorrect empty families")
 
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
 	families, err = p.whichFamilies(&svc)
-	assert.Nil(t, err, "whichFamilies() failed")
+	assert.NoError(t, err, "whichFamilies() failed")
 	assert.ElementsMatch(t, []int{nl.FAMILY_V4}, families, "incorrect empty families")
 
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol, v1.IPv4Protocol}
 	families, err = p.whichFamilies(&svc)
-	assert.Nil(t, err, "whichFamilies() failed")
+	assert.NoError(t, err, "whichFamilies() failed")
 	assert.ElementsMatch(t, []int{nl.FAMILY_V6, nl.FAMILY_V4}, families, "incorrect empty families")
 }
 
