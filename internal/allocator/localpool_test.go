@@ -127,6 +127,30 @@ func TestNewLocalPool(t *testing.T) {
 	assert.Error(t, err, "pool isn't contained in its subnet")
 }
 
+func TestFirstNext(t *testing.T) {
+	p := mustDualStackPool(t, []string{"192.168.2.0/31", "192.168.1.3/32", "192.168.1.2/32"}, []string{"fc00::0043:0000/128", "fc00::0042:0000/128"})
+
+	first := p.first(nl.FAMILY_V4)
+	next := first
+	assert.Equal(t, net.ParseIP("192.168.2.0"), first, "first() returned an incorrect address")
+	next = p.next(next)
+	assert.Equal(t, net.ParseIP("192.168.2.1"), next, "next() returned an incorrect address")
+	next = p.next(next)
+	assert.Equal(t, net.ParseIP("192.168.1.3"), next, "next() returned an incorrect address")
+	next = p.next(next)
+	assert.Equal(t, net.ParseIP("192.168.1.2"), next, "next() returned an incorrect address")
+	next = p.next(next)
+	assert.Nil(t, next, "next() returned an incorrect address")
+
+	first = p.first(nl.FAMILY_V6)
+	next = first
+	assert.Equal(t, net.ParseIP("fc00::0043:0000"), first, "first() returned an incorrect address")
+	next = p.next(next)
+	assert.Equal(t, net.ParseIP("fc00::0042:0000"), next, "next() returned an incorrect address")
+	next = p.next(next)
+	assert.Nil(t, next, "next() returned an incorrect address")
+}
+
 func TestNotify(t *testing.T) {
 	ip1 := net.ParseIP("192.168.1.2")
 	ip2 := net.ParseIP("192.168.1.3")
@@ -183,7 +207,7 @@ func TestServicesOn(t *testing.T) {
 
 func TestSharing(t *testing.T) {
 	ip4 := net.ParseIP("192.168.1.1")
-	p := mustDualStackPool(t, "192.168.1.1/32", "192.168.1.0/31", "fc00::0042:0000/120", "fc00::/7")
+	p := mustDualStackPool(t, []string{"192.168.1.1/32"}, []string{"fc00::0042:0000/120"})
 	svc1 := service("svc1", ports("tcp/80"), key1.Sharing)
 	svc1.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol, v1.IPv4Protocol}
 	svc2 := service("svc2", ports("tcp/81"), key1.Sharing)
@@ -213,7 +237,7 @@ func TestSharing(t *testing.T) {
 }
 
 func TestAvailable(t *testing.T) {
-	p := mustLocalPool(t, "192.168.1.1/32")
+	p := mustDualStackPool(t, []string{"192.168.1.1/32"}, []string{})
 	ip := net.ParseIP("192.168.1.1")
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
 
@@ -239,7 +263,7 @@ func TestAvailable(t *testing.T) {
 }
 
 func TestAssignNext(t *testing.T) {
-	p := mustLocalPool(t, "192.168.1.0/31")
+	p := mustDualStackPool(t, []string{"192.168.1.0/32", "192.168.1.1/32"}, []string{})
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
 	svc2 := service("svc2", ports("tcp/80"), "sharing2")
 	svc3 := service("svc3", ports("tcp/80"), "sharing2")
@@ -309,7 +333,7 @@ func TestPoolContains(t *testing.T) {
 	assert.False(t, p.Contains(containedV4))
 	assert.False(t, p.Contains(containedV6))
 
-	p = mustDualStackPool(t, "192.168.1.1/32", "192.168.1.0/31", "fc00::0042:0000/120", "fc00::/7")
+	p = mustDualStackPool(t, []string{"192.168.1.1/32"}, []string{"fc00::0042:0000/120"})
 	assert.False(t, p.Contains(outsideV4))
 	assert.False(t, p.Contains(outsideV6))
 	assert.True(t, p.Contains(containedV4))
@@ -329,8 +353,15 @@ func mustLocalPool(t *testing.T, r string) LocalPool {
 	return *p
 }
 
-func mustDualStackPool(t *testing.T, pool4 string, subnet4 string, pool6 string, subnet6 string) LocalPool {
-	p, err := NewLocalPool(allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{V4Pool: &purelbv1.ServiceGroupAddressPool{Pool: pool4, Subnet: subnet4}, V6Pool: &purelbv1.ServiceGroupAddressPool{Pool: pool6, Subnet: subnet6}})
+func mustDualStackPool(t *testing.T, pools4 []string, pools6 []string) LocalPool {
+	spec := purelbv1.ServiceGroupLocalSpec{}
+	for _, pool6 := range pools6 {
+		spec.V6Pools = append(spec.V6Pools, &purelbv1.ServiceGroupAddressPool{Pool: pool6, Subnet: pool6})
+	}
+	for _, pool4 := range pools4 {
+		spec.V4Pools = append(spec.V4Pools, &purelbv1.ServiceGroupAddressPool{Pool: pool4, Subnet: pool4})
+	}
+	p, err := NewLocalPool(allocatorTestLogger, spec)
 	if err != nil {
 		panic(err)
 	}

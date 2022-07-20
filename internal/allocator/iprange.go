@@ -90,9 +90,10 @@ func (r IPRange) First() net.IP {
 }
 
 // Next returns the next net.IP within this IPRange, or nil if the
-// provided net.IP is the last address in the range.
+// provided net.IP is the last address in the range or is not
+// contained by this range.
 func (r IPRange) Next(ip net.IP) net.IP {
-	if bytes.Compare(ip.To16(), r.to.To16()) >= 0 {
+	if bytes.Compare(ip.To16(), r.from.To16()) < 0 || bytes.Compare(ip.To16(), r.to.To16()) >= 0 {
 		return nil
 	}
 	next := dup(ip)

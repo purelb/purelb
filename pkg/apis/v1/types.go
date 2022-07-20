@@ -77,6 +77,11 @@ type ServiceGroupLocalSpec struct {
 	V4Pool *ServiceGroupAddressPool `json:"v4pool,omitempty"`
 	// +optional
 	V6Pool *ServiceGroupAddressPool `json:"v6pool,omitempty"`
+
+	// +optional
+	V4Pools []*ServiceGroupAddressPool `json:"v4pools,omitempty"`
+	// +optional
+	V6Pools []*ServiceGroupAddressPool `json:"v6pools,omitempty"`
 }
 
 // FamilyAggregation returns this Spec's aggregation value that
