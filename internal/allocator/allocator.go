@@ -51,9 +51,11 @@ func (a *Allocator) SetClient(client k8s.ServiceEvent) {
 
 // SetPools updates the set of address pools that the allocator owns.
 func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
-	pools, err := a.parseConfig(groups)
-	if err != nil {
-		return err
+	pools := a.parseGroups(groups)
+
+	// If we have groups but they're all bogus then let the user know.
+	if len(groups) > 0 && len(pools) == 0 {
+		return fmt.Errorf("No valid pools found")
 	}
 
 	for n := range a.pools {
@@ -226,20 +228,28 @@ func poolFor(pools map[string]Pool, ip net.IP) string {
 	return ""
 }
 
-func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Pool, error) {
+// parseGroups parses a slice of ServiceGroups and returns a map of
+// the pools specified by those groups. We try to return any good
+// pools so if a pool fails our validation it won't be in the output,
+// but other valid pools will be. Therefore there might be fewer pools
+// in the output than there are groups in the input.
+func (a *Allocator) parseGroups(groups []*purelbv1.ServiceGroup) map[string]Pool {
 	pools := map[string]Pool{}
 
-	for i, group := range groups {
+Group:
+	for _, group := range groups {
 		pool, err := parsePool(a.logger, group.Name, group.Spec)
 		if err != nil {
 			a.client.Errorf(group, "ParseFailed", "Failed to parse: %s", err)
-			return nil, fmt.Errorf("parsing address pool #%d: %s", i+1, err)
+			a.logger.Log("failure", "parsing ServiceGroup address pool", "service-group", group.Name, "message", err)
+			continue Group
 		}
 
 		// Check that the pool isn't already defined
 		if pools[group.Name] != nil {
 			a.client.Errorf(group, "ParseFailed", "Duplicate definition of pool %s", group.Name)
-			return nil, fmt.Errorf("duplicate definition of pool %q", group.Name)
+			a.logger.Log("failure", "duplicate definition of ServiceGroup address pool", "service-group", group.Name)
+			continue Group
 		}
 
 		// Check that this pool doesn't overlap with any of the previous
@@ -247,7 +257,8 @@ func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Poo
 		for name, r := range pools {
 			if pool.Overlaps(r) {
 				a.client.Errorf(group, "ParseFailed", "Pool overlaps with already defined pool \"%s\"", name)
-				return nil, fmt.Errorf("pool %q overlaps with already defined pool %q", group.Name, name)
+				a.logger.Log("failure", "ServiceGroup address pool overlaps with already defined pool", "service-group", group.Name, "overlaps-with", name)
+				continue Group
 			}
 		}
 
@@ -255,5 +266,5 @@ func (a *Allocator) parseConfig(groups []*purelbv1.ServiceGroup) (map[string]Poo
 		a.client.Infof(group, "Parsed", "ServiceGroup parsed successfully")
 	}
 
-	return pools, nil
+	return pools
 }
