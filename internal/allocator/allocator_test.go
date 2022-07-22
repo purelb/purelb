@@ -16,11 +16,13 @@ package allocator
 
 import (
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/go-kit/kit/log"
+	"github.com/google/go-cmp/cmp"
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
@@ -849,6 +851,94 @@ func TestSharingSimple(t *testing.T) {
 	assert.Nil(t, err, "error allocating address")
 	assert.Equal(t, defaultPoolName, pool, "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.0", svc3.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
+}
+
+func TestParseGroups(t *testing.T) {
+	tests := []struct {
+		desc string
+		raw  []*purelbv1.ServiceGroup
+		want map[string]Pool
+	}{
+		{desc: "empty config",
+			raw:  []*purelbv1.ServiceGroup{},
+			want: map[string]Pool{},
+		},
+
+		{desc: "config using all features",
+			raw: []*purelbv1.ServiceGroup{
+				localServiceGroup("pool1", "10.20.0.0/16"),
+				localServiceGroup("pool2", "30.0.0.0/8"),
+				localServiceGroup("pool3", "40.0.0.0/25"),
+				localServiceGroup("pool4", "2001:db8::/126"),
+			},
+			want: map[string]Pool{
+				"pool1": mustLocalPool(t, "10.20.0.0/16"),
+				"pool2": mustLocalPool(t, "30.0.0.0/8"),
+				"pool3": mustLocalPool(t, "40.0.0.0/25"),
+				"pool4": mustLocalPool(t, "2001:db8::/126"),
+			},
+		},
+
+		{desc: "invalid CIDR",
+			raw: []*purelbv1.ServiceGroup{
+				localServiceGroup("pool1", "100.200.300.400/24"),
+			},
+			want: map[string]Pool{},
+		},
+
+		{desc: "invalid CIDR prefix length",
+			raw: []*purelbv1.ServiceGroup{
+				localServiceGroup("pool1", "1.2.3.0/33"),
+			},
+			want: map[string]Pool{},
+		},
+
+		{desc: "duplicate group name",
+			raw: []*purelbv1.ServiceGroup{
+				localServiceGroup("pool1", "10.20.0.0/16"),
+				localServiceGroup("pool1", "30.0.0.0/8"),
+			},
+			want: map[string]Pool{
+				"pool1": mustLocalPool(t, "10.20.0.0/16"),
+			},
+		},
+
+		{desc: "duplicate CIDRs",
+			raw: []*purelbv1.ServiceGroup{
+				localServiceGroup("pool1", "10.0.0.0/8"),
+				localServiceGroup("pool2", "10.0.0.0/8"),
+			},
+			want: map[string]Pool{
+				"pool1": mustLocalPool(t, "10.0.0.0/8"),
+			},
+		},
+
+		{desc: "overlapping CIDRs",
+			raw: []*purelbv1.ServiceGroup{
+				localServiceGroup("pool1", "10.0.0.0/8"),
+				localServiceGroup("pool2", "10.0.0.0/16"),
+			},
+			want: map[string]Pool{
+				"pool1": mustLocalPool(t, "10.0.0.0/8"),
+			},
+		},
+	}
+
+	k := &testK8S{t: t}
+	alloc := New(log.NewNopLogger())
+	alloc.client = k
+
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			got := alloc.parseGroups(test.raw)
+			iprangeComparer := cmp.Comparer(func(x, y IPRange) bool {
+				return reflect.DeepEqual(x.from, y.from) && reflect.DeepEqual(x.to, y.to)
+			})
+			if diff := cmp.Diff(test.want, got, iprangeComparer, cmp.AllowUnexported(LocalPool{})); diff != "" {
+				t.Errorf("%q: parse returned wrong result (-want, +got)\n%s", test.desc, diff)
+			}
+		})
+	}
 }
 
 // Some helpers
