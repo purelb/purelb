@@ -15,7 +15,7 @@ RUN go build -tags 'osusergo netgo' -o ${bin} \
 -ldflags "-X purelb.io/internal/logging.release=${release} -X purelb.io/internal/logging.commit=${commit} -X purelb.io/internal/logging.branch=${branch}" \
 ./cmd/${cmd}/
 
-FROM registry.access.redhat.com/ubi8-minimal:8.5 as runtime
+FROM registry.access.redhat.com/ubi8-minimal:8.6-854 as runtime
 ARG cmd
 ARG branch
 ARG commit
