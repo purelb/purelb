@@ -29,6 +29,14 @@ const (
 	// allocate this service's IP address.
 	DesiredGroupAnnotation string = "purelb.io/service-group"
 
+	// EgressAnnotation is the key for the annotation that indicates
+	// that PureLB should masquerade traffic coming from LoadBalancer
+	// service pods so that it appears to come from the public load
+	// balancer IP instead of the pod address. The value doesn't matter
+	// - the existence of the annotation will trigger PureLB to manage
+	// egress traffic.
+	EgressAnnotation string = "purelb.io/masquerade-source"
+
 	// Annotations that PureLB sets that might be useful to users.
 
 	// BrandAnnotation is the key for the PureLB "brand" annotation.
@@ -49,4 +57,9 @@ const (
 	// family name will be appended because in a dual-stack service we
 	// might announce different IP addresses on different hosts.
 	AnnounceAnnotation string = "purelb.io/announcing"
+
+	// RouteTableAnnotation holds the number of the service's egress
+	// gateway routing table. This is allocated by the allocator and
+	// must be unique throughout the k8s cluster.
+	RouteTableAnnotation string = "purelb.io/route-table"
 )

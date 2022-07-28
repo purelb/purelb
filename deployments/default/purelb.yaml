@@ -235,7 +235,7 @@ spec:
             - NET_RAW
             drop:
             - ALL
-          readOnlyRootFilesystem: true
+          readOnlyRootFilesystem: false
       hostNetwork: true
       nodeSelector:
         kubernetes.io/os: linux

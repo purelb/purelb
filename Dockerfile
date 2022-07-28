@@ -24,7 +24,7 @@ LABEL branch=${branch}
 LABEL commit=${commit}
 
 # The egress announcer needs iptables
-RUN apt-get update && apt-get install -y iptables
+RUN apt-get update && apt-get install -y iptables curl telnet
 
 COPY --from=builder /tmp/allocator /usr/local/bin/allocator
 COPY --from=builder /tmp/lbnodeagent /usr/local/bin/lbnodeagent

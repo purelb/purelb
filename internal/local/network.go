@@ -21,6 +21,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
+	v1 "k8s.io/api/core/v1"
 )
 
 // AddrFamily returns whether lbIP is an IPV4 or IPV6 address.  The
@@ -280,5 +281,14 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 		}
 	}
 
+	return nil
+}
+
+func nodeAddress(node v1.Node) *string {
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == v1.NodeInternalIP {
+			return &addr.Address
+		}
+	}
 	return nil
 }

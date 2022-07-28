@@ -28,6 +28,7 @@ import (
 
 	"github.com/go-kit/kit/log"
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -72,6 +73,7 @@ type ServiceEvent interface {
 	Infof(obj runtime.Object, desc, msg string, args ...interface{})
 	Errorf(obj runtime.Object, desc, msg string, args ...interface{})
 	ForceSync()
+	Nodes() (map[string]v1.Node, error)
 }
 
 // SyncState is the result of calling synchronization callbacks.
@@ -299,6 +301,23 @@ func (c *Client) ForceSync() {
 			c.queue.AddRateLimited(svcKey(k))
 		}
 	}
+}
+
+// Nodes returns a map of this cluster's nodes. If error is non-nil
+// then the map isn't valid.
+func (c *Client) Nodes() (map[string]v1.Node, error) {
+	nodeMap := map[string]v1.Node{}
+
+	nl, err := c.client.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return nodeMap, err
+	}
+
+	for _, node := range nl.Items {
+		nodeMap[node.Name] = node
+	}
+
+	return nodeMap, nil
 }
 
 // maybeUpdateService writes the "is" service back to the cluster, but

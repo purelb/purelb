@@ -225,6 +225,9 @@ type LBNodeAgent struct {
 // see the "config/" directory in the PureLB source tree.
 type LBNodeAgentSpec struct {
 	Local *LBNodeAgentLocalSpec `json:"local"`
+
+	// +optional
+	Egress *LBNodeAgentEgressSpec `json:"egress"`
 }
 
 // LBNodeAgentLocalSpec configures the announcers to announce service
@@ -248,6 +251,25 @@ type LBNodeAgentLocalSpec struct {
 	// +kubebuilder:default="kube-lb0"
 	// +optional
 	ExtLBInterface string `json:"extlbint"`
+}
+
+// LBNodeAgentEgressSpec configures the egress announcer to SNAT
+// traffic from service endpoint pods so that it comes from the
+// service's IP address instead of the pod's IP.
+type LBNodeAgentEgressSpec struct {
+	// DontNAT specifies the networks that the egress announcer should
+	// not NAT. Typically these would be at least the cluster's pod CIDR
+	// and service CIDR.
+	DontNAT []string `json:"dontNAT"`
+
+	// CNIInterface specifies the name of the interface to use for local
+	// routes, for example, the interface to use for pod CIDR
+	// traffic. This field is optional but the default is "cni0" which
+	// works for the Flannel CNI.
+	//
+	// +kubebuilder:default="cni0"
+	// +optional
+	CNIInterface string `json:"cniInterface"`
 }
 
 // LBNodeAgentStatus is currently unused.

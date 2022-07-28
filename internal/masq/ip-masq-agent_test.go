@@ -249,7 +249,7 @@ func TestSyncMasqRules(t *testing.T) {
 			want: `*nat
 :` + string(masqChain) + ` - [0:0]
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d 169.254.0.0/16 -j RETURN
--A ` + string(masqChain) + ` ` + masqRuleComment + ` -j MASQUERADE
+-A ` + string(masqChain) + ` ` + masqRuleComment + ` -j SNAT --to-source anywhere
 COMMIT
 `,
 		},
@@ -262,7 +262,7 @@ COMMIT
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d 10.0.0.0/8 -j RETURN
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d 172.16.0.0/12 -j RETURN
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d 192.168.0.0/16 -j RETURN
--A ` + string(masqChain) + ` ` + masqRuleComment + ` -j MASQUERADE
+-A ` + string(masqChain) + ` ` + masqRuleComment + ` -j SNAT --to-source anywhere
 COMMIT
 `,
 		},
@@ -283,7 +283,7 @@ COMMIT
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d 198.51.100.0/24 -j RETURN
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d 203.0.113.0/24 -j RETURN
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d 240.0.0.0/4 -j RETURN
--A ` + string(masqChain) + ` ` + masqRuleComment + ` -j MASQUERADE
+-A ` + string(masqChain) + ` ` + masqRuleComment + ` -j SNAT --to-source anywhere
 COMMIT
 `,
 		},
@@ -299,7 +299,7 @@ COMMIT
 :` + string(masqChain) + ` - [0:0]
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d 169.254.0.0/16 -j RETURN
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d 10.244.0.0/16 -j RETURN
--A ` + string(masqChain) + ` ` + masqRuleComment + ` -j MASQUERADE
+-A ` + string(masqChain) + ` ` + masqRuleComment + ` -j SNAT --to-source anywhere
 COMMIT
 `,
 		},
@@ -335,7 +335,7 @@ func TestSyncMasqRulesIPv6(t *testing.T) {
 			want: `*nat
 :` + string(masqChain) + ` - [0:0]
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d fe80::/10 -j RETURN
--A ` + string(masqChain) + ` ` + masqRuleComment + ` -j MASQUERADE
+-A ` + string(masqChain) + ` ` + masqRuleComment + ` -j SNAT --to-source anywhere
 COMMIT
 `,
 		},
@@ -351,7 +351,7 @@ COMMIT
 :` + string(masqChain) + ` - [0:0]
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d fe80::/10 -j RETURN
 -A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d fc00::/7 -j RETURN
--A ` + string(masqChain) + ` ` + masqRuleComment + ` -j MASQUERADE
+-A ` + string(masqChain) + ` ` + masqRuleComment + ` -j SNAT --to-source anywhere
 COMMIT
 `,
 		},
@@ -360,7 +360,7 @@ COMMIT
 			cfg:  &MasqConfig{MasqLinkLocalIPv6: true},
 			want: `*nat
 :` + string(masqChain) + ` - [0:0]
--A ` + string(masqChain) + ` ` + masqRuleComment + ` -j MASQUERADE
+-A ` + string(masqChain) + ` ` + masqRuleComment + ` -j SNAT --to-source anywhere
 COMMIT
 `,
 		},
@@ -387,7 +387,7 @@ COMMIT
 // tests m.ensurePostroutingJump
 func TestEnsurePostroutingJump(t *testing.T) {
 	m := NewFakeMasqDaemon()
-	if err := m.ensurePostroutingJump(masqChain); err != nil {
+	if err := m.EnsurePostroutingJump(masqChain, "anywhere"); err != nil {
 		t.Errorf("error: %v", err)
 	}
 }
@@ -403,14 +403,14 @@ func TestWriteNonMasqRule(t *testing.T) {
 			desc: "with ipv4 non masquerade cidr",
 			cidr: "10.0.0.0/8",
 			want: string(utiliptables.Append) + " " + string(masqChain) +
-				` -m comment --comment "ip-masq-agent: local traffic is not subject to MASQUERADE"` +
+				` -m comment --comment "local traffic is not subject to MASQUERADE"` +
 				" -d 10.0.0.0/8 -j RETURN\n",
 		},
 		{
 			desc: "with ipv6 non masquerade cidr",
 			cidr: "fc00::/7",
 			want: string(utiliptables.Append) + " " + string(masqChain) +
-				` -m comment --comment "ip-masq-agent: local traffic is not subject to MASQUERADE"` +
+				` -m comment --comment "local traffic is not subject to MASQUERADE"` +
 				" -d fc00::/7 -j RETURN\n",
 		},
 	}

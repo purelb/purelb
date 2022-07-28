@@ -115,7 +115,7 @@ func (c *FakeServiceGroups) UpdateStatus(ctx context.Context, serviceGroup *apis
 // Delete takes name of the serviceGroup and deletes it. Returns an error if one occurs.
 func (c *FakeServiceGroups) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
 	_, err := c.Fake.
-		Invokes(testing.NewDeleteAction(servicegroupsResource, c.ns, name), &apisv1.ServiceGroup{})
+		Invokes(testing.NewDeleteActionWithOptions(servicegroupsResource, c.ns, name, opts), &apisv1.ServiceGroup{})
 
 	return err
 }

@@ -115,7 +115,7 @@ func (c *FakeLBNodeAgents) UpdateStatus(ctx context.Context, lBNodeAgent *apisv1
 // Delete takes name of the lBNodeAgent and deletes it. Returns an error if one occurs.
 func (c *FakeLBNodeAgents) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
 	_, err := c.Fake.
-		Invokes(testing.NewDeleteAction(lbnodeagentsResource, c.ns, name), &apisv1.LBNodeAgent{})
+		Invokes(testing.NewDeleteActionWithOptions(lbnodeagentsResource, c.ns, name, opts), &apisv1.LBNodeAgent{})
 
 	return err
 }

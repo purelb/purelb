@@ -163,6 +163,18 @@ func (m *MasqDaemon) Run(chain utiliptables.Chain) {
 	}
 }
 
+func (m *MasqDaemon) UpdateConfig(c MasqConfig) error {
+	// validate configuration
+	if err := c.validate(); err != nil {
+		return err
+	}
+
+	// apply new config
+	m.config = &c
+
+	return nil
+}
+
 func (m *MasqDaemon) osSyncConfig() error {
 	// the fakefs.FileSystem interface allows us to mock the fs from tests
 	// fakefs.DefaultFS implements fakefs.FileSystem using os.Stat and io/ioutil.ReadFile
@@ -210,14 +222,8 @@ func (m *MasqDaemon) syncConfig(fs fakefs.FileSystem) error {
 		return err
 	}
 
-	// validate configuration
-	if err := c.validate(); err != nil {
-		return err
-	}
-
 	// apply new config
-	m.config = c
-	return nil
+	return m.UpdateConfig(*c)
 }
 
 func (c *MasqConfig) validate() error {
@@ -256,13 +262,22 @@ func validateCIDR(cidr string) error {
 }
 
 func (m *MasqDaemon) syncMasqRules(chain utiliptables.Chain) error {
-	// make sure our custom chain for non-masquerade exists
-	m.iptables.EnsureChain(utiliptables.TableNAT, chain)
-
 	// ensure that any non-local in POSTROUTING jumps to chain
-	if err := m.ensurePostroutingJump(chain); err != nil {
+	if err := m.SyncChain(chain, "anywhere"); err != nil {
 		return err
 	}
+
+	// ensure that any non-local in POSTROUTING jumps to chain
+	if err := m.EnsurePostroutingJump(chain, "anywhere"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (m *MasqDaemon) SyncChain(chain utiliptables.Chain, ip string) error {
+	// make sure our custom chain for non-masquerade exists
+	m.iptables.EnsureChain(utiliptables.TableNAT, chain)
 
 	// build up lines to pass to iptables-restore
 	lines := bytes.NewBuffer(nil)
@@ -282,7 +297,7 @@ func (m *MasqDaemon) syncMasqRules(chain utiliptables.Chain) error {
 	}
 
 	// masquerade all other traffic that is not bound for a --dst-type LOCAL destination
-	writeMasqRule(lines, chain)
+	writeMasqRule(lines, chain, ip)
 
 	writeLine(lines, "COMMIT")
 
@@ -322,7 +337,7 @@ func (m *MasqDaemon) syncMasqRulesIPv6(chain utiliptables.Chain) error {
 		}
 
 		// masquerade all other traffic that is not bound for a --dst-type LOCAL destination
-		writeMasqRule(lines6, chain)
+		writeMasqRule(lines6, chain, "anywhere")
 
 		writeLine(lines6, "COMMIT")
 
@@ -333,25 +348,50 @@ func (m *MasqDaemon) syncMasqRulesIPv6(chain utiliptables.Chain) error {
 	return nil
 }
 
+// DeleteChain deletes chain. The error can be caused by either IPV4
+// or IPV6.
+func (m *MasqDaemon) DeleteChain(chain utiliptables.Chain) error {
+	retVal := m.iptables.FlushChain(utiliptables.TableNAT, chain)
+	if err := m.iptables.DeleteChain(utiliptables.TableNAT, chain); err != nil {
+		retVal = err
+	}
+	// if err := m.ip6tables.FlushChain(utiliptables.TableNAT, chain); err != nil {
+	// 	retVal = err
+	// }
+	// if err := m.ip6tables.DeleteChain(utiliptables.TableNAT, chain); err != nil {
+	// 	retVal = err
+	// }
+	return retVal
+}
+
 // NOTE(mtaufen): iptables requires names to be <= 28 characters, and somehow prepending "-m comment --comment " to this string makes it think this condition is violated
 // Feel free to dig around in iptables and see if you can figure out exactly why; I haven't had time to fully trace how it parses and handle subcommands.
 // If you want to investigate, get the source via `git clone git://git.netfilter.org/iptables.git`, `git checkout v1.4.21` (the version I've seen this issue on,
 // though it may also happen on others), and start with `git grep XT_EXTENSION_MAXNAMELEN`.
 func postroutingJumpComment(chain utiliptables.Chain) string {
-	return fmt.Sprintf("ip-masq-agent: ensure nat POSTROUTING directs all non-LOCAL destination traffic to our custom %s chain", chain)
+	return fmt.Sprintf("purelb-egress: jump service endpoint traffic to our %s chain", chain)
 }
 
-func (m *MasqDaemon) ensurePostroutingJump(chain utiliptables.Chain) error {
-	if _, err := m.iptables.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPostrouting,
+func (m *MasqDaemon) EnsurePostroutingJump(chain utiliptables.Chain, source string) error {
+	if _, err := m.iptables.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
 		"-m", "comment", "--comment", postroutingJumpComment(chain),
-		"-m", "addrtype", "!", "--dst-type", "LOCAL", "-j", string(chain)); err != nil {
+		"-m", "set", "--match-set", string(chain), "src", "-j", string(chain)); err != nil {
 		return fmt.Errorf("failed to ensure that %s chain %s jumps to MASQUERADE: %v", utiliptables.TableNAT, chain, err)
 	}
 	return nil
 }
 
+func (m *MasqDaemon) DeletePostroutingJump(chain utiliptables.Chain) error {
+	if err := m.iptables.DeleteRule(utiliptables.TableNAT, utiliptables.ChainPostrouting,
+		"-m", "comment", "--comment", postroutingJumpComment(chain),
+		"-m", "set", "--match-set", string(chain), "src", "-j", string(chain)); err != nil {
+		return fmt.Errorf("failed to delete %s chain %s that jumps to MASQUERADE: %v", utiliptables.TableNAT, chain, err)
+	}
+	return nil
+}
+
 func (m *MasqDaemon) ensurePostroutingJumpIPv6(chain utiliptables.Chain) error {
-	if _, err := m.ip6tables.EnsureRule(utiliptables.Append, utiliptables.TableNAT, utiliptables.ChainPostrouting,
+	if _, err := m.ip6tables.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
 		"-m", "comment", "--comment", postroutingJumpComment(chain),
 		"-m", "addrtype", "!", "--dst-type", "LOCAL", "-j", string(chain)); err != nil {
 		return fmt.Errorf("failed to ensure that %s chain %s jumps to MASQUERADE: %v for ipv6", utiliptables.TableNAT, chain, err)
@@ -359,16 +399,16 @@ func (m *MasqDaemon) ensurePostroutingJumpIPv6(chain utiliptables.Chain) error {
 	return nil
 }
 
-const nonMasqRuleComment = `-m comment --comment "ip-masq-agent: local traffic is not subject to MASQUERADE"`
+const nonMasqRuleComment = `-m comment --comment "local traffic is not subject to MASQUERADE"`
 
 func writeNonMasqRule(lines *bytes.Buffer, cidr string, chain utiliptables.Chain) {
 	writeRule(lines, utiliptables.Append, chain, nonMasqRuleComment, "-d", cidr, "-j", "RETURN")
 }
 
-const masqRuleComment = `-m comment --comment "ip-masq-agent: outbound traffic is subject to MASQUERADE (must be last in chain)"`
+const masqRuleComment = `-m comment --comment "outbound traffic is subject to MASQUERADE (must be last in chain)"`
 
-func writeMasqRule(lines *bytes.Buffer, chain utiliptables.Chain) {
-	writeRule(lines, utiliptables.Append, chain, masqRuleComment, "-j", "MASQUERADE")
+func writeMasqRule(lines *bytes.Buffer, chain utiliptables.Chain, addr string) {
+	writeRule(lines, utiliptables.Append, chain, masqRuleComment, "-j", "SNAT", "--to-source", addr)
 }
 
 // Similar syntax to utiliptables.Interface.EnsureRule, except you don't pass a table

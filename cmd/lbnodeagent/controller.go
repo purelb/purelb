@@ -72,6 +72,7 @@ func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8
 		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-IPv4")
 		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-IPv6")
 		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-unknown")
+		delete(svc.Annotations, purelbv1.EgressAnnotation)
 
 		c.logger.Log("op", "withdraw", "reason", "notLoadBalancerType", "node", c.myNode, "service", nsName)
 		c.DeleteBalancer(nsName)
