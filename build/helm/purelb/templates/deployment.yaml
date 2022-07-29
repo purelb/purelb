@@ -27,7 +27,9 @@ spec:
       {{- toYaml . | nindent 6 }}
       {{- end }}
       containers:
-      - env:
+      - name: allocator
+        command: ["/usr/local/bin/allocator"]
+        env:
         - name: NETBOX_USER_TOKEN
           valueFrom:
             secretKeyRef:
@@ -36,9 +38,8 @@ spec:
               optional: true
         - name: DEFAULT_ANNOUNCER
           value: "{{ .Values.defaultAnnouncer }}"
-        image: "{{ .Values.image.repository }}/allocator:{{ .Values.image.tag }}"
+        image: "{{ .Values.image.repository }}/purelb:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
-        name: allocator
         ports:
         - containerPort: 7472
           name: monitoring

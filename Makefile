@@ -22,29 +22,24 @@ help: ## Display help message
 
 ##@ Development Goals
 .PHONY: all
-all: check crd $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) ## Build it all!
+all: check crd image ## Build it all!
 
 .PHONY: check
 check:	## Run "short" tests
 	go vet ./...
 	NETBOX_BASE_URL=${NETBOX_BASE_URL} NETBOX_USER_TOKEN=${NETBOX_USER_TOKEN} go test -race -short ./...
 
-.PHONY: image-%
-image-%: CMD=$(subst image-,,$@)
-image-%: TAG=${REGISTRY_IMAGE}/${CMD}:${SUFFIX}
-image-%:
+.PHONY: image
+image: TAG=${REGISTRY_IMAGE}/${PROJECT}:${SUFFIX}
+image:
 	docker build -t ${TAG} \
-	--build-arg cmd=${CMD} \
 	--build-arg commit=`git describe --dirty --always` \
 	--build-arg branch=`git rev-parse --abbrev-ref HEAD` \
-	-f build/package/Dockerfile.${CMD} .
+	.
 
 .PHONY: install
-install: all $(shell echo ${COMMANDS} | sed s,cmd/,install-,g) ## Push images to registry
-
-.PHONY: install-%
-install-%: TAG=${REGISTRY_IMAGE}/$(subst install-,,$@):${SUFFIX}
-install-%:
+install: TAG=${REGISTRY_IMAGE}/${PROJECT}:${SUFFIX}
+install:
 	docker push ${TAG}
 
 .PHONY: run-%
@@ -72,20 +67,17 @@ manifest:  ## Generate deployment manifest
 	cd deployments/samples
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
-	kustomize edit set image registry.gitlab.com/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} registry.gitlab.com/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
+	kustomize edit set image registry.gitlab.com/purelb/purelb/purelb=${REGISTRY_IMAGE}/purelb:${SUFFIX}
 	kustomize build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml
 
 .ONESHELL:
 .PHONY: docker-manifest
-docker-manifest: ALLOCATOR_IMG=${REGISTRY_IMAGE}/allocator
-docker-manifest: LBNODEAGENT_IMG=${REGISTRY_IMAGE}/lbnodeagent
+docker-manifest: IMG=${REGISTRY_IMAGE}/${PROJECT}
 docker-manifest:  ## Generate and push Docker multiarch manifest
-	docker manifest create ${ALLOCATOR_IMG}:${MANIFEST_SUFFIX} ${ALLOCATOR_IMG}:amd64-${SUFFIX} ${ALLOCATOR_IMG}:arm64-${SUFFIX}
-	docker manifest push ${ALLOCATOR_IMG}:${MANIFEST_SUFFIX}
-	docker manifest create ${LBNODEAGENT_IMG}:${MANIFEST_SUFFIX} ${LBNODEAGENT_IMG}:amd64-${SUFFIX} ${LBNODEAGENT_IMG}:arm64-${SUFFIX}
-	docker manifest push ${LBNODEAGENT_IMG}:${MANIFEST_SUFFIX}
+	docker manifest create ${IMG}:${MANIFEST_SUFFIX} ${IMG}:amd64-${SUFFIX} ${IMG}:arm64-${SUFFIX}
+	docker manifest push ${IMG}:${MANIFEST_SUFFIX}
 
 .PHONY: helm
 helm:  ## Package PureLB using Helm
