@@ -43,25 +43,15 @@ check:
   before_script: []
   script: make check
 
-allocatorarm64:
+arm64:
   stage: image
   tags:
   - arm64
-  script: make SUFFIX=arm64-${TAG_SPECIFIC} image-allocator install-allocator
+  script: make SUFFIX=arm64-${TAG_SPECIFIC} image install
 
-allocatoramd:
+amd:
   stage: image
-  script: make SUFFIX=amd64-${TAG_SPECIFIC} image-allocator install-allocator
-
-lbnodeagentarm64:
-  stage: image
-  tags:
-  - arm64
-  script: make SUFFIX=arm64-${TAG_SPECIFIC} image-lbnodeagent install-lbnodeagent
-
-lbnodeagentamd:
-  stage: image
-  script: make SUFFIX=amd64-${TAG_SPECIFIC} image-lbnodeagent install-lbnodeagent
+  script: make SUFFIX=amd64-${TAG_SPECIFIC} image install
 
 docker-manifest:
   stage: manifest
