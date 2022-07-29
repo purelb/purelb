@@ -159,7 +159,7 @@ lbnodeagent:
   localint: default
   extlbint: kube-lb0
   podSecurityPolicy:
-    enabled: true
+    enabled: false
   resources:
     limits:
       memory: 100Mi
@@ -173,7 +173,7 @@ lbnodeagent:
 # Configurable values specific to allocator.
 allocator:
   podSecurityPolicy:
-    enabled: true
+    enabled: false
   resources:
     limits:
       memory: 100Mi
