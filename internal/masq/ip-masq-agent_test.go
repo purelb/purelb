@@ -32,6 +32,11 @@ import (
 	"purelb.io/internal/masq/testing/fakefs"
 )
 
+var (
+	// name of nat chain for iptables masquerade rules
+	masqChain utiliptables.Chain = utiliptables.Chain("unit-test")
+)
+
 // turn off glog logging during tests to avoid clutter in output
 func TestMain(m *testing.M) {
 	flag.Set("logtostderr", "false")
@@ -304,7 +309,7 @@ COMMIT
 		t.Run(tt.desc, func(t *testing.T) {
 			m := NewFakeMasqDaemon()
 			m.config = tt.cfg
-			m.syncMasqRules()
+			m.syncMasqRules(masqChain)
 			fipt, ok := m.iptables.(*iptest.FakeIPTables)
 			if !ok {
 				t.Errorf("MasqDaemon wasn't using the expected iptables mock")
@@ -366,7 +371,7 @@ COMMIT
 			flag.Set("enable-ipv6", "true")
 			m := NewFakeMasqDaemon()
 			m.config = tt.cfg
-			m.syncMasqRulesIPv6()
+			m.syncMasqRulesIPv6(masqChain)
 			fipt6, ok := m.ip6tables.(*iptest.FakeIPTables)
 			if !ok {
 				t.Errorf("MasqDaemon wasn't using the expected iptables mock")
@@ -382,7 +387,7 @@ COMMIT
 // tests m.ensurePostroutingJump
 func TestEnsurePostroutingJump(t *testing.T) {
 	m := NewFakeMasqDaemon()
-	if err := m.ensurePostroutingJump(); err != nil {
+	if err := m.ensurePostroutingJump(masqChain); err != nil {
 		t.Errorf("error: %v", err)
 	}
 }
@@ -413,7 +418,7 @@ func TestWriteNonMasqRule(t *testing.T) {
 	for _, tt := range writeNonMasqRuleTests {
 		t.Run(tt.desc, func(t *testing.T) {
 			lines := bytes.NewBuffer(nil)
-			writeNonMasqRule(lines, tt.cidr)
+			writeNonMasqRule(lines, tt.cidr, masqChain)
 
 			s, err := lines.ReadString('\n')
 			if err != nil {
