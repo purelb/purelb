@@ -36,8 +36,8 @@ localint | An interface name regex | PureLB automatically identifies the interfa
 ServiceGroup CRs contain the configuration required to allocate Load Balancer addresses.  Service groups are Custom Resources and their contents depend on the source of the allocated addresses.  In the case of locally allocated addresses, pools of addresses are contained in the ServiceGroup. In the case of NetBox the ServiceGroup contains the configuration necessary to contact Netbox so the allocator can return an address for use.
 
 ### Integrated IPAM
-{{% notice danger %}} Note: PureLB requires the creation of at least one service group for operation {{% /notice %}}
-**PureLB does not install a default service group and requires a default service group for operation as per the example below.**  The default group is used where no purelb.io/service-group annotation is present in the service definition.
+{{% notice danger %}} Note: PureLB does not install a default service group and requires a default service group for operation as per the example below. {{% /notice %}}
+The group named `default` will be used where no `purelb.io/service-group` annotation is present in the service definition.
 
 ```yaml
 apiVersion: purelb.io/v1
@@ -49,36 +49,32 @@ spec:
   local:
     v4pool:
       aggregation: default
-      pool: 172.32.100.225-172.30.100.229
-      subnet: 192.168.100.0/24
+      pool: 172.32.100.225-172.32.100.229
+      subnet: 172.32.100.0/24
     v6pool:
       aggregation: default
       pool: fc00:370:155:0:8000::/126
       subnet: fc00:370:155::/64
-
 ```
 
-A Service Group is configured for each pool of addresses needed by the k8s cluster.  Service Groups support Dual Stack, therefore a service group can contain both IPv4 and IPv6 addresses
-
+A Service Group is configured for each pool of addresses needed by the k8s cluster.  Service Groups support Dual Stack, therefore a service group can contain both IPv4 and IPv6 addresses.
 
 parameter | type | Description
 -----|----|------
 v4pool | IPv4 AFI | Contains configuration for IPv4 address
 v6pool | IPv6 AFI | Contains configuration for IPv6 address
 
-
 Each Address Family contains the following:
-
 
 parameter | type | Description
 -------|----|---
-subnet | IPv4 or IPv6 CIDR.|  Configured with the subnet that the pool addresses will be allocated.  PureLB uses this information to compute how the address is added to the cluster.
-pool | ipv4 or IPv6 CIDR or range | The specific range of addresses that will be allocated.  Can be expressed as a CIRD or range of addresses.
+subnet | IPv4 or IPv6 CIDR| Configured with the subnet that contains all of the pool addresses. PureLB uses this information to compute how the address is added to the cluster.
+pool | IPv4 or IPv6 CIDR or range | The specific range of addresses that will be allocated.  Can be expressed as a CIDR or range of addresses.
 Aggregation | "default" or int 8-128 | The aggregator changes the address mask of the allocated address from the subnet mask to the specified mask.
 
 #### Configuring Aggregation
-Aggregation configuration brings a capability commonly used in routers to control how addresses are advertised.  When a Service Group is defined with _aggregation: default_ the prefix mask will be used from the subnet. PureLB will create an address from the allocated address and subnets mask that is applied to the appropriate interface.  Put simply, the services API provides an address, _192.168.1.100_, if _aggregation: default_ the resulting address applied to the interface by PureLB will be _192.168.151.100/24_. (added to the local interface if it matches the subnet otherwise the virtual interface).  Similarly for IPv6, _fc:00:370:155:0:8000::/126
-will result in the address _fc:00:370:155:0:8000::/64_ being added.  Adding an address to an interface also updates the routing table, therefore if its a new network, (not new address), a new routing table entry is added.  This is how routes are further distributed into the network via the virtual interface and node routing software.
+Aggregation configuration brings a capability commonly used in routers to control how addresses are advertised.  When a Service Group is defined with _aggregation: default_ the prefix mask will be used from the subnet. PureLB will create an address from the allocated address and subnets mask that is applied to the appropriate interface.  Put simply, the services API provides an address, _192.168.1.100_, if _aggregation: default_ the resulting address applied to the interface by PureLB will be _192.168.151.100/24_. (added to the local interface if it matches the subnet otherwise the virtual interface).  Similarly for IPv6, _fc:00:370:155:0:8000::/126_
+will result in the address _fc:00:370:155:0:8000::/64_ being added.  Adding an address to an interface also updates the routing table, therefore if it's a new network (not new address), a new routing table entry is added.  This is how routes are further distributed into the network via the virtual interface and node routing software.
 
 The primary purpose of of Aggregation is to change the way that routing distributes the address.  Changing the aggregator impacts when the prefix is added to the routing table.  
 
@@ -95,13 +91,13 @@ spec:
       pool: '192.168.1.100-192.168.1.200'
       aggregation: /25
 ```
-In the example above, the range is further subnetted by changing the aggregator.  As the allocator adds address, when the first address is allocated, the routing table will be updated with _192.168.1.0/25_ when the allocator _192.168.1.129_, the routing table will be updated with _192.168.1.128/25_  This example is somewhat academic but illustrates the use.
+In the example above, the range is further subnetted by changing the aggregator.  As the allocator adds address, when the first address is allocated, the routing table will be updated with _192.168.1.0/25_ when the allocator adds _192.168.1.129_, the routing table will be updated with _192.168.1.128/25_  This example is somewhat academic but illustrates the use.
 
 ```yaml
 apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
-  name: Team-1
+  name: team-1
   namespace: purelb
 spec:
   local:
@@ -113,7 +109,7 @@ spec:
 apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
-  name: Team-2
+  name: team-2
   namespace: purelb
 spec:
   local:
@@ -132,11 +128,11 @@ metadata:
   namespace: purelb
 spec:
   local:
-    ipv4pool:
+    v4pool:
       subnet: '172.30.0.144/28'
       pool: '172.30.0.144/28'
       aggregation: /32
-    ipv6pool:
+    v6pool:
       subnet: fc00:370:155:0:8000:1::/112
       pool: fc00:370:155:0:8000:1::/112
       aggregation: /128
@@ -210,7 +206,7 @@ Spec:
 Events:             <none>
 
 ```
-Service groups are namespaced, however PureLB will check all namespaces.  For simplicity we recommend adding them to the purelb namespace however in cases where RBAC controls who can update namespace, service groups can to the namespaces of their users.
+Service groups are namespaced, however PureLB will check all namespaces.  For simplicity we recommend adding them to the purelb namespace however in cases where RBAC controls who can update that namespace, service groups can be added to the namespaces of their users.
 
 ### Changing a Service Group
-Changing a Service Group does not affect the services that have already been created.  The modified service group will only impact services subsequently created.  This is intentional: service address changes should be initiated on a per service basis, not by an address range change in the service group having the side effect of changing all of the associated services' external addresses.  To migrate service addresses, add an additional service that will be allocated an address from the changed pool, once traffic has been drained, remove the original service releasing the address.
+Changing a Service Group does not affect services that have already been created. Modified service groups will only impact services subsequently created. This is intentional: service address changes should be initiated on a per service basis, not by an address range change in the service group having the side effect of changing all of the associated services' external addresses. To migrate service addresses, add an additional service that will be allocated an address from the changed pool, once traffic has been drained, remove the original service releasing the address.
