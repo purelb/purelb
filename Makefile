@@ -21,8 +21,7 @@ help: ## Display help message
 		/^##@/ { printf "\n%s\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
 ##@ Development Goals
-.PHONY: all
-all: check crd $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) helm ## Build it all!
+all: crd check $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) helm ## Build it all!
 
 .PHONY: check
 check:	## Run "short" tests
