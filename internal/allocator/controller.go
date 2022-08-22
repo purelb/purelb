@@ -39,6 +39,7 @@ type controller struct {
 	client    k8s.ServiceEvent
 	synced    bool
 	ips       *Allocator
+	tables    *TableAllocator
 	groupURL  *string
 	logger    log.Logger
 	isDefault bool
@@ -46,10 +47,11 @@ type controller struct {
 
 // NewController configures a new controller. If error is non-nil then
 // the controller object shouldn't be used.
-func NewController(l log.Logger, ips *Allocator) (Controller, error) {
+func NewController(l log.Logger, ips *Allocator, tables *TableAllocator) (Controller, error) {
 	con := &controller{
 		logger: l,
 		ips:    ips,
+		tables: tables,
 	}
 
 	return con, nil
@@ -58,9 +60,15 @@ func NewController(l log.Logger, ips *Allocator) (Controller, error) {
 func (c *controller) SetClient(client *k8s.Client) {
 	c.client = client
 	c.ips.SetClient(client)
+	c.tables.SetClient(client)
 }
 
 func (c *controller) DeleteBalancer(name string) k8s.SyncState {
+	if err := c.tables.Unassign(name); err != nil {
+		c.logger.Log("event", "serviceDelete", "error", err)
+		return k8s.SyncStateError
+	}
+
 	if err := c.ips.Unassign(name); err != nil {
 		c.logger.Log("event", "serviceDelete", "error", err)
 		return k8s.SyncStateError
@@ -79,6 +87,11 @@ func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
 	}
 
 	if err := c.ips.SetPools(cfg.Groups); err != nil {
+		c.logger.Log("op", "setConfig", "error", err)
+		return k8s.SyncStateError
+	}
+
+	if err := c.tables.SetAgents(cfg.Agents); err != nil {
 		c.logger.Log("op", "setConfig", "error", err)
 		return k8s.SyncStateError
 	}

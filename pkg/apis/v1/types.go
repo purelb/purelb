@@ -262,6 +262,20 @@ type LBNodeAgentEgressSpec struct {
 	// and service CIDR.
 	DontNAT []string `json:"dontNAT"`
 
+	// RouteTableBase specifies the lowest (i.e., starting) value that
+	// PureLB will use for its egress gateway routing table. This table
+	// will be configured on each node that is not an egress point for
+	// the service. For local subnets, this table will be set up on the
+	// non-winner nodes.
+	//
+	// There's no good way to detect table ID re-use at runtime so
+	// PureLB depends on the user to ensure that nothing else is using
+	// these tables.
+	//
+	// +kubebuilder:default=500
+	// +optional
+	RouteTableBase int `json:"routeTableBase"`
+
 	// CNIInterface specifies the name of the interface to use for local
 	// routes, for example, the interface to use for pod CIDR
 	// traffic. This field is optional but the default is "cni0" which

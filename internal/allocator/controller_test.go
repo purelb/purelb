@@ -62,6 +62,10 @@ func (s *testK8S) Errorf(_ runtime.Object, evtType string, msg string, args ...i
 
 func (s *testK8S) ForceSync() {}
 
+func (s *testK8S) Nodes() (map[string]v1.Node, error) {
+	return map[string]v1.Node{}, nil
+}
+
 func (s *testK8S) reset() {
 	s.loggedWarning = false
 }

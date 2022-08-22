@@ -18,6 +18,7 @@ package allocator
 import (
 	"fmt"
 	"net"
+	"strconv"
 
 	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
@@ -33,6 +34,17 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 	if !c.synced {
 		log.Log("op", "allocateIP", "error", "controller not synced")
 		return k8s.SyncStateError
+	}
+
+	// If the user has asked us to manage this service's egress traffic
+	// then we need to either assign a table index or tell the allocator
+	// about it.
+	if _, hasEgress := svc.Annotations[purelbv1.EgressAnnotation]; hasEgress {
+		if _, hasIndex := svc.Annotations[purelbv1.RouteTableAnnotation]; hasIndex {
+			c.tables.NotifyExisting(svc)
+		} else {
+			svc.Annotations[purelbv1.RouteTableAnnotation] = strconv.Itoa(c.tables.NextTableIndex())
+		}
 	}
 
 	// If the user has specified an LB class and it's not ours then we

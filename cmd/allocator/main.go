@@ -46,7 +46,7 @@ func main() {
 	defer logger.Log("op", "shutdown", "msg", "done")
 
 	// Set up controller
-	c, _ := allocator.NewController(logger, allocator.New(logger))
+	c, _ := allocator.NewController(logger, allocator.New(logger), allocator.NewTableAllocator(logger))
 
 	client, err := k8s.New(&k8s.Config{
 		ProcessName: "purelb-allocator",
