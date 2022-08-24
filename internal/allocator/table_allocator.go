@@ -52,7 +52,7 @@ func (a *TableAllocator) SetClient(client k8s.ServiceEvent) {
 // SetPools updates the set of address pools that the allocator owns.
 func (a *TableAllocator) SetAgents(agents []*purelbv1.LBNodeAgent) error {
 	for _, agent := range agents {
-		if agent != nil {
+		if agent != nil && agent.Spec.Egress != nil {
 			a.index = agent.Spec.Egress.RouteTableBase
 			a.logger.Log("event", "setTableIndex", "index", a.index)
 			return nil

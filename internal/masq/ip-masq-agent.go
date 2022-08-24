@@ -268,7 +268,7 @@ func (m *MasqDaemon) syncMasqRules(chain utiliptables.Chain) error {
 	}
 
 	// ensure that any non-local in POSTROUTING jumps to chain
-	if err := m.EnsurePostroutingJump(chain, "anywhere"); err != nil {
+	if err := m.EnsurePostroutingJump(chain); err != nil {
 		return err
 	}
 
@@ -372,7 +372,7 @@ func postroutingJumpComment(chain utiliptables.Chain) string {
 	return fmt.Sprintf("purelb-egress: jump service endpoint traffic to our %s chain", chain)
 }
 
-func (m *MasqDaemon) EnsurePostroutingJump(chain utiliptables.Chain, source string) error {
+func (m *MasqDaemon) EnsurePostroutingJump(chain utiliptables.Chain) error {
 	if _, err := m.iptables.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
 		"-m", "comment", "--comment", postroutingJumpComment(chain),
 		"-m", "set", "--match-set", string(chain), "src", "-j", string(chain)); err != nil {

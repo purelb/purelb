@@ -521,7 +521,7 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, endpoints 
 		}
 	}
 
-	if err := a.masqer.EnsurePostroutingJump(chain, "no-op"); err != nil {
+	if err := a.masqer.EnsurePostroutingJump(chain); err != nil {
 		l.Log("message", "error syncing masquerade rules", "error", err, "chain", chain)
 		return err
 	}

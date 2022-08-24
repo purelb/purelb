@@ -387,7 +387,7 @@ COMMIT
 // tests m.ensurePostroutingJump
 func TestEnsurePostroutingJump(t *testing.T) {
 	m := NewFakeMasqDaemon()
-	if err := m.EnsurePostroutingJump(masqChain, "anywhere"); err != nil {
+	if err := m.EnsurePostroutingJump(masqChain); err != nil {
 		t.Errorf("error: %v", err)
 	}
 }
