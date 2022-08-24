@@ -49,7 +49,7 @@ const (
 var (
 	masqChainFlag                     = flag.String("masq-chain", "IP-MASQ-AGENT", `Name of nat chain for iptables masquerade rules.`)
 	noMasqueradeAllReservedRangesFlag = flag.Bool("nomasq-all-reserved-ranges", false, "Whether to disable masquerade for all IPv4 ranges reserved by RFCs.")
-	enableIPv6                        = flag.Bool("enable-ipv6", false, "Whether to enable IPv6.")
+	enableIPv6                        = flag.Bool("enable-ipv6", true, "Whether to enable IPv6.")
 )
 
 // MasqConfig object
