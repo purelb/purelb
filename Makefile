@@ -22,7 +22,7 @@ help: ## Display help message
 
 ##@ Development Goals
 .PHONY: all
-all: check crd $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) ## Build it all!
+all: check crd $(shell echo ${COMMANDS} | sed s,cmd/,image-,g) helm ## Build it all!
 
 .PHONY: check
 check:	## Run "short" tests
