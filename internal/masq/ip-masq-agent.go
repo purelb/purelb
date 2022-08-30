@@ -19,6 +19,8 @@ package masq
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base32"
 	utiljson "encoding/json"
 	"flag"
 	"fmt"
@@ -27,9 +29,8 @@ import (
 	"strings"
 	"time"
 
+	v1 "k8s.io/api/core/v1"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
-	"k8s.io/component-base/logs"
-	"k8s.io/component-base/version/verflag"
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
 	utilexec "k8s.io/utils/exec"
 
@@ -39,6 +40,11 @@ import (
 )
 
 const (
+	IP_FAMILY_V4 = string(v1.IPv4Protocol)
+	IP_FAMILY_V6 = string(v1.IPv6Protocol)
+
+	CHAIN_PREFIX string = "PURELB-"
+
 	linkLocalCIDR = "169.254.0.0/16"
 	// RFC 4291
 	linkLocalCIDRIPv6 = "fe80::/10"
@@ -121,45 +127,6 @@ func NewMasqDaemon(c *MasqConfig) *MasqDaemon {
 		config:    c,
 		iptables:  iptables,
 		ip6tables: ip6tables,
-	}
-}
-
-func main() {
-	flag.Parse()
-
-	c := NewMasqConfig(*noMasqueradeAllReservedRangesFlag)
-
-	logs.InitLogs()
-	defer logs.FlushLogs()
-
-	verflag.PrintAndExitIfRequested()
-
-	m := NewMasqDaemon(c)
-	m.Run(utiliptables.Chain(*masqChainFlag))
-}
-
-// Run ...
-func (m *MasqDaemon) Run(chain utiliptables.Chain) {
-	// Periodically resync to reconfigure or heal from any rule decay
-	for {
-		func() {
-			defer time.Sleep(time.Duration(m.config.ResyncInterval))
-			// resync config
-			if err := m.osSyncConfig(); err != nil {
-				glog.Errorf("error syncing configuration: %v", err)
-				return
-			}
-			// resync rules
-			if err := m.syncMasqRules(chain); err != nil {
-				glog.Errorf("error syncing masquerade rules: %v", err)
-				return
-			}
-			// resync ipv6 rules
-			if err := m.syncMasqRulesIPv6(chain); err != nil {
-				glog.Errorf("error syncing masquerade rules for ipv6: %v", err)
-				return
-			}
-		}()
 	}
 }
 
@@ -261,47 +228,60 @@ func validateCIDR(cidr string) error {
 	return nil
 }
 
-func (m *MasqDaemon) syncMasqRules(chain utiliptables.Chain) error {
-	// ensure that any non-local in POSTROUTING jumps to chain
-	if err := m.SyncChain(chain, "anywhere"); err != nil {
+func (m *MasqDaemon) SyncChains(nsName string, ingress []v1.LoadBalancerIngress) error {
+	chainV4 := utiliptables.Chain(ChainNameV4(nsName))
+	chainV6 := utiliptables.Chain(ChainNameV6(nsName))
+
+	// make sure our custom chains for non-masquerade exist
+	m.iptables.EnsureChain(utiliptables.TableNAT, chainV4)
+	_, err := m.ip6tables.EnsureChain(utiliptables.TableNAT, chainV6)
+	if err != nil {
 		return err
 	}
-
-	// ensure that any non-local in POSTROUTING jumps to chain
-	if err := m.EnsurePostroutingJump(chain); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (m *MasqDaemon) SyncChain(chain utiliptables.Chain, ip string) error {
-	// make sure our custom chain for non-masquerade exists
-	m.iptables.EnsureChain(utiliptables.TableNAT, chain)
 
 	// build up lines to pass to iptables-restore
-	lines := bytes.NewBuffer(nil)
-	writeLine(lines, "*nat")
-	writeLine(lines, utiliptables.MakeChainLine(chain)) // effectively flushes chain atomically with rule restore
+	linesV4 := bytes.NewBuffer(nil)
+	writeLine(linesV4, "*nat")
+	writeLine(linesV4, utiliptables.MakeChainLine(chainV4)) // effectively flushes chain atomically with rule restore
+	linesV6 := bytes.NewBuffer(nil)
+	writeLine(linesV6, "*nat")
+	writeLine(linesV6, utiliptables.MakeChainLine(chainV6))
 
 	// link-local CIDR is always non-masquerade
 	if !m.config.MasqLinkLocal {
-		writeNonMasqRule(lines, linkLocalCIDR, chain)
+		writeNonMasqRule(linesV4, linkLocalCIDR, chainV4)
+	}
+	if !m.config.MasqLinkLocalIPv6 {
+		writeNonMasqRule(linesV6, linkLocalCIDRIPv6, chainV6)
 	}
 
 	// non-masquerade for user-provided CIDRs
 	for _, cidr := range m.config.NonMasqueradeCIDRs {
 		if !isIPv6CIDR(cidr) {
-			writeNonMasqRule(lines, cidr, chain)
+			writeNonMasqRule(linesV4, cidr, chainV4)
+		} else {
+			writeNonMasqRule(linesV6, cidr, chainV6)
 		}
 	}
 
-	// masquerade all other traffic that is not bound for a --dst-type LOCAL destination
-	writeMasqRule(lines, chain, ip)
+	// masquerade all other traffic that is not bound for a --dst-type
+	// LOCAL destination
+	for _, addr := range ingress {
+		ip := addr.IP
+		if IsIPv6(ip) {
+			writeMasqRule(linesV6, chainV6, ip)
+		} else {
+			writeMasqRule(linesV4, chainV4, ip)
+		}
+	}
 
-	writeLine(lines, "COMMIT")
+	writeLine(linesV4, "COMMIT")
+	writeLine(linesV6, "COMMIT")
 
-	if err := m.iptables.RestoreAll(lines.Bytes(), utiliptables.NoFlushTables, utiliptables.NoRestoreCounters); err != nil {
+	if err := m.iptables.RestoreAll(linesV4.Bytes(), utiliptables.NoFlushTables, utiliptables.NoRestoreCounters); err != nil {
+		return err
+	}
+	if err := m.ip6tables.RestoreAll(linesV6.Bytes(), utiliptables.NoFlushTables, utiliptables.NoRestoreCounters); err != nil {
 		return err
 	}
 	return nil
@@ -317,7 +297,7 @@ func (m *MasqDaemon) syncMasqRulesIPv6(chain utiliptables.Chain) error {
 			return err
 		}
 		// ensure that any non-local in POSTROUTING jumps to chain
-		if err := m.ensurePostroutingJumpIPv6(chain); err != nil {
+		if err := m.EnsurePostroutingJumpIPv6(chain); err != nil {
 			return err
 		}
 		// build up lines to pass to ip6tables-restore
@@ -350,17 +330,19 @@ func (m *MasqDaemon) syncMasqRulesIPv6(chain utiliptables.Chain) error {
 
 // DeleteChain deletes chain. The error can be caused by either IPV4
 // or IPV6.
-func (m *MasqDaemon) DeleteChain(chain utiliptables.Chain) error {
-	retVal := m.iptables.FlushChain(utiliptables.TableNAT, chain)
-	if err := m.iptables.DeleteChain(utiliptables.TableNAT, chain); err != nil {
+func (m *MasqDaemon) DeleteChains(nsName string) error {
+	chainV4 := utiliptables.Chain(ChainNameV4(nsName))
+	retVal := m.iptables.FlushChain(utiliptables.TableNAT, chainV4)
+	if err := m.iptables.DeleteChain(utiliptables.TableNAT, chainV4); err != nil {
 		retVal = err
 	}
-	// if err := m.ip6tables.FlushChain(utiliptables.TableNAT, chain); err != nil {
-	// 	retVal = err
-	// }
-	// if err := m.ip6tables.DeleteChain(utiliptables.TableNAT, chain); err != nil {
-	// 	retVal = err
-	// }
+	chainV6 := utiliptables.Chain(ChainNameV6(nsName))
+	if err := m.ip6tables.FlushChain(utiliptables.TableNAT, chainV6); err != nil {
+		retVal = err
+	}
+	if err := m.ip6tables.DeleteChain(utiliptables.TableNAT, chainV6); err != nil {
+		retVal = err
+	}
 	return retVal
 }
 
@@ -390,11 +372,20 @@ func (m *MasqDaemon) DeletePostroutingJump(chain utiliptables.Chain) error {
 	return nil
 }
 
-func (m *MasqDaemon) ensurePostroutingJumpIPv6(chain utiliptables.Chain) error {
+func (m *MasqDaemon) EnsurePostroutingJumpIPv6(chain utiliptables.Chain) error {
 	if _, err := m.ip6tables.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
 		"-m", "comment", "--comment", postroutingJumpComment(chain),
-		"-m", "addrtype", "!", "--dst-type", "LOCAL", "-j", string(chain)); err != nil {
+		"-m", "set", "--match-set", string(chain), "src", "-j", string(chain)); err != nil {
 		return fmt.Errorf("failed to ensure that %s chain %s jumps to MASQUERADE: %v for ipv6", utiliptables.TableNAT, chain, err)
+	}
+	return nil
+}
+
+func (m *MasqDaemon) DeletePostroutingJumpIPv6(chain utiliptables.Chain) error {
+	if err := m.ip6tables.DeleteRule(utiliptables.TableNAT, utiliptables.ChainPostrouting,
+		"-m", "comment", "--comment", postroutingJumpComment(chain),
+		"-m", "set", "--match-set", string(chain), "src", "-j", string(chain)); err != nil {
+		return fmt.Errorf("failed to delete %s chain %s that jumps to MASQUERADE: %v", utiliptables.TableNAT, chain, err)
 	}
 	return nil
 }
@@ -428,12 +419,33 @@ func writeLine(lines *bytes.Buffer, words ...string) {
 // which means the cidr belongs to ipv4 family
 func isIPv6CIDR(cidr string) bool {
 	ip, _, _ := net.ParseCIDR(cidr)
-	return isIPv6(ip.String())
+	return IsIPv6(ip.String())
 }
 
-// isIPv6 checks if the provided ip belongs to ipv6 family.
+// IsIPv6 checks if the provided ip belongs to ipv6 family.
 // If ip belongs to ipv6 family, return true else it returns false
 // which means the ip belongs to ipv4 family
-func isIPv6(ip string) bool {
+func IsIPv6(ip string) bool {
 	return net.ParseIP(ip).To4() == nil
+}
+
+func ChainNameV4(serviceName string) string {
+	return CHAIN_PREFIX + chainName(serviceName) + "-" + IP_FAMILY_V4
+}
+
+func ChainNameV6(serviceName string) string {
+	return CHAIN_PREFIX + chainName(serviceName) + "-" + IP_FAMILY_V6
+}
+
+// chainName takes serviceName and returns the associated 16 character
+// hash. This is computed by hashing (sha256) then encoding to base32
+// and truncating to 16 chars. We do this because IPTables Chain Names
+// must be <= 28 chars long, and the longer they are the harder they
+// are to read.
+//
+// This is lifted from proxier.go:portProtoHash() in the k8s source.
+func chainName(serviceName string) string {
+	hash := sha256.Sum256([]byte(serviceName))
+	encoded := base32.StdEncoding.EncodeToString(hash[:])
+	return encoded[:16]
 }

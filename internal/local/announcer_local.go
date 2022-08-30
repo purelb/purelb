@@ -15,14 +15,13 @@
 package local
 
 import (
-	"crypto/sha256"
-	"encoding/base32"
 	"fmt"
 	"net"
 	"regexp"
 	"strconv"
 
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/util/json"
 
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
@@ -38,10 +37,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
-)
-
-const (
-	CHAIN_PREFIX string = "PURELB-"
 )
 
 type announcer struct {
@@ -182,7 +177,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		// validate the allocated address
 		lbIP := net.ParseIP(ingress.IP)
 		if lbIP == nil {
-			l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", svc.Status.LoadBalancer.Ingress[0].IP)
+			l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
 			continue
 		}
 
@@ -263,7 +258,7 @@ func (a *announcer) announceLocal(svc *v1.Service, endpoints *v1.Endpoints, anno
 		if svc.Annotations == nil {
 			svc.Annotations = map[string]string{}
 		}
-		svc.Annotations[purelbv1.AnnounceAnnotation+addrFamilyName(lbIP)] = a.myNode + "," + announceInt.Attrs().Name
+		svc.Annotations[purelbv1.AnnounceAnnotation+AddrFamilyName(lbIP)] = a.myNode + "," + announceInt.Attrs().Name
 		announcing.With(prometheus.Labels{
 			"service": nsName,
 			"node":    a.myNode,
@@ -300,7 +295,11 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 	// Should we announce?
 	// No, if externalTrafficPolicy is Local && there's no ready local endpoint
 	// Yes, in all other cases
-	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && len(healthyEndpoints(endpoints, a.myNode)) > 0 {
+	eps, err := a.healthyEndpoints(svc, a.myNode)
+	if err != nil {
+		return err
+	}
+	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && len(eps) > 0 {
 		l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
 		return a.deleteAddress(nsName, "noEndpoints", lbIP)
 	}
@@ -315,6 +314,7 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 		family := AddrFamily(lbIP)
 		subnet, err := allocPool.FamilySubnet(family)
 		if err != nil {
+			return err
 		}
 		aggregation, err := allocPool.FamilyAggregation(family)
 		if err != nil {
@@ -359,17 +359,21 @@ func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 	}
 
 	// Clean up any egress config.
-	chain := utiliptables.Chain(chainName(nsName))
-	if err := a.masqer.DeletePostroutingJump(chain); err != nil {
+	chainV6 := masq.ChainNameV6(nsName)
+	chainV4 := masq.ChainNameV4(nsName)
+	if err := a.masqer.DeletePostroutingJumpIPv6(utiliptables.Chain(chainV6)); err != nil {
 		a.logger.Log("ERROR", err)
 	}
-	if err := ipset.Flush(string(chain)); err != nil {
+	if err := ipset.Destroy(chainV6); err != nil {
 		a.logger.Log("ERROR", err)
 	}
-	if err := ipset.Destroy(string(chain)); err != nil {
+	if err := a.masqer.DeletePostroutingJump(utiliptables.Chain(chainV4)); err != nil {
 		a.logger.Log("ERROR", err)
 	}
-	if err := a.masqer.DeleteChain(chain); err != nil {
+	if err := ipset.Destroy(chainV4); err != nil {
+		a.logger.Log("ERROR", err)
+	}
+	if err := a.masqer.DeleteChains(nsName); err != nil {
 		a.logger.Log("ERROR", err)
 	}
 
@@ -427,46 +431,21 @@ func (a *announcer) SetElection(election *election.Election) {
 }
 
 // healthyEndpoints returns eps' healthy endpoints.
-func healthyEndpoints(eps *v1.Endpoints, node string) []v1.EndpointAddress {
-	ready := map[v1.EndpointAddress]bool{}
-	for _, subset := range eps.Subsets {
-		for _, ep := range subset.Addresses {
-			if _, ok := ready[ep]; !ok {
-				// Only set true if nothing else has expressed an
-				// opinion. This means that false will take precedence
-				// if there's any unready ports for a given endpoint.
-				ready[ep] = true
-			}
-		}
-		for _, ep := range subset.NotReadyAddresses {
-			ready[ep] = false
-		}
+func (a *announcer) healthyEndpoints(svc *v1.Service, node string) ([]discoveryv1.Endpoint, error) {
+	healthy := []discoveryv1.Endpoint{}
+
+	slices, err := a.client.EndpointSlices(svc)
+	if err != nil {
+		return healthy, err
 	}
 
-	healthy := []v1.EndpointAddress{}
-	for addr, r := range ready {
-		if r {
+	for _, slice := range slices.Items {
+		for _, addr := range slice.Endpoints {
 			healthy = append(healthy, addr)
 		}
 	}
-	return healthy
-}
 
-// addrFamilyName returns whether lbIP is an IPV4 or IPV6 address.
-// The return value will be "IPv6" if the address is an IPV6 address,
-// "IPv4" if it's IPV4, or "unknown" if the family can't be determined.
-func addrFamilyName(lbIP net.IP) (lbIPFamily string) {
-	lbIPFamily = "-unknown"
-
-	if nil != lbIP.To16() {
-		lbIPFamily = "-IPv6"
-	}
-
-	if nil != lbIP.To4() {
-		lbIPFamily = "-IPv4"
-	}
-
-	return
+	return healthy, nil
 }
 
 // updateEgressWinner updates the SNAT rules that implement our Egress
@@ -482,31 +461,75 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, endpoints 
 	}
 
 	// Return if the service has no healthy endpoints.
-	ips := healthyEndpoints(endpoints, a.myNode)
+	ips, err := a.healthyEndpoints(svc, a.myNode)
+	if err != nil {
+		return err
+	}
 	if len(ips) < 1 {
 		l.Log("message", "no healthy endpoints", "service", nsName)
 		return nil
 	}
 
-	// Set up the service's iptables chain.
-	chain := utiliptables.Chain(chainName(nsName))
-	if err := a.masqer.SyncChain(chain, svc.Status.LoadBalancer.Ingress[0].IP); err != nil {
-		l.Log("message", "error syncing masquerade rules", "error", err, "chain", chain)
+	// Set up the service's iptables chains.
+	if err := a.masqer.SyncChains(nsName, svc.Status.LoadBalancer.Ingress); err != nil {
+		l.Log("message", "error syncing masquerade rules", "error", err, "chain", nsName)
 		return err
 	}
 
-	// Create an ipset containing this service's endpoints on this host.
-	if err := ipset.Destroy(string(chain)); err != nil {
-		return err
+	chainV4 := masq.ChainNameV4(nsName)
+	chainV6 := masq.ChainNameV6(nsName)
+
+	// Destroy our ipsets - it's easier then synchronizing them
+	// incrementally.
+	var destroyErr error
+	if err := ipset.Destroy(chainV4); err != nil {
+		destroyErr = err
+		l.Log("op", "cleanup v4 ipset", "error", err)
 	}
-	if err := ipset.Create(string(chain)); err != nil {
-		return err
+	if err := ipset.Destroy(chainV6); err != nil {
+		destroyErr = err
+		l.Log("op", "cleanup v6 ipset", "error", err)
 	}
+	if destroyErr != nil {
+		return destroyErr
+	}
+
+	// Create ipsets which will contain this service's endpoints on this
+	// host.
+	var createErr error
+	if err := ipset.Create(chainV4); err != nil {
+		createErr = err
+		l.Log("op", "create v4 ipset", "error", err)
+	}
+	if err := ipset.Create(chainV6, ipset.OptIPv6()); err != nil {
+		createErr = err
+		l.Log("op", "create v6 ipset", "error", err)
+	}
+	if createErr != nil {
+		return createErr
+	}
+
 	// Add each endpoint address to the IP set so they'll get SNATed
-	for _, ip := range ips {
-		l.Log("message", "will SNAT", "service", nsName, "endpoint", ip.IP, "chain", string(chain))
-		if err := ipset.Add(string(chain), ip.IP); err != nil {
-			return err
+	for _, endpoint := range ips {
+		for _, addr := range endpoint.Addresses {
+			ip := net.ParseIP(addr)
+			if ip == nil {
+				l.Log("message", "invalid endpoint address, can't NAT", "service", nsName, "endpoint", addr)
+				continue
+			}
+			if AddrFamily(ip) == nl.FAMILY_V6 {
+				l.Log("message", "ipset V6", "service", nsName, "endpoint", ip)
+				if err := ipset.Add(chainV6, addr); err != nil {
+					l.Log("error", err, "service", nsName, "endpoint", ip)
+					continue
+				}
+			} else if AddrFamily(ip) == nl.FAMILY_V4 {
+				l.Log("message", "ipset V4", "service", nsName, "endpoint", ip)
+				if err := ipset.Add(chainV4, addr); err != nil {
+					l.Log("error", err, "service", nsName, "endpoint", ip)
+					continue
+				}
+			}
 		}
 	}
 	// Add each *non-winner* node IP to the IP set so we'll SNAT egress
@@ -515,14 +538,18 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, endpoints 
 		if name == winnerNodeName {
 			continue
 		}
-		l.Log("message", "will SNAT", "service", nsName, "node", *nodeAddress(node), "chain", string(chain))
-		if err := ipset.Add(string(chain), *nodeAddress(node)); err != nil {
+		l.Log("message", "will SNAT", "service", nsName, "node", *nodeAddress(node), "chain", nsName)
+		if err := ipset.Add(chainV4, *nodeAddress(node)); err != nil {
 			return err
 		}
 	}
 
-	if err := a.masqer.EnsurePostroutingJump(chain); err != nil {
-		l.Log("message", "error syncing masquerade rules", "error", err, "chain", chain)
+	if err := a.masqer.EnsurePostroutingJump(utiliptables.Chain(chainV4)); err != nil {
+		l.Log("message", "error syncing masquerade rules", "error", err, "chain", chainV4)
+		return err
+	}
+	if err := a.masqer.EnsurePostroutingJumpIPv6(utiliptables.Chain(chainV6)); err != nil {
+		l.Log("message", "error syncing masquerade rules", "error", err, "chain", chainV6)
 		return err
 	}
 
@@ -546,6 +573,8 @@ func (a *announcer) updateEgressNonWinner(l log.Logger, svc *v1.Service, endpoin
 	if err != nil {
 		return err
 	}
+
+	nsName := svc.Namespace + "/" + svc.Name
 
 	// Log rules
 	rules, err := netlink.RuleList(nl.FAMILY_ALL)
@@ -605,18 +634,32 @@ func (a *announcer) updateEgressNonWinner(l log.Logger, svc *v1.Service, endpoin
 	}
 
 	// Add rules to jump to our routing table.
-	ips := healthyEndpoints(endpoints, a.myNode)
+	ips, err := a.healthyEndpoints(svc, a.myNode)
+	if err != nil {
+		l.Log("op", "addPodCIDRRoute", "ERROR", err)
+	}
 	for _, ep := range ips {
-		rule := netlink.NewRule()
-		rule.Table = tableKey
-		_, rule.Src, err = net.ParseCIDR(ep.IP + "/32")
-		if err != nil {
-			l.Log("op", "addEndpointRule", "ERROR", err, "ip", ep.IP)
-			continue
-		}
-		err = netlink.RuleAdd(rule)
-		if err != nil {
-			l.Log("op", "addEndpointRule", "ERROR", err)
+		for _, addr := range ep.Addresses {
+			ip := net.ParseIP(addr)
+			if ip == nil {
+				l.Log("message", "invalid endpoint address, can't add rule", "service", nsName, "endpoint", addr)
+				continue
+			}
+			if AddrFamily(ip) == nl.FAMILY_V6 {
+				l.Log("message", "IPV6 not implemented")
+			} else if AddrFamily(ip) == nl.FAMILY_V4 {
+				rule := netlink.NewRule()
+				rule.Table = tableKey
+				_, rule.Src, err = net.ParseCIDR(addr + "/32")
+				if err != nil {
+					l.Log("op", "addEndpointRule", "ERROR", err, "ip", addr)
+					continue
+				}
+				err = netlink.RuleAdd(rule)
+				if err != nil {
+					l.Log("op", "addEndpointRule", "ERROR", err)
+				}
+			}
 		}
 	}
 
@@ -656,17 +699,4 @@ func (a *announcer) removeEgressNonWinner(l log.Logger, tableKey int) error {
 	}
 
 	return nil
-}
-
-// chainName takes serviceName and returns the associated 16 character
-// hash. This is computed by hashing (sha256) then encoding to base32
-// and truncating to 16 chars. We do this because IPTables Chain Names
-// must be <= 28 chars long, and the longer they are the harder they
-// are to read.
-//
-// This is lifted from proxier.go:portProtoHash() in the k8s source.
-func chainName(serviceName string) string {
-	hash := sha256.Sum256([]byte(serviceName))
-	encoded := base32.StdEncoding.EncodeToString(hash[:])
-	return CHAIN_PREFIX + encoded[:16]
 }

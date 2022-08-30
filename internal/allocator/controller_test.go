@@ -24,6 +24,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -64,6 +65,10 @@ func (s *testK8S) ForceSync() {}
 
 func (s *testK8S) Nodes() (map[string]v1.Node, error) {
 	return map[string]v1.Node{}, nil
+}
+
+func (s *testK8S) EndpointSlices(_ *v1.Service) (*discoveryv1.EndpointSliceList, error) {
+	return nil, nil
 }
 
 func (s *testK8S) reset() {

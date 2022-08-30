@@ -29,8 +29,10 @@ import (
 	"github.com/go-kit/kit/log"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -74,6 +76,7 @@ type ServiceEvent interface {
 	Errorf(obj runtime.Object, desc, msg string, args ...interface{})
 	ForceSync()
 	Nodes() (map[string]v1.Node, error)
+	EndpointSlices(*corev1.Service) (*discoveryv1.EndpointSliceList, error)
 }
 
 // SyncState is the result of calling synchronization callbacks.
@@ -318,6 +321,13 @@ func (c *Client) Nodes() (map[string]v1.Node, error) {
 	}
 
 	return nodeMap, nil
+}
+
+func (c *Client) EndpointSlices(svc *v1.Service) (*discoveryv1.EndpointSliceList, error) {
+	selector := labels.SelectorFromSet(map[string]string{"kubernetes.io/service-name": svc.Name})
+	listOpts := metav1.ListOptions{LabelSelector: selector.String()}
+
+	return c.client.DiscoveryV1().EndpointSlices(svc.Namespace).List(context.TODO(), listOpts)
 }
 
 // maybeUpdateService writes the "is" service back to the cluster, but

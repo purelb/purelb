@@ -24,6 +24,11 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+const (
+	IP_FAMILY_V4 = string(v1.IPv4Protocol)
+	IP_FAMILY_V6 = string(v1.IPv6Protocol)
+)
+
 // AddrFamily returns whether lbIP is an IPV4 or IPV6 address.  The
 // return value will be nl.FAMILY_V6 if the address is an IPV6
 // address, nl.FAMILY_V4 if it's IPV4, or 0 if the family can't be
@@ -35,6 +40,23 @@ func AddrFamily(lbIP net.IP) (lbIPFamily int) {
 
 	if nil != lbIP.To4() {
 		lbIPFamily = nl.FAMILY_V4
+	}
+
+	return
+}
+
+// AddrFamilyName returns whether lbIP is an IPV4 or IPV6 address.
+// The return value will be "IPv6" if the address is an IPV6 address,
+// "IPv4" if it's IPV4, or "unknown" if the family can't be determined.
+func AddrFamilyName(lbIP net.IP) (lbIPFamily string) {
+	lbIPFamily = "-unknown"
+
+	if nil != lbIP.To16() {
+		lbIPFamily = "-" + IP_FAMILY_V6
+	}
+
+	if nil != lbIP.To4() {
+		lbIPFamily = "-" + IP_FAMILY_V4
 	}
 
 	return
