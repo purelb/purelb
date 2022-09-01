@@ -235,68 +235,6 @@ func TestSyncConfig(t *testing.T) {
 	}
 }
 
-// tests MasqDaemon.syncMasqRulesIPv6
-func TestSyncMasqRulesIPv6(t *testing.T) {
-	var syncMasqRulesIPv6Tests = []struct {
-		desc string      // human readable description of the test
-		cfg  *MasqConfig // Masq configuration to use
-		err  error       // expected error, if any. If nil, no error expected
-		want string      // String expected to be sent to iptables-restore
-	}{
-		{
-			desc: "empty config",
-			cfg:  &MasqConfig{},
-			want: `*nat
-:` + string(masqChain) + ` - [0:0]
--A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d fe80::/10 -j RETURN
--A ` + string(masqChain) + ` ` + masqRuleComment + ` -j SNAT --to-source anywhere
-COMMIT
-`,
-		},
-		{
-			desc: "config has ipv4 and ipv6 non masquerade cidr",
-			cfg: &MasqConfig{
-				NonMasqueradeCIDRs: []string{
-					"10.244.0.0/16",
-					"fc00::/7",
-				},
-			},
-			want: `*nat
-:` + string(masqChain) + ` - [0:0]
--A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d fe80::/10 -j RETURN
--A ` + string(masqChain) + ` ` + nonMasqRuleComment + ` -d fc00::/7 -j RETURN
--A ` + string(masqChain) + ` ` + masqRuleComment + ` -j SNAT --to-source anywhere
-COMMIT
-`,
-		},
-		{
-			desc: "config has masqLinkLocalIPv6: true",
-			cfg:  &MasqConfig{MasqLinkLocalIPv6: true},
-			want: `*nat
-:` + string(masqChain) + ` - [0:0]
--A ` + string(masqChain) + ` ` + masqRuleComment + ` -j SNAT --to-source anywhere
-COMMIT
-`,
-		},
-	}
-
-	for _, tt := range syncMasqRulesIPv6Tests {
-		t.Run(tt.desc, func(t *testing.T) {
-			flag.Set("enable-ipv6", "true")
-			m := NewFakeMasqDaemon()
-			m.config = tt.cfg
-			m.syncMasqRulesIPv6(masqChain)
-			fipt6, ok := m.ip6tables.(*iptest.FakeIPTables)
-			if !ok {
-				t.Errorf("MasqDaemon wasn't using the expected iptables mock")
-			}
-			if string(fipt6.Lines) != tt.want {
-				t.Errorf("syncMasqRulesIPv6 wrote %q, want %q", string(fipt6.Lines), tt.want)
-			}
-		})
-	}
-}
-
 // TODO(mtaufen): switch to an iptables mock that allows us to check the results of EnsureRule
 // tests m.ensurePostroutingJump
 func TestEnsurePostroutingJump(t *testing.T) {

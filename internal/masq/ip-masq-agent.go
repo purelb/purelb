@@ -228,39 +228,29 @@ func validateCIDR(cidr string) error {
 	return nil
 }
 
-func (m *MasqDaemon) SyncChains(nsName string, ingress []v1.LoadBalancerIngress) error {
-	chainV4 := utiliptables.Chain(ChainNameV4(nsName))
-	chainV6 := utiliptables.Chain(ChainNameV6(nsName))
+func (m *MasqDaemon) SyncChainIPv6(nsName string, ingress []v1.LoadBalancerIngress) error {
+	chain := utiliptables.Chain(ChainNameV6(nsName))
 
 	// make sure our custom chains for non-masquerade exist
-	m.iptables.EnsureChain(utiliptables.TableNAT, chainV4)
-	_, err := m.ip6tables.EnsureChain(utiliptables.TableNAT, chainV6)
+	_, err := m.ip6tables.EnsureChain(utiliptables.TableNAT, chain)
 	if err != nil {
 		return err
 	}
 
 	// build up lines to pass to iptables-restore
-	linesV4 := bytes.NewBuffer(nil)
-	writeLine(linesV4, "*nat")
-	writeLine(linesV4, utiliptables.MakeChainLine(chainV4)) // effectively flushes chain atomically with rule restore
-	linesV6 := bytes.NewBuffer(nil)
-	writeLine(linesV6, "*nat")
-	writeLine(linesV6, utiliptables.MakeChainLine(chainV6))
+	lines := bytes.NewBuffer(nil)
+	writeLine(lines, "*nat")
+	writeLine(lines, utiliptables.MakeChainLine(chain))
 
 	// link-local CIDR is always non-masquerade
-	if !m.config.MasqLinkLocal {
-		writeNonMasqRule(linesV4, linkLocalCIDR, chainV4)
-	}
 	if !m.config.MasqLinkLocalIPv6 {
-		writeNonMasqRule(linesV6, linkLocalCIDRIPv6, chainV6)
+		writeNonMasqRule(lines, linkLocalCIDRIPv6, chain)
 	}
 
 	// non-masquerade for user-provided CIDRs
 	for _, cidr := range m.config.NonMasqueradeCIDRs {
-		if !isIPv6CIDR(cidr) {
-			writeNonMasqRule(linesV4, cidr, chainV4)
-		} else {
-			writeNonMasqRule(linesV6, cidr, chainV6)
+		if isIPv6CIDR(cidr) {
+			writeNonMasqRule(lines, cidr, chain)
 		}
 	}
 
@@ -269,61 +259,54 @@ func (m *MasqDaemon) SyncChains(nsName string, ingress []v1.LoadBalancerIngress)
 	for _, addr := range ingress {
 		ip := addr.IP
 		if IsIPv6(ip) {
-			writeMasqRule(linesV6, chainV6, ip)
-		} else {
-			writeMasqRule(linesV4, chainV4, ip)
+			writeMasqRule(lines, chain, ip)
 		}
 	}
 
-	writeLine(linesV4, "COMMIT")
-	writeLine(linesV6, "COMMIT")
+	writeLine(lines, "COMMIT")
 
-	if err := m.iptables.RestoreAll(linesV4.Bytes(), utiliptables.NoFlushTables, utiliptables.NoRestoreCounters); err != nil {
-		return err
-	}
-	if err := m.ip6tables.RestoreAll(linesV6.Bytes(), utiliptables.NoFlushTables, utiliptables.NoRestoreCounters); err != nil {
+	if err := m.ip6tables.RestoreAll(lines.Bytes(), utiliptables.NoFlushTables, utiliptables.NoRestoreCounters); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (m *MasqDaemon) syncMasqRulesIPv6(chain utiliptables.Chain) error {
-	isIPv6Enabled := *enableIPv6
+func (m *MasqDaemon) SyncChainIPv4(nsName string, ingress []v1.LoadBalancerIngress) error {
+	chain := utiliptables.Chain(ChainNameV4(nsName))
 
-	if isIPv6Enabled {
-		// make sure our custom chain for ipv6 non-masquerade exists
-		_, err := m.ip6tables.EnsureChain(utiliptables.TableNAT, chain)
-		if err != nil {
-			return err
+	// make sure our custom chains for non-masquerade exist
+	m.iptables.EnsureChain(utiliptables.TableNAT, chain)
+
+	// build up lines to pass to iptables-restore
+	lines := bytes.NewBuffer(nil)
+	writeLine(lines, "*nat")
+	writeLine(lines, utiliptables.MakeChainLine(chain)) // effectively flushes chain atomically with rule restore
+
+	// link-local CIDR is always non-masquerade
+	if !m.config.MasqLinkLocal {
+		writeNonMasqRule(lines, linkLocalCIDR, chain)
+	}
+
+	// non-masquerade for user-provided CIDRs
+	for _, cidr := range m.config.NonMasqueradeCIDRs {
+		if !isIPv6CIDR(cidr) {
+			writeNonMasqRule(lines, cidr, chain)
 		}
-		// ensure that any non-local in POSTROUTING jumps to chain
-		if err := m.EnsurePostroutingJumpIPv6(chain); err != nil {
-			return err
+	}
+
+	// masquerade all other traffic that is not bound for a --dst-type
+	// LOCAL destination
+	for _, addr := range ingress {
+		ip := addr.IP
+		if !IsIPv6(ip) {
+			writeMasqRule(lines, chain, ip)
 		}
-		// build up lines to pass to ip6tables-restore
-		lines6 := bytes.NewBuffer(nil)
-		writeLine(lines6, "*nat")
-		writeLine(lines6, utiliptables.MakeChainLine(chain)) // effectively flushes chain atomically with rule restore
+	}
 
-		// link-local IPv6 CIDR is non-masquerade by default
-		if !m.config.MasqLinkLocalIPv6 {
-			writeNonMasqRule(lines6, linkLocalCIDRIPv6, chain)
-		}
+	writeLine(lines, "COMMIT")
 
-		for _, cidr := range m.config.NonMasqueradeCIDRs {
-			if isIPv6CIDR(cidr) {
-				writeNonMasqRule(lines6, cidr, chain)
-			}
-		}
-
-		// masquerade all other traffic that is not bound for a --dst-type LOCAL destination
-		writeMasqRule(lines6, chain, "anywhere")
-
-		writeLine(lines6, "COMMIT")
-
-		if err := m.ip6tables.RestoreAll(lines6.Bytes(), utiliptables.NoFlushTables, utiliptables.NoRestoreCounters); err != nil {
-			return err
-		}
+	if err := m.iptables.RestoreAll(lines.Bytes(), utiliptables.NoFlushTables, utiliptables.NoRestoreCounters); err != nil {
+		return err
 	}
 	return nil
 }

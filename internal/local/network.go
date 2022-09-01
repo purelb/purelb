@@ -306,11 +306,16 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 	return nil
 }
 
-func nodeAddress(node v1.Node) *string {
+func nodeAddress(node v1.Node, family int) *string {
 	for _, addr := range node.Status.Addresses {
 		if addr.Type == v1.NodeInternalIP {
+			ip := net.ParseIP(addr.Address)
+			if ip == nil || AddrFamily(ip) != family {
+				continue
+			}
 			return &addr.Address
 		}
 	}
+
 	return nil
 }
