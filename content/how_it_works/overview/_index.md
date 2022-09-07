@@ -96,8 +96,8 @@ Each pool conIn the case of the Allocator's inbuilt IPAM a Service Group consist
 apiVersion: "purelb.io/v1"
 kind: ServiceGroup
 metadata:
-  name: LocalAddressRange
-  namespace: purelb 
+  name: localaddrange
+  namespace: purelb
 spec:
  local:
     v4pool:

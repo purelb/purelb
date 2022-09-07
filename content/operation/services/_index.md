@@ -5,7 +5,9 @@ weight: 10
 hide: toc, nextpage
 ---
 
-PureLB uses the k8s services API and if a default service group has been defined, the following the  instructions provided in the k8s documentation will result in a load balancer service with an IPv4 address being created.  This command will create a service type LoadBalancer resource for the deployment echoserver using using the default service group.
+PureLB uses the k8s services API and if a default service group has been defined then following the instructions provided in the k8s documentation will result in a load balancer service with an IPv4 address being created.
+
+This command will create a service type LoadBalancer resource for the deployment echoserver using using the default service group:
 
 ```plaintext
 $ kubectl expose deployment echoserver --name=echoserver-service --port=80 --target-port=8080 --type=LoadBalancer

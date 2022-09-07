@@ -13,10 +13,9 @@ The Virtual Internet is important for clusters where a new Prefix is used for Lo
 
 When PureLB identifies that the address provided by the Service Group is not part of a local interface subnet, it undertakes the following steps:
 
-1. Query the SG configuration.  Service Groups are identified in the Load Balancer Service definition using the annotation, PureLB also annotates the service indicating the IPAM and Service Group allocating the address.
-2. Apply mask from subnet or aggregate from service group query.  If the aggregate is set to default the subnet network mask is used, if the aggregate is set it will be applied to the address.  This can be used to further subnet or supernet the address added to the virtual interface.
+1. Query the SG configuration.  Service Groups are identified in the Load Balancer Service definition using the `purelb.io/service-group` annotation; PureLB also annotates the service indicating the IPAM and Service Group allocating the address.
+2. Apply the mask from the subnet or aggregation service group query.  If aggregation is set to default the subnet network mask is used, otherwise the explicitly-specified mask will be applied to the address.  This can be used to further subnet or supernet the address added to the virtual interface.
 3.  Add the address to the virtual interface, _kube-lb0_ by default.  The Linux routing stack automatically computes and applies the correct prefix to the virtual interface.
-
 
 ```yaml
 apiVersion: purelb.io/v1
@@ -29,7 +28,7 @@ spec:
     v4pool:
       aggregation: /32
       pool: 172.32.100.225-172.30.100.229
-      subnet: 192.168.100.0/24
+      subnet: 172.32.100.0/24
     v6pool:
       aggregation: /128
       pool: fc00:370:155:0:8000::/126
