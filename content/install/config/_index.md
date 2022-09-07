@@ -136,7 +136,6 @@ spec:
       subnet: fc00:370:155:0:8000:1::/112
       pool: fc00:370:155:0:8000:1::/112
       aggregation: /128
-
 ```
 In certain cases it can be beneficial to advertize a host route, this is a specific route for one address.  In this example every address allocated from the pool will add a route to the routing table, _172.30.0.144/32_.  This functionality is useful when combined with ExternalTrafficPolicy:Local.  Note that some routers will not accept /32 routes over BGP and the upstream routers at your ISP will most certainly reject this route by configuration.  PureLB offers a couple of alternatives, waste a few addresses using an aggregator of /30 when the router does not allow /32 routes over BGP or use an IGP such as OSPF instead to provide rapid failover for individual service changes.
 
@@ -204,7 +203,6 @@ Spec:
       Pool:         fc00:270:154:0:8100::4/126
       Subnet:       fc00:270:154::/64
 Events:             <none>
-
 ```
 Service groups are namespaced, however PureLB will check all namespaces.  For simplicity we recommend adding them to the purelb namespace however in cases where RBAC controls who can update that namespace, service groups can be added to the namespaces of their users.
 

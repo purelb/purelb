@@ -125,7 +125,6 @@ O   172.31.1.1/32 [110/10000] via 172.30.250.101, enp6s0, 00:00:02
                               via 172.30.250.105, enp6s0, 00:00:02
 B>* 192.168.100.0/24 [20/1] via 172.30.255.1, enp1s0, 19:56:03
 B>* 192.168.151.0/24 [20/1] via 172.30.255.1, enp1s0, 3d01h36m
-
 ```
 
 In the example above, 172.31.1.1/32 has 5 equal cost routes indicated by _*_ showing that they are Forwarding Information Base routes.  Note this router is receiving these routes via two protocols, in this case the cluster has been configured with OSPF and BGP, BGP will take precedence therefore it provides the selected and FIB routes.

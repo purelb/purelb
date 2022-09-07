@@ -34,7 +34,6 @@ spec:
       subnet: fc00:270:154:0::/64
 ```
 ```plaintext
-
 $ kubectl describe service kuard-svc-dual-remote 
 Name:                     kuard-svc-dual-remote
 Namespace:                adamd
@@ -85,10 +84,6 @@ node3:~$ ip -6 addr show dev enp1s0
        valid_lft forever preferred_lft forever
     inet6 fe80::5054:ff:fec9:7073/64 scope link 
        valid_lft forever preferred_lft forever
-
-
-
-
 ```
 
 ### Memberlist

@@ -33,10 +33,9 @@ spec:
       aggregation: /128
       pool: fc00:370:155:0:8000::/126
       subnet: fc00:370:155::/64
-
 ```
-```plaintext
 
+```plaintext
 $ kubectl describe service kuard-svc-dual-remote 
 Name:                     kuard-svc-dual-remote
 Namespace:                test
@@ -98,7 +97,6 @@ node3:~$ ip addr show dev kube-lb0
        valid_lft forever preferred_lft forever
     inet6 fe80::6457:a0ff:fe1a:cfd5/64 scope link 
        valid_lft forever preferred_lft forever
-
 ```
 
 The configured aggregator is useful for providing additional address management functionality.  For example, multiple service groups with subnets that can be aggregated into a single single address advertisement can be defined.  By setting the aggregator, a single subnet can be added to multiple service groups resulting in a single route being advertised.  Conversely, a Service Group can be further subnetted into multiple networks that will be added to the virtual interface, including /32 or /128.   This functionality, when combined with Routing Software on the cluster enables complete routing address management and forwarding flexibility.

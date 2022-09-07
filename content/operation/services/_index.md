@@ -36,7 +36,6 @@ Events:
   ----    ------           ----               ----                -------
   Normal  IPAllocated      92m (x2 over 92m)  purelb-allocator    Assigned IP 172.30.250.53 from pool default
   Normal  AnnouncingLocal  92m (x2 over 92m)  purelb-lbnodeagent  Node node3 announcing 172.30.250.53 on interface eth1
-
 ```
 
 ### PureLB Annotations
@@ -116,8 +115,6 @@ Events:Type    Reason           Age                From                Message
   ----    ------           ----               ----                -------
   Normal  IPAllocated      92m (x2 over 92m)  purelb-allocator    Assigned IP 172.30.250.53 from pool localaddr
   Normal  AnnouncingLocal  92m (x2 over 92m)  purelb-lbnodeagent  Node node3 announcing 172.30.250.53 on interface enp1s0
-
-
 ```
 Describing the service displays the address provided by PureLB, in addition PureLB annotates the service to provide status information.  The annotations show that PureLB allocated the address from the localaddr Service Group.  Further, the annotations show that the address was added to a local interface, enp1s0 on k8s node purelb2-1.
 
@@ -176,7 +173,6 @@ Events:
   Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.225 from node node2 interface kube-lb0
   Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.225 from node node5 interface kube-lb0
   Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.225 from node node4 interface kube-lb0
-
 ```
 Describing the service shows that the requested address has been allocated by PureLB from the pool virtualsub.  PureLB scanned the configured service groups to confirm the address is in a service group and not in use prior to allocation.  
 
@@ -214,7 +210,6 @@ spec:
       subnet: '172.31.1.0/24'
       pool: '172.31.1.0/24'
       aggregation: '/32'
-
 ```
 
 This sets _externalTrafficPolicy: Local_ changing the behavior of both PureLB and kube-proxy.  PureLB will only advertise the allocated address on nodes where the POD with the app label echoserver present.  KubeProxy will not configure forwarding to send traffic over the CNI to PODs.  
@@ -256,6 +251,3 @@ Describing the service shows that address was requested and allocated from the v
 {{% notice warning %}} Local Addresses. Where the address is a local address External Traffic Policy is not supported.  PureLB will reset External Traffic Policy to Cluster.  Where an address is on the local network it can only be allocated to a single node, therefore this setting is not applicable {{% /notice %}}
 
 {{% notice warning %}} Address Sharing.  External Traffic Policy: Local does not support Address Sharing.  Address sharing can result in nodes that do not have POD (endpoints) being advertised.  Kubeproxy will not forward so traffic would be lost.  PureLB does not allow this configuration {{% /notice %}}
-
-
-

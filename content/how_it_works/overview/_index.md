@@ -41,7 +41,6 @@ The PureLB allocator watches the k8s service API for services of type LoadBalanc
 To use a Service Load Balancer the service type is set to LoadBalancer. 
 
 ```yaml
-
 apiVersion: v1
 kind: Service
 metadata:
@@ -66,7 +65,6 @@ spec:
     app: kuard
   sessionAffinity: None
   type: LoadBalancer
-
 ```
 
 The Allocator is configured with a minimum of one "default" Service Group. Multiple service groups can be defined and are accessed using annotations.
@@ -108,7 +106,6 @@ spec:
       aggregation: default
       pool: fc00:270:154:0:8100::4/64
       subnet: fc00:270:154::/64
-
 ```
 
 Kubernetes support Dual Stack by default, therefore the section of IPv4, IPv6 or both are configured in the service.  Based upon the service configuration the allocator will provide an address from the requested address families.

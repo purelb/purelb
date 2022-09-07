@@ -43,7 +43,6 @@ default via 172.30.250.1 dev enp1s0  src 172.30.250.104  metric 100
 172.30.250.1 dev enp1s0 scope link  src 172.30.250.104  metric 100 
 172.31.0.0/24 dev kube-lb0 scope link  src 172.31.0.9 
 172.31.2.0/24 dev kube-lb0 scope link  src 172.31.2.128 
-
 ```
 
 On this node PureLB would identify enp1s0 as the local interface as it has the default route.  Inspect the interface:

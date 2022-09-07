@@ -24,7 +24,7 @@ spec:
       - env:
         - name: DEFAULT_ANNOUNCER
           value: PureLB
-        ....
+        ...
 ```
 To disable PureLB as the default loadBalancer delete the DEFAULT_ANNOUNCER environment variable in the allocator deployment yaml
 

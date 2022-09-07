@@ -74,7 +74,6 @@ The local hosts ip address is substituted for the variable _k8sipaddr_.
         export where  source ~ [ RTS_STATIC, RTS_BGP, RTS_DEVICE ];
         import filter bgp_reject;
       };
-
 ```
 Do not change the variable k8ipaddr, the provides the per node ipaddress necessary for BGP operation. 
 

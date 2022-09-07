@@ -10,7 +10,6 @@ PureLB attempts to provide all of the information necessary to monitor and troub
 The simplest way to check the status of services if using the _kubectl describe_ command.
 
 ```plaintext
-
 $ kubectl describe service kuard-svc-dual-remote 
 Name:                     kuard-svc-dual-remote
 Namespace:                adamd
@@ -39,9 +38,7 @@ Events:
   Normal  AnnouncingNonLocal  10s (x2 over 10s)  purelb-lbnodeagent  Announcing 172.32.100.225 from node mk8s1 interface kube-lb0
   Normal  AnnouncingNonLocal  10s (x2 over 10s)  purelb-lbnodeagent  Announcing fc00:370:155:0:8000:: from node mk8s1 interface kube-lb0
   Normal  AnnouncingNonLocal  10s (x2 over 10s)  purelb-lbnodeagent  Announcing fc00:370:155:0:8000:: from node mk8s3 interface kube-lb0
-
-
-``` 
+```
 
 The example above shows that PureLB allocated the address from the requested service group _virtualsg_, this information was added by the _allocator_.  The event messages are added by _lbnodeagent_ and show the nodes where the address was added.  As the address was added to multiple nodes, it is a virtual address as local addresses can only be added to a single node.
 
@@ -71,7 +68,6 @@ Events:
   ----    ------           ----               ----                -------
   Normal  AddressAssigned  27m                purelb-allocator    Assigned {Ingress:[{IP:192.168.10.240 Hostname: Ports:[]}]} from pool default
   Normal  AnnouncingLocal  27m (x4 over 27m)  purelb-lbnodeagent  Node mk8s2 announcing 192.168.10.240 on interface enp1s0
-
 ```
 
 This example shows that the default pool is part of the local address.  PureLB annotates these services with the node and interface where the address was announced as well us updating the event.  
@@ -84,7 +80,6 @@ $ kubectl get services -A -o json | jq '.items[].metadata.annotations' | grep an
   "purelb.io/announcing-IPv4": "mk8s2,enp1s0",
   "purelb.io/announcing-IPv6": "mk8s2,enp1s0",
   "purelb.io/announcing-IPv4": "mk8s2,enp1s0"
-
 ```
 
 

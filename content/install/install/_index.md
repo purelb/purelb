@@ -40,10 +40,8 @@ Updating the kubeproxy configuration is dependent upon the Kubernetes packaging 
 Kubeproxy Configuration
 
 ```plaintext
-
 --proxy-mode IPVS
 --ipvs-strict-arp
-
 ```
 
 Sysctl configuration
@@ -54,7 +52,6 @@ net.ipv4.conf.all.arp_announce=2
 
 EOF
 sudo sysctl --system
-
 ```
 {{% notice danger %}}
 PureLB will operate without making this change, however if kubeproxy is set to IPVS mode and ARP changes are not made, all nodes will respond to locally allocated addresses as kubeproxy adds these addresses to kube-ipvs0, the behavior is the same as duplicate IP addresses on the same subnet.
