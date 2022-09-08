@@ -148,7 +148,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	return nil
 }
 
-func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
+func (a *announcer) SetBalancer(svc *v1.Service, _ *v1.Endpoints) error {
 	// retErr caches an error while we try other operations. Because we
 	// might have more than one interface to announce, if an error
 	// happens on the first one we still want to try the second. Instead
@@ -183,12 +183,12 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 			lbIPNet, localif, err := findLocal(a.localNameRegex, lbIP)
 			if err == nil {
 				// We found a local interface, announce the address on it
-				if err := a.announceLocal(svc, endpoints, localif, lbIP, lbIPNet); err != nil {
+				if err := a.announceLocal(svc, localif, lbIP, lbIPNet); err != nil {
 					retErr = err
 				}
 			} else {
 				// lbIP isn't local to any interfaces so add it to dummyInt
-				if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+				if err := a.announceRemote(svc, lbIP); err != nil {
 					retErr = err
 				}
 			}
@@ -204,12 +204,12 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 			if lbIPNet, defaultif, err := checkLocal(announceInt, lbIP); err == nil {
 				// The default interface is a local interface, announce the
 				// address on it
-				if err := a.announceLocal(svc, endpoints, defaultif, lbIP, lbIPNet); err != nil {
+				if err := a.announceLocal(svc, defaultif, lbIP, lbIPNet); err != nil {
 					retErr = err
 				}
 			} else {
 				// The default interface is remote, so add lbIP to dummyInt
-				if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+				if err := a.announceRemote(svc, lbIP); err != nil {
 					retErr = err
 				}
 			}
@@ -220,7 +220,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 	return retErr
 }
 
-func (a *announcer) announceLocal(svc *v1.Service, endpoints *v1.Endpoints, announceInt netlink.Link, lbIP net.IP, lbIPNet net.IPNet) error {
+func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbIP net.IP, lbIPNet net.IPNet) error {
 	nsName := svc.Namespace + "/" + svc.Name
 	l := log.With(a.logger, "service", nsName)
 
@@ -262,13 +262,13 @@ func (a *announcer) announceLocal(svc *v1.Service, endpoints *v1.Endpoints, anno
 		}).Set(1)
 
 		// Update SNAT egress rules
-		if err := a.updateEgressWinner(l, svc, lbIP, endpoints, nodeMap, winner); err != nil {
+		if err := a.updateEgressWinner(svc, lbIP, nodeMap, winner); err != nil {
 			return err
 		}
 	} else {
 		// Update egress routing rules. These send egress traffic to the
 		// winning node for SNAT.
-		if err := a.updateEgressNonWinner(l, svc, lbIP, endpoints, nodeMap, winner, announceInt); err != nil {
+		if err := a.updateEgressNonWinner(svc, lbIP, nodeMap, winner, announceInt); err != nil {
 			return err
 		}
 
@@ -281,7 +281,7 @@ func (a *announcer) announceLocal(svc *v1.Service, endpoints *v1.Endpoints, anno
 	return nil
 }
 
-func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, announceInt *netlink.Link, lbIP net.IP) error {
+func (a *announcer) announceRemote(svc *v1.Service, lbIP net.IP) error {
 	l := log.With(a.logger, "service", svc.Name)
 	nsName := svc.Namespace + "/" + svc.Name
 
@@ -297,6 +297,12 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 	}
 	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && len(eps) > 0 {
 		l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
+
+		// Clean up any egress config.
+		if err := a.removeEgressWinner(nsName); err != nil {
+			a.logger.Log("ERROR", err)
+		}
+
 		return a.deleteAddress(nsName, "noEndpoints", lbIP)
 	}
 
@@ -324,6 +330,13 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 		}).Set(1)
 	} else {
 		return fmt.Errorf("PoolAnnotation missing from service %s", nsName)
+	}
+
+	// Update SNAT egress rules for this node only. We pass an empty
+	// node map because we're going to SNAT traffic only for this node -
+	// no other nodes should route traffic to us.
+	if err := a.updateEgressWinner(svc, lbIP, map[string]v1.Node{}, ""); err != nil {
+		return err
 	}
 
 	return nil
@@ -448,7 +461,7 @@ func (a *announcer) healthyEndpoints(svc *v1.Service, node string) ([]discoveryv
 // on the locally-announcing node, i.e., the "winner". If egress is
 // enabled we add a rule for each service pod running on this host and
 // one for each other node that also hosts endpoints.
-func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.IP, endpoints *v1.Endpoints, nodes map[string]v1.Node, winnerNodeName string) error {
+func (a *announcer) updateEgressWinner(svc *v1.Service, lbIP net.IP, nodes map[string]v1.Node, winnerNodeName string) error {
 	nsName := svc.Namespace + "/" + svc.Name
 
 	// Return if the service isn't configured for egress.
@@ -462,7 +475,7 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 		return err
 	}
 	if len(ips) < 1 {
-		l.Log("message", "no healthy endpoints", "service", nsName)
+		a.logger.Log("message", "no healthy endpoints", "service", nsName)
 		return nil
 	}
 
@@ -470,7 +483,7 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 
 		// Set up the service's iptables chains.
 		if err := a.masqer.SyncChainIPv6(nsName, svc.Status.LoadBalancer.Ingress); err != nil {
-			l.Log("message", "error syncing masquerade rules", "error", err, "chain", nsName)
+			a.logger.Log("message", "error syncing masquerade rules", "error", err, "chain", nsName)
 			return err
 		}
 
@@ -481,7 +494,7 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 		var destroyErr error
 		if err := ipset.Destroy(chain); err != nil {
 			destroyErr = err
-			l.Log("op", "cleanup v6 ipset", "error", err)
+			a.logger.Log("op", "cleanup v6 ipset", "error", err)
 		}
 		if destroyErr != nil {
 			return destroyErr
@@ -492,7 +505,7 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 		var createErr error
 		if err := ipset.Create(chain, ipset.OptIPv6()); err != nil {
 			createErr = err
-			l.Log("op", "create v6 ipset", "error", err)
+			a.logger.Log("op", "create v6 ipset", "error", err)
 		}
 		if createErr != nil {
 			return createErr
@@ -503,13 +516,13 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 			for _, addr := range endpoint.Addresses {
 				ip := net.ParseIP(addr)
 				if ip == nil {
-					l.Log("message", "invalid endpoint address, can't NAT", "service", nsName, "endpoint", addr)
+					a.logger.Log("message", "invalid endpoint address, can't NAT", "service", nsName, "endpoint", addr)
 					continue
 				}
 				if AddrFamily(ip) == nl.FAMILY_V6 {
-					l.Log("message", "ipset V6", "service", nsName, "endpoint", ip)
+					a.logger.Log("message", "ipset V6", "service", nsName, "endpoint", ip)
 					if err := ipset.Add(chain, addr); err != nil {
-						l.Log("error", err, "service", nsName, "endpoint", ip)
+						a.logger.Log("error", err, "service", nsName, "endpoint", ip)
 						continue
 					}
 				}
@@ -521,14 +534,14 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 			if name == winnerNodeName {
 				continue
 			}
-			l.Log("message", "will SNAT", "service", nsName, "node", *nodeAddress(node, nl.FAMILY_V6), "chain", nsName)
+			a.logger.Log("message", "will SNAT", "service", nsName, "node", *nodeAddress(node, nl.FAMILY_V6), "chain", nsName)
 			if err := ipset.Add(chain, *nodeAddress(node, nl.FAMILY_V6)); err != nil {
 				return err
 			}
 		}
 
 		if err := a.masqer.EnsurePostroutingJumpIPv6(utiliptables.Chain(chain)); err != nil {
-			l.Log("message", "error syncing masquerade rules", "error", err, "chain", chain)
+			a.logger.Log("message", "error syncing masquerade rules", "error", err, "chain", chain)
 			return err
 		}
 
@@ -536,7 +549,7 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 
 		// Set up the service's iptables chains.
 		if err := a.masqer.SyncChainIPv4(nsName, svc.Status.LoadBalancer.Ingress); err != nil {
-			l.Log("message", "error syncing masquerade rules", "error", err, "chain", nsName)
+			a.logger.Log("message", "error syncing masquerade rules", "error", err, "chain", nsName)
 			return err
 		}
 
@@ -547,7 +560,7 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 		var destroyErr error
 		if err := ipset.Destroy(chain); err != nil {
 			destroyErr = err
-			l.Log("op", "cleanup v4 ipset", "error", err)
+			a.logger.Log("op", "cleanup v4 ipset", "error", err)
 		}
 		if destroyErr != nil {
 			return destroyErr
@@ -558,7 +571,7 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 		var createErr error
 		if err := ipset.Create(chain); err != nil {
 			createErr = err
-			l.Log("op", "create v4 ipset", "error", err)
+			a.logger.Log("op", "create v4 ipset", "error", err)
 		}
 		if createErr != nil {
 			return createErr
@@ -569,13 +582,13 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 			for _, addr := range endpoint.Addresses {
 				ip := net.ParseIP(addr)
 				if ip == nil {
-					l.Log("message", "invalid endpoint address, can't NAT", "service", nsName, "endpoint", addr)
+					a.logger.Log("message", "invalid endpoint address, can't NAT", "service", nsName, "endpoint", addr)
 					continue
 				}
 				if AddrFamily(ip) == nl.FAMILY_V4 {
-					l.Log("message", "ipset V4", "service", nsName, "endpoint", ip)
+					a.logger.Log("message", "ipset V4", "service", nsName, "endpoint", ip)
 					if err := ipset.Add(chain, addr); err != nil {
-						l.Log("error", err, "service", nsName, "endpoint", ip)
+						a.logger.Log("error", err, "service", nsName, "endpoint", ip)
 						continue
 					}
 				}
@@ -587,14 +600,14 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 			if name == winnerNodeName {
 				continue
 			}
-			l.Log("message", "will SNAT", "service", nsName, "node", *nodeAddress(node, nl.FAMILY_V4), "chain", nsName)
+			a.logger.Log("message", "will SNAT", "service", nsName, "node", *nodeAddress(node, nl.FAMILY_V4), "chain", nsName)
 			if err := ipset.Add(chain, *nodeAddress(node, nl.FAMILY_V4)); err != nil {
 				return err
 			}
 		}
 
 		if err := a.masqer.EnsurePostroutingJump(utiliptables.Chain(chain)); err != nil {
-			l.Log("message", "error syncing masquerade rules", "error", err, "chain", chain)
+			a.logger.Log("message", "error syncing masquerade rules", "error", err, "chain", chain)
 			return err
 		}
 	}
@@ -604,7 +617,7 @@ func (a *announcer) updateEgressWinner(l log.Logger, svc *v1.Service, lbIP net.I
 
 // updateEgressNonWinner updates the routes that send egress traffic over
 // to the "winner" to be SNAT'ed.
-func (a *announcer) updateEgressNonWinner(l log.Logger, svc *v1.Service, lbIP net.IP, endpoints *v1.Endpoints, nodes map[string]v1.Node, winnerNodeName string, announceInt netlink.Link) error {
+func (a *announcer) updateEgressNonWinner(svc *v1.Service, lbIP net.IP, nodes map[string]v1.Node, winnerNodeName string, announceInt netlink.Link) error {
 	nsName := svc.Namespace + "/" + svc.Name
 
 	// Return if we're not configured for egress.
@@ -629,13 +642,13 @@ func (a *announcer) updateEgressNonWinner(l log.Logger, svc *v1.Service, lbIP ne
 	// }
 	// for _, rule := range rules {
 	// 	bytes, _ := json.Marshal(rule)
-	// 	l.Log("rule", string(bytes))
+	// 	a.logger.Log("rule", string(bytes))
 	// }
 
 	// Empty our routing table and rules.
 	err = a.removeEgressNonWinner(tableKey)
 	if err != nil {
-		l.Log("ERROR", err)
+		a.logger.Log("ERROR", err)
 		return err
 	}
 
@@ -655,18 +668,18 @@ func (a *announcer) updateEgressNonWinner(l log.Logger, svc *v1.Service, lbIP ne
 		}
 		err = netlink.RouteAdd(&defaultRoute)
 		if err != nil {
-			l.Log("op", "addDefaultRoute", "ERROR", err)
+			a.logger.Log("op", "addDefaultRoute", "ERROR", err)
 		}
 
 		// Add a route for the local pod network
 		cni0, err := netlink.LinkByName(a.config.Egress.CNIInterface)
 		if err != nil {
-			l.Log("op", "addCNI0Route", "ERROR", err, "name", a.config.Egress.CNIInterface)
+			a.logger.Log("op", "addCNI0Route", "ERROR", err, "name", a.config.Egress.CNIInterface)
 		}
 		me := nodes[a.myNode]
 		_, myCidr, err := net.ParseCIDR(me.Spec.PodCIDR)
 		if err != nil {
-			l.Log("op", "addCNI0Route", "ERROR", err)
+			a.logger.Log("op", "addCNI0Route", "ERROR", err)
 		}
 		cidrRoute := netlink.Route{
 			Dst:       myCidr,
@@ -677,19 +690,19 @@ func (a *announcer) updateEgressNonWinner(l log.Logger, svc *v1.Service, lbIP ne
 		}
 		err = netlink.RouteAdd(&cidrRoute)
 		if err != nil {
-			l.Log("op", "addPodCIDRRoute", "ERROR", err)
+			a.logger.Log("op", "addPodCIDRRoute", "ERROR", err)
 		}
 
 		// Add rules to jump to our routing table.
 		ips, err := a.healthyEndpoints(svc, a.myNode)
 		if err != nil {
-			l.Log("op", "addPodCIDRRoute", "ERROR", err)
+			a.logger.Log("op", "addPodCIDRRoute", "ERROR", err)
 		}
 		for _, ep := range ips {
 			for _, addr := range ep.Addresses {
 				ip := net.ParseIP(addr)
 				if ip == nil {
-					l.Log("message", "invalid endpoint address, can't add rule", "service", nsName, "endpoint", addr)
+					a.logger.Log("message", "invalid endpoint address, can't add rule", "service", nsName, "endpoint", addr)
 					continue
 				}
 				if AddrFamily(ip) == nl.FAMILY_V6 {
@@ -698,12 +711,12 @@ func (a *announcer) updateEgressNonWinner(l log.Logger, svc *v1.Service, lbIP ne
 					rule.Table = tableKey
 					_, rule.Src, err = net.ParseCIDR(addr + "/128")
 					if err != nil {
-						l.Log("op", "addEndpointRule", "ERROR", err, "ip", addr)
+						a.logger.Log("op", "addEndpointRule", "ERROR", err, "ip", addr)
 						continue
 					}
 					err = netlink.RuleAdd(rule)
 					if err != nil {
-						l.Log("op", "addEndpointRule", "ERROR", err)
+						a.logger.Log("op", "addEndpointRule", "ERROR", err)
 					}
 				}
 			}
@@ -726,18 +739,18 @@ func (a *announcer) updateEgressNonWinner(l log.Logger, svc *v1.Service, lbIP ne
 		}
 		err = netlink.RouteAdd(&defaultRoute)
 		if err != nil {
-			l.Log("op", "addDefaultRoute", "ERROR", err)
+			a.logger.Log("op", "addDefaultRoute", "ERROR", err)
 		}
 
 		// Add a route for the local pod network
 		cni0, err := netlink.LinkByName(a.config.Egress.CNIInterface)
 		if err != nil {
-			l.Log("op", "addCNI0Route", "ERROR", err, "name", a.config.Egress.CNIInterface)
+			a.logger.Log("op", "addCNI0Route", "ERROR", err, "name", a.config.Egress.CNIInterface)
 		}
 		me := nodes[a.myNode]
 		_, myCidr, err := net.ParseCIDR(me.Spec.PodCIDR)
 		if err != nil {
-			l.Log("op", "addCNI0Route", "ERROR", err)
+			a.logger.Log("op", "addCNI0Route", "ERROR", err)
 		}
 		cidrRoute := netlink.Route{
 			Dst:       myCidr,
@@ -748,19 +761,19 @@ func (a *announcer) updateEgressNonWinner(l log.Logger, svc *v1.Service, lbIP ne
 		}
 		err = netlink.RouteAdd(&cidrRoute)
 		if err != nil {
-			l.Log("op", "addPodCIDRRoute", "ERROR", err)
+			a.logger.Log("op", "addPodCIDRRoute", "ERROR", err)
 		}
 
 		// Add rules to jump to our routing table.
 		ips, err := a.healthyEndpoints(svc, a.myNode)
 		if err != nil {
-			l.Log("op", "addPodCIDRRoute", "ERROR", err)
+			a.logger.Log("op", "addPodCIDRRoute", "ERROR", err)
 		}
 		for _, ep := range ips {
 			for _, addr := range ep.Addresses {
 				ip := net.ParseIP(addr)
 				if ip == nil {
-					l.Log("message", "invalid endpoint address, can't add rule", "service", nsName, "endpoint", addr)
+					a.logger.Log("message", "invalid endpoint address, can't add rule", "service", nsName, "endpoint", addr)
 					continue
 				}
 				if AddrFamily(ip) == nl.FAMILY_V4 {
@@ -769,12 +782,12 @@ func (a *announcer) updateEgressNonWinner(l log.Logger, svc *v1.Service, lbIP ne
 					rule.Table = tableKey
 					_, rule.Src, err = net.ParseCIDR(addr + "/32")
 					if err != nil {
-						l.Log("op", "addEndpointRule", "ERROR", err, "ip", addr)
+						a.logger.Log("op", "addEndpointRule", "ERROR", err, "ip", addr)
 						continue
 					}
 					err = netlink.RuleAdd(rule)
 					if err != nil {
-						l.Log("op", "addEndpointRule", "ERROR", err)
+						a.logger.Log("op", "addEndpointRule", "ERROR", err)
 					}
 				}
 			}
