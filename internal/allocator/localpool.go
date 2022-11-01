@@ -368,8 +368,8 @@ func (p LocalPool) Overlaps(other Pool) bool {
 // Contains indicates whether the provided net.IP represents an
 // address within this Pool.  It returns true if so, false otherwise.
 func (p LocalPool) Contains(ip net.IP) bool {
-	if p.v4Range != nil && p.v4Range.Contains(ip) {
-		return true
+	if p.v4Range != nil && ip.To4() != nil {
+		return p.v4Range.Contains(ip.To4())
 	}
 	if p.v6Range != nil && p.v6Range.Contains(ip) {
 		return true
