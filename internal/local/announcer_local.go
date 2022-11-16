@@ -369,10 +369,6 @@ func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 	}
 
 	// Clean up any egress config.
-	if err := a.removeEgressWinner(nsName); err != nil {
-		a.logger.Log("ERROR", err)
-	}
-
 	tableKeyRaw, gotEgress := svc.Annotations[purelbv1.RouteTableAnnotation]
 	if !gotEgress {
 		return nil
@@ -381,7 +377,10 @@ func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 	if err != nil {
 		return err
 	}
-	if err := a.removeEgressNonWinner(tableKey); err != nil {
+	if err := a.removeEgressWinner(nsName); err != nil {
+		a.logger.Log("ERROR", err)
+	}
+	if err := a.removeEgressNonWinner(tableKey, nsName); err != nil {
 		a.logger.Log("ERROR", err)
 		return err
 	}
@@ -487,59 +486,11 @@ func (a *announcer) updateEgressWinner(svc *v1.Service, lbIP net.IP, nodes map[s
 			return err
 		}
 
+		// Create the ipset and the postrouting jump
 		chain := masq.ChainNameV6(nsName)
-
-		// Destroy our ipsets - it's easier then synchronizing them
-		// incrementally.
-		var destroyErr error
-		if err := ipset.Destroy(chain); err != nil {
-			destroyErr = err
-			a.logger.Log("op", "cleanup v6 ipset", "error", err)
+		if err := a.createIPSetV6(chain, ips, nodes, winnerNodeName); err != nil {
+			return err
 		}
-		if destroyErr != nil {
-			return destroyErr
-		}
-
-		// Create ipsets which will contain this service's endpoints on this
-		// host.
-		var createErr error
-		if err := ipset.Create(chain, ipset.OptIPv6()); err != nil {
-			createErr = err
-			a.logger.Log("op", "create v6 ipset", "error", err)
-		}
-		if createErr != nil {
-			return createErr
-		}
-
-		// Add each endpoint address to the IP set so they'll get SNATed
-		for _, endpoint := range ips {
-			for _, addr := range endpoint.Addresses {
-				ip := net.ParseIP(addr)
-				if ip == nil {
-					a.logger.Log("message", "invalid endpoint address, can't NAT", "service", nsName, "endpoint", addr)
-					continue
-				}
-				if AddrFamily(ip) == nl.FAMILY_V6 {
-					a.logger.Log("message", "ipset V6", "service", nsName, "endpoint", ip)
-					if err := ipset.Add(chain, addr); err != nil {
-						a.logger.Log("error", err, "service", nsName, "endpoint", ip)
-						continue
-					}
-				}
-			}
-		}
-		// Add each *non-winner* node IP to the IP set so we'll SNAT egress
-		// traffic that they route to us.
-		for name, node := range nodes {
-			if name == winnerNodeName {
-				continue
-			}
-			a.logger.Log("message", "will SNAT", "service", nsName, "node", *nodeAddress(node, nl.FAMILY_V6), "chain", nsName)
-			if err := ipset.Add(chain, *nodeAddress(node, nl.FAMILY_V6)); err != nil {
-				return err
-			}
-		}
-
 		if err := a.masqer.EnsurePostroutingJumpIPv6(utiliptables.Chain(chain)); err != nil {
 			a.logger.Log("message", "error syncing masquerade rules", "error", err, "chain", chain)
 			return err
@@ -553,59 +504,11 @@ func (a *announcer) updateEgressWinner(svc *v1.Service, lbIP net.IP, nodes map[s
 			return err
 		}
 
+		// Create the ipset and the postrouting jump
+		if err := a.createIPSetV4(nsName, ips, nodes, winnerNodeName); err != nil {
+			return err
+		}
 		chain := masq.ChainNameV4(nsName)
-
-		// Destroy our ipsets - it's easier then synchronizing them
-		// incrementally.
-		var destroyErr error
-		if err := ipset.Destroy(chain); err != nil {
-			destroyErr = err
-			a.logger.Log("op", "cleanup v4 ipset", "error", err)
-		}
-		if destroyErr != nil {
-			return destroyErr
-		}
-
-		// Create ipsets which will contain this service's endpoints on this
-		// host.
-		var createErr error
-		if err := ipset.Create(chain); err != nil {
-			createErr = err
-			a.logger.Log("op", "create v4 ipset", "error", err)
-		}
-		if createErr != nil {
-			return createErr
-		}
-
-		// Add each endpoint address to the IP set so they'll get SNATed
-		for _, endpoint := range ips {
-			for _, addr := range endpoint.Addresses {
-				ip := net.ParseIP(addr)
-				if ip == nil {
-					a.logger.Log("message", "invalid endpoint address, can't NAT", "service", nsName, "endpoint", addr)
-					continue
-				}
-				if AddrFamily(ip) == nl.FAMILY_V4 {
-					a.logger.Log("message", "ipset V4", "service", nsName, "endpoint", ip)
-					if err := ipset.Add(chain, addr); err != nil {
-						a.logger.Log("error", err, "service", nsName, "endpoint", ip)
-						continue
-					}
-				}
-			}
-		}
-		// Add each *non-winner* node IP to the IP set so we'll SNAT egress
-		// traffic that they route to us.
-		for name, node := range nodes {
-			if name == winnerNodeName {
-				continue
-			}
-			a.logger.Log("message", "will SNAT", "service", nsName, "node", *nodeAddress(node, nl.FAMILY_V4), "chain", nsName)
-			if err := ipset.Add(chain, *nodeAddress(node, nl.FAMILY_V4)); err != nil {
-				return err
-			}
-		}
-
 		if err := a.masqer.EnsurePostroutingJump(utiliptables.Chain(chain)); err != nil {
 			a.logger.Log("message", "error syncing masquerade rules", "error", err, "chain", chain)
 			return err
@@ -646,7 +549,7 @@ func (a *announcer) updateEgressNonWinner(svc *v1.Service, lbIP net.IP, nodes ma
 	// }
 
 	// Empty our routing table and rules.
-	err = a.removeEgressNonWinner(tableKey)
+	err = a.removeEgressNonWinner(tableKey, nsName)
 	if err != nil {
 		a.logger.Log("ERROR", err)
 		return err
@@ -722,6 +625,16 @@ func (a *announcer) updateEgressNonWinner(svc *v1.Service, lbIP net.IP, nodes ma
 			}
 		}
 
+		// Create the ipset and the postrouting jump
+		if err := a.createIPSetV6(nsName, ips, nodes, winnerNodeName); err != nil {
+			return err
+		}
+		chainName := masq.ChainNameV6(nsName)
+		if err := a.masqer.EnsurePostroutingReturnIPv6(utiliptables.Chain(chainName)); err != nil {
+			a.logger.Log("message", "error syncing masquerade rules", "error", err, "chain", chainName)
+			return err
+		}
+
 	} else if AddrFamily(lbIP) == nl.FAMILY_V4 {
 
 		// Add a default route to our routing table
@@ -792,6 +705,15 @@ func (a *announcer) updateEgressNonWinner(svc *v1.Service, lbIP net.IP, nodes ma
 				}
 			}
 		}
+		// Create the ipset and the postrouting jump
+		if err := a.createIPSetV4(nsName, ips, nodes, winnerNodeName); err != nil {
+			return err
+		}
+		chainName := masq.ChainNameV4(nsName)
+		if err := a.masqer.EnsurePostroutingReturn(utiliptables.Chain(chainName)); err != nil {
+			a.logger.Log("message", "error syncing masquerade rules", "error", err, "chain", chainName)
+			return err
+		}
 	}
 
 	return nil
@@ -805,7 +727,13 @@ func (a *announcer) removeEgressWinner(nsName string) error {
 	if err := a.masqer.DeletePostroutingJumpIPv6(utiliptables.Chain(chainV6)); err != nil {
 		a.logger.Log("ERROR", err)
 	}
+	if err := a.masqer.DeletePostroutingReturnIPv6(utiliptables.Chain(chainV6)); err != nil {
+		a.logger.Log("ERROR", err)
+	}
 	if err := a.masqer.DeletePostroutingJump(utiliptables.Chain(chainV4)); err != nil {
+		a.logger.Log("ERROR", err)
+	}
+	if err := a.masqer.DeletePostroutingReturn(utiliptables.Chain(chainV4)); err != nil {
 		a.logger.Log("ERROR", err)
 	}
 	if err := ipset.Destroy(chainV6); err != nil {
@@ -823,7 +751,22 @@ func (a *announcer) removeEgressWinner(nsName string) error {
 
 // removeEgressNonWinner cleans up one service's worth of ip rules and
 // routes on a non-winner node.
-func (a *announcer) removeEgressNonWinner(tableKey int) error {
+func (a *announcer) removeEgressNonWinner(tableKey int, nsName string) error {
+	chainV6 := masq.ChainNameV6(nsName)
+	chainV4 := masq.ChainNameV4(nsName)
+	if err := a.masqer.DeletePostroutingReturnIPv6(utiliptables.Chain(chainV6)); err != nil {
+		a.logger.Log("ERROR", err)
+	}
+	if err := a.masqer.DeletePostroutingReturn(utiliptables.Chain(chainV4)); err != nil {
+		a.logger.Log("ERROR", err)
+	}
+	if err := ipset.Destroy(chainV6); err != nil {
+		a.logger.Log("ERROR", err)
+	}
+	if err := ipset.Destroy(chainV4); err != nil {
+		a.logger.Log("ERROR", err)
+	}
+
 	// Remove any rules that point to this table.
 	rules, err := netlink.RuleList(nl.FAMILY_ALL)
 	if err != nil {
@@ -846,6 +789,100 @@ func (a *announcer) removeEgressNonWinner(tableKey int) error {
 	for _, route := range routes {
 		if err := netlink.RouteDel(&route); err != nil {
 			a.logger.Log("op", "deleteRoute", "ERROR", err)
+		}
+	}
+
+	return nil
+}
+
+func (a *announcer) createIPSetV4(nsName string, ips []discoveryv1.Endpoint, nodes map[string]v1.Node, winnerNodeName string) error {
+	// Destroy our ipsets - it's easier then synchronizing them
+	// incrementally.
+	chain := masq.ChainNameV4(nsName)
+	var destroyErr error
+	if err := ipset.Destroy(chain); err != nil {
+		destroyErr = err
+		a.logger.Log("op", "cleanup v4 ipset", "error", err)
+	}
+	if destroyErr != nil {
+		return destroyErr
+	}
+
+	// Create an ipset which will contain this service's endpoints
+	if err := ipset.Create(chain); err != nil {
+		a.logger.Log("op", "create v4 ipset", "error", err)
+		return err
+	}
+
+	// Add each endpoint address to the ipset so they'll get SNATed
+	for _, endpoint := range ips {
+		for _, addr := range endpoint.Addresses {
+			ip := net.ParseIP(addr)
+			if ip == nil {
+				a.logger.Log("message", "invalid endpoint address, can't NAT", "service", nsName, "endpoint", addr)
+				continue
+			}
+			if AddrFamily(ip) == nl.FAMILY_V4 {
+				if err := ipset.Add(chain, addr); err != nil {
+					a.logger.Log("error", err, "service", nsName, "endpoint", ip)
+					continue
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (a *announcer) createIPSetV6(nsName string, ips []discoveryv1.Endpoint, nodes map[string]v1.Node, winnerNodeName string) error {
+	// Destroy our ipsets - it's easier then synchronizing them
+	// incrementally.
+	chain := masq.ChainNameV6(nsName)
+	var destroyErr error
+	if err := ipset.Destroy(chain); err != nil {
+		destroyErr = err
+		a.logger.Log("op", "cleanup v6 ipset", "error", err)
+	}
+	if destroyErr != nil {
+		return destroyErr
+	}
+
+	// Create ipsets which will contain this service's endpoints on this
+	// host.
+	var createErr error
+	if err := ipset.Create(chain, ipset.OptIPv6()); err != nil {
+		createErr = err
+		a.logger.Log("op", "create v6 ipset", "error", err)
+	}
+	if createErr != nil {
+		return createErr
+	}
+
+	// Add each endpoint address to the IP set so they'll get SNATed
+	for _, endpoint := range ips {
+		for _, addr := range endpoint.Addresses {
+			ip := net.ParseIP(addr)
+			if ip == nil {
+				a.logger.Log("message", "invalid endpoint address, can't NAT", "service", nsName, "endpoint", addr)
+				continue
+			}
+			if AddrFamily(ip) == nl.FAMILY_V6 {
+				if err := ipset.Add(chain, addr); err != nil {
+					a.logger.Log("error", err, "service", nsName, "endpoint", ip)
+					continue
+				}
+			}
+		}
+	}
+	// Add each *non-winner* node IP to the IP set so we'll SNAT egress
+	// traffic that they route to us.
+	for name, node := range nodes {
+		if name == winnerNodeName {
+			continue
+		}
+		a.logger.Log("message", "will SNAT", "service", nsName, "node", *nodeAddress(node, nl.FAMILY_V6), "chain", nsName)
+		if err := ipset.Add(chain, *nodeAddress(node, nl.FAMILY_V6)); err != nil {
+			return err
 		}
 	}
 

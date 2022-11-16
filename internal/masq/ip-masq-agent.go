@@ -311,22 +311,29 @@ func (m *MasqDaemon) SyncChainIPv4(nsName string, ingress []v1.LoadBalancerIngre
 	return nil
 }
 
-// DeleteChain deletes chain. The error can be caused by either IPV4
-// or IPV6.
+// DeleteChain deletes the chain named nsName. The error can be caused
+// by either IPV4 or IPV6.
 func (m *MasqDaemon) DeleteChains(nsName string) error {
+	var retVal error
 	chainV4 := utiliptables.Chain(ChainNameV4(nsName))
-	retVal := m.iptables.FlushChain(utiliptables.TableNAT, chainV4)
-	if err := m.iptables.DeleteChain(utiliptables.TableNAT, chainV4); err != nil {
+	if err := m.iptables.FlushChain(utiliptables.TableNAT, chainV4); checkNoChain(err) != nil {
+		retVal = err
+	}
+	if err := m.iptables.DeleteChain(utiliptables.TableNAT, chainV4); checkNoChain(err) != nil {
 		retVal = err
 	}
 	chainV6 := utiliptables.Chain(ChainNameV6(nsName))
-	if err := m.ip6tables.FlushChain(utiliptables.TableNAT, chainV6); err != nil {
+	if err := m.ip6tables.FlushChain(utiliptables.TableNAT, chainV6); checkNoChain(err) != nil {
 		retVal = err
 	}
-	if err := m.ip6tables.DeleteChain(utiliptables.TableNAT, chainV6); err != nil {
+	if err := m.ip6tables.DeleteChain(utiliptables.TableNAT, chainV6); checkNoChain(err) != nil {
 		retVal = err
 	}
 	return retVal
+}
+
+func checkNoChain(err error) error {
+	return checkError(err, "No chain/target/match by that name.")
 }
 
 // NOTE(mtaufen): iptables requires names to be <= 28 characters, and somehow prepending "-m comment --comment " to this string makes it think this condition is violated
@@ -336,12 +343,15 @@ func (m *MasqDaemon) DeleteChains(nsName string) error {
 func postroutingJumpComment(chain utiliptables.Chain) string {
 	return fmt.Sprintf("purelb-egress: jump service endpoint traffic to our %s chain", chain)
 }
+func postroutingReturnComment(chain utiliptables.Chain) string {
+	return fmt.Sprintf("purelb-egress: return service endpoint traffic")
+}
 
 func (m *MasqDaemon) EnsurePostroutingJump(chain utiliptables.Chain) error {
 	if _, err := m.iptables.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
 		"-m", "comment", "--comment", postroutingJumpComment(chain),
 		"-m", "set", "--match-set", string(chain), "src", "-j", string(chain)); err != nil {
-		return fmt.Errorf("failed to ensure that %s chain %s jumps to MASQUERADE: %v", utiliptables.TableNAT, chain, err)
+		return fmt.Errorf("failed to ensure that %s chain %s jumps to MASQUERADE: %w", utiliptables.TableNAT, chain, err)
 	}
 	return nil
 }
@@ -349,15 +359,33 @@ func (m *MasqDaemon) EnsurePostroutingJump(chain utiliptables.Chain) error {
 func (m *MasqDaemon) DeletePostroutingJump(chain utiliptables.Chain) error {
 	if err := m.iptables.DeleteRule(utiliptables.TableNAT, utiliptables.ChainPostrouting,
 		"-m", "comment", "--comment", postroutingJumpComment(chain),
-		"-m", "set", "--match-set", string(chain), "src", "-j", string(chain)); err != nil {
-		return fmt.Errorf("failed to delete %s chain %s that jumps to MASQUERADE: %v", utiliptables.TableNAT, chain, err)
+		"-m", "set", "--match-set", string(chain), "src", "-j", string(chain)); checkDoesntExist(err) != nil {
+		return fmt.Errorf("failed to delete %s chain %s that jumps to MASQUERADE: %w", utiliptables.TableNAT, chain, err)
+	}
+	return nil
+}
+
+func (m *MasqDaemon) EnsurePostroutingReturn(chain utiliptables.Chain) error {
+	if _, err := m.iptables.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
+		"-m", "comment", "--comment", postroutingReturnComment(chain),
+		"-m", "set", "--match-set", string(chain), "src", "-j", "RETURN"); err != nil {
+		return fmt.Errorf("failed to ensure that %s chain %s returns: %w", utiliptables.TableNAT, chain, err)
+	}
+	return nil
+}
+
+func (m *MasqDaemon) DeletePostroutingReturn(chain utiliptables.Chain) error {
+	if err := m.iptables.DeleteRule(utiliptables.TableNAT, utiliptables.ChainPostrouting,
+		"-m", "comment", "--comment", postroutingReturnComment(chain),
+		"-m", "set", "--match-set", string(chain), "src", "-j", "RETURN"); checkDoesntExist(err) != nil {
+		return fmt.Errorf("failed to delete %s chain %s that returns: %w", utiliptables.TableNAT, chain, err)
 	}
 	return nil
 }
 
 func (m *MasqDaemon) EnsurePostroutingJumpIPv6(chain utiliptables.Chain) error {
 	if _, err := m.ip6tables.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
-		"-m", "comment", "--comment", postroutingJumpComment(chain),
+		"-m", "comment", "--comment", postroutingReturnComment(chain),
 		"-m", "set", "--match-set", string(chain), "src", "-j", string(chain)); err != nil {
 		return fmt.Errorf("failed to ensure that %s chain %s jumps to MASQUERADE: %v for ipv6", utiliptables.TableNAT, chain, err)
 	}
@@ -367,10 +395,46 @@ func (m *MasqDaemon) EnsurePostroutingJumpIPv6(chain utiliptables.Chain) error {
 func (m *MasqDaemon) DeletePostroutingJumpIPv6(chain utiliptables.Chain) error {
 	if err := m.ip6tables.DeleteRule(utiliptables.TableNAT, utiliptables.ChainPostrouting,
 		"-m", "comment", "--comment", postroutingJumpComment(chain),
-		"-m", "set", "--match-set", string(chain), "src", "-j", string(chain)); err != nil {
-		return fmt.Errorf("failed to delete %s chain %s that jumps to MASQUERADE: %v", utiliptables.TableNAT, chain, err)
+		"-m", "set", "--match-set", string(chain), "src", "-j", string(chain)); checkDoesntExist(err) != nil {
+		return fmt.Errorf("failed to delete %s chain %s that jumps to MASQUERADE: %w", utiliptables.TableNAT, chain, err)
 	}
 	return nil
+}
+
+func (m *MasqDaemon) EnsurePostroutingReturnIPv6(chain utiliptables.Chain) error {
+	if _, err := m.ip6tables.EnsureRule(utiliptables.Prepend, utiliptables.TableNAT, utiliptables.ChainPostrouting,
+		"-m", "comment", "--comment", postroutingReturnComment(chain),
+		"-m", "set", "--match-set", string(chain), "src", "-j", "RETURN"); err != nil {
+		return fmt.Errorf("failed to ensure that %s chain %s returns for ipv6: %w", utiliptables.TableNAT, chain, err)
+	}
+	return nil
+}
+
+func (m *MasqDaemon) DeletePostroutingReturnIPv6(chain utiliptables.Chain) error {
+	if err := m.ip6tables.DeleteRule(utiliptables.TableNAT, utiliptables.ChainPostrouting,
+		"-m", "comment", "--comment", postroutingReturnComment(chain),
+		"-m", "set", "--match-set", string(chain), "src", "-j", "RETURN"); checkDoesntExist(err) != nil {
+		return fmt.Errorf("failed to delete %s chain %s that returns: %w", utiliptables.TableNAT, chain, err)
+	}
+	return nil
+}
+
+func checkDoesntExist(err error) error {
+	if checkError(err, "doesn't exist.") == nil {
+		return nil
+	}
+	return checkError(err, "No such file or directory")
+}
+
+// checkError checks the error message and returns nil if it indicates
+// that the error is caused by the provided pattern. We do this
+// because it's easier to try to delete everything and recover from
+// known errors than to track what we have and haven't created.
+func checkError(err error, pattern string) error {
+	if err != nil && strings.Contains(err.Error(), pattern) {
+		return nil
+	}
+	return err
 }
 
 const nonMasqRuleComment = `-m comment --comment "local traffic is not subject to MASQUERADE"`
