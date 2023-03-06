@@ -8,6 +8,10 @@ COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
 
+# Tools that we use.
+CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.7.0
+KUSTOMIZE = go run sigs.k8s.io/kustomize/kustomize/v4@v4.5.2
+
 ##@ Default Goal
 .PHONY: help
 help: ## Display help message
@@ -61,7 +65,7 @@ generate:  ## Generate client-side stubs for our custom resources
 
 .PHONY: crd
 crd: ## Generate CRDs from golang api structs
-	controller-gen crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
+	$(CONTROLLER_GEN) crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
 	cp deployments/crds/purelb.io_*.yaml build/helm/purelb/crds
 
 .ONESHELL:
@@ -71,8 +75,8 @@ manifest:  ## Generate deployment manifest
 	cd deployments/samples
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
-	kustomize edit set image registry.gitlab.com/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} registry.gitlab.com/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
-	kustomize build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
+	$(KUSTOMIZE) edit set image registry.gitlab.com/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} registry.gitlab.com/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
+	$(KUSTOMIZE) build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml
 
