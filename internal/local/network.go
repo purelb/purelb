@@ -21,6 +21,8 @@ import (
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
+	"github.com/mdlayher/arp"
+	"github.com/mdlayher/ethernet"
 )
 
 // AddrFamily returns whether lbIP is an IPV4 or IPV6 address.  The
@@ -280,5 +282,32 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 		}
 	}
 
+	return nil
+}
+
+
+// sendGARP sends a gratuitous ARP message for ip on ifi. This is
+// based on MetalLB's internal/layer2/arp.go, modified to be a
+// standalone function.
+func sendGARP(ifName string, ip net.IP) error {
+	ifi, err := net.InterfaceByName(ifName)
+	if err != nil {
+		return fmt.Errorf("finding interface named %s: %w", ifName, err)
+	}
+
+	client, err := arp.Dial(ifi)
+	if err != nil {
+		return fmt.Errorf("creating ARP responder for %s: %w", ifName, err)
+	}
+
+	for _, op := range []arp.Operation{arp.OperationRequest, arp.OperationReply} {
+		pkt, err := arp.NewPacket(op, ifi.HardwareAddr, ip, ethernet.Broadcast, ip)
+		if err != nil {
+			return fmt.Errorf("assembling %q gratuitous packet for %q: %w", op, ip, err)
+		}
+		if err = client.WriteTo(pkt, ethernet.Broadcast); err != nil {
+			return fmt.Errorf("writing %q gratuitous packet for %q: %w", op, ip, err)
+		}
+	}
 	return nil
 }

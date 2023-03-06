@@ -8,6 +8,8 @@ require (
 	github.com/google/go-cmp v0.5.7
 	github.com/hashicorp/memberlist v0.2.4
 	github.com/imdario/mergo v0.3.6 // indirect
+	github.com/mdlayher/arp v0.0.0-20220221190821-c37aaafac7f9
+	github.com/mdlayher/ethernet v0.0.0-20220221185849-529eae5b6118
 	github.com/prometheus/client_golang v1.0.0
 	github.com/stretchr/testify v1.6.1
 	github.com/vishvananda/netlink v1.1.0
@@ -44,10 +46,13 @@ require (
 	github.com/hashicorp/go-multierror v1.0.0 // indirect
 	github.com/hashicorp/go-sockaddr v1.0.0 // indirect
 	github.com/hashicorp/golang-lru v0.5.1 // indirect
+	github.com/josharian/native v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.10 // indirect
 	github.com/kr/logfmt v0.0.0-20140226030751-b84e30acd515 // indirect
 	github.com/mailru/easyjson v0.7.0 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
+	github.com/mdlayher/packet v1.0.0 // indirect
+	github.com/mdlayher/socket v0.2.1 // indirect
 	github.com/miekg/dns v1.1.26 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.1 // indirect

@@ -215,35 +215,33 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 		}
 	}
 
-	// We can announce the address if we win the election
-	if winner := a.election.Winner(lbIP.String()); winner == a.myNode {
-
-		// we won the election so we'll add the service address to our
-		// node's default interface so linux will respond to ARP
-		// requests for it
-		l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
-		a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
-
-		addNetwork(lbIPNet, announceInt)
-		if svc.Annotations == nil {
-			svc.Annotations = map[string]string{}
-		}
-		svc.Annotations[purelbv1.AnnounceAnnotation+addrFamilyName(lbIP)] = a.myNode + "," + announceInt.Attrs().Name
-		announcing.With(prometheus.Labels{
-			"service": nsName,
-			"node":    a.myNode,
-			"ip":      lbIP.String(),
-		}).Set(1)
-
-	} else {
-
+	// See if we won the announcement election
+	if winner := a.election.Winner(lbIP.String()); winner != a.myNode {
 		// We lost the election so we'll withdraw any announcement that
 		// we might have been making
 		l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
 		return a.deleteAddress(nsName, "lostElection", lbIP)
 	}
 
-	return nil
+	// We won the election so we'll add the service address to our
+	// node's default interface so linux will respond to ARP
+	// requests for it.
+	l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
+	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
+
+	addNetwork(lbIPNet, announceInt)
+	if svc.Annotations == nil {
+		svc.Annotations = map[string]string{}
+	}
+	svc.Annotations[purelbv1.AnnounceAnnotation+addrFamilyName(lbIP)] = a.myNode + "," + announceInt.Attrs().Name
+	announcing.With(prometheus.Labels{
+		"service": nsName,
+		"node":    a.myNode,
+		"ip":      lbIP.String(),
+	}).Set(1)
+
+	// Broadcast the fact that we've got the address.
+	return sendGARP(announceInt.Attrs().Name, lbIP)
 }
 
 func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, announceInt *netlink.Link, lbIP net.IP) error {
