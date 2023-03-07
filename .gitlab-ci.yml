@@ -39,7 +39,7 @@ stages:
 
 check:
   stage: image
-  image: golang:1.15.8-buster
+  image: golang:1.19-bullseye
   before_script: []
   script: make check
 
@@ -74,7 +74,7 @@ docker-manifest:
 
 manifest:
   stage: manifest
-  image: golang:1.15.8-buster
+  image: golang:1.19-bullseye
   before_script:
   - *tag-setup
   script:

@@ -1,4 +1,4 @@
-FROM golang:1.15.15-buster as builder
+FROM golang:1.19-bullseye as builder
 
 ARG cmd
 ARG branch
