@@ -22,11 +22,6 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "purelb.labels" . | nindent 4 }}
-    helm.sh/chart: {{ template "purelb.chart" . }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: allocator
-    app.kubernetes.io/version: {{ .Chart.AppVersion }}
     {{- if .Values.Prometheus.allocator.serviceMonitor.extraLabels }}
     {{ toYaml .Values.Prometheus.allocator.serviceMonitor.extraLabels | nindent 4 }}
     {{- end }}
