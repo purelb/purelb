@@ -243,6 +243,13 @@ type LBNodeAgentLocalSpec struct {
 	// +kubebuilder:default="kube-lb0"
 	// +optional
 	ExtLBInterface string `json:"extlbint"`
+
+	// SendGratuitousARP determines whether or not the node agent should
+	// send Gratuitous ARP messages when it adds an IP address to the
+	// local interface. This can be used to alert network equipment that
+	// the IP-to-MAC binding has changed.
+	// +kubebuilder:default=false
+	SendGratuitousARP bool `json:"sendgarp"`
 }
 
 // LBNodeAgentStatus is currently unused.

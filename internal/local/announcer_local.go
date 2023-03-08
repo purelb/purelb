@@ -240,8 +240,13 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 		"ip":      lbIP.String(),
 	}).Set(1)
 
-	// Broadcast the fact that we've got the address.
-	return sendGARP(announceInt.Attrs().Name, lbIP)
+	// If we're configured to do so, broadcast a GARP message to say
+	// that we own the address.
+	if a.config.SendGratuitousARP {
+		return sendGARP(announceInt.Attrs().Name, lbIP)
+	}
+
+	return nil
 }
 
 func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, announceInt *netlink.Link, lbIP net.IP) error {

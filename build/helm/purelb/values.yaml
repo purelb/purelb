@@ -158,6 +158,7 @@ priorityClassName: ""
 lbnodeagent:
   localint: default
   extlbint: kube-lb0
+  sendgarp: false
   podSecurityPolicy:
     enabled: false
   resources:
