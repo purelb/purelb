@@ -205,13 +205,26 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	l := log.With(a.logger, "service", svc.Name)
 	nsName := svc.Namespace + "/" + svc.Name
 
-	// Local addresses do not support ExternalTrafficPolicyLocal
-	// Set the service back to ExternalTrafficPolicyCluster if adding to local interface
+	// Local addresses do not support ExternalTrafficPolicyLocal unless the override annotation is present.
 	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal {
-		l.Log("op", "setBalancer", "error", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster")
-		svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
-		if err := a.deleteAddress(nsName, "ClusterLocal", lbIP); err != nil {
-			return err
+		if _, hasOverride := svc.Annotations[purelbv1.AllowLocalAnnotation]; hasOverride {
+
+			// The user has added the override annotation so we'll allow
+			// Local policy but warn them.
+			l.Log("op", "setBalancer", "error", "ExternalTrafficPolicy override annotation found, will allow Local policy. Incoming traffic will NOT be forwarded inter-node. This is not a recommended configuration; please see the PureLB docs for more info.")
+			a.client.Infof(svc, "LocalOverride", "ExternalTrafficPolicy override annotation found, will allow Local policy. Incoming traffic will NOT be forwarded inter-node. This is not a recommended configuration; please see the PureLB docs for more info.")
+
+		} else {
+
+			// There's no override annotation so we'll switch back to
+			// "Cluster"
+			l.Log("op", "setBalancer", "error", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster. Please see the PureLB docs for info on why we do this, and how to override this policy.")
+			a.client.Infof(svc, "LocalOverride", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster. Please see the PureLB docs for info on why we do this, and how to override this policy.")
+			// Set the service back to ExternalTrafficPolicyCluster if adding to local interface
+			svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
+			if err := a.deleteAddress(nsName, "ClusterLocal", lbIP); err != nil {
+				return err
+			}
 		}
 	}
 

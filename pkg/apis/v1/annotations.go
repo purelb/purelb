@@ -29,6 +29,14 @@ const (
 	// allocate this service's IP address.
 	DesiredGroupAnnotation string = "purelb.io/service-group"
 
+	// AllowLocalAnnotation tells PureLB to allow this Service
+	// to implement "Local" ExternalTrafficPolicy. We usually don't
+	// allow this, because it means that PureLB might announce an IP
+	// address from a node that has no Pod belonging to this Service. At
+	// least one user has found that "Local" is useful for them, though,
+	// so this annotation overrides that policy.
+	AllowLocalAnnotation string = "purelb.io/allow-local"
+
 	// Annotations that PureLB sets that might be useful to users.
 
 	// BrandAnnotation is the key for the PureLB "brand" annotation.
