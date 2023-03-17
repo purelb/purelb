@@ -123,6 +123,27 @@ serviceGroup:
   #     pool: '192.168.254.200-192.168.254.201'
   #     aggregation: default
 
+# This can be used to define a list of arbitrary extra Kubernetes objects to be created (configmaps, serviceGroups, etc.).
+# Example:
+#   extraObjects:
+#     - |
+#       apiVersion: v1
+#       kind: ConfigMap
+#       metadata:
+#         name: {{ .Release.Name }}-extra
+#       data:
+#         hello: world
+#     - |
+#       apiVersion: purelb.io/v1
+#       kind: ServiceGroup
+#       metadata:
+#         name: private
+#       spec:
+#         local:
+#           pool: 192.168.0.0-192.168.0.5
+#           subnet: 192.168.0.0/27
+extraObjects: []
+
 # PureLB will act as the default service announcer if this value is
 # "PureLB". This means that PureLB will handle services that do not
 # have a Spec.LoadBalancerClass field. If this is other than "PureLB"

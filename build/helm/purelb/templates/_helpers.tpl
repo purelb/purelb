@@ -55,3 +55,14 @@ Selector labels
 app.kubernetes.io/name: {{ include "purelb.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Render a value that contains a template.
+*/}}
+{{- define "purelb.render" -}}
+    {{- if typeIs "string" .value }}
+        {{- tpl .value .context }}
+    {{- else }}
+        {{- tpl (.value | toYaml) .context }}
+    {{- end }}
+{{- end -}}
