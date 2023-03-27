@@ -98,3 +98,7 @@ helm:  ## Package PureLB using Helm
 	helm package \
 	--version "${SUFFIX}" --app-version "${SUFFIX}" \
 	build/build/purelb
+
+.PHONY: scan
+scan: ## Scan for vulnerabilities using govulncheck
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
