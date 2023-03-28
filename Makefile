@@ -11,6 +11,7 @@ NETBOX_BASE_URL = http://192.168.1.40:30080/
 # Tools that we use.
 CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.7.0
 KUSTOMIZE = go run sigs.k8s.io/kustomize/kustomize/v4@v4.5.2
+HELM = go run helm.sh/helm/v3/cmd/helm@v3.11
 
 ##@ Default Goal
 .PHONY: help
@@ -95,7 +96,7 @@ helm:  ## Package PureLB using Helm
 	--expression="s~DEFAULT_TAG~${SUFFIX}~" \
 	build/helm/purelb/values.yaml > build/build/purelb/values.yaml
 
-	helm package \
+	${HELM} package \
 	--version "${SUFFIX}" --app-version "${SUFFIX}" \
 	build/build/purelb
 
