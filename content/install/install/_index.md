@@ -57,6 +57,43 @@ sudo sysctl --system
 PureLB will operate without making this change, however if kubeproxy is set to IPVS mode and ARP changes are not made, all nodes will respond to locally allocated addresses as kubeproxy adds these addresses to kube-ipvs0, the behavior is the same as duplicate IP addresses on the same subnet.
 {{% /notice %}}
 
+### GARP
+PureLB supports GARP required for EVPN/VXLAN environments.  GARP can be installed during installation using helm by adding --set=lbnodeagent.sendgarp=true
+
+```plaintext
+helm install --create-namespace --namespace=purelb --set=lbnodeagent.sendgarp=true purelb/purelb
+
+```
+It can also be enable after installation by editing the LBNodeAgent resources
+
+``` yaml
+$ kubectl edit -n purelb lbnodeagent
+apiVersion: purelb.io/v1
+kind: LBNodeAgent
+metadata:
+  annotations:
+    meta.helm.sh/release-name: purelb
+    meta.helm.sh/release-namespace: purelb
+  creationTimestamp: "2023-04-10T19:57:23Z"
+  generation: 1
+  labels:
+    app.kubernetes.io/instance: purelb
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: purelb
+    app.kubernetes.io/version: v0.7.0
+    helm.sh/chart: purelb-v0.7.0
+  name: default
+  namespace: purelb
+  resourceVersion: "311738"
+  uid: 33bf398d-cb8f-416d-9bb1-ed5c12a42a95
+spec:
+  local:
+    extlbint: kube-lb0
+    localint: default
+    sendgarp: true
+
+```
+
 ### Install Using Helm
 ```plaintext
 $ helm repo add purelb https://gitlab.com/api/v4/projects/20400619/packages/helm/stable

@@ -49,5 +49,9 @@ Use of CRDs simplifies configuration with validation
 * **Dual Stack Support for IPv4 & IPv6.**
 PureLB provides Dual Stack IPv6 support (subject to your cluster & network configuration)
 
+* **Supports GARP for Datacenters using EVPN/VXLAN.**
+GARP can be enabled to support ARP suppression mechanisms used in EVPN/VXLAN
+
+
 * **Extensible to support external IPAM.**
 Integrate Service Load Balancer with Enterprise IP Address Management Systems
