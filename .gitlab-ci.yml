@@ -1,5 +1,5 @@
 
-image: monachus/hugo
+image: registry.gitlab.com/pages/hugo/hugo_extended:latest
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
@@ -10,5 +10,5 @@ pages:
   artifacts:
     paths:
     - public
-  only:
-  - main
+  rules:
+  - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
