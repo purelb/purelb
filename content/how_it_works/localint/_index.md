@@ -24,12 +24,12 @@ metadata:
   namespace: purelb
 spec:
   local:
-    v4pool:
-      aggregation: default
+    v4pools:
+    - aggregation: default
       pool: 192.168.10.225-192.168.10.229
       subnet: 192.168.10.0/24
-    v6pool:
-      aggregation: default
+    v6pools:
+    - aggregation: default
       pool: fc00:270:154:0:8000::4/126
       subnet: fc00:270:154:0::/64
 ```

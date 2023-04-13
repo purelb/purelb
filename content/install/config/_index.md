@@ -47,22 +47,25 @@ metadata:
   namespace: purelb
 spec:
   local:
-    v4pool:
+    v4pools:
+    - subnet: 192.168.254.0/24
+      pool: 192.168.254.230/32
       aggregation: default
-      pool: 172.32.100.225-172.32.100.229
-      subnet: 172.32.100.0/24
-    v6pool:
+    - subnet: 192.168.254.0/24
+      pool: 192.168.254.231-192.168.254.240
       aggregation: default
-      pool: fc00:370:155:0:8000::/126
-      subnet: fc00:370:155::/64
+    v6pools:
+    - subnet: fd53:9ef0:8683::/120
+      pool: fd53:9ef0:8683::-fd53:9ef0:8683::3
+      aggregation: default
 ```
 
-A Service Group is configured for each pool of addresses needed by the k8s cluster.  Service Groups support Dual Stack, therefore a service group can contain both IPv4 and IPv6 addresses.
+A Service Group is configured for each pool of addresses needed by the k8s cluster.  Service Groups support Dual Stack, therefore a service group can contain both IPv4 and IPv6 addresses, and it can contain multiple ranges of each.
 
 parameter | type | Description
 -----|----|------
-v4pool | IPv4 AFI | Contains configuration for IPv4 address
-v6pool | IPv6 AFI | Contains configuration for IPv6 address
+v4pools | IPv4 AFI | Array of configuration for IPv4 address ranges
+v6pools | IPv6 AFI | Array of configuration for IPv6 address ranges
 
 Each Address Family contains the following:
 
@@ -86,8 +89,8 @@ metadata:
   namespace: purelb
 spec:
   local:
-    v4pool: 
-      subnet: '192.168.1.0/24'
+    v4pools:
+    - subnet: '192.168.1.0/24'
       pool: '192.168.1.100-192.168.1.200'
       aggregation: /25
 ```
@@ -101,8 +104,8 @@ metadata:
   namespace: purelb
 spec:
   local:
-    v4pool:
-      subnet: '192.168.1.0/26'
+    v4pools:
+    - subnet: '192.168.1.0/26'
       pool: '192.168.1.0-192.168.1.62'
       aggregation: /24
 ---
@@ -113,8 +116,8 @@ metadata:
   namespace: purelb
 spec:
   local:
-    v4pool:
-      subnet: '192.168.1.64/26'
+    v4pools:
+    - subnet: '192.168.1.64/26'
       pool: '192.168.1.64-192.168.1.126'
       aggregation: /24
 ```
@@ -128,12 +131,12 @@ metadata:
   namespace: purelb
 spec:
   local:
-    v4pool:
-      subnet: '172.30.0.144/28'
+    v4pools:
+    - subnet: '172.30.0.144/28'
       pool: '172.30.0.144/28'
       aggregation: /32
-    v6pool:
-      subnet: fc00:370:155:0:8000:1::/112
+    v6pools:
+    - subnet: fc00:370:155:0:8000:1::/112
       pool: fc00:370:155:0:8000:1::/112
       aggregation: /128
 ```
@@ -157,35 +160,11 @@ Metadata:
   Generation:          2
   Managed Fields:
     API Version:  purelb.io/v1
-    Fields Type:  FieldsV1
-    fieldsV1:
-      f:metadata:
-        f:annotations:
-          .:
-          f:kubectl.kubernetes.io/last-applied-configuration:
-      f:spec:
-        .:
-        f:local:
-          .:
-          f:v4pool:
-            .:
-            f:aggregation:
-            f:subnet:
-          f:v6pool:
-            .:
-            f:aggregation:
-            f:pool:
-            f:subnet:
     Manager:      kubectl-client-side-apply
     Operation:    Update
     Time:         2022-01-04T22:27:40Z
     API Version:  purelb.io/v1
-    Fields Type:  FieldsV1
-    fieldsV1:
-      f:spec:
-        f:local:
-          f:v4pool:
-            f:pool:
+    ...
     Manager:         kubectl-edit
     Operation:       Update
     Time:            2022-01-04T22:29:15Z
@@ -194,12 +173,12 @@ Metadata:
   UID:               5c4a5149-307a-42ba-9232-a1d1c0110d11
 Spec:
   Local:
-    v4pool:
-      Aggregation:  default
+    v4pools:
+    - Aggregation:  default
       Pool:         192.168.10.240-192.168.10.243
       Subnet:       192.168.10.0/24
-    v6pool:
-      Aggregation:  default
+    v6pools:
+    - Aggregation:  default
       Pool:         fc00:270:154:0:8100::4/126
       Subnet:       fc00:270:154::/64
 Events:             <none>

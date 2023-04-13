@@ -206,8 +206,8 @@ metadata:
   name: virtualsub
 spec:
   local:
-    ipv4pool:
-      subnet: '172.31.1.0/24'
+    v4pools:
+    - subnet: '172.31.1.0/24'
       pool: '172.31.1.0/24'
       aggregation: '/32'
 ```

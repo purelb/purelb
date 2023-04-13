@@ -74,16 +74,16 @@ The Allocator is configured with a minimum of one "default" Service Group. Multi
 When using the Allocators inbuilt IPAM each Service group can contain an address pool for IPv4 and/or IPv6, one is required.
 
 
- * v4pool.  Contains the IPv4 range for allocation
- * v6pool.  Contains the IPv6 range for allocation
+ * v4pools.  Contains the IPv4 addresses for allocation
+ * v6pools.  Contains the IPv6 addresses for allocation
 
 
 Each pool conIn the case of the Allocator's inbuilt IPAM a Service Group consists of the following:
 
  * Name:  The name of the Service Group referenced by annotations in the service definition.  The default service group is used when no annotation is present.
  * local:  Indicates that PureLB will allocate these address from the information contained in the service group.
- * ipv4pool:  A container for a pool of IPv4 addresses
- * ipv6pool:  A container from a pool of IPv6 addresses
+ * v4pools:  A container for a pool of IPv4 addresses
+ * v6pools:  A container from a pool of IPv6 addresses
  * Subnet:  In the form of CIDR, the network that addresses are allocated
  * Pool:  The specific addresses to be allocated in the form of a range or CIDR
  * Aggregation:  Where the address is not local, this allows subnet to be aggregated
@@ -98,12 +98,12 @@ metadata:
   namespace: purelb
 spec:
  local:
-    v4pool:
-      aggregation: default
+    v4pools:
+    - aggregation: default
       pool: 192.168.10.240-192.168.10.243
       subnet: 192.168.10.0/24
-    v6pool:
-      aggregation: default
+    v6pools:
+    - aggregation: default
       pool: fc00:270:154:0:8100::4/64
       subnet: fc00:270:154::/64
 ```

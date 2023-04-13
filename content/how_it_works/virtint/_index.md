@@ -25,12 +25,12 @@ metadata:
   namespace: purelb
 spec:
   local:
-    v4pool:
-      aggregation: /32
+    v4pools:
+    - aggregation: /32
       pool: 172.32.100.225-172.30.100.229
       subnet: 172.32.100.0/24
-    v6pool:
-      aggregation: /128
+    v6pools:
+    - aggregation: /128
       pool: fc00:370:155:0:8000::/126
       subnet: fc00:370:155::/64
 ```
