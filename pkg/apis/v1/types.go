@@ -120,40 +120,61 @@ func (s *ServiceGroupLocalSpec) FamilyAggregation(family int) (string, error) {
 	return "", fmt.Errorf("unable to find aggregation for family %d", family)
 }
 
-// FamilySubnet returns this Spec's subnet value that
-// corresponds to family.
-func (s *ServiceGroupLocalSpec) FamilySubnet(family int) (string, error) {
-	if family == nl.FAMILY_V4 {
-		if s.V4Pool != nil {
-			return s.V4Pool.Subnet, nil
-		} else {
-			// If the legacy pool is V4 we can return that
-			ip, _, err := net.ParseCIDR(s.Subnet)
-			if err != nil {
-				return "", err
-			}
-			if addrFamily(ip) != nl.FAMILY_V4 {
-				return "", fmt.Errorf("no IPV4 subnet has been configured")
-			}
-			return s.Subnet, nil
+// Subnet returns this Spec's subnet value that corresponds to the
+// provided address.
+func (s *ServiceGroupLocalSpec) AddressSubnet(address net.IP) (string, error) {
+	pool, err := s.PoolForAddress(address)
+	if err != nil {
+		return "", err
+	}
+	return pool.Subnet, nil
+}
+
+// Subnet returns this Spec's aggregation value that corresponds to
+// the provided address.
+func (s *ServiceGroupLocalSpec) AddressAggregation(address net.IP) (string, error) {
+	pool, err := s.PoolForAddress(address)
+	if err != nil {
+		return "", err
+	}
+	return pool.Subnet, nil
+}
+
+// Subnet returns this Spec's Pool that corresponds to the provided
+// address.
+func (s *ServiceGroupLocalSpec) PoolForAddress(address net.IP) (*ServiceGroupAddressPool, error) {
+	for _, spec := range s.V6Pools {
+		pool, err := NewIPRange(spec.Pool)
+		if err == nil && pool.Contains(address) {
+			return spec, nil
 		}
 	}
-	if family == nl.FAMILY_V6 {
-		if s.V6Pool != nil {
-			return s.V6Pool.Subnet, nil
-		} else {
-			// If the legacy pool is V6 we can return that
-			ip, _, err := net.ParseCIDR(s.Subnet)
-			if err != nil {
-				return "", err
-			}
-			if addrFamily(ip) != nl.FAMILY_V6 {
-				return "", fmt.Errorf("no IPV6 subnet has been configured")
-			}
-			return s.Subnet, nil
+	for _, spec := range s.V4Pools {
+		pool, err := NewIPRange(spec.Pool)
+		if err == nil && pool.Contains(address) {
+			return spec, nil
 		}
 	}
-	return "", fmt.Errorf("unable to find subnet for family %d", family)
+	if s.V6Pool != nil {
+		pool, err := NewIPRange(s.V6Pool.Pool)
+		if err == nil && pool.Contains(address) {
+			return s.V6Pool, nil
+		}
+	}
+	if s.V4Pool != nil {
+		pool, err := NewIPRange(s.V4Pool.Pool)
+		if err == nil && pool.Contains(address) {
+			return s.V4Pool, nil
+		}
+	}
+	if s.Pool != "" && s.Subnet != "" {
+		return &ServiceGroupAddressPool{
+			Pool:        s.Pool,
+			Subnet:      s.Subnet,
+			Aggregation: s.Aggregation,
+		}, nil
+	}
+	return nil, fmt.Errorf("unable to find subnet for addres %+v", address)
 }
 
 // addrFamily returns whether lbIP is an IPV4 or IPV6 address.  The

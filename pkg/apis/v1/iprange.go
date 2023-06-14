@@ -12,18 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package allocator
+package v1
 
 import (
 	"bytes"
 	"fmt"
 	"math"
 	"net"
+	"reflect"
 	"strings"
 
 	go_cidr "github.com/apparentlymart/go-cidr/cidr"
-
-	"purelb.io/internal/local"
+	"github.com/google/go-cmp/cmp"
+	"github.com/vishvananda/netlink/nl"
 )
 
 type IPRange struct {
@@ -46,6 +47,10 @@ func NewIPRange(raw string) (IPRange, error) {
 	// CIDR notation
 	return parseCIDR(raw)
 }
+
+var IPRangeComparer = cmp.Comparer(func(x, y IPRange) bool {
+	return reflect.DeepEqual(x.from, y.from) && reflect.DeepEqual(x.to, y.to)
+})
 
 // Overlaps indicates whether the other IPRange overlaps with this one
 // (i.e., has any addresses in common).  It returns true if there are
@@ -80,7 +85,7 @@ func (p IPRange) ContainedBy(cidr net.IPNet) bool {
 // return value will be nl.FAMILY_V6 if this is an IPV6 range,
 // nl.FAMILY_V4 if it's IPV4, or 0 if the family can't be determined.
 func (r IPRange) Family() int {
-	return local.AddrFamily(r.from)
+	return AddrFamily(r.from)
 }
 
 // First returns the first (i.e., lowest-valued) net.IP within this
@@ -188,4 +193,20 @@ func dup(ip net.IP) net.IP {
 	dup := make(net.IP, len(ip))
 	copy(dup, ip)
 	return dup
+}
+
+// AddrFamily returns whether lbIP is an IPV4 or IPV6 address.  The
+// return value will be nl.FAMILY_V6 if the address is an IPV6
+// address, nl.FAMILY_V4 if it's IPV4, or 0 if the family can't be
+// determined.
+func AddrFamily(lbIP net.IP) (lbIPFamily int) {
+	if nil != lbIP.To16() {
+		lbIPFamily = nl.FAMILY_V6
+	}
+
+	if nil != lbIP.To4() {
+		lbIPFamily = nl.FAMILY_V4
+	}
+
+	return
 }
