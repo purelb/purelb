@@ -71,9 +71,9 @@ Each Address Family contains the following:
 
 parameter | type | Description
 -------|----|---
-subnet | IPv4 or IPv6 CIDR| Configured with the subnet that contains all of the pool addresses. PureLB uses this information to compute how the address is added to the cluster.
+subnet | IPv4 or IPv6 CIDR| The subnet that contains all of the pool addresses. PureLB uses this information to compute how the address is added to the cluster.
 pool | IPv4 or IPv6 CIDR or range | The specific range of addresses that will be allocated.  Can be expressed as a CIDR or range of addresses.
-Aggregation | "default" or int 8-128 | The aggregator changes the address mask of the allocated address from the subnet mask to the specified mask.
+aggregation | "default" or subnet mask "/8" - "/128" | The aggregator changes the address mask of the allocated address from the subnet's mask to the specified mask.
 
 #### Configuring Aggregation
 Aggregation configuration brings a capability commonly used in routers to control how addresses are advertised.  When a Service Group is defined with _aggregation: default_ the prefix mask will be used from the subnet. PureLB will create an address from the allocated address and subnets mask that is applied to the appropriate interface.  Put simply, the services API provides an address, _192.168.1.100_, if _aggregation: default_ the resulting address applied to the interface by PureLB will be _192.168.151.100/24_. (added to the local interface if it matches the subnet otherwise the virtual interface).  Similarly for IPv6, _fc:00:370:155:0:8000::/126_
