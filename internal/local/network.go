@@ -19,27 +19,13 @@ import (
 	"net"
 	"regexp"
 
-	"github.com/vishvananda/netlink"
-	"github.com/vishvananda/netlink/nl"
 	"github.com/mdlayher/arp"
 	"github.com/mdlayher/ethernet"
+	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
+
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
-
-// AddrFamily returns whether lbIP is an IPV4 or IPV6 address.  The
-// return value will be nl.FAMILY_V6 if the address is an IPV6
-// address, nl.FAMILY_V4 if it's IPV4, or 0 if the family can't be
-// determined.
-func AddrFamily(lbIP net.IP) (lbIPFamily int) {
-	if nil != lbIP.To16() {
-		lbIPFamily = nl.FAMILY_V6
-	}
-
-	if nil != lbIP.To4() {
-		lbIPFamily = nl.FAMILY_V4
-	}
-
-	return
-}
 
 // findLocal tries to find a "local" network interface based on the
 // name of the interface and the IP addresses that are assigned to it.
@@ -79,7 +65,7 @@ func findLocal(regex *regexp.Regexp, lbIP net.IP) (net.IPNet, netlink.Link, erro
 func checkLocal(intf *netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	var lbIPNet net.IPNet = net.IPNet{IP: lbIP}
 
-	family := AddrFamily(lbIP)
+	family := purelbv1.AddrFamily(lbIP)
 
 	defaddrs, _ := netlink.AddrList(*intf, family)
 
@@ -231,7 +217,7 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 	if aggregation == "default" {
 
-		switch AddrFamily(lbIP) {
+		switch purelbv1.AddrFamily(lbIP) {
 		case (nl.FAMILY_V4):
 
 			_, poolipnet, _ := net.ParseCIDR(subnet)
@@ -257,7 +243,7 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 	} else {
 
-		switch AddrFamily(lbIP) {
+		switch purelbv1.AddrFamily(lbIP) {
 		case (nl.FAMILY_V4):
 
 			_, poolaggr, _ := net.ParseCIDR("0.0.0.0" + aggregation)
@@ -284,7 +270,6 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 	return nil
 }
-
 
 // sendGARP sends a gratuitous ARP message for ip on ifi. This is
 // based on MetalLB's internal/layer2/arp.go, modified to be a

@@ -16,7 +16,6 @@ package allocator
 
 import (
 	"net"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -931,10 +930,7 @@ func TestParseGroups(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.desc, func(t *testing.T) {
 			got := alloc.parseGroups(test.raw)
-			iprangeComparer := cmp.Comparer(func(x, y IPRange) bool {
-				return reflect.DeepEqual(x.from, y.from) && reflect.DeepEqual(x.to, y.to)
-			})
-			if diff := cmp.Diff(test.want, got, iprangeComparer, cmp.AllowUnexported(LocalPool{})); diff != "" {
+			if diff := cmp.Diff(test.want, got, purelbv1.IPRangeComparer, cmp.AllowUnexported(LocalPool{})); diff != "" {
 				t.Errorf("%q: parse returned wrong result (-want, +got)\n%s", test.desc, diff)
 			}
 		})

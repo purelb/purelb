@@ -24,7 +24,6 @@ import (
 	"github.com/vishvananda/netlink/nl"
 	v1 "k8s.io/api/core/v1"
 
-	"purelb.io/internal/local"
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
@@ -35,12 +34,12 @@ type LocalPool struct {
 	// v4Ranges contains the IPV4 addresses that are part of this
 	// pool. config.Parse guarantees that these are non-overlapping,
 	// both within and between pools.
-	v4Ranges []*IPRange
+	v4Ranges []*purelbv1.IPRange
 
 	// v6Ranges contains the IPV6 addresses that are part of this
 	// pool. config.Parse guarantees that these are non-overlapping,
 	// both within and between pools.
-	v6Ranges []*IPRange
+	v6Ranges []*purelbv1.IPRange
 
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
@@ -69,7 +68,7 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 
 	// See if there's an IPV6 range in the spec
 	for _, v6pool := range spec.V6Pools {
-		iprange, err := NewIPRange(v6pool.Pool)
+		iprange, err := purelbv1.NewIPRange(v6pool.Pool)
 		if err != nil {
 			return nil, err
 		}
@@ -88,7 +87,7 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 
 	// See if there's an IPV4 range in the spec
 	for _, v4pool := range spec.V4Pools {
-		iprange, err := NewIPRange(v4pool.Pool)
+		iprange, err := purelbv1.NewIPRange(v4pool.Pool)
 		if err != nil {
 			return nil, err
 		}
@@ -108,7 +107,7 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 	// See if there's a top-level range in the spec
 	if spec.Pool != "" {
 		// Validate that Subnet is at least well-formed
-		iprange, err := NewIPRange(spec.Pool)
+		iprange, err := purelbv1.NewIPRange(spec.Pool)
 		if err == nil {
 			// Validate that the range is contained by the subnet.
 			_, subnet, err := net.ParseCIDR(spec.Subnet)
@@ -334,7 +333,7 @@ func (p LocalPool) first(family int) net.IP {
 // next returns the next net.IP within this Pool, or nil if the
 // provided net.IP is the last address in the range.
 func (p LocalPool) next(ip net.IP) net.IP {
-	if local.AddrFamily(ip) == nl.FAMILY_V6 {
+	if purelbv1.AddrFamily(ip) == nl.FAMILY_V6 {
 		for i, v6 := range p.v6Ranges {
 			// If this range contains the current address, and has another
 			// address available then return that.
@@ -357,7 +356,7 @@ func (p LocalPool) next(ip net.IP) net.IP {
 		}
 	}
 
-	if local.AddrFamily(ip) == nl.FAMILY_V4 {
+	if purelbv1.AddrFamily(ip) == nl.FAMILY_V4 {
 		for i, v4 := range p.v4Ranges {
 			// If this range contains the current address, and has another
 			// address available then return that.

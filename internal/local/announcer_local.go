@@ -176,7 +176,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 
 		} else {
 			// The user wants us to determine the "default" interface
-			announceInt, err := defaultInterface(AddrFamily(lbIP))
+			announceInt, err := defaultInterface(purelbv1.AddrFamily(lbIP))
 			if err != nil {
 				l.Log("event", "announceError", "err", err)
 				retErr = err
@@ -271,15 +271,20 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 		allocPool := a.groups[poolName]
 		l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName)
 		a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (*a.dummyInt).Attrs().Name)
-		family := AddrFamily(lbIP)
-		subnet, err := allocPool.FamilySubnet(family)
-		if err != nil {
-		}
-		aggregation, err := allocPool.FamilyAggregation(family)
+
+		// Find the pool from which this address was allocated, which
+		// gives us the subnet and aggregation that we need.
+		pool, err := allocPool.PoolForAddress(lbIP)
 		if err != nil {
 			return err
 		}
-		addVirtualInt(lbIP, *a.dummyInt, subnet, aggregation)
+
+		// Add the address to the dummy interface.
+		l.Log("msg", "subnet", "node", a.myNode, "service", nsName, "pool", pool)
+		if err := addVirtualInt(lbIP, *a.dummyInt, pool.Subnet, pool.Aggregation); err != nil {
+			return err
+		}
+
 		announcing.With(prometheus.Labels{
 			"service": nsName,
 			"node":    a.myNode,
