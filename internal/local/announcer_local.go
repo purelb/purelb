@@ -195,7 +195,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, _ *v1.Endpoints) error {
 
 		} else {
 			// The user wants us to determine the "default" interface
-			announceInt, err := defaultInterface(AddrFamily(lbIP))
+			announceInt, err := defaultInterface(purelbv1.AddrFamily(lbIP))
 			if err != nil {
 				l.Log("event", "announceError", "err", err)
 				retErr = err
@@ -241,13 +241,23 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 		return err
 	}
 
-	// We can announce the address if we win the election
-	if winner := a.election.Winner(lbIP.String()); winner == a.myNode {
+	// See if we won the announcement election
+	if winner := a.election.Winner(lbIP.String()); winner != a.myNode {
+		// We lost the election so we'll withdraw any announcement that
+		// we might have been making
+		l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "memberCount", a.election.Memberlist.NumMembers(), "ip", lbIP)
+		// Update egress routing rules. These send egress traffic to the
+		// winning node for SNAT.
+		if err := a.updateEgressNonWinner(svc, lbIP, nodeMap, winner, announceInt); err != nil {
+			return err
+		}
+		return a.deleteAddress(nsName, "lostElection", lbIP)
+	} else {
 
-		// we won the election so we'll add the service address to our
+		// We won the election so we'll add the service address to our
 		// node's default interface so linux will respond to ARP
-		// requests for it
-		l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "memberCount", a.election.Memberlist.NumMembers(), "ip", lbIP)
+		// requests for it.
+		l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
 		a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
 		addNetwork(lbIPNet, announceInt)
@@ -261,21 +271,16 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 			"ip":      lbIP.String(),
 		}).Set(1)
 
+		// If we're configured to do so, broadcast a GARP message to say
+		// that we own the address.
 		// Update SNAT egress rules
 		if err := a.updateEgressWinner(svc, lbIP, nodeMap, winner); err != nil {
 			return err
 		}
-	} else {
-		// Update egress routing rules. These send egress traffic to the
-		// winning node for SNAT.
-		if err := a.updateEgressNonWinner(svc, lbIP, nodeMap, winner, announceInt); err != nil {
-			return err
-		}
 
-		// We lost the election so we'll withdraw any announcement that
-		// we might have been making
-		l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "memberCount", a.election.Memberlist.NumMembers(), "ip", lbIP)
-		return a.deleteAddress(nsName, "lostElection", lbIP)
+		if a.config.Local.SendGratuitousARP {
+			return sendGARP(announceInt.Attrs().Name, lbIP)
+		}
 	}
 
 	return nil
@@ -313,16 +318,20 @@ func (a *announcer) announceRemote(svc *v1.Service, lbIP net.IP) error {
 		allocPool := a.groups[poolName]
 		l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName)
 		a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (*a.dummyInt).Attrs().Name)
-		family := AddrFamily(lbIP)
-		subnet, err := allocPool.FamilySubnet(family)
+
+		// Find the pool from which this address was allocated, which
+		// gives us the subnet and aggregation that we need.
+		pool, err := allocPool.PoolForAddress(lbIP)
 		if err != nil {
 			return err
 		}
-		aggregation, err := allocPool.FamilyAggregation(family)
-		if err != nil {
+
+		// Add the address to the dummy interface.
+		l.Log("msg", "subnet", "node", a.myNode, "service", nsName, "pool", pool)
+		if err := addVirtualInt(lbIP, *a.dummyInt, pool.Subnet, pool.Aggregation); err != nil {
 			return err
 		}
-		addVirtualInt(lbIP, *a.dummyInt, subnet, aggregation)
+
 		announcing.With(prometheus.Labels{
 			"service": nsName,
 			"node":    a.myNode,

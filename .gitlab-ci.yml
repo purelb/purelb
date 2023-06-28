@@ -39,7 +39,7 @@ stages:
 
 check:
   stage: image
-  image: golang:1.18.4-bullseye
+  image: golang:1.19-bullseye
   before_script: []
   script: make check
 
@@ -64,16 +64,10 @@ docker-manifest:
 
 manifest:
   stage: manifest
-  image: golang:1.18.4-bullseye
+  image: golang:1.19-bullseye
   before_script:
   - *tag-setup
   script:
-    # Install kustomize
-    - wget --no-verbose -O - https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv4.0.1/kustomize_v4.0.1_linux_amd64.tar.gz | tar -C /usr/local/bin -xzf -
-    # Install helm
-    - wget --no-verbose -O - https://get.helm.sh/helm-v3.6.3-linux-amd64.tar.gz | tar -C /usr/local/bin -xzf - --strip-components=1 linux-amd64/helm
-    # Install controller-gen
-    - go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.7.0
     - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} crd manifest
     - make SUFFIX=${TAG_SPECIFIC} helm
     - curl --request POST --form "chart=@purelb-${TAG_SPECIFIC}.tgz" --user gitlab-ci-token:${CI_JOB_TOKEN} "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/helm/api/stable/charts"

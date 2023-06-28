@@ -8,6 +8,11 @@ COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
 
+# Tools that we use.
+CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.7.0
+KUSTOMIZE = go run sigs.k8s.io/kustomize/kustomize/v4@v4.5.2
+HELM = go run helm.sh/helm/v3/cmd/helm@v3.11
+
 ##@ Default Goal
 .PHONY: help
 help: ## Display help message
@@ -21,7 +26,8 @@ help: ## Display help message
 		/^##@/ { printf "\n%s\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
 ##@ Development Goals
-all: crd check image helm ## Build it all!
+.PHONY: all
+all: check crd image ## Build it all!
 
 .PHONY: check
 check:	## Run "short" tests
@@ -56,7 +62,7 @@ generate:  ## Generate client-side stubs for our custom resources
 
 .PHONY: crd
 crd: ## Generate CRDs from golang api structs
-	controller-gen crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
+	$(CONTROLLER_GEN) crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
 	cp deployments/crds/purelb.io_*.yaml build/helm/purelb/crds
 
 .ONESHELL:
@@ -66,8 +72,8 @@ manifest:  ## Generate deployment manifest
 	cd deployments/samples
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
-	kustomize edit set image registry.gitlab.com/purelb/purelb/purelb=${REGISTRY_IMAGE}/purelb:${SUFFIX}
-	kustomize build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
+	$(KUSTOMIZE) edit set image registry.gitlab.com/purelb/purelb/purelb=${REGISTRY_IMAGE}/purelb:${SUFFIX}
+	$(KUSTOMIZE) build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml
 
@@ -90,6 +96,10 @@ helm:  ## Package PureLB using Helm
 	--expression="s~DEFAULT_TAG~${SUFFIX}~" \
 	build/helm/purelb/values.yaml > build/build/purelb/values.yaml
 
-	helm package \
+	${HELM} package \
 	--version "${SUFFIX}" --app-version "${SUFFIX}" \
 	build/build/purelb
+
+.PHONY: scan
+scan: ## Scan for vulnerabilities using govulncheck
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...

@@ -19,9 +19,13 @@ import (
 	"net"
 	"regexp"
 
+	"github.com/mdlayher/arp"
+	"github.com/mdlayher/ethernet"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	v1 "k8s.io/api/core/v1"
+
+	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
 const (
@@ -100,7 +104,7 @@ func findLocal(regex *regexp.Regexp, lbIP net.IP) (net.IPNet, netlink.Link, erro
 func checkLocal(intf *netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	var lbIPNet net.IPNet = net.IPNet{IP: lbIP}
 
-	family := AddrFamily(lbIP)
+	family := purelbv1.AddrFamily(lbIP)
 
 	defaddrs, _ := netlink.AddrList(*intf, family)
 
@@ -252,7 +256,7 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 	if aggregation == "default" {
 
-		switch AddrFamily(lbIP) {
+		switch purelbv1.AddrFamily(lbIP) {
 		case (nl.FAMILY_V4):
 
 			_, poolipnet, _ := net.ParseCIDR(subnet)
@@ -278,7 +282,7 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 	} else {
 
-		switch AddrFamily(lbIP) {
+		switch purelbv1.AddrFamily(lbIP) {
 		case (nl.FAMILY_V4):
 
 			_, poolaggr, _ := net.ParseCIDR("0.0.0.0" + aggregation)
@@ -316,6 +320,31 @@ func nodeAddress(node v1.Node, family int) *string {
 			return &addr.Address
 		}
 	}
+	return nil
+}
 
+// sendGARP sends a gratuitous ARP message for ip on ifi. This is
+// based on MetalLB's internal/layer2/arp.go, modified to be a
+// standalone function.
+func sendGARP(ifName string, ip net.IP) error {
+	ifi, err := net.InterfaceByName(ifName)
+	if err != nil {
+		return fmt.Errorf("finding interface named %s: %w", ifName, err)
+	}
+
+	client, err := arp.Dial(ifi)
+	if err != nil {
+		return fmt.Errorf("creating ARP responder for %s: %w", ifName, err)
+	}
+
+	for _, op := range []arp.Operation{arp.OperationRequest, arp.OperationReply} {
+		pkt, err := arp.NewPacket(op, ifi.HardwareAddr, ip, ethernet.Broadcast, ip)
+		if err != nil {
+			return fmt.Errorf("assembling %q gratuitous packet for %q: %w", op, ip, err)
+		}
+		if err = client.WriteTo(pkt, ethernet.Broadcast); err != nil {
+			return fmt.Errorf("writing %q gratuitous packet for %q: %w", op, ip, err)
+		}
+	}
 	return nil
 }

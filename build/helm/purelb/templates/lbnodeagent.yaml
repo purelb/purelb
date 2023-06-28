@@ -10,3 +10,4 @@ spec:
   local:
     localint: {{ .Values.lbnodeagent.localint }}
     extlbint: {{ .Values.lbnodeagent.extlbint }}
+    sendgarp: {{ .Values.lbnodeagent.sendgarp }}
