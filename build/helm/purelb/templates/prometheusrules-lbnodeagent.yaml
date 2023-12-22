@@ -24,7 +24,7 @@ metadata:
     {{- if .Values.Prometheus.lbnodeagent.prometheusRules.extraLabels }}
     {{ toYaml .Values.Prometheus.lbnodeagent.prometheusRules.extraLabels | nindent 4 }}
     {{- end }}
-  name: {{ .Release.Name }}
+  name: {{ .Release.Name }}-lbnodeagent
   {{- if .Values.Prometheus.lbnodeagent.prometheusRules.namespace }}
   namespace: {{ .Values.Prometheus.lbnodeagent.prometheusRules.namespace }}
   {{- else }}

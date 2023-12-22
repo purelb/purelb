@@ -24,7 +24,7 @@ metadata:
     {{- if .Values.Prometheus.allocator.prometheusRules.extraLabels }}
     {{ toYaml .Values.Prometheus.allocator.prometheusRules.extraLabels | nindent 4 }}
     {{- end }}
-  name: {{ .Release.Name }}
+  name: {{ .Release.Name }}-allocator
   {{- if .Values.Prometheus.allocator.prometheusRules.namespace }}
   namespace: {{ .Values.Prometheus.allocator.prometheusRules.namespace }}
   {{- else }}
