@@ -38,7 +38,7 @@ type announcer struct {
 	config   *purelbv1.LBNodeAgentLocalSpec
 	groups   map[string]*purelbv1.ServiceGroupLocalSpec // groupName -> ServiceGroupLocalSpec
 	election *election.Election
-	dummyInt *netlink.Link // for non-local announcements
+	dummyInt netlink.Link // for non-local announcements
 
 	// svcIngresses is a map from svcName to that Service's
 	// Ingresses. Note that we may or may not advertise all of them
@@ -262,7 +262,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	return nil
 }
 
-func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, announceInt *netlink.Link, lbIP net.IP) error {
+func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, announceInt netlink.Link, lbIP net.IP) error {
 	l := log.With(a.logger, "service", svc.Name)
 	nsName := svc.Namespace + "/" + svc.Name
 
@@ -283,7 +283,7 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 	if gotName {
 		allocPool := a.groups[poolName]
 		l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName)
-		a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, (*a.dummyInt).Attrs().Name)
+		a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, a.dummyInt.Attrs().Name)
 
 		// Find the pool from which this address was allocated, which
 		// gives us the subnet and aggregation that we need.
@@ -294,7 +294,7 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 
 		// Add the address to the dummy interface.
 		l.Log("msg", "subnet", "node", a.myNode, "service", nsName, "pool", pool)
-		if err := addVirtualInt(lbIP, *a.dummyInt, pool.Subnet, pool.Aggregation); err != nil {
+		if err := addVirtualInt(lbIP, a.dummyInt, pool.Subnet, pool.Aggregation); err != nil {
 			return err
 		}
 

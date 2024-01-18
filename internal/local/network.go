@@ -48,7 +48,7 @@ func findLocal(regex *regexp.Regexp, lbIP net.IP) (net.IPNet, netlink.Link, erro
 			if err != nil {
 				return net.IPNet{}, nil, err
 			}
-			if ipnet, link, err := checkLocal(&nlIntf, lbIP); err == nil {
+			if ipnet, link, err := checkLocal(nlIntf, lbIP); err == nil {
 				// The addresses match so this is a local interface
 				return ipnet, link, nil
 			}
@@ -62,12 +62,12 @@ func findLocal(regex *regexp.Regexp, lbIP net.IP) (net.IPNet, netlink.Link, erro
 // intf.  If so, then the netlink.Link return value will be the
 // default interface and error will be nil.  If error is non-nil then
 // the address is non-local.
-func checkLocal(intf *netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error) {
+func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	var lbIPNet net.IPNet = net.IPNet{IP: lbIP}
 
 	family := purelbv1.AddrFamily(lbIP)
 
-	defaddrs, _ := netlink.AddrList(*intf, family)
+	defaddrs, _ := netlink.AddrList(intf, family)
 
 	if family == nl.FAMILY_V4 {
 		for _, addrs := range defaddrs {
@@ -109,16 +109,16 @@ func checkLocal(intf *netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error
 	}
 
 	if lbIPNet.Mask == nil {
-		return lbIPNet, *intf, fmt.Errorf("non-local address")
+		return lbIPNet, intf, fmt.Errorf("non-local address")
 	}
 
-	return lbIPNet, *intf, nil
+	return lbIPNet, intf, nil
 }
 
 // defaultInterface finds the default interface (i.e., the one with
 // the default route) for the given family, which should be either
 // nl.FAMILY_V6 or nl.FAMILY_V4.
-func defaultInterface(family int) (*netlink.Link, error) {
+func defaultInterface(family int) (netlink.Link, error) {
 	var defaultifindex int = 0
 	var defaultifmetric int = 0
 
@@ -143,7 +143,7 @@ func defaultInterface(family int) (*netlink.Link, error) {
 
 	// there's only one default route
 	defaultint, err := netlink.LinkByIndex(defaultifindex)
-	return &defaultint, err
+	return defaultint, err
 }
 
 // addNetwork adds lbIPNet to link.
@@ -158,7 +158,7 @@ func addNetwork(lbIPNet net.IPNet, link netlink.Link) error {
 
 // addDummyInterface creates a "dummy" interface whose name is
 // specified by dummyint.
-func addDummyInterface(name string) (*netlink.Link, error) {
+func addDummyInterface(name string) (netlink.Link, error) {
 
 	// check if there's already an interface with that name
 	link, err := netlink.LinkByName(name)
@@ -175,13 +175,13 @@ func addDummyInterface(name string) (*netlink.Link, error) {
 	}
 	// Make sure that "dummy" interface is set to up.
 	netlink.LinkSetUp(link)
-	return &link, nil
+	return link, nil
 }
 
 // removeInterface removes link. It returns nil if everything goes
 // fine, an error otherwise.
-func removeInterface(link *netlink.Link) error {
-	if err := netlink.LinkDel(*link); err != nil {
+func removeInterface(link netlink.Link) error {
+	if err := netlink.LinkDel(link); err != nil {
 		return err
 	}
 
