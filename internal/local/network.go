@@ -67,7 +67,10 @@ func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error)
 
 	family := purelbv1.AddrFamily(lbIP)
 
-	defaddrs, _ := netlink.AddrList(intf, family)
+	defaddrs, err := netlink.AddrList(intf, family)
+	if err != nil {
+		return lbIPNet, intf, err
+	}
 
 	if family == nl.FAMILY_V4 {
 		for _, addrs := range defaddrs {
@@ -122,7 +125,10 @@ func defaultInterface(family int) (netlink.Link, error) {
 	var defaultifindex int = 0
 	var defaultifmetric int = 0
 
-	rt, _ := netlink.RouteList(nil, family)
+	rt, err := netlink.RouteList(nil, family)
+	if err != nil {
+		return nil, err
+	}
 	for _, r := range rt {
 		// check each route to see if it's the default (i.e., no destination)
 		if r.Dst == nil && defaultifindex == 0 {
@@ -148,9 +154,11 @@ func defaultInterface(family int) (netlink.Link, error) {
 
 // addNetwork adds lbIPNet to link.
 func addNetwork(lbIPNet net.IPNet, link netlink.Link) error {
-	addr, _ := netlink.ParseAddr(lbIPNet.String())
-	err := netlink.AddrReplace(link, addr)
+	addr, err := netlink.ParseAddr(lbIPNet.String())
 	if err != nil {
+		return err
+	}
+	if err := netlink.AddrReplace(link, addr); err != nil {
 		return fmt.Errorf("could not add %v: to %v %w", addr, link, err)
 	}
 	return nil
@@ -190,17 +198,32 @@ func removeInterface(link netlink.Link) error {
 
 // deleteAddr deletes lbIP from whichever interface has it.
 func deleteAddr(lbIP net.IP) error {
-	hostints, _ := net.Interfaces()
+	hostints, err := net.Interfaces()
+	if err != nil {
+		return err
+	}
 	for _, hostint := range hostints {
-		addrs, _ := hostint.Addrs()
+		addrs, err := hostint.Addrs()
+		if err != nil {
+			return err
+		}
 		for _, ipnet := range addrs {
 
-			ipaddr, _, _ := net.ParseCIDR(ipnet.String())
+			ipaddr, _, err := net.ParseCIDR(ipnet.String())
+			if err != nil {
+				return err
+			}
 
 			if lbIP.Equal(ipaddr) {
-				ifindex, _ := netlink.LinkByIndex(hostint.Index)
-				deladdr, _ := netlink.ParseAddr(ipnet.String())
-				err := netlink.AddrDel(ifindex, deladdr)
+				ifindex, err := netlink.LinkByIndex(hostint.Index)
+				if err != nil {
+					return err
+				}
+				deladdr, err := netlink.ParseAddr(ipnet.String())
+				if err != nil {
+					return err
+				}
+				err = netlink.AddrDel(ifindex, deladdr)
 				if err != nil {
 					return fmt.Errorf("could not remove %v from %v: %w", deladdr, ifindex, err)
 				}
@@ -219,24 +242,26 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 		switch purelbv1.AddrFamily(lbIP) {
 		case (nl.FAMILY_V4):
-
-			_, poolipnet, _ := net.ParseCIDR(subnet)
+			_, poolipnet, err := net.ParseCIDR(subnet)
+			if err != nil {
+				return err
+			}
 
 			lbIPNet.Mask = poolipnet.Mask
 
-			err := addNetwork(lbIPNet, link)
-			if err != nil {
+			if err := addNetwork(lbIPNet, link); err != nil {
 				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
 			}
 
 		case (nl.FAMILY_V6):
-
-			_, poolipnet, _ := net.ParseCIDR(subnet)
+			_, poolipnet, err := net.ParseCIDR(subnet)
+			if err != nil {
+				return err
+			}
 
 			lbIPNet.Mask = poolipnet.Mask
 
-			err := addNetwork(lbIPNet, link)
-			if err != nil {
+			if err := addNetwork(lbIPNet, link); err != nil {
 				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
 			}
 		}
@@ -245,24 +270,26 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 
 		switch purelbv1.AddrFamily(lbIP) {
 		case (nl.FAMILY_V4):
-
-			_, poolaggr, _ := net.ParseCIDR("0.0.0.0" + aggregation)
+			_, poolaggr, err := net.ParseCIDR("0.0.0.0" + aggregation)
+			if err != nil {
+				return err
+			}
 
 			lbIPNet.Mask = poolaggr.Mask
 
-			err := addNetwork(lbIPNet, link)
-			if err != nil {
+			if err := addNetwork(lbIPNet, link); err != nil {
 				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
 			}
 
 		case (nl.FAMILY_V6):
-
-			_, poolaggr, _ := net.ParseCIDR("::" + aggregation)
+			_, poolaggr, err := net.ParseCIDR("::" + aggregation)
+			if err != nil {
+				return err
+			}
 
 			lbIPNet.Mask = poolaggr.Mask
 
-			err := addNetwork(lbIPNet, link)
-			if err != nil {
+			if err := addNetwork(lbIPNet, link); err != nil {
 				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
 			}
 		}
