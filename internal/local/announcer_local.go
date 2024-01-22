@@ -86,7 +86,6 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	for _, agent := range cfg.Agents {
 		if spec := agent.Spec.Local; spec != nil {
 			a.logger.Log("op", "setConfig", "spec", spec, "name", agent.Namespace+"/"+agent.Name)
-			a.config = spec
 
 			// stash the local service group configs
 			a.groups = map[string]*purelbv1.ServiceGroupLocalSpec{}
@@ -115,6 +114,10 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 			if a.dummyInt, err = addDummyInterface(spec.ExtLBInterface); err != nil {
 				return fmt.Errorf("error adding interface \"%s\": %s", spec.ExtLBInterface, err.Error())
 			}
+
+			// The dummy interface is set up so we can set the config which
+			// will allow announcements to happen.
+			a.config = spec
 
 			// we've got our marching orders so we don't need to continue
 			// scanning
