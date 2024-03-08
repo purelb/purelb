@@ -26,11 +26,13 @@ Spec:
   Local:
     extlbint:  kube-lb0
     localint:  default
+    sendgarp:  false
 ```
 parameter | type | Description
 -------|----|---
 extlbint | An interface name | The name of the virtual interface used for virtual addresses.  The default is kube-lb0. If you change it, and are using the purelb bird configuration, make sure you update the bird.cm.
 localint | An interface name regex | PureLB automatically identifies the interface that is connected to the local network and the address range used.  The default setting enables this automatic functionality.  If you wish to override this functionality and specify the interface to which PureLB will add local addresses, specify the NIC or an appropriate matching regex.  If you specify the NIC, you need to make sure that this interface has appropriate routing. The algorithmic selector finds the interface with the lowest-cost default route, i.e., the interface that is most likely to have global communications.
+sendgarp | true/false (false by default) | Gratuitous ARP (GARP), required for EVPN/VXLAN environments.
 
 ## ServiceGroup
 ServiceGroup CRs contain the configuration required to allocate Load Balancer addresses.  Service groups are Custom Resources and their contents depend on the source of the allocated addresses.  In the case of locally allocated addresses, pools of addresses are contained in the ServiceGroup. In the case of NetBox the ServiceGroup contains the configuration necessary to contact Netbox so the allocator can return an address for use.

@@ -11,6 +11,8 @@ PureLB can be installed from:
 * Manifest
 * Source repository
 
+We recommend using Helm for production systems and source for development.
+
 ## Installed Components
 1. PureLB Namespace.  A namespace is created and annotated for all of the PureLB components
 2. Custom Resource Definition.  PureLB uses two CRD's for configuration
@@ -28,14 +30,12 @@ PureLB uses a library called Memberlist to provide local network address failove
 If UDP/TCP 7934 is not open and a local network address is allocated, PureLB will exhibit "split brain" behavior.  Each node will attempt to allocate the address where the local network addresses match and update v1/service.  This will cause the v1/service to continously update, the lbnodeagent logs show repeated attempts to register addresses and it it will appear that PureLB is unstable.
 {{% /notice %}}
 
-
 #### ARP Behavior
 {{% notice warning %}}
-We recommend that you change the Linux kernel's ARP behavior from its default.  This is necessary if you're using kubeproxy in IPVS mode and is also good security practice.  By default Linux will answer ARP requests for addresses on any interface irrespective of the source. We recommend changing this setting so Linux only answers ARP requests for addresses on the interface it receives the request.  Linux sets this default to increase the the chance of successful communication. This change can be undertaken in sysconfig or in the kubeproxy configuration.  
+We recommend that you change the Linux kernel's ARP behavior from its default.  This is necessary if you're using kubeproxy in IPVS mode and is also good security practice. By default Linux will answer ARP requests for addresses on any interface irrespective of the source.  Linux sets this default to increase the the chance of successful communication. We recommend changing this setting so Linux only answers ARP requests for addresses on the interface it receives the request. This can be done in sysconfig or in the kubeproxy configuration.
 {{% /notice %}}
 
 Updating the kubeproxy configuration is dependent upon the Kubernetes packaging in use, refer to your distribution packaging information.  The following should be used to set IPVS and ARP behavior.
-
 
 Kubeproxy Configuration
 
@@ -58,13 +58,13 @@ PureLB will operate without making this change, however if kubeproxy is set to I
 {{% /notice %}}
 
 ### GARP
-PureLB supports GARP required for EVPN/VXLAN environments.  GARP can be installed during installation using helm by adding --set=lbnodeagent.sendgarp=true
+PureLB supports gratuitous ARP (GARP) which is required for EVPN/VXLAN environments. GARP can be enabled during installation by setting the `lbnodeagent.sendgarp` flag in the LBNodeAgent configuration. If you're using Helm, then add `--set=lbnodeagent.sendgarp=true` to the command line:
 
 ```plaintext
-helm install --create-namespace --namespace=purelb --set=lbnodeagent.sendgarp=true purelb/purelb
+helm install --create-namespace --namespace=purelb --set=lbnodeagent.sendgarp=true purelb purelb/purelb
 
 ```
-It can also be enable after installation by editing the LBNodeAgent resources
+It can also be enabled after installation by editing the LBNodeAgent resource:
 
 ``` yaml
 $ kubectl edit -n purelb lbnodeagent
@@ -90,7 +90,7 @@ spec:
   local:
     extlbint: kube-lb0
     localint: default
-    sendgarp: true
+    sendgarp: true            # enable GARP
 
 ```
 
