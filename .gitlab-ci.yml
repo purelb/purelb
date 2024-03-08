@@ -1,5 +1,6 @@
 ---
-image: "${CI_TEMPLATE_REGISTRY_HOST}/pages/hugo/hugo_extended:latest"
+# FIXME: Hugo v0.123.8+extended crashes on our site. This is v0.113.0+extended
+image: "${CI_TEMPLATE_REGISTRY_HOST}/pages/hugo/hugo_extended@sha256:04d5bc70785440bffece39d1bae01c10b745430bd5d0732be75b93507ad6f85b"
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
