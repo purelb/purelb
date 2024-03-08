@@ -1,5 +1,5 @@
-
-image: registry.gitlab.com/pages/hugo/hugo_extended:latest
+---
+image: "${CI_TEMPLATE_REGISTRY_HOST}/pages/hugo/hugo_extended:latest"
 
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
