@@ -607,21 +607,20 @@ func TestAllocateAnyIP(t *testing.T) {
 }
 
 func TestPoolMetrics(t *testing.T) {
-	alloc := New(allocatorTestLogger)
-	alloc.SetClient(&testK8S{t: t})
-	alloc.SetPools([]*purelbv1.ServiceGroup{
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test",
-			},
-			Spec: purelbv1.ServiceGroupSpec{
-				Local: &purelbv1.ServiceGroupLocalSpec{
-					Subnet: "1.2.3.4/30",
-					Pool:   "1.2.3.4/30",
-				},
+	testSG := purelbv1.ServiceGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test",
+		},
+		Spec: purelbv1.ServiceGroupSpec{
+			Local: &purelbv1.ServiceGroupLocalSpec{
+				Subnet: "1.2.3.4/30",
+				Pool:   "1.2.3.4/30",
 			},
 		},
-	})
+	}
+	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
+	alloc.SetPools([]*purelbv1.ServiceGroup{&testSG})
 
 	tests := []struct {
 		desc       string
@@ -698,31 +697,21 @@ func TestPoolMetrics(t *testing.T) {
 	}
 
 	// The "test" pool contains one range: 1.2.3.4/30
-	value := ptu.ToFloat64(poolCapacity.WithLabelValues("test"))
-	if int(value) != 4 {
-		t.Errorf("stats.poolCapacity invalid %f. Expected 4", value)
-	}
+	assert.Equal(t, 4.0, ptu.ToFloat64(poolCapacity.WithLabelValues("test")), "stats.poolCapacity invalid")
 
 	for _, test := range tests {
 		service := service(test.svc, test.ports, test.sharingKey)
 		if test.ip == "" {
 			alloc.Unassign(namespacedName(&service))
-			value := ptu.ToFloat64(poolActive.WithLabelValues("test"))
-			if value != test.ipsInUse {
-				t.Errorf("%v; in-use %v. Expected %v", test.desc, value, test.ipsInUse)
-			}
+			assert.Equal(t, test.ipsInUse, ptu.ToFloat64(poolActive.WithLabelValues(testSG.ObjectMeta.Name)), "incorrect pool active IP count after unassign")
 			continue
 		}
 
 		service.Spec.LoadBalancerIP = test.ip
-		_, err := alloc.AllocateAnyIP(&service)
-		if err != nil {
-			t.Errorf("%q: Assign(%q, %q): %v", test.desc, test.svc, test.ip, err)
-		}
-		value := ptu.ToFloat64(poolActive.WithLabelValues("test"))
-		if value != test.ipsInUse {
-			t.Errorf("%v; in-use %v. Expected %v", test.desc, value, test.ipsInUse)
-		}
+		pool, err := alloc.AllocateAnyIP(&service)
+		assert.Nil(t, err, "%q: Assign(%q, %q)", test.desc, test.svc, test.ip)
+		assert.Equal(t, pool, testSG.ObjectMeta.Name, "incorrect pool assigned")
+		assert.Equal(t, test.ipsInUse, ptu.ToFloat64(poolActive.WithLabelValues(testSG.ObjectMeta.Name)), "incorrect pool active IP count after allocation")
 	}
 }
 

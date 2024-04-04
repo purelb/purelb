@@ -118,12 +118,12 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, error) {
 		err      error
 	)
 
-	if svc.Spec.LoadBalancerIP != "" {
-		// The user asked for a specific IP, so try that.
-		if poolName, err = a.allocateSpecificIP(svc); err != nil {
-			return "", err
-		}
-	} else {
+	// If the user asked for a specific IP, allocate that.
+	poolName, err = a.allocateSpecificIP(svc)
+	if err != nil {
+		return "", err
+	}
+	if poolName == "" {
 		// The user didn't ask for a specific IP so we can allocate one
 		// ourselves
 
@@ -145,9 +145,16 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, error) {
 	return poolName, nil
 }
 
-// allocateSpecificIP assigns the requested ip to svc, if the assignment is
-// permissible by sharingKey.
+// allocateSpecificIP assigns the requested ip to svc, if the
+// assignment is permissible by sharingKey. If the user didn't ask for
+// a specific address then the return values will be ("", nil). If an
+// address was allocated then the string return value will be
+// non-"". If an error happened then the error return will be non-nil.
 func (a *Allocator) allocateSpecificIP(svc *v1.Service) (string, error) {
+	if svc.Spec.LoadBalancerIP == "" {
+		return "", nil
+	}
+
 	ip := net.ParseIP(svc.Spec.LoadBalancerIP)
 	if ip == nil {
 		return "", fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
