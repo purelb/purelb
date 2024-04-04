@@ -285,19 +285,13 @@ func TestAssignment(t *testing.T) {
 			continue
 		}
 		ip := net.ParseIP(test.ip)
-		if ip == nil {
-			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
-		}
+		assert.NotNil(t, ip, "invalid IP %q in test %q", test.ip, test.desc)
 		service.Spec.LoadBalancerIP = test.ip
 		_, err := alloc.allocateSpecificIP(&service)
 		if test.wantErr {
-			if err == nil {
-				t.Errorf("%q should have caused an error, but did not", test.desc)
-			}
+			assert.NotNil(t, err, "%q should have caused an error, but did not", test.desc)
 		} else {
-			if err != nil {
-				t.Errorf("%q: Assign(%q, %q): %s", test.desc, test.svc, test.ip, err)
-			}
+			assert.Nil(t, err, "%q: Assign(%q, %q)", test.desc, test.svc, test.ip)
 		}
 	}
 }
@@ -525,30 +519,21 @@ func TestPoolAllocation(t *testing.T) {
 		}
 		err := alloc.allocateFromPool(&service, pool)
 		if test.wantErr {
-			if err == nil {
-				t.Errorf("%s: should have caused an error, but did not", test.desc)
-
-			}
+			assert.NotNil(t, err, "%s: should have caused an error, but did not", test.desc)
 			continue
 		}
-		if err != nil {
-			t.Errorf("%s: AllocateFromPool(%q, \"test\"): %s", test.desc, test.svc, err)
-		}
+		assert.Nil(t, err, "%s: AllocateFromPool(%q, \"test\")", test.desc, test.svc)
 		validIPs := validIP4s
 		if test.isIPv6 {
 			validIPs = validIP6s
 		}
 		ip := service.Status.LoadBalancer.Ingress[0].IP
-		if !validIPs[ip] {
-			t.Errorf("%s: allocated unexpected IP %q", test.desc, ip)
-		}
+		assert.True(t, validIPs[ip], "%s: allocated unexpected IP %q", test.desc, ip)
 	}
 
 	alloc.Unassign("unit/s5")
 	service := service("s5", []v1.ServicePort{}, "")
-	if err := alloc.allocateFromPool(&service, "nonexistentpool"); err == nil {
-		t.Error("Allocating from non-existent pool succeeded")
-	}
+	assert.NotNil(t, alloc.allocateFromPool(&service, "nonexistentpool"), "Allocating from non-existent pool succeeded")
 }
 
 func TestAllocateAnyIP(t *testing.T) {
