@@ -285,19 +285,13 @@ func TestAssignment(t *testing.T) {
 			continue
 		}
 		ip := net.ParseIP(test.ip)
-		if ip == nil {
-			t.Fatalf("invalid IP %q in test %q", test.ip, test.desc)
-		}
-		service.Spec.LoadBalancerIP = test.ip
+		assert.NotNil(t, ip, "invalid IP %q in test %q", test.ip, test.desc)
+		service.Annotations[purelbv1.DesiredAddressAnnotation] = test.ip
 		_, err := alloc.allocateSpecificIP(&service)
 		if test.wantErr {
-			if err == nil {
-				t.Errorf("%q should have caused an error, but did not", test.desc)
-			}
+			assert.NotNil(t, err, "%q should have caused an error, but did not", test.desc)
 		} else {
-			if err != nil {
-				t.Errorf("%q: Assign(%q, %q): %s", test.desc, test.svc, test.ip, err)
-			}
+			assert.Nil(t, err, "%q: Assign(%q, %q)", test.desc, test.svc, test.ip)
 		}
 	}
 }
@@ -525,30 +519,21 @@ func TestPoolAllocation(t *testing.T) {
 		}
 		err := alloc.allocateFromPool(&service, pool)
 		if test.wantErr {
-			if err == nil {
-				t.Errorf("%s: should have caused an error, but did not", test.desc)
-
-			}
+			assert.NotNil(t, err, "%s: should have caused an error, but did not", test.desc)
 			continue
 		}
-		if err != nil {
-			t.Errorf("%s: AllocateFromPool(%q, \"test\"): %s", test.desc, test.svc, err)
-		}
+		assert.Nil(t, err, "%s: AllocateFromPool(%q, \"test\")", test.desc, test.svc)
 		validIPs := validIP4s
 		if test.isIPv6 {
 			validIPs = validIP6s
 		}
 		ip := service.Status.LoadBalancer.Ingress[0].IP
-		if !validIPs[ip] {
-			t.Errorf("%s: allocated unexpected IP %q", test.desc, ip)
-		}
+		assert.True(t, validIPs[ip], "%s: allocated unexpected IP %q", test.desc, ip)
 	}
 
 	alloc.Unassign("unit/s5")
 	service := service("s5", []v1.ServicePort{}, "")
-	if err := alloc.allocateFromPool(&service, "nonexistentpool"); err == nil {
-		t.Error("Allocating from non-existent pool succeeded")
-	}
+	assert.NotNil(t, alloc.allocateFromPool(&service, "nonexistentpool"), "Allocating from non-existent pool succeeded")
 }
 
 func TestAllocateAnyIP(t *testing.T) {
@@ -562,7 +547,7 @@ func TestAllocateAnyIP(t *testing.T) {
 
 	// Allocate specific IP succeeds
 	svc = service("t1", ports("tcp/80"), "")
-	svc.Spec.LoadBalancerIP = "1000::4"
+	svc.Annotations[purelbv1.DesiredAddressAnnotation] = "1000::4"
 	pool, err := alloc.AllocateAnyIP(&svc)
 	assert.Nil(t, err, "specific IP allocation failed")
 	assert.Equal(t, "test1V6", pool, "IP allocated from wrong pool")
@@ -570,14 +555,14 @@ func TestAllocateAnyIP(t *testing.T) {
 
 	// Allocate specific IP fails if IP and pool disagree
 	svc = service("t2", ports("tcp/80"), "")
-	svc.Spec.LoadBalancerIP = "1000::4"
-	svc.ObjectMeta.Annotations[purelbv1.DesiredGroupAnnotation] = "not test1V6"
+	svc.Annotations[purelbv1.DesiredAddressAnnotation] = "1000::4"
+	svc.Annotations[purelbv1.DesiredGroupAnnotation] = "not test1V6"
 	_, err = alloc.AllocateAnyIP(&svc)
 	assert.Error(t, err, "specific IP allocation should have failed")
 
 	// Allocate from specific pool succeeds
 	svc = service("t3", ports("tcp/80"), "")
-	svc.ObjectMeta.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
+	svc.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
 	pool, err = alloc.AllocateAnyIP(&svc)
 	assert.Nil(t, err, "specific IP allocation failed")
 	assert.Equal(t, "test1V6", pool, "IP allocated from wrong pool")
@@ -585,7 +570,7 @@ func TestAllocateAnyIP(t *testing.T) {
 
 	// Pool is empty so allocation fails
 	svc = service("t4", ports("tcp/80"), "")
-	svc.ObjectMeta.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
+	svc.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
 	_, err = alloc.AllocateAnyIP(&svc)
 	assert.Error(t, err, "allocation from exhausted pool should have failed")
 
@@ -607,21 +592,20 @@ func TestAllocateAnyIP(t *testing.T) {
 }
 
 func TestPoolMetrics(t *testing.T) {
-	alloc := New(allocatorTestLogger)
-	alloc.SetClient(&testK8S{t: t})
-	alloc.SetPools([]*purelbv1.ServiceGroup{
-		{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "test",
-			},
-			Spec: purelbv1.ServiceGroupSpec{
-				Local: &purelbv1.ServiceGroupLocalSpec{
-					Subnet: "1.2.3.4/30",
-					Pool:   "1.2.3.4/30",
-				},
+	testSG := purelbv1.ServiceGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test",
+		},
+		Spec: purelbv1.ServiceGroupSpec{
+			Local: &purelbv1.ServiceGroupLocalSpec{
+				Subnet: "1.2.3.4/30",
+				Pool:   "1.2.3.4/30",
 			},
 		},
-	})
+	}
+	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
+	alloc.SetPools([]*purelbv1.ServiceGroup{&testSG})
 
 	tests := []struct {
 		desc       string
@@ -698,31 +682,21 @@ func TestPoolMetrics(t *testing.T) {
 	}
 
 	// The "test" pool contains one range: 1.2.3.4/30
-	value := ptu.ToFloat64(poolCapacity.WithLabelValues("test"))
-	if int(value) != 4 {
-		t.Errorf("stats.poolCapacity invalid %f. Expected 4", value)
-	}
+	assert.Equal(t, 4.0, ptu.ToFloat64(poolCapacity.WithLabelValues("test")), "stats.poolCapacity invalid")
 
 	for _, test := range tests {
 		service := service(test.svc, test.ports, test.sharingKey)
 		if test.ip == "" {
 			alloc.Unassign(namespacedName(&service))
-			value := ptu.ToFloat64(poolActive.WithLabelValues("test"))
-			if value != test.ipsInUse {
-				t.Errorf("%v; in-use %v. Expected %v", test.desc, value, test.ipsInUse)
-			}
+			assert.Equal(t, test.ipsInUse, ptu.ToFloat64(poolActive.WithLabelValues(testSG.ObjectMeta.Name)), "incorrect pool active IP count after unassign")
 			continue
 		}
 
-		service.Spec.LoadBalancerIP = test.ip
-		_, err := alloc.AllocateAnyIP(&service)
-		if err != nil {
-			t.Errorf("%q: Assign(%q, %q): %v", test.desc, test.svc, test.ip, err)
-		}
-		value := ptu.ToFloat64(poolActive.WithLabelValues("test"))
-		if value != test.ipsInUse {
-			t.Errorf("%v; in-use %v. Expected %v", test.desc, value, test.ipsInUse)
-		}
+		service.Annotations[purelbv1.DesiredAddressAnnotation] = test.ip
+		pool, err := alloc.AllocateAnyIP(&service)
+		assert.Nil(t, err, "%q: Assign(%q, %q)", test.desc, test.svc, test.ip)
+		assert.Equal(t, pool, testSG.ObjectMeta.Name, "incorrect pool assigned")
+		assert.Equal(t, test.ipsInUse, ptu.ToFloat64(poolActive.WithLabelValues(testSG.ObjectMeta.Name)), "incorrect pool active IP count after allocation")
 	}
 }
 
@@ -762,21 +736,19 @@ func TestSpecificAddress(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				purelbv1.DesiredGroupAnnotation: defaultPoolName,
+				purelbv1.DesiredAddressAnnotation: "1.2.3.8",
 			},
-		},
-		Spec: v1.ServiceSpec{
-			LoadBalancerIP: "1.2.3.8",
 		},
 	}
 	_, err := alloc.AllocateAnyIP(svc1)
 	assert.Error(t, err, "address allocated but shouldn't be")
 
 	// Allocate a specific address in the default pool
-	svc1.Spec.LoadBalancerIP = "1.2.3.0"
+	svc1.Annotations[purelbv1.DesiredAddressAnnotation] = "1.2.3.0"
 	pool, err := alloc.AllocateAnyIP(svc1)
 	assert.Nil(t, err, "error allocating address")
 	assert.Equal(t, defaultPoolName, pool, "incorrect pool chosen")
-	assert.Equal(t, svc1.Spec.LoadBalancerIP, svc1.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
+	assert.Equal(t, svc1.Annotations[purelbv1.DesiredAddressAnnotation], svc1.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 
 }
 
@@ -935,6 +907,42 @@ func TestParseGroups(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestServiceIP(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.client = &testK8S{t: t}
+
+	addr1 := "1000::4:1"
+	addr2 := "1000::4:2"
+	svc1 := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "svc1",
+		},
+		Spec: v1.ServiceSpec{},
+	}
+
+	// Test no address configured
+	ip, err := alloc.serviceIP(svc1)
+	assert.Nil(t, err)
+	assert.Nil(t, ip)
+
+	// Test deprecated LoadBalancerIP field
+	svc1.Spec.LoadBalancerIP = addr1
+	ip, err = alloc.serviceIP(svc1)
+	assert.Nil(t, err)
+	assert.Equal(t, ip.String(), addr1)
+
+	// Test the preferred way to assign a specific address (i.e., our
+	// annotation). This overrides LoadBalancerIP.
+	svc1.ObjectMeta = metav1.ObjectMeta{
+			Annotations: map[string]string{
+				purelbv1.DesiredAddressAnnotation: addr2,
+			},
+		}
+	ip, err = alloc.serviceIP(svc1)
+	assert.Nil(t, err)
+	assert.Equal(t, ip.String(), addr2)
 }
 
 // Some helpers

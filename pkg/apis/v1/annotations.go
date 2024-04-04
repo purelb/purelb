@@ -24,6 +24,13 @@ const (
 	// share their IP address.
 	SharingAnnotation string = "purelb.io/allow-shared-ip"
 
+	// DesiredAddressAnnotation specifies an IP address (or a
+	// comma-separated pair of addresses in the case of dual-stack) that
+	// PureLB should use for this Service. If it's not present then
+	// PureLB will allocate the next available address from the
+	// specified service-group (or the default if none is specified).
+	DesiredAddressAnnotation string = "purelb.io/addresses"
+
 	// DesiredGroupAnnotation is the key for the annotation that
 	// indicates the pool from which the user would like PureLB to
 	// allocate this service's IP address.
