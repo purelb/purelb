@@ -151,13 +151,13 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, error) {
 // address was allocated then the string return value will be
 // non-"". If an error happened then the error return will be non-nil.
 func (a *Allocator) allocateSpecificIP(svc *v1.Service) (string, error) {
-	if svc.Spec.LoadBalancerIP == "" {
-		return "", nil
+	// See if the user configured a specific address and return if not.
+	ip, err := serviceIP(svc)
+	if err != nil {
+		return "", err
 	}
-
-	ip := net.ParseIP(svc.Spec.LoadBalancerIP)
-	if ip == nil {
-		return "", fmt.Errorf("invalid spec.loadBalancerIP %q", svc.Spec.LoadBalancerIP)
+	if ip == nil { // no user-configured address
+		return "", err
 	}
 
 	// Check that the address belongs to a pool
@@ -180,8 +180,7 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (string, error) {
 	// Does the IP already have allocs? If so, needs to be the same
 	// sharing key, and have non-overlapping ports. If not, the proposed
 	// IP needs to be allowed by configuration.
-	err := a.pools[pool].Assign(ip, svc)
-	if err != nil {
+	if err := a.pools[pool].Assign(ip, svc); err != nil {
 		return "", err
 	}
 
@@ -233,6 +232,32 @@ func poolFor(pools map[string]Pool, ip net.IP) string {
 		}
 	}
 	return ""
+}
+
+// serviceIP returns any IP addresses configured in the provided
+// service. There can be 0-2 addresses: the deprecated
+// svc.Spec.LoadBalancer field can contain one, and the
+// purelbv1.DesiredAddressAnnotation can contain one or two, separated
+// by commas.
+func serviceIP(svc *v1.Service) (net.IP, error) {
+
+	// Try our annotation first.
+	rawAddr, exists := svc.Annotations[purelbv1.DesiredAddressAnnotation]
+	if !exists {
+		// There's no DesiredAddressAnnotation so try the (deprecated)
+		// LoadBalancerIP field.
+		rawAddr = svc.Spec.LoadBalancerIP
+		if rawAddr == "" {
+			return nil, nil
+		}
+	}
+
+	ip := net.ParseIP(rawAddr)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid user-specified address: \"%q\"", rawAddr)
+	}
+
+	return ip, nil
 }
 
 // parseGroups parses a slice of ServiceGroups and returns a map of

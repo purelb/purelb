@@ -286,7 +286,7 @@ func TestAssignment(t *testing.T) {
 		}
 		ip := net.ParseIP(test.ip)
 		assert.NotNil(t, ip, "invalid IP %q in test %q", test.ip, test.desc)
-		service.Spec.LoadBalancerIP = test.ip
+		service.Annotations[purelbv1.DesiredAddressAnnotation] = test.ip
 		_, err := alloc.allocateSpecificIP(&service)
 		if test.wantErr {
 			assert.NotNil(t, err, "%q should have caused an error, but did not", test.desc)
@@ -547,7 +547,7 @@ func TestAllocateAnyIP(t *testing.T) {
 
 	// Allocate specific IP succeeds
 	svc = service("t1", ports("tcp/80"), "")
-	svc.Spec.LoadBalancerIP = "1000::4"
+	svc.Annotations[purelbv1.DesiredAddressAnnotation] = "1000::4"
 	pool, err := alloc.AllocateAnyIP(&svc)
 	assert.Nil(t, err, "specific IP allocation failed")
 	assert.Equal(t, "test1V6", pool, "IP allocated from wrong pool")
@@ -555,14 +555,14 @@ func TestAllocateAnyIP(t *testing.T) {
 
 	// Allocate specific IP fails if IP and pool disagree
 	svc = service("t2", ports("tcp/80"), "")
-	svc.Spec.LoadBalancerIP = "1000::4"
-	svc.ObjectMeta.Annotations[purelbv1.DesiredGroupAnnotation] = "not test1V6"
+	svc.Annotations[purelbv1.DesiredAddressAnnotation] = "1000::4"
+	svc.Annotations[purelbv1.DesiredGroupAnnotation] = "not test1V6"
 	_, err = alloc.AllocateAnyIP(&svc)
 	assert.Error(t, err, "specific IP allocation should have failed")
 
 	// Allocate from specific pool succeeds
 	svc = service("t3", ports("tcp/80"), "")
-	svc.ObjectMeta.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
+	svc.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
 	pool, err = alloc.AllocateAnyIP(&svc)
 	assert.Nil(t, err, "specific IP allocation failed")
 	assert.Equal(t, "test1V6", pool, "IP allocated from wrong pool")
@@ -570,7 +570,7 @@ func TestAllocateAnyIP(t *testing.T) {
 
 	// Pool is empty so allocation fails
 	svc = service("t4", ports("tcp/80"), "")
-	svc.ObjectMeta.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
+	svc.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
 	_, err = alloc.AllocateAnyIP(&svc)
 	assert.Error(t, err, "allocation from exhausted pool should have failed")
 
@@ -692,7 +692,7 @@ func TestPoolMetrics(t *testing.T) {
 			continue
 		}
 
-		service.Spec.LoadBalancerIP = test.ip
+		service.Annotations[purelbv1.DesiredAddressAnnotation] = test.ip
 		pool, err := alloc.AllocateAnyIP(&service)
 		assert.Nil(t, err, "%q: Assign(%q, %q)", test.desc, test.svc, test.ip)
 		assert.Equal(t, pool, testSG.ObjectMeta.Name, "incorrect pool assigned")
@@ -736,21 +736,19 @@ func TestSpecificAddress(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				purelbv1.DesiredGroupAnnotation: defaultPoolName,
+				purelbv1.DesiredAddressAnnotation: "1.2.3.8",
 			},
-		},
-		Spec: v1.ServiceSpec{
-			LoadBalancerIP: "1.2.3.8",
 		},
 	}
 	_, err := alloc.AllocateAnyIP(svc1)
 	assert.Error(t, err, "address allocated but shouldn't be")
 
 	// Allocate a specific address in the default pool
-	svc1.Spec.LoadBalancerIP = "1.2.3.0"
+	svc1.Annotations[purelbv1.DesiredAddressAnnotation] = "1.2.3.0"
 	pool, err := alloc.AllocateAnyIP(svc1)
 	assert.Nil(t, err, "error allocating address")
 	assert.Equal(t, defaultPoolName, pool, "incorrect pool chosen")
-	assert.Equal(t, svc1.Spec.LoadBalancerIP, svc1.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
+	assert.Equal(t, svc1.Annotations[purelbv1.DesiredAddressAnnotation], svc1.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 
 }
 
@@ -909,6 +907,39 @@ func TestParseGroups(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestServiceIP(t *testing.T) {
+	addr1 := "1000::4:1"
+	addr2 := "1000::4:2"
+	svc1 := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "svc1",
+		},
+		Spec: v1.ServiceSpec{},
+	}
+
+	// Test no address configured
+	ip, err := serviceIP(svc1)
+	assert.Nil(t, err)
+	assert.Nil(t, ip)
+
+	// Test deprecated LoadBalancerIP field
+	svc1.Spec.LoadBalancerIP = addr1
+	ip, err = serviceIP(svc1)
+	assert.Nil(t, err)
+	assert.Equal(t, ip.String(), addr1)
+
+	// Test the preferred way to assign a specific address (i.e., our
+	// annotation). This overrides LoadBalancerIP.
+	svc1.ObjectMeta = metav1.ObjectMeta{
+			Annotations: map[string]string{
+				purelbv1.DesiredAddressAnnotation: addr2,
+			},
+		}
+	ip, err = serviceIP(svc1)
+	assert.Nil(t, err)
+	assert.Equal(t, ip.String(), addr2)
 }
 
 // Some helpers
