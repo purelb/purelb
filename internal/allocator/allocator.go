@@ -152,7 +152,7 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, error) {
 // non-"". If an error happened then the error return will be non-nil.
 func (a *Allocator) allocateSpecificIP(svc *v1.Service) (string, error) {
 	// See if the user configured a specific address and return if not.
-	ip, err := serviceIP(svc)
+	ip, err := a.serviceIP(svc)
 	if err != nil {
 		return "", err
 	}
@@ -239,7 +239,7 @@ func poolFor(pools map[string]Pool, ip net.IP) string {
 // svc.Spec.LoadBalancer field can contain one, and the
 // purelbv1.DesiredAddressAnnotation can contain one or two, separated
 // by commas.
-func serviceIP(svc *v1.Service) (net.IP, error) {
+func (a *Allocator) serviceIP(svc *v1.Service) (net.IP, error) {
 
 	// Try our annotation first.
 	rawAddr, exists := svc.Annotations[purelbv1.DesiredAddressAnnotation]
@@ -250,6 +250,10 @@ func serviceIP(svc *v1.Service) (net.IP, error) {
 		if rawAddr == "" {
 			return nil, nil
 		}
+
+		// Warn the user about the deprecated LoadBalancerIP field
+		a.client.Infof(svc, "DeprecationWarning", "Service.Spec.LoadBalancerIP is deprecated, please use the \"%s\" annotation instead", purelbv1.DesiredAddressAnnotation)
+		a.logger.Log("svc-name", svc.Name, "deprecation", "Service.Spec.LoadBalancerIP is deprecated, please use the \"" + purelbv1.DesiredAddressAnnotation + "\" annotation instead")
 	}
 
 	ip := net.ParseIP(rawAddr)

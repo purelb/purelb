@@ -910,6 +910,9 @@ func TestParseGroups(t *testing.T) {
 }
 
 func TestServiceIP(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.client = &testK8S{t: t}
+
 	addr1 := "1000::4:1"
 	addr2 := "1000::4:2"
 	svc1 := &v1.Service{
@@ -920,13 +923,13 @@ func TestServiceIP(t *testing.T) {
 	}
 
 	// Test no address configured
-	ip, err := serviceIP(svc1)
+	ip, err := alloc.serviceIP(svc1)
 	assert.Nil(t, err)
 	assert.Nil(t, ip)
 
 	// Test deprecated LoadBalancerIP field
 	svc1.Spec.LoadBalancerIP = addr1
-	ip, err = serviceIP(svc1)
+	ip, err = alloc.serviceIP(svc1)
 	assert.Nil(t, err)
 	assert.Equal(t, ip.String(), addr1)
 
@@ -937,7 +940,7 @@ func TestServiceIP(t *testing.T) {
 				purelbv1.DesiredAddressAnnotation: addr2,
 			},
 		}
-	ip, err = serviceIP(svc1)
+	ip, err = alloc.serviceIP(svc1)
 	assert.Nil(t, err)
 	assert.Equal(t, ip.String(), addr2)
 }
