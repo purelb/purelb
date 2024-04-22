@@ -47,13 +47,13 @@ spec:
           {{- with .Values.allocator.resources }}
           {{- toYaml . | nindent 10 }}
           {{- end }}
-        {{- with .Values.containerSecurityContext }}
+        {{- with .Values.allocator.containerSecurityContext }}
         securityContext:
           {{- toYaml . | nindent 10 }}
         {{- end }}
       nodeSelector:
         kubernetes.io/os: linux
-      {{- with .Values.securityContext }}
+      {{- with .Values.allocator.securityContext }}
       securityContext:
       {{- toYaml . | nindent 8 }}
       {{- end }}

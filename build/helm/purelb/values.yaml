@@ -207,16 +207,15 @@ allocator:
   resources:
     limits:
       memory: 100Mi
+  # Set the container security context
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - all
+    readOnlyRootFilesystem: true
 
-# Set the container security context
-containerSecurityContext:
-  allowPrivilegeEscalation: false
-  capabilities:
-    drop:
-    - all
-  readOnlyRootFilesystem: true
-
-# Set the pod security context
-securityContext:
-  runAsNonRoot: true
-  runAsUser: 65534
+  # Set the pod security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
