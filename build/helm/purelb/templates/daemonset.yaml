@@ -25,6 +25,10 @@ spec:
       imagePullSecrets:
       {{- toYaml . | nindent 6 }}
       {{- end }}
+      {{- if .Values.lbnodeagent.securityContext }}
+      securityContext:
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
       containers:
       - name: lbnodeagent
         command: ["/usr/local/bin/lbnodeagent"]
@@ -62,14 +66,10 @@ spec:
           {{- with .Values.lbnodeagent.resources }}
           {{- toYaml . | nindent 10 }}
           {{- end }}
+        {{- with .Values.lbnodeagent.containerSecurityContext }}
         securityContext:
-          capabilities:
-            add:
-            - NET_ADMIN
-            - NET_RAW
-            drop:
-            - ALL
-          readOnlyRootFilesystem: false
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       hostNetwork: true
       nodeSelector:
         kubernetes.io/os: linux

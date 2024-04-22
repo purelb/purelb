@@ -185,6 +185,14 @@ lbnodeagent:
   resources:
     limits:
       memory: 100Mi
+  containerSecurityContext:
+    capabilities:
+      add:
+      - NET_ADMIN
+      - NET_RAW
+      drop:
+      - ALL
+    readOnlyRootFilesystem: false
   # Tolerations: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
   tolerations: []
   # For example, to allow lbnodeagents to run on master nodes, comment the above line and uncomment the following lines:
@@ -199,3 +207,16 @@ allocator:
   resources:
     limits:
       memory: 100Mi
+
+# Set the container security context
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - all
+  readOnlyRootFilesystem: true
+
+# Set the pod security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
