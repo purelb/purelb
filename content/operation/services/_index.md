@@ -45,6 +45,7 @@ Annotation | example | Description
 -----------|---------|--------------
 purelb.io/service-group | purelb.io/service-group: virtualsg |  Sets the Service Group that will be used to allocate the address
 purelb.io/allow-shared-ip | purelb.io/allow-shared-ip: sharingkey |  Allows the allocated address to be shared between multiple services as long as they expose different ports
+purelb.io/addresses | purelb.io/addresses: 172.30.250.80,ffff::27 | Assigns the provided addresses instead of allocating addresses from the Service Group address pool
 
 
 ### k8s configuration options
@@ -53,7 +54,6 @@ The service API has options that impact how Loadbalancer services behave
 Parameter | example | description
 ----|----|----
 ExternalTrafficPolicy | ExternalTrafficPolicy: Cluster | Sets how purelb should add the service and kube-proxy forward traffic for the service
-loadBalancerIP| loadBalancerIP: 172.30.250.80 | Allows the IP address to be statically defined in the service
 allocateLoadBalancerNodePorts | allocateLoadBalancerNodePorts: false |  By default nodeports are added for loadbalancers but are seldom required
 loadBalancerClass | loadBalancerClass: purelb.io/purelb | When multiple loadbalancer controllers are present, select the specified controller
 ipFamilyPolicy | ipFamilyPolicy: PreferDualStack | Selects which address families should be added to the services, SingleStack, PreferDualStack, RequireDualStack
