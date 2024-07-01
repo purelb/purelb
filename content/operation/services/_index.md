@@ -57,7 +57,7 @@ loadBalancerIP| loadBalancerIP: 172.30.250.80 | Allows the IP address to be stat
 allocateLoadBalancerNodePorts | allocateLoadBalancerNodePorts: false |  By default nodeports are added for loadbalancers but are seldom required
 loadBalancerClass | loadBalancerClass: purelb.io/purelb | When multiple loadbalancer controllers are present, select the specified controller
 ipFamilyPolicy | ipFamilyPolicy: PreferDualStack | Selects which address families should be added to the services, SingleStack, PreferDualStack, RequireDualStack
-ipFamilies | ipFamilies: | enumerates IPv6 and/or IPv6  
+ipFamilies | ipFamilies: IPv6 | Selects IPv4 and/or IPv6
 
 
 
