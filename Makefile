@@ -103,3 +103,7 @@ helm:  ## Package PureLB using Helm
 .PHONY: scan
 scan: ## Scan for vulnerabilities using govulncheck
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+.PHONY: website
+website: ## Generate documentation website
+	hugo --source website

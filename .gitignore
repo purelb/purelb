@@ -5,3 +5,7 @@ configs/my-servicegroup.yaml
 build/helm/purelb/crds/purelb.io_*.yaml
 build/build/*
 *.tgz
+website/public
+website/resources/_gen
+website/hugo_stats.json
+.hugo_build.lock

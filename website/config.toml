@@ -1,0 +1,71 @@
+baseURL = "https://purelb.gitlab.io/docs/"
+languageCode = "en-us"
+title = "PureLB"
+theme = "docport"
+DefaultContentLanguage = "en"
+pygmentsCodeFences = true
+pygmentsStyle = "monokai"
+
+defaultContentLanguageInSubdir= false
+enableMissingTranslationPlaceholders = false
+
+ googleAnalytics = "G-K7X5FYG9N9"
+
+
+
+
+
+# Keep this as is
+[outputs]
+home = [ "HTML", "RSS", "JSON"]
+
+# Site params
+[params]
+ordersectionsby = "weight" # ordersectionsby = "title"
+color_main = "#66b1de"
+#color_second = "#ffffff"
+disableSearch = false # default is false
+disableNavChevron = false # set true to hide next/prev chevron, default is false
+menushortcutsnewtab = false # set true to open shortcuts links to a new tab/window
+
+editURL = "https://github.com/vjeantet/hugo-theme-docport/edit/master/exampleSite/content/"
+enableGitInfo = true
+
+[markup.goldmark.renderer]
+unsafe = true
+
+# Code highlight configuration
+[markup.highlight]
+codeFences = true
+guessSyntax = true
+hl_Lines = ""
+lineNoStart = 1
+lineNos = false
+lineNumbersInTable = true
+noClasses = true
+style = "monokai"
+tabWidth = 2
+
+#
+# top menu shotcuts
+#
+[[menu.shortcuts]]
+name = "Gitlab"
+url = "https://gitlab.com/purelb"
+weight = 10
+
+#[[menu.shortcuts]]
+#name = "Download"
+#url = "https://github.com/vjeantet/hugo-theme-docport/archive/master.zip"
+#weight = 11
+
+#[[menu.shortcuts]]
+#name = "Hugo Documentation"
+#identifier = "hugodoc"
+#url = "https://gohugo.io/"
+#weight = 20
+
+[[menu.shortcuts]]
+name = "Acnodal"
+url = "http://www.acnodal.io"
+weight = 30

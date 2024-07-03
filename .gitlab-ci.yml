@@ -20,10 +20,15 @@
 .alpine-setup: &alpine-setup
 - apk add make git wget
 
+.hugo-setup: &hugo-setup
+- apt-get update
+- apt-get install -y hugo
+
 image: docker:20.10.3
 services:
 - docker:20.10.3-dind
 variables:
+  GIT_SUBMODULE_STRATEGY: recursive
   PROJECT: $CI_PROJECT_NAME
   REGISTRY_IMAGE: $CI_REGISTRY_IMAGE
   NETBOX_USER_TOKEN: no-op
@@ -36,12 +41,14 @@ before_script:
 stages:
   - image
   - manifest
+  - pages
 
 check:
   stage: image
   image: golang:1.19-bullseye
-  before_script: []
-  script: make check
+  services: []
+  before_script: [ *hugo-setup ]
+  script: make website check
 
 arm64:
   stage: image
@@ -62,11 +69,11 @@ docker-manifest:
         make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} docker-manifest
       fi
 
-manifest:
+k8s-manifest:
   stage: manifest
   image: golang:1.19-bullseye
-  before_script:
-  - *tag-setup
+  services: []
+  before_script: [ *tag-setup ]
   script:
     - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} crd manifest
     - make SUFFIX=${TAG_SPECIFIC} helm
@@ -82,9 +89,24 @@ manifest:
         # don't need to update the docs for every release.
         wget --no-verbose --header "JOB-TOKEN: $CI_JOB_TOKEN" --method=PUT --body-file=deployments/purelb-${TAG_SPECIFIC}.yaml "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/manifest/0.0.1/purelb-complete.yaml"
       fi
-
   artifacts:
     paths:
       - deployments/*
       - configs/*
       - purelb-v*.tgz
+
+pages:
+  stage: pages
+  image: golang:1.19-bullseye
+  services: []
+  before_script:
+  - *tag-setup
+  - *hugo-setup
+  script:
+  - make website
+  artifacts:
+    paths:
+    - website/public
+  publish: website/public
+  rules:
+  - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
