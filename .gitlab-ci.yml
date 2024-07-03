@@ -24,6 +24,7 @@ image: docker:20.10.3
 services:
 - docker:20.10.3-dind
 variables:
+  GIT_SUBMODULE_STRATEGY: recursive
   PROJECT: $CI_PROJECT_NAME
   REGISTRY_IMAGE: $CI_REGISTRY_IMAGE
   NETBOX_USER_TOKEN: no-op
@@ -36,6 +37,7 @@ before_script:
 stages:
   - image
   - manifest
+  - pages
 
 check:
   stage: image
@@ -88,3 +90,14 @@ manifest:
       - deployments/*
       - configs/*
       - purelb-v*.tgz
+
+pages:
+  stage: pages
+  image: "${CI_TEMPLATE_REGISTRY_HOST}/pages/hugo/hugo_extended:0.123.8"
+  script:
+  - make website
+  artifacts:
+    paths:
+    - website/public
+  rules:
+  - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
