@@ -47,17 +47,16 @@ spec:
           {{- with .Values.allocator.resources }}
           {{- toYaml . | nindent 10 }}
           {{- end }}
+        {{- with .Values.allocator.containerSecurityContext }}
         securityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop:
-            - all
-          readOnlyRootFilesystem: true
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       nodeSelector:
         kubernetes.io/os: linux
+      {{- with .Values.allocator.securityContext }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534
+      {{- toYaml . | nindent 8 }}
+      {{- end }}
       serviceAccountName: allocator
       terminationGracePeriodSeconds: 0
       {{- if .Values.priorityClassName }}
