@@ -1,4 +1,3 @@
-[submodule "themes/docport"]
+[submodule "website/themes/docport"]
 	path = website/themes/docport
 	url = https://github.com/purelb/hugo-theme-docport.git
-	branch = fix-basefilename-crash
