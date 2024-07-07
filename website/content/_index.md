@@ -1,24 +1,14 @@
 ---
-title: ""
-description: "Description of PureLB"
+title: "PureLB"
+description: "PureLB is a lightweight Kubernetes Service LoadBalancer for non-cloud deployments. It provides external access to your application, using Linux networking to add addresses to Network Interface Cards (enabling access from the local network) or to virtual interfaces (so the address can be distributed to routers)."
 weight: 10
 
 hide: [ "toc", "breadcrumb", "nextpage", "footer" ]
 ---
 
+<img align="right" src="images/purelb.png">
 
-<img align="left" src="images/purelb.png">
-
-
-</br>
-
-**_PureLB_** is a Service Load Balancer Controller for Kubernetes.  A LoadBalancer is a Service type that allows configuration of network components external to Kubernetes to enable network access to the specified application resources. 
-
-The resources that PureLB controls is the host Linux networking stack, adding addresses to either Network Interface Cards enabling access from the local host network or to a virtual interface named kube-lb0 so the address can be distributed to routers.
-
-Service Load Balancers are key component in the K8s developer workflow.  They allow access resources to be pre-defined so they can be accessed on demand by developers via service definition.  This simple operation can be undertaken on demand or as part of CI without custom configuration or tooling.   
-
-</br>
+PureLB is a lightweight Kubernetes [Service LoadBalancer](https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer) for non-cloud deployments. It provides external access to your application, using Linux networking to add addresses to Network Interface Cards (enabling access from the local network) or to virtual interfaces (so the address can be distributed to routers).
 
 ### Features
 
@@ -26,32 +16,28 @@ Service Load Balancers are key component in the K8s developer workflow.  They al
 Expose applications by allocating addresses to services using type LoadBalancer.
 
 * **Leverages Linux Networking.**
-Configures Linux Networking stack so its easy to observe behavior and troubleshoot.
+Works with Linux networking for easy observation and troubleshooting.
 
-* **Local Address support.**
-Addresses matching the local host address are automatically added to the default or configured interface for simple local access.
+* **Local Address Support.**
+Local addresses are added to host interfaces for simple local access.
 
 * **Routing.**
-All non-local addresses are added to a virtual interface for distribution by routing software or CNI unlocking full routing functionality.
+Non-local addresses are added to a virtual interface for distribution by routing software or CNI, unlocking full routing functionality.
 
-* **Service Groups.**
-Configurable policy, address & network configuration & load balancer behavior.
+* **Easy Integration with CNI Routing.**
+Supports CNIs such as Calico that implement routing.
 
-* **Easy Integration with CNI routing.**
-Supports CNIs such as Calico that implement routing, CNI distributes LoadBalancer alongside other routes.
-
-* **Supports multiple Service Load Balancer controllers.**
-Implements LoadBalancerClass allowing multiple Load Balancer Controllers to be installed in the same cluster for use in Public Clouds.
+* **Works With Other Service Load Balancer Controllers.**
+Implements LoadBalancerClass which allows multiple LoadBalancer Controllers to be installed in the same cluster.
 
 * **Configured using Custom Resources.**
-Use of CRDs simplifies configuration with validation
+Use of CRDs simplifies configuration and provides input validation.
 
-* **Dual Stack Support for IPv4 & IPv6.**
-PureLB provides Dual Stack IPv6 support (subject to your cluster & network configuration)
+* **Dual Stack Support for IPv4 and IPv6.**
+Supports Dual Stack IPv6 if your cluster has IPv6.
 
 * **Supports GARP for Datacenters using EVPN/VXLAN.**
-GARP can be enabled to support ARP suppression mechanisms used in EVPN/VXLAN
+GARP can be enabled to support ARP suppression mechanisms used in EVPN/VXLAN.
 
-
-* **Extensible to support external IPAM.**
-Integrate Service Load Balancer with Enterprise IP Address Management Systems
+* **Supports External IPAM.**
+Integrates with Enterprise IP Address Management Systems.

@@ -11,10 +11,6 @@ enableMissingTranslationPlaceholders = false
 
  googleAnalytics = "G-K7X5FYG9N9"
 
-
-
-
-
 # Keep this as is
 [outputs]
 home = [ "HTML", "RSS", "JSON"]
@@ -50,22 +46,11 @@ tabWidth = 2
 # top menu shotcuts
 #
 [[menu.shortcuts]]
-name = "Gitlab"
-url = "https://gitlab.com/purelb"
+name = "Code"
+url = "https://gitlab.com/purelb/purelb"
 weight = 10
 
-#[[menu.shortcuts]]
-#name = "Download"
-#url = "https://github.com/vjeantet/hugo-theme-docport/archive/master.zip"
-#weight = 11
-
-#[[menu.shortcuts]]
-#name = "Hugo Documentation"
-#identifier = "hugodoc"
-#url = "https://gohugo.io/"
-#weight = 20
-
 [[menu.shortcuts]]
-name = "Acnodal"
-url = "http://www.acnodal.io"
+name = "Sponsor"
+url = "https://www.acnodal.io"
 weight = 30
