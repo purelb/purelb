@@ -17,8 +17,8 @@ The Routing software enables the distribution of LoadBalancer addresses to other
     A(Router/Switch);
     A---C4;
     A---D4;
-    C3-.-|Advertizes IPNET|A;
-    D3-.-|Advertizes IPNET|A;
+    C3-.-|Advertises IPNET|A;
+    D3-.-|Advertises IPNET|A;
     subgraph k8s-Node-1
       C1-->|add ipnet|C2;
       C2-->|imports to kube-lb0|C3;
@@ -58,7 +58,7 @@ The routing infrastructure should be designed to include k8s nodes as network de
 
 
 ### BIRD
-Bird is a popular open source linux routing software.  Its used by Calico (see specific configuration example) and can be integrated with any k8s network.   BIRD has a protocol called _Direct_.  This protocol is used to redistribute routes from directly connected networks identified by a list of interfaces.  Once in the BIRD routing table, they can be advertized using protocols supported by BIRD such as OSPF or BGP by exporting **RTS_DEVICE**.  The configuration snippit for the _Direct_ protocol is and an example for the desired protocol.
+Bird is a popular open source linux routing software.  Its used by Calico (see specific configuration example) and can be integrated with any k8s network.   BIRD has a protocol called _Direct_.  This protocol is used to redistribute routes from directly connected networks identified by a list of interfaces.  Once in the BIRD routing table, they can be advertised using protocols supported by BIRD such as OSPF or BGP by exporting **RTS_DEVICE**.  The configuration snippit for the _Direct_ protocol is and an example for the desired protocol.
 
 ```plaintext
 protocol direct {

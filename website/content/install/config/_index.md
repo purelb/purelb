@@ -123,7 +123,7 @@ spec:
       pool: '192.168.1.64-192.168.1.126'
       aggregation: /24
 ```
-In the example above, the k8s cluster has been allocated the address range of _192.168.1.0/24_ and the network infrastructure expects this address to be advertized by the cluster.  However, the cluster administrators would like to break up the address range and allocate a subset of the addresses between two development teams.  The configuration above allocates half of the address space to two teams, leaving half unallocated for future use, advertizing a single router _192.168.1.0/24_ to the network.
+In the example above, the k8s cluster has been allocated the address range of _192.168.1.0/24_ and the network infrastructure expects this address to be advertised by the cluster.  However, the cluster administrators would like to break up the address range and allocate a subset of the addresses between two development teams.  The configuration above allocates half of the address space to two teams, leaving half unallocated for future use, advertising a single router _192.168.1.0/24_ to the network.
 
 ```yaml
 apiVersion: purelb.io/v1
@@ -142,7 +142,7 @@ spec:
       pool: fc00:370:155:0:8000:1::/112
       aggregation: /128
 ```
-In certain cases it can be beneficial to advertize a host route, this is a specific route for one address.  In this example every address allocated from the pool will add a route to the routing table, _172.30.0.144/32_.  This functionality is useful when combined with ExternalTrafficPolicy:Local.  Note that some routers will not accept /32 routes over BGP and the upstream routers at your ISP will most certainly reject this route by configuration.  PureLB offers a couple of alternatives, waste a few addresses using an aggregator of /30 when the router does not allow /32 routes over BGP or use an IGP such as OSPF instead to provide rapid failover for individual service changes.
+In certain cases it can be beneficial to advertise a host route, this is a specific route for one address.  In this example every address allocated from the pool will add a route to the routing table, _172.30.0.144/32_.  This functionality is useful when combined with ExternalTrafficPolicy:Local.  Note that some routers will not accept /32 routes over BGP and the upstream routers at your ISP will most certainly reject this route by configuration.  PureLB offers a couple of alternatives, waste a few addresses using an aggregator of /30 when the router does not allow /32 routes over BGP or use an IGP such as OSPF instead to provide rapid failover for individual service changes.
 
 ### Creating the Service Group
 Service Groups are a custom resource, the following creates a service group

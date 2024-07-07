@@ -27,7 +27,7 @@ _See the [Calico Documentation](https://docs.projectcalico.org/networking/determ
 
 
 ### Integrating with PureLB
-Using Calico's TOR style configuration is a logical choice when PureLB is used with virtual addresses and the addresses need to be advertized using BGP.  
+Using Calico's TOR style configuration is a logical choice when PureLB is used with virtual addresses and the addresses need to be advertised using BGP.  
 
 Configuring the Calico CNI to peer with TOR BGP routers will result in the Cluster Network on each node being advertised establishing pod network connectivity. 
 
@@ -90,7 +90,7 @@ spec:
 _Note:  This configuration is ideally suited to a Dual Stack Kubernetes deployment._
 
 #### Recommended Calico Configuration
-Calico uses BGP to advertise the pod Network, this network contains internal addresses that are likely RFC1918 allocations.  One of the key reasons to use an external LoadBalancer is to separate internal addresses from external public addresses.  At the external network boundary the pod Network routes would be filter and not advertized.  This type of route manipulation is commonly undertaken with BGP communities.  The route is tagged with a community and based upon the community is either advertised or dropped at BGP border routers.   Its recommended that PureLB routes be tagged with a community when they are initially advertised allowing network administrators to manage the distribution of these routes without needing to implement address specific filters in the board routers.  BGP communities can be configured using Calico CRs
+Calico uses BGP to advertise the pod Network, this network contains internal addresses that are likely RFC1918 allocations.  One of the key reasons to use an external LoadBalancer is to separate internal addresses from external public addresses.  At the external network boundary the pod Network routes would be filter and not advertised.  This type of route manipulation is commonly undertaken with BGP communities.  The route is tagged with a community and based upon the community is either advertised or dropped at BGP border routers.   Its recommended that PureLB routes be tagged with a community when they are initially advertised allowing network administrators to manage the distribution of these routes without needing to implement address specific filters in the board routers.  BGP communities can be configured using Calico CRs
 
 Calico BGP default configuration including community 
 ```yaml

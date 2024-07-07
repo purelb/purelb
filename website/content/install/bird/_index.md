@@ -66,7 +66,7 @@ The local hosts ip address is substituted for the variable _k8sipaddr_.
       ipv4 {                    # IPv4 unicast (1/1)
         # RTS_DEVICE matches routes added to kube-lb0 by protocol device
         export where source ~ [ RTS_STATIC, RTS_BGP, RTS_DEVICE ];
-        import filter bgp_reject; # we are only advertizing
+        import filter bgp_reject; # we are only advertising
       };
 
       ipv6 {                    # IPv6 unicast

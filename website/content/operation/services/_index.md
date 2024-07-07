@@ -244,7 +244,7 @@ Events:
   Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.0 from node node1 interface kube-lb0
   Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.0 from node node2 interface kube-lb0
 ```
-Describing the service shows that address was requested and allocated from the virtualsub pool.  In this case the virtualsub pool sets the resulting address to 172.31.1.0/32.  This is the recommended configuration for External Traffic Policy: Local as the address is only added to _kube-lb0_ when the pod is present and therefore advertised via routing when the pod is present.  If the scale of the application changes, the number of nodes advertized will change.  
+Describing the service shows that address was requested and allocated from the virtualsub pool.  In this case the virtualsub pool sets the resulting address to 172.31.1.0/32.  This is the recommended configuration for External Traffic Policy: Local as the address is only added to _kube-lb0_ when the pod is present and therefore advertised via routing when the pod is present.  If the scale of the application changes, the number of nodes advertised will change.  
 
 {{% notice danger %}} Aggregation.  Setting Service Group aggregation to a mask other than /32 (or /128) can result in traffic being send to nodes that do not have pods, kubeproxy will not forward so the traffic will be lost.  There are use cases but caution should be exercised {{% /notice %}}
 

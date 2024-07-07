@@ -72,7 +72,7 @@ Events:
 
 This example shows that the default pool is part of the local address.  PureLB annotates these services with the node and interface where the address was announced as well us updating the event.  
 
-This useful command command will show all nodes that are advertizing addresses locally.  The annotations make it easier find information in larger k8s clusters.
+This useful command command will show all nodes that are advertising addresses locally.  The annotations make it easier find information in larger k8s clusters.
 
 
 ```plaintext
