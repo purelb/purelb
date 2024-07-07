@@ -2,7 +2,7 @@
 title: "Help & Contribution"
 description: "Describe Operation"
 weight: 45
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 ### Help - Getting help on PureLB

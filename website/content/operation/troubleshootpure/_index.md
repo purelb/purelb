@@ -2,7 +2,7 @@
 title: "Troubleshooting PureLB"
 description: "Describe Operation"
 weight: 40
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 If PureLB isn't behaving the way you expect, it's easy to figure out what's going on.  PureLB uses the standard Linux networking libraries (iproute2/netlink) to configure addresses on nodes.

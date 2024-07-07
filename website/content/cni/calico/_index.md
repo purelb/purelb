@@ -2,7 +2,7 @@
 title: "Calico"
 description: "Describe Operation"
 weight: 10
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 Calico is a CNI bundled with a number of Kubernetes packages including the popular MicroK8s or can be added independently. The primary role of a CNI is to establish connectivity between PODs across nodes.  All CNI's operate in a similar manner, allocating IP addresses to POD's and establishing connectivity between nodes.
 

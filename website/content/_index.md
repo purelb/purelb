@@ -3,7 +3,7 @@ title: ""
 description: "Description of PureLB"
 weight: 10
 
-hide: toc, breadcrumb
+hide: [ "toc", "breadcrumb", "nextpage", "footer" ]
 ---
 
 

@@ -2,7 +2,7 @@
 title: "Install PureLB"
 description: "Describe Operation"
 weight: 10
-hide: toc
+hide: [ "toc", "footer" ]
 ---
 
 PureLB can be installed from:

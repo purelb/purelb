@@ -2,7 +2,7 @@
 title: "Adding a Bird Router"
 description: "Describe Operation"
 weight: 45
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 

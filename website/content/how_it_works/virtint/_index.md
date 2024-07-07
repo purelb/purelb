@@ -2,7 +2,7 @@
 title: "Virtual Network Addresses"
 description: "Describe Operation"
 weight: 20
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 The Virtual Internet is important for clusters where a new Prefix is used for LoadBalancer services.  These addresses are added to the cluster and require routing to be accessed.  Use cases for this configuration are:

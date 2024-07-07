@@ -2,7 +2,7 @@
 title: "Multiple LoadBalance Controllers"
 description: "Describe Operation"
 weight: 45
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 Beginning with k8s v1.22 multiple LoadBalancer Controllers can be used in a single cluster.  This allows either default LoadBalancer or other LoadBalancers to be selected by adding spec.loadBalancerClass to the the service definition.
 

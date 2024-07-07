@@ -2,7 +2,7 @@
 title: "External IPAM"
 description: "Describe Operation"
 weight: 15
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 PureLB supports external IPAM systems.  These are configured and access via Service Groups, and therefore transparent to developers.  The installation and configuration of the specific IPAM systems is beyond the scope of PureLB's documentation, how PureLB is configured is documented.

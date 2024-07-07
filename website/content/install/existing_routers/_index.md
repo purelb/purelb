@@ -2,7 +2,7 @@
 title: "Integrating existing in-cluster routers"
 description: "Describe Operation"
 weight: 25
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 If there is a router already present on the node either running natively or in a container, PureLB can use that router to advertise routes to load-balancer addresses.  This functionality depends on the routing software being able to manipulate the Linux Routing table or FIB.  This is a necessary requirement to update the hosts routing table so it therefore likely.

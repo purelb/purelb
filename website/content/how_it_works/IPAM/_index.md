@@ -2,7 +2,7 @@
 title: "IPAM"
 description: "Describe Operation"
 weight: 26
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 IP Address Management (IPAM) is a critical function in any network, ensuring that addresses are allocated to devices in a manner that results in the desired connectivity requires planning and ongoing management.  PureLB includes an integrated IPAM/address allocator, however can also support external IPAM systems.

@@ -2,7 +2,7 @@
 title: "BIRD Router monitor & configure "
 description: "Describe Operation"
 weight: 30
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 draft: true
 ---
 

@@ -2,7 +2,7 @@
 title: "License"
 description: "Describe Operation"
 weight: 50
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
                                  Apache License

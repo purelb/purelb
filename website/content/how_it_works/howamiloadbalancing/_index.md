@@ -2,7 +2,7 @@
 title: "How am I Loadbalancing?"
 description: "Describe Operation"
 weight: 40
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 

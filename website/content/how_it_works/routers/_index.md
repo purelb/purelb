@@ -2,7 +2,7 @@
 title: "Using Routers"
 description: "Describe Operation"
 weight: 35
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 

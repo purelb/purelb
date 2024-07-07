@@ -2,7 +2,7 @@
 title: "Initial Configuration"
 description: "Describe Operation"
 weight: 15
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 PureLB configuration is simple and uses Custom Resources.  A single LBNodeAgent CR enables default overrides, and as many ServiceGroup CRs as needed configure external IP address ranges.

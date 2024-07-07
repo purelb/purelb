@@ -2,7 +2,7 @@
 title: "Local Network Addresses"
 description: "Describe Operation"
 weight: 15
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 The local interface mechanism uses standard Linux capabilities to add load-balancer addresses that match the hosts configured subnet as secondary address on the hosts interface.  Using this mechanism a cluster can use the same local address allocation for LoadBalancer services.  When added to an existing physical interface, the Linux Networking stack will respond to ARP/ND messages for that address and the address will be visible on the physical network interface.  
 

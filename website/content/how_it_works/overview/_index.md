@@ -4,7 +4,7 @@ description: "High Level Overview"
 weight: 10
 mermaid: true
 
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 

@@ -2,7 +2,7 @@
 title: "Load Balancer Services"
 description: "Describe Operation"
 weight: 10
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 ---
 
 PureLB uses the k8s services API and if a default service group has been defined then following the instructions provided in the k8s documentation will result in a load balancer service with an IPv4 address being created.

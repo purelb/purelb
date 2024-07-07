@@ -2,7 +2,7 @@
 title: "Install PureLB Bird router"
 description: "Describe Operation"
 weight: 20
-hide: toc, nextpage
+hide: [ "toc", "footer" ]
 draft: true
 ---
 
