@@ -53,7 +53,7 @@ The service API has options that impact how Loadbalancer services behave
 
 Parameter | example | description
 ----|----|----
-ExternalTrafficPolicy | ExternalTrafficPolicy: Cluster | Sets how purelb should add the service and kube-proxy forward traffic for the service
+ExternalTrafficPolicy | ExternalTrafficPolicy: Cluster | Sets how PureLB should add the service and kube-proxy forward traffic for the service
 allocateLoadBalancerNodePorts | allocateLoadBalancerNodePorts: false |  By default nodeports are added for loadbalancers but are seldom required
 loadBalancerClass | loadBalancerClass: purelb.io/purelb | When multiple loadbalancer controllers are present, select the specified controller
 ipFamilyPolicy | ipFamilyPolicy: PreferDualStack | Selects which address families should be added to the services, SingleStack, PreferDualStack, RequireDualStack

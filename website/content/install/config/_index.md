@@ -30,7 +30,7 @@ Spec:
 ```
 parameter | type | Description
 -------|----|---
-extlbint | An interface name | The name of the virtual interface used for virtual addresses.  The default is kube-lb0. If you change it, and are using the purelb bird configuration, make sure you update the bird.cm.
+extlbint | An interface name | The name of the virtual interface used for virtual addresses.  The default is kube-lb0. If you change it, and are using the PureLB bird configuration, make sure you update the bird.cm.
 localint | An interface name regex | PureLB automatically identifies the interface that is connected to the local network and the address range used.  The default setting enables this automatic functionality.  If you wish to override this functionality and specify the interface to which PureLB will add local addresses, specify the NIC or an appropriate matching regex.  If you specify the NIC, you need to make sure that this interface has appropriate routing. The algorithmic selector finds the interface with the lowest-cost default route, i.e., the interface that is most likely to have global communications.
 sendgarp | true/false (false by default) | Gratuitous ARP (GARP), required for EVPN/VXLAN environments.
 
@@ -185,7 +185,7 @@ Spec:
       Subnet:       fc00:270:154::/64
 Events:             <none>
 ```
-Service groups are namespaced, however PureLB will check all namespaces.  For simplicity we recommend adding them to the purelb namespace however in cases where RBAC controls who can update that namespace, service groups can be added to the namespaces of their users.
+Service groups are namespaced, however PureLB will check all namespaces.  For simplicity we recommend adding them to the `purelb` namespace however in cases where RBAC controls who can update that namespace, service groups can be added to the namespaces of their users.
 
 ### Changing a Service Group
 Changing a Service Group does not affect services that have already been created. Modified service groups will only impact services subsequently created. This is intentional: service address changes should be initiated on a per service basis, not by an address range change in the service group having the side effect of changing all of the associated services' external addresses. To migrate service addresses, add an additional service that will be allocated an address from the changed pool, once traffic has been drained, remove the original service releasing the address.
