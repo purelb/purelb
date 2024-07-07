@@ -212,7 +212,7 @@ spec:
       aggregation: '/32'
 ```
 
-This sets _externalTrafficPolicy: Local_ changing the behavior of both PureLB and kube-proxy.  PureLB will only advertise the allocated address on nodes where the POD with the app label echoserver present.  KubeProxy will not configure forwarding to send traffic over the CNI to PODs.  
+This sets _externalTrafficPolicy: Local_ changing the behavior of both PureLB and kube-proxy.  PureLB will only advertise the allocated address on nodes where the pod with the app label echoserver present.  KubeProxy will not configure forwarding to send traffic over the CNI to pods.  
 
 
 ```plaintext
@@ -244,10 +244,10 @@ Events:
   Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.0 from node node1 interface kube-lb0
   Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.0 from node node2 interface kube-lb0
 ```
-Describing the service shows that address was requested and allocated from the virtualsub pool.  In this case the virtualsub pool sets the resulting address to 172.31.1.0/32.  This is the recommended configuration for External Traffic Policy: Local as the address is only added to _kube-lb0_ when the POD is present and therefore advertised via routing when the POD is present.  If the scale of the application changes, the number of nodes advertized will change.  
+Describing the service shows that address was requested and allocated from the virtualsub pool.  In this case the virtualsub pool sets the resulting address to 172.31.1.0/32.  This is the recommended configuration for External Traffic Policy: Local as the address is only added to _kube-lb0_ when the pod is present and therefore advertised via routing when the pod is present.  If the scale of the application changes, the number of nodes advertized will change.  
 
-{{% notice danger %}} Aggregation.  Setting Service Group aggregation to a mask other than /32 (or /128) can result in traffic being send to nodes that do not have PODs, kubeproxy will not forward so the traffic will be lost.  There are use cases but caution should be exercised {{% /notice %}}
+{{% notice danger %}} Aggregation.  Setting Service Group aggregation to a mask other than /32 (or /128) can result in traffic being send to nodes that do not have pods, kubeproxy will not forward so the traffic will be lost.  There are use cases but caution should be exercised {{% /notice %}}
 
 {{% notice warning %}} Local Addresses. Where the address is a local address External Traffic Policy is not supported.  PureLB will reset External Traffic Policy to Cluster.  Where an address is on the local network it can only be allocated to a single node, therefore this setting is not applicable {{% /notice %}}
 
-{{% notice warning %}} Address Sharing.  External Traffic Policy: Local does not support Address Sharing.  Address sharing can result in nodes that do not have POD (endpoints) being advertised.  Kubeproxy will not forward so traffic would be lost.  PureLB does not allow this configuration {{% /notice %}}
+{{% notice warning %}} Address Sharing.  External Traffic Policy: Local does not support Address Sharing.  Address sharing can result in nodes that do not have pod (endpoints) being advertised.  Kubeproxy will not forward so traffic would be lost.  PureLB does not allow this configuration {{% /notice %}}

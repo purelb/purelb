@@ -37,10 +37,10 @@ hide: [ "toc", "footer" ]
 
 {{</mermaid>}}
 
-## Bird POD
-For simplicity, the repo packages the bird router container, daemonset configuration and sample configmap.  This can either be loaded with simple configuration changes or used as a template for more complex network configurations.  A key component of the operation of k8s infrastructure networking is the use of _hostNetwork: true_ in the POD configuration.  This combined with securityContext capabilities enables the POD to access the host network namespace. Using this technique, the Bird router process is isolated but has access to access to the host network.  PureLB relies on the same functionality.
+## Bird Pod
+For simplicity, the repo packages the bird router container, daemonset configuration and sample configmap.  This can either be loaded with simple configuration changes or used as a template for more complex network configurations.  A key component of the operation of k8s infrastructure networking is the use of _hostNetwork: true_ in the pod configuration.  This combined with securityContext capabilities enables the pod to access the host network namespace. Using this technique, the Bird router process is isolated but has access to access to the host network.  PureLB relies on the same functionality.
 
-Bird POD's read their configuration from a configmap projected into the BIRD container in the same namespace.  Ionotify watches the projected file and reloads the bird router process on change.  The container also includes the birdc, the bird command line, useful for troubleshooting.
+Bird pods read their configuration from a configmap projected into the BIRD container in the same namespace.  Ionotify watches the projected file and reloads the bird router process on change.  The container also includes the birdc, the bird command line, useful for troubleshooting.
 
 
 ### The Sample Configuration

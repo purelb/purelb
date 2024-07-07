@@ -6,7 +6,7 @@ hide: [ "toc", "footer" ]
 ---
 
 
-Where the cluster spans multiple subnets routing is often used to provide connectivity between hosts and POD (CNI network).  Certain CNIs add routing by default while others leave routing software choice and implementation to the user. 
+Where the cluster spans multiple subnets routing is often used to provide connectivity between hosts and pod (CNI network).  Certain CNIs add routing by default while others leave routing software choice and implementation to the user. 
 
 The Routing software enables the distribution of LoadBalancer addresses to other network devices.  This is achieved using a routing software function called redistribution.
 

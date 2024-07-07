@@ -9,7 +9,7 @@ If PureLB isn't behaving the way you expect, it's easy to figure out what's goin
 
 PureLB adds addresses to the interface that it identifies as the default interface (by looking for the default route), unless this election was overridden in the custom resource _lbnodeagent_ or the virtual interface _kube-lb0_.
 
-Inspecting Linux interfaces and the Linux Routing table will show the load balancer addresses.  It is not necessary to log into the host to do this inspection.  Just like a CNI, the _lbnodeagent_ PODs are set to hostNetwork:true, so the container is isolated but uses the host network namespace.
+Inspecting Linux interfaces and the Linux Routing table will show the load balancer addresses.  It is not necessary to log into the host to do this inspection.  Just like a CNI, the _lbnodeagent_ pods are set to hostNetwork:true, so the container is isolated but uses the host network namespace.
 
 ```plaintext
 $ kubectl get pods --namespace=purelb --output=wide
@@ -92,7 +92,7 @@ Note that the addresses routes are correctly represented in the routing table.
 
 For the addresses added by PureLB, the k8s service is authoritative so the Linux host should match k8s expected state.  If the linux network state does not match, there are misconfigurations that are possible.
 
-An example is where multiple default routes have been added to the host.  This is not a valid configuration however Linux allows it to occur.  When there are two default routes, Linux picks the first default however this can cause unpredictable behavior.  PureLB does not operate in this manner, if this occurs, PureLB is unable to identify the local interface.   An error will be logged in the _lbnodeagent_ POD log and the address will be added to the virtual interface instead.
+An example is where multiple default routes have been added to the host.  This is not a valid configuration however Linux allows it to occur.  When there are two default routes, Linux picks the first default however this can cause unpredictable behavior.  PureLB does not operate in this manner, if this occurs, PureLB is unable to identify the local interface.   An error will be logged in the _lbnodeagent_ pod log and the address will be added to the virtual interface instead.
 
 ## Logging
 

@@ -5,7 +5,7 @@ weight: 15
 hide: [ "toc", "footer" ]
 ---
 
-PureLB attempts to provide all of the information necessary to monitor and troubleshoot the health of Load Balancer services via kubectl without resorting to inspecting PureLB's POD logging.  PureLB's operational status and events are updated in the Load Balancer Services.  PureLB annotates services where it was the source of the allocated address.  If _allocated-by_ is not present, PureLB did not allocate the address. 
+PureLB attempts to provide all of the information necessary to monitor and troubleshoot the health of Load Balancer services via kubectl without resorting to inspecting PureLB's pod logging.  PureLB's operational status and events are updated in the Load Balancer Services.  PureLB annotates services where it was the source of the allocated address.  If _allocated-by_ is not present, PureLB did not allocate the address. 
 
 The simplest way to check the status of services if using the _kubectl describe_ command.
 
