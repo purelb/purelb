@@ -9,11 +9,11 @@ hide: [ "toc", "footer" ]
 
 PureLB consists of two components:
 
- * **Allocator.**  The Allocator runs on a single node. It watches the service API for LoadBalancer service events and allocates IP addresses.
+ * **Allocator.**  The Allocator runs on a single node. It watches for LoadBalancer change events and allocates IP addresses.
 
- * **LBNodeAgent.**  The LBNodeAgent runs on all nodes that packets for exposed services can transit. It watches service changes and configures networking behavior.
+ * **LBNodeAgent.**  The LBNodeAgent runs on all nodes that packets for exposed services can transit. It watches for LoadBalancer change events and configures networking behavior.
 
-KubeProxy is important, but not part of PureLB.  KubeProxy watches service changes and adds the addresses managed by PureLB to configure communication within the cluster.
+KubeProxy is important, but not part of PureLB.  KubeProxy watches for service changes and adds the addresses managed by PureLB to configure communication within the cluster.
 
 {{% notice %}} _Instead of thinking of PureLB as **advertising services**, think of it as **attracting packets** to allocated addresses, with KubeProxy forwarding those packets within the cluster via
  the Container Network Interface Network (pod Network)._ {{% /notice %}}
@@ -31,9 +31,11 @@ KubeProxy is important, but not part of PureLB.  KubeProxy watches service chang
     B---D;
 {{</mermaid>}}
 
-The PureLB allocator watches the k8s service API for services of type LoadBalancer with IP address set to nil. It allocates an address from a ServiceGroup (Local IPAM) or sends a request for an IP address to the configured IPAM system.  The address returned is used to update the k8s service.
+The PureLB Allocator watches kubeAPI for changes to Services of type LoadBalancer. It allocates an address from the requested ServiceGroup and adds it to the LoadBalancer. The LBNodeAgents see the address allocation and configure Linux networking on each node to allow packets to reach that node.
 
-To use a Service Load Balancer the service type is set to LoadBalancer.
+KubeProxy makes the necessary configuration changes so traffic arriving at a node with the LoadBalancer's address is forwarded to the correct pods. If KubeProxy is operating in default mode, it will configure IPtables to match the allocated address and forward to the Nodeport address. If operating in IPVS mode, the external address is added to the IPVS tables and the IPVS virtual interface.
+
+To use a LoadBalancer the Service type is set to `type: LoadBalancer`.
 
 ```yaml
 apiVersion: v1
@@ -62,18 +64,18 @@ spec:
   type: LoadBalancer
 ```
 
-The Allocator is configured with one "default" ServiceGroup. Multiple ServiceGroups can be defined and accessed using annotations.
+The Allocator is configured with one "default" ServiceGroup. Additional ServiceGroups can be defined and accessed using annotations.
 
 ## ServiceGroups
 
 A PureLB ServiceGroup represents an IPAM mechanism and its configuration parameters. When using the Allocator's built-in IPAM a ServiceGroup consists of the following:
 
- * Name:  The name of the ServiceGroup referenced by annotations in the service definition.  The default ServiceGroup is used when no annotation is present
+ * Name:  The name of the ServiceGroup (referenced by annotations in Service definitions)
  * local:  PureLB will allocate addresses from the information contained in the ServiceGroup
  * v4pools:  A pool of IPv4 addresses
  * v6pools:  A pool of IPv6 addresses
- * Subnet:  In the form of CIDR, the network that addresses are allocated from
- * Aggregation:  Where the address is not local, this allows subnet to be aggregated
+ * subnet:  In the form of CIDR, the network that addresses are allocated from
+ * aggregation:  Where the address is not local, this allows subnet to be aggregated
 
 Each ServiceGroup is a Custom Resource and is namespaced.
 
@@ -95,37 +97,31 @@ spec:
       subnet: fc00:270:154::/64
 ```
 
-Kubernetes supports Dual Stack by default, so IPv4, IPv6, or both are configured in the ServiceGroup.  The allocator provides addresses from the requested address families.
-
-Once the Allocator has allocated address(es) (which will be visible in the service), it updates the service. The LBNodeAgent and KubeProxy see this update and respond.
-
-The LBNodeAgent converts the address into an IPNet (192.168.100.1/24) and configures Linux to use it.
-
-KubeProxy makes the necessary configuration changes so traffic arriving at a node with the allocated address is forwarded to the correct pods. If KubeProxy is operating in default mode, it will configure IPtables to match the allocated address and forward to the Nodeport address. If operating in IPVS mode, the external address is added to the IPVS tables and the IPVS virtual interface.
+Kubernetes supports Dual Stack by default, so IPv4, IPv6, or both are configured in the ServiceGroup.  The Allocator allocates addresses from the requested address families.
 
 ### Local Addresses
-Each Linux host is connected to a network and therefore has a CIDR address.  A Local address is any address that matches the subnet of the host's address.
+Each Linux host is connected to a network and therefore has a CIDR address.  A Local address is any address in the host's subnet.
 
-> _For example: let's say that DHCP allocates 192.168.100.10/24 from an address pool of 192.168.100.2-192.168.100.100. If a ServiceGroup used the same subnet (192.168.100.0/24 with a pool of 192.168.100.200-192.168.100.250), addresses from that ServiceGroup would be considered local._
+> _For example: let's say that a host's CIDR address is 192.168.100.10/24. If a ServiceGroup used a pool of 192.168.100.200-192.168.100.250 from the same subnet (192.168.100.0/24), then addresses from that ServiceGroup would be considered local._
 
 The LBNodeAgent identifies the interface with that subnet, elects a single node on that subnet, and then adds it to the physical interface on that node.
 
 ### Virtual Addresses
-PureLB can use "virtual addresses", which are addresses that are not currently in use by the cluster. When the LBNodeAgent receives a Service with a _virtual address_, it adds that address to a virtual interface called _kube-lb0_.  This virtual interface is used in conjunction with routing software to advertise routes to these addresses.  Any routing protocol or topology can be used based on the routing software's capabilities.
+PureLB can use "virtual addresses", which are addresses that are not currently in use by the cluster. When the LBNodeAgent receives a Service with a virtual address, it adds that address to a virtual interface called `kube-lb0`.  This virtual interface is used in conjunction with routing software to advertise routes to these addresses.  Any routing protocol or topology can be used based on the routing software's capabilities.
 
-LBNodeAgent adds IP Addresses to either the _local physical interface_ or _virtual interface_. It's easy to see which addresses are allocated to interfaces; that information is added to the service and can be viewed on the host using standard Linux iproute2 tools.
+LBNodeAgent adds IP addresses to either a _local physical interface_ or a _virtual interface_. It's easy to see which addresses are allocated to which interfaces; that information is added to the LoadBalancer and can be viewed on the host using standard Linux iproute2 tools.
 
 Virtual addresses and local addresses can be used concurrently. No configuration is needed other than adding the appropriate addresses to ServiceGroups.
 
 ### IPv6 Dual Stack
-PureLB supports IPv6. With the advent of Dual Stack, the use of IPv4 and IPv6 addresses is integrated with Kubernetes. From a PureLB user perspective, the allocation behavior is very similar, however the _LBNodeAgent_ does elect local interfaces independently for IPv4 and IPv6, therefore addresses can appear on different nodes.  A Cluster and CNI supporting Dual Stack IPv6 is required.
+PureLB supports IPv6. From a PureLB user perspective, the allocation behavior is very similar, however the LBNodeAgent does elect local interfaces independently for IPv4 and IPv6, therefore addresses can appear on different nodes.  A Cluster and CNI supporting Dual Stack IPv6 is required.
 
 ### External Traffic Policy
-LoadBalancer Service can be configured with an External Traffic Policy.  Its purpose is to control the distribution of external traffic in the cluster and requires support from the LoadBalancer controller.  The default setting, "Cluster", is used to implement forwarding to pods over the CNI network.  Any node can receive traffic, and the node receiving the traffic distributes traffic to pod(s). Cluster mode depends on KubeProxy to distribute traffic to the correct pod(s) and load balances traffic among all pod(s).  The "Local" setting is used to constrain the LoadBalancer to send traffic only to nodes that are running the target pod(s), resulting in traffic not traversing the CNI.  **As traffic does not transit the CNI, KubeProxy does not NAT, therefore the original source IP address is retained**.  External Traffic Policy can be a useful tool in k8s edge design, especially when additional forms of load balancing are added using Ingress Controllers or a Service Mesh to further control which hosts receive traffic for distribution to pods. Consideration of network design is recommended before using this feature.
+LoadBalancer Services can be configured with an External Traffic Policy.  Its purpose is to control the distribution of external traffic in the cluster and requires support from the LoadBalancer controller.  The default setting, `externalTrafficPolicy: Cluster`, is used to implement forwarding to pods over the CNI network.  Any node can receive traffic, and the node receiving the traffic distributes traffic to pods. Cluster mode depends on KubeProxy to distribute traffic to the correct pods and load balance traffic among all pods.  The `externalTrafficPolicy: Local` setting is used to constrain the LoadBalancer to send traffic only to nodes that are running target pods, resulting in traffic not traversing the CNI.  **As traffic does not transit the CNI, KubeProxy does not NAT, therefore the original source IP address is retained**.  External Traffic Policy can be a useful tool in k8s edge design, especially when additional forms of load balancing are added using Ingress Controllers or a Service Mesh to further control which hosts receive traffic for distribution to pods. Consideration of network design is recommended before using this feature.
 
-External Traffic Policy is ignored for Local Addresses. Virtual addresses support _ExternalTrafficPolicy: Local_ behavior.
+External Traffic Policy is ignored for Local Addresses. Virtual addresses support `externalTrafficPolicy: Local` behavior.
 
-PureLB Service behavior is consistent with k8s when setting _ExternalTrafficPolicy: Cluster_: the address is added irrespective of the state of the pod identified in the selector.  However, when set to _ExternalTrafficPolicy: Local_, PureLB must identify if there are any pods on the node prior to adding addresses to the virtual interface, therefore if no pods are present, no addresses are added to the nodes.
+PureLB Service behavior is consistent with k8s when setting `externalTrafficPolicy: Cluster`: the address is added irrespective of the state of the pod identified in the selector.  However, when set to `externalTrafficPolicy: Local`, PureLB must identify if there are any pods on the node prior to adding addresses to the virtual interface, therefore if no pods are present, addresses are not added to the nodes.
 
 ### Allocating Node Ports
 Allocating node ports is often unnecessary for LoadBalancer Services as the LoadBalancer Service will be used for access, not the NodePort.  PureLB supports setting `allocateLoadBalancerNodePorts: false`.
