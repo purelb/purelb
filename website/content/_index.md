@@ -13,31 +13,31 @@ PureLB is a lightweight Kubernetes [Service LoadBalancer](https://kubernetes.io/
 ### Features
 
 * **Easy to Use.**
-Expose applications by allocating addresses to services using type LoadBalancer.
+Expose applications by allocating addresses to services using [type LoadBalancer](operation/services).
 
 * **Leverages Linux Networking.**
-Works with Linux networking for easy observation and troubleshooting.
+Works with Linux networking for easy [observation](operation/monitoring_kubectl/) and [troubleshooting](operation/troubleshootpure/).
 
 * **Local Address Support.**
-Local addresses are added to host interfaces for simple local access.
+[Local addresses](how_it_works/localint/) are added to host interfaces for simple local access.
 
 * **Routing.**
-Non-local addresses are added to a virtual interface for distribution by routing software or CNI, unlocking full routing functionality.
+Non-local addresses are added to a [virtual interface](how_it_works/virtint/) for distribution by [routing software](how_it_works/routers/) or CNI, unlocking full routing functionality.
 
 * **Easy Integration with CNI Routing.**
-Supports CNIs such as Calico that implement routing.
+Supports CNIs such as [Calico](cni/calico/) that implement routing.
 
-* **Works With Other Service Load Balancer Controllers.**
-Implements LoadBalancerClass which allows multiple LoadBalancer Controllers to be installed in the same cluster.
+* **Plays Nicely With Other Load Balancer Controllers.**
+Implements LoadBalancerClass which allows multiple LoadBalancer controllers to be installed in the same cluster.
 
-* **Configured using Custom Resources.**
-Use of CRDs simplifies configuration and provides input validation.
+* **CRD-Based Configuration.**
+PureLB is configured using [custom resource definitions](install/config) which simplifies configuration and provides input validation.
 
 * **Dual Stack Support for IPv4 and IPv6.**
-Supports Dual Stack IPv6 if your cluster has IPv6.
+Supports [Dual Stack IPv6](install/config#servicegroup) if your cluster has IPv6.
 
 * **Supports GARP for Datacenters using EVPN/VXLAN.**
-GARP can be enabled to support ARP suppression mechanisms used in EVPN/VXLAN.
+[GARP](install/install#garp) can be enabled to support ARP suppression mechanisms used in EVPN/VXLAN.
 
 * **Supports External IPAM.**
-Integrates with Enterprise IP Address Management Systems.
+Integrates with Enterprise [IP Address Management](how_it_works/ipam/) Systems.
