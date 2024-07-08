@@ -9,7 +9,7 @@ pygmentsStyle = "monokai"
 defaultContentLanguageInSubdir= false
 enableMissingTranslationPlaceholders = false
 
- googleAnalytics = "G-K7X5FYG9N9"
+googleAnalytics = "G-K7X5FYG9N9"
 
 # Keep this as is
 [outputs]
@@ -45,6 +45,11 @@ tabWidth = 2
 #
 # top menu shotcuts
 #
+[[menu.shortcuts]]
+name = "Support"
+url = "https://kubernetes.slack.com/archives/C01BCB7U031"
+weight = 5
+
 [[menu.shortcuts]]
 name = "Code"
 url = "https://gitlab.com/purelb/purelb"
