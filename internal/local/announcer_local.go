@@ -87,7 +87,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 		if spec := agent.Spec.Local; spec != nil {
 			a.logger.Log("op", "setConfig", "spec", spec, "name", agent.Namespace+"/"+agent.Name)
 
-			// stash the local service group configs
+			// stash the local ServiceGroup configs
 			a.groups = map[string]*purelbv1.ServiceGroupLocalSpec{}
 			for _, group := range cfg.Groups {
 				if group.Spec.Local != nil {

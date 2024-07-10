@@ -115,7 +115,7 @@ Prometheus:
 serviceGroup:
   name: "default"
   create: false
-  # For example, to configure a "default" service group, comment the above line and uncomment the following lines:
+  # For example, to configure a "default" ServiceGroup, comment the above line and uncomment the following lines:
   # create: true
   # spec:
   #   local:

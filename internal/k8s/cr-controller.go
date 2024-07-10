@@ -231,7 +231,7 @@ func (c *Controller) syncHandler() error {
 
 	cfg.Groups, err = c.sgLister.ServiceGroups("").List(labels.Everything())
 	if err != nil {
-		c.logger.Log("error listing service groups", err)
+		c.logger.Log("error listing ServiceGroups", err)
 		return err
 	}
 	cfg.Agents, err = c.lbnaLister.LBNodeAgents("").List(labels.Everything())

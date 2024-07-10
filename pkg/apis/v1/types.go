@@ -26,7 +26,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ServiceGroup is the top-level custom resource for configuring
-// service groups. It contains the usual CRD metadata, and the service
+// ServiceGroups. It contains the usual CRD metadata, and the service
 // group spec and status.
 // +kubebuilder:resource:shortName=sg;sgs
 type ServiceGroup struct {

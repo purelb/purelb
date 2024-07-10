@@ -57,7 +57,7 @@ func NewNetboxPool(log log.Logger, spec purelbv1.ServiceGroupNetboxSpec) (*Netbo
 		return nil, fmt.Errorf("NETBOX_USER_TOKEN not set, can't connect to Netbox")
 	}
 
-	// Validate the url from the service group
+	// Validate the url from the ServiceGroup
 	url, err := url.Parse(spec.URL)
 	if err != nil {
 		return nil, fmt.Errorf("Netbox URL invalid")

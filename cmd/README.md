@@ -13,7 +13,7 @@ Netbox instance.
 
 The node agent configures the local operating system and works with Acnodal's Enterprise Gateway.
 
-* [lbnodeagent](lbnodeagent)
+* [LBNodeAgent](lbnodeagent)
 
 Commands are typically a small ```main()``` method that uses [internal
 packages](../internal) to do most of the work.

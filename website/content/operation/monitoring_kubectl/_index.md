@@ -40,7 +40,7 @@ Events:
   Normal  AnnouncingNonLocal  10s (x2 over 10s)  purelb-lbnodeagent  Announcing fc00:370:155:0:8000:: from node mk8s3 interface kube-lb0
 ```
 
-The example above shows that PureLB allocated the address from the requested service group _virtualsg_, this information was added by the _allocator_.  The event messages are added by _lbnodeagent_ and show the nodes where the address was added.  As the address was added to multiple nodes, it is a virtual address as local addresses can only be added to a single node.
+The example above shows that PureLB allocated the address from the requested ServiceGroup _virtualsg_, this information was added by the _allocator_.  The event messages are added by _lbnodeagent_ and show the nodes where the address was added.  As the address was added to multiple nodes, it is a virtual address as local addresses can only be added to a single node.
 
 ```plaintext
 k describe service kuard-service 

@@ -20,16 +20,16 @@ Now you can configure PureLB. PureLB's default node agent
 configuration usually "just works" so we loaded it above.  PureLB's
 allocator manages IP addresses so it needs a configuration that
 matches the network on which it's running.  The allocator is
-configured using "Service Group" resources which contain pools of IP
+configured using "ServiceGroup" resources which contain pools of IP
 addresses and their associated network configuration.  The node agent
 configures the Linux OS to advertise them.  The easiest way to get
-started is to create a Service Group that uses the same IPNET as the
+started is to create a ServiceGroup that uses the same IPNET as the
 host interface, PureLB will add the allocated addresses to the same
 network interface.
-1. Copy the default service group config to your custom version<br/>
+1. Copy the default ServiceGroup config to your custom version<br/>
 `cp configs/default-servicegroup.yaml configs/my-servicegroup.yaml`
 1. Edit `configs/my-servicegroup.yaml` so the `subnet` and `pool` are appropriate for your network. The sample assumes a v4 pool but either v4, v6, or both can be configured
-1. Load your service group config<br/>
+1. Load your ServiceGroup config<br/>
 `kubectl apply -f configs/my-servicegroup.yaml`
 
 To test PureLB you can deploy a simple "echo" web application:

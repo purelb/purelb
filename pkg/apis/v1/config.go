@@ -25,7 +25,7 @@ type Config struct {
 	// announcer.
 	DefaultAnnouncer bool
 
-	// Service Groups from which to allocate load balancer IP addresses
+	// ServiceGroups from which to allocate load balancer IP addresses
 	Groups []*ServiceGroup
 	// Node agent configurations
 	Agents []*LBNodeAgent

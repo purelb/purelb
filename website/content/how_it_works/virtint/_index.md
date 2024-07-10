@@ -4,24 +4,27 @@ description: "Describe Operation"
 weight: 20
 hide: [ "toc", "footer" ]
 ---
+Virtual network addresses are more complex to configure than [local addresses](/purelb/how_it_works/localint) but allow for more robust and scalable deployments since more than one node can receive traffic from the upstream routers.
 
-The Virtual Internet is important for clusters where a new Prefix is used for LoadBalancer services.  These addresses are added to the cluster and require routing to be accessed.  Use cases for this configuration are:
+Use cases for virtual addresses include:
 
-1. Cluster is installed behind network routers.  Where the cluster is installed behind network routers, this mechanism can be used to have the addresses added to the virtual interface dynamically advertised using any network routing protocol.
-2. A CNI that uses a routing protocol, such as BGP to create the CNI network.  Larger clusters are often deployed over multiple networks with BGP routing used between nodes and Top-of-Rack switches.  In this case, the Virtual interface mechanism allows LoadBalancer addresses to be combined in advertisements used by the CNI to construct the network.
-3.  Scaling & Redundancy.  Unlike a local address, an allocated virtual address is added to every node and that node can be advertised as a nexthop to the allocated address.  By enabling load balancing in the upstream router(s) the router can distribute the traffic among the nodes advertising the address which increases capacity and redundancy.
+* High-performance clusters. Unlike a local address, a virtual address is added to every node so they all receive traffic for that address. Enabling load balancing in the upstream routers allows them to distribute traffic to every node, increasing capacity and redundancy.
+* A CNI that uses a routing protocol, such as BGP, to create the CNI network. Larger clusters are often deployed over multiple networks, using BGP routing between nodes and Top-of-Rack switches. In this case, virtual addresses allow LoadBalancer addresses to be combined in the advertisements used by the CNI to construct the network.
 
-When PureLB identifies that the address provided by the Service Group is not part of a local interface subnet, it undertakes the following steps:
+To use virtual addresses, create a ServiceGroup whose address pool uses a different subnet than the host interface. Virtual addresses require routing to be accessed, so the cluster must be installed behind network routers, and a [mechanism that advertises routes](/purelb/how_it_works/routers) must be added to the nodes.
 
-1. Query the SG configuration.  Service Groups are identified in the Load Balancer Service definition using the `purelb.io/service-group` annotation; PureLB also annotates the service indicating the IPAM and Service Group allocating the address.
-2. Apply the mask from the subnet or aggregation service group query.  If aggregation is set to default the subnet network mask is used, otherwise the explicitly-specified mask will be applied to the address.  This can be used to further subnet or supernet the address added to the virtual interface.
-3.  Add the address to the virtual interface, _kube-lb0_ by default.  The Linux routing stack automatically computes and applies the correct prefix to the virtual interface.
+Here’s how LBNodeAgent handles virtual addresses:
 
+1. Query the ServiceGroup configuration.  ServiceGroups are chosen by the LoadBalancer Service using the `purelb.io/service-group` annotation; PureLB also annotates the service indicating the IPAM and ServiceGroup allocating the address.
+1. Apply the mask from the subnet or aggregation ServiceGroup query.  If aggregation is set to `default` then the subnet mask is used, otherwise the explicitly-specified mask will be applied to the address.  This can be used to further subnet or supernet the address added to the virtual interface.
+1. Add the address to the virtual interface (`kube-lb0` by default).  The Linux routing stack automatically computes and applies the correct prefix to the virtual interface.
+
+Here’s an example using a "remotedual" ServiceGroup that has both IPV6 and IPV4 pools:
 ```yaml
 apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
-  name: virtual-address-range
+  name: remotedual
   namespace: purelb
 spec:
   local:
@@ -35,8 +38,10 @@ spec:
       subnet: fc00:370:155::/64
 ```
 
+A LoadBalancer has been created that uses that ServiceGroup (since it has the `purelb.io/service-group: remotedual` annotation). PureLB’s Allocator has assigned both IPv6 and IPv4 addresses to this LoadBalancer, which you can see as `LoadBalancer Ingress: 172.32.100.225, fc00:370:155:0:8000::`:
+
 ```plaintext
-$ kubectl describe service kuard-svc-dual-remote 
+$ kubectl describe service kuard-svc-dual-remote
 Name:                     kuard-svc-dual-remote
 Namespace:                test
 Labels:                   <none>
@@ -65,16 +70,17 @@ Events:
   Normal  AnnouncingNonLocal  4s (x3 over 4s)  purelb-lbnodeagent  Announcing fc00:370:155:0:8000:: from node node1 interface kube-lb0
   Normal  AnnouncingNonLocal  4s (x3 over 4s)  purelb-lbnodeagent  Announcing 172.32.100.225 from node node3 interface kube-lb0
   Normal  AnnouncingNonLocal  4s (x3 over 4s)  purelb-lbnodeagent  Announcing fc00:370:155:0:8000:: from node node3 interface kube-lb0
-
-
+```
+You can ssh into each node and verify that 172.32.100.225 and fc00:370:155:0:8000:: have been added to `kube-lb0`:
+```plaintext
 node1:~$ ip addr show dev kube-lb0
 25: kube-lb0: <BROADCAST,NOARP,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN group default qlen 1000
     link/ether 16:5f:c1:ff:9c:b3 brd ff:ff:ff:ff:ff:ff
     inet 172.32.100.225/32 scope global kube-lb0
        valid_lft forever preferred_lft forever
-    inet6 fc00:370:155:0:8000::/128 scope global 
+    inet6 fc00:370:155:0:8000::/128 scope global
        valid_lft forever preferred_lft forever
-    inet6 fe80::145f:c1ff:feff:9cb3/64 scope link 
+    inet6 fe80::145f:c1ff:feff:9cb3/64 scope link
        valid_lft forever preferred_lft forever
 
 node2:~$ ip addr show dev kube-lb0
@@ -82,28 +88,30 @@ node2:~$ ip addr show dev kube-lb0
     link/ether 7a:a3:f5:06:fd:85 brd ff:ff:ff:ff:ff:ff
     inet 172.32.100.225/32 scope global kube-lb0
        valid_lft forever preferred_lft forever
-    inet6 fc00:370:155:0:8000::/128 scope global 
+    inet6 fc00:370:155:0:8000::/128 scope global
        valid_lft forever preferred_lft forever
-    inet6 fe80::78a3:f5ff:fe06:fd85/64 scope link 
+    inet6 fe80::78a3:f5ff:fe06:fd85/64 scope link
        valid_lft forever preferred_lft forever
-
 
 node3:~$ ip addr show dev kube-lb0
 39: kube-lb0: <BROADCAST,NOARP,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN group default qlen 1000
     link/ether 66:57:a0:1a:cf:d5 brd ff:ff:ff:ff:ff:ff
     inet 172.32.100.225/32 scope global kube-lb0
        valid_lft forever preferred_lft forever
-    inet6 fc00:370:155:0:8000::/128 scope global 
+    inet6 fc00:370:155:0:8000::/128 scope global
        valid_lft forever preferred_lft forever
-    inet6 fe80::6457:a0ff:fe1a:cfd5/64 scope link 
+    inet6 fe80::6457:a0ff:fe1a:cfd5/64 scope link
        valid_lft forever preferred_lft forever
 ```
 
-The configured aggregator is useful for providing additional address management functionality.  For example, multiple service groups with subnets that can be aggregated into a single single address advertisement can be defined.  By setting the aggregator, a single subnet can be added to multiple service groups resulting in a single route being advertised.  Conversely, a Service Group can be further subnetted into multiple networks that will be added to the virtual interface, including /32 or /128.   This functionality, when combined with Routing Software on the cluster enables complete routing address management and forwarding flexibility.
-
+Aggregation is useful for providing additional address management functionality.  Using aggregation the same subnet can be added to multiple ServiceGroups, resulting in a single route being advertised. Conversely, a ServiceGroup can be further subnetted into multiple networks that will be added to the virtual interface, including /32 or /128. This functionality, when combined with routing software on the cluster, enables complete routing address management and forwarding flexibility.
 
 ### External Traffic Policy
-A Service Group with an address that is applied to the Virtual Interface supports External Traffic Policy.  When configured with _External Traffic Policy: Cluster_, PureLB will only add the LoadBalancer address to the virtual interface (kube-lb0) when a pod is located on the node and remove the address if the pod is not longer on the node.  Unlike a Service Group with a local address, access to these addresses is via the routing.  Put simply, the next hop is the node's local address resulting in a stable local network and the routed destination is changing, an expected behavior.  However, the forwarding behavior of the upstream routers depends upon how the address has been advertised, and therefore changing External Traffic Policy to Local can have no or adverse effects.  For example where a Service Group is using a address range where multiple addresses from the same range are added to the virtual interface a single routing advertisement will be made for the subnet containing both those addresses.  Should one of those services be configured for External Traffic Policy: Local and no pod present traffic reaching that pod will be discarded.  Configuring the aggregator to reduce the size of the the advertised subnet to /32(/128) will result in single routes being advertised and withdrawn for that Service.  While this may seem like a simple solution, there are also other implications, for example many popular routers will not accept /32 routes over BGP.  When correctly used, externalTrafficPolicy, Aggregators, and nodeSelector can provide complete control over how external traffic is distributed.
+Virtual address ServiceGroups support External Traffic Policy.  When a LoadBalancer is configured with `externalTrafficPolicy: Cluster`, PureLB will always add its address to each node's virtual interface. When configured with `externalTrafficPolicy: Local`, however, PureLB will add its address to a node's virtual interface only when one or more of the LoadBalancer's pods are running on that node.
+
+Unlike local addresses, access to virtual addresses is via routing: the next hop is the node's address (resulting in a stable local network) but the routed destination can change, an expected behavior.  However, the forwarding behavior of the upstream routers depends upon how the address has been advertised, and therefore changing External Traffic Policy to `Local` can have no or adverse effects.  For example, where a ServiceGroup is using an address range where multiple LoadBalancer addresses from the same range are added to the virtual interface, a single routing advertisement will be made for the subnet containing all of those addresses. Should one of those LoadBalancers be configured for `externalTrafficPolicy: Local` and have no pod running on a host, traffic reaching that host will be lost.
+
+Configuring the aggregator to reduce the size of the the advertised subnet to /32(/128) will result in single routes being advertised and withdrawn for that Service.  While this may seem like a simple solution, there are other implications: many popular routers, for example, will not accept /32 routes over BGP. When correctly used, externalTrafficPolicy, Aggregators, and nodeSelector can provide complete control over how external traffic is distributed.
 
 #### Direct Server Return, Source Address Preservation
-_External Traffic Policy: Local_ has another useful side effect: Direct Server Return.  Traffic does not transit the CNI, kubeproxy does not need to NAT, therefore the source client address is preserved and visible to the pod(s).  
+`externalTrafficPolicy: Local` has a useful side effect: [Direct Server Return](https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip). Traffic does not transit the CNI, so kubeproxy does not need to NAT, so the source client address is preserved and visible to the pods.

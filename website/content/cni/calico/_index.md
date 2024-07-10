@@ -34,13 +34,13 @@ Configuring the Calico CNI to peer with TOR BGP routers will result in the Clust
 The Calico CNI pod uses the host networking namespace just like the PureLB node agent.  Both Calico and PureLB modify the host networking stack in a similar manner, adding interfaces and addresses to the host.  When using Calico with BGP, the BIRD router imports those interfaces, addresses and routes.  This removes the need for an additional BGP process to be used for Virtual addresses, BIRD in the Calico Node pod will import the addresses created by PureLB for external LoadBalance Services.
 
 #### Required Calico Configuration
-As with any BGP routing configuration, care is taken not to advertise routes that are not required.  The Calico BIRD configuration imports the routes to addresses allocated by PureLB to _kube-lb0_ but does not advertise the routes to those addresses.  To enable the advertisement of the address range allocated in the PureLB Service groups, a Calico _IPPool_ is created.  
+As with any BGP routing configuration, care is taken not to advertise routes that are not required.  The Calico BIRD configuration imports the routes to addresses allocated by PureLB to _kube-lb0_ but does not advertise the routes to those addresses.  To enable the advertisement of the address range allocated in the PureLB ServiceGroups, a Calico _IPPool_ is created.  
 
 
 The Calico IPPool is set to disabled so Calico does not use the pool for any of its address allocation purposes.   However the configuration does add export rules to the BIRD BGP configuration for this CIDR and when addresses are allocated by PureLB to _kube-lb0_, routes will be advertised to the peered routers. 
 
 
-PurelLB IPv4 Service Group
+PurelLB IPv4 ServiceGroup
 ```yaml
 apiVersion: purelb.io/v1
 kind: ServiceGroup
@@ -63,7 +63,7 @@ spec:
   cidr: 172.30.200.0/24
   disabled: true
 ```
-PureLB IPv6 Service Group
+PureLB IPv6 ServiceGroup
 ```yaml
 apiVersion: purelb.io/v1
 kind: ServiceGroup

@@ -5,9 +5,9 @@ weight: 10
 hide: [ "toc", "footer" ]
 ---
 
-PureLB uses the k8s services API and if a default service group has been defined then following the instructions provided in the k8s documentation will result in a load balancer service with an IPv4 address being created.
+PureLB uses the k8s services API and if a default ServiceGroup has been defined then following the instructions provided in the k8s documentation will result in a load balancer service with an IPv4 address being created.
 
-This command will create a service type LoadBalancer resource for the deployment echoserver using using the default service group:
+This command will create a service type LoadBalancer resource for the deployment echoserver using using the default ServiceGroup:
 
 ```plaintext
 $ kubectl expose deployment echoserver --name=echoserver-service --port=80 --target-port=8080 --type=LoadBalancer
@@ -43,9 +43,9 @@ PureLB uses annotations to configure functionality not native in the k8s API.
 
 Annotation | example | Description
 -----------|---------|--------------
-purelb.io/service-group | purelb.io/service-group: virtualsg |  Sets the Service Group that will be used to allocate the address
+purelb.io/service-group | purelb.io/service-group: virtualsg |  Sets the ServiceGroup that will be used to allocate the address
 purelb.io/allow-shared-ip | purelb.io/allow-shared-ip: sharingkey |  Allows the allocated address to be shared between multiple services as long as they expose different ports
-purelb.io/addresses | purelb.io/addresses: 172.30.250.80,ffff::27 | Assigns the provided addresses instead of allocating addresses from the Service Group address pool
+purelb.io/addresses | purelb.io/addresses: 172.30.250.80,ffff::27 | Assigns the provided addresses instead of allocating addresses from the ServiceGroup address pool
 
 
 ### k8s configuration options
@@ -62,7 +62,7 @@ ipFamilies | ipFamilies: IPv6 | Selects IPv4 and/or IPv6
 
 
 ### Creating a Service
-The combination of the service group configuration, annotations and service configuration determine how the LoadBalancer is created.
+The combination of the ServiceGroup configuration, annotations and service configuration determine how the LoadBalancer is created.
 
 ```yaml
 apiVersion: v1
@@ -88,7 +88,7 @@ spec:
   sessionAffinity: None
   type: LoadBalancer
 ```
-The sample above creates a service using a Service Group called localaddr.  PureLB will allocate from that service group and in these case the service group is configured with the local subnet therefore the following services will be created.
+The sample above creates a service using a ServiceGroup called localaddr.  PureLB will allocate from that ServiceGroup and in these case the ServiceGroup is configured with the local subnet therefore the following services will be created.
 
 ``` plaintext
 $ kubectl describe service echoserver
@@ -116,7 +116,7 @@ Events:Type    Reason           Age                From                Message
   Normal  IPAllocated      92m (x2 over 92m)  purelb-allocator    Assigned IP 172.30.250.53 from pool localaddr
   Normal  AnnouncingLocal  92m (x2 over 92m)  purelb-lbnodeagent  Node node3 announcing 172.30.250.53 on interface enp1s0
 ```
-Describing the service displays the address provided by PureLB, in addition PureLB annotates the service to provide status information.  The annotations show that PureLB allocated the address from the localaddr Service Group.  Further, the annotations show that the address was added to a local interface, enp1s0 on k8s node purelb2-1.
+Describing the service displays the address provided by PureLB, in addition PureLB annotates the service to provide status information.  The annotations show that PureLB allocated the address from the localaddr ServiceGroup.  Further, the annotations show that the address was added to a local interface, enp1s0 on k8s node purelb2-1.
 
 
 ```yaml
@@ -174,7 +174,7 @@ Events:
   Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.225 from node node5 interface kube-lb0
   Normal  AnnouncingNonLocal  25m                purelb-lbnodeagent  Announcing 172.31.1.225 from node node4 interface kube-lb0
 ```
-Describing the service shows that the requested address has been allocated by PureLB from the pool virtualsub.  PureLB scanned the configured service groups to confirm the address is in a service group and not in use prior to allocation.  
+Describing the service shows that the requested address has been allocated by PureLB from the pool virtualsub.  PureLB scanned the configured ServiceGroups to confirm the address is in a ServiceGroup and not in use prior to allocation.  
 
 ```yaml
 apiVersion: v1
@@ -246,7 +246,7 @@ Events:
 ```
 Describing the service shows that address was requested and allocated from the virtualsub pool.  In this case the virtualsub pool sets the resulting address to 172.31.1.0/32.  This is the recommended configuration for External Traffic Policy: Local as the address is only added to _kube-lb0_ when the pod is present and therefore advertised via routing when the pod is present.  If the scale of the application changes, the number of nodes advertised will change.  
 
-{{% notice danger %}} Aggregation.  Setting Service Group aggregation to a mask other than /32 (or /128) can result in traffic being send to nodes that do not have pods, kubeproxy will not forward so the traffic will be lost.  There are use cases but caution should be exercised {{% /notice %}}
+{{% notice danger %}} Aggregation.  Setting ServiceGroup aggregation to a mask other than /32 (or /128) can result in traffic being send to nodes that do not have pods, kubeproxy will not forward so the traffic will be lost.  There are use cases but caution should be exercised {{% /notice %}}
 
 {{% notice warning %}} Local Addresses. Where the address is a local address External Traffic Policy is not supported.  PureLB will reset External Traffic Policy to Cluster.  Where an address is on the local network it can only be allocated to a single node, therefore this setting is not applicable {{% /notice %}}
 

@@ -8,7 +8,7 @@ Beginning with k8s v1.22 multiple LoadBalancer Controllers can be used in a sing
 
 PureLB supports loadBalancerClass and will ignore services that have a spec.loadBalancer class that is not _purelb.io/purelb_
 
-The default installation of PureLB assumes it is the only Service LoadBalancer therefore services with no spec.loadBalancerClass will be allocated addresses by PureLB from the default Service Group.
+The default installation of PureLB assumes it is the only Service LoadBalancer therefore services with no spec.loadBalancerClass will be allocated addresses by PureLB from the default ServiceGroup.
 
 ### Configuring PureLB as Default LoadBalancer
 
