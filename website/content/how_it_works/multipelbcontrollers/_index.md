@@ -1,18 +1,14 @@
 ---
-title: "Multiple LoadBalance Controllers"
+title: "Multiple LoadBalancer Controllers"
 description: "Describe Operation"
 weight: 45
 hide: [ "toc", "footer" ]
 ---
-Beginning with k8s v1.22 multiple LoadBalancer Controllers can be used in a single cluster.  This allows either default LoadBalancer or other LoadBalancers to be selected by adding spec.loadBalancerClass to the the service definition.
-
-PureLB supports loadBalancerClass and will ignore services that have a spec.loadBalancer class that is not _purelb.io/purelb_
-
-The default installation of PureLB assumes it is the only Service LoadBalancer therefore services with no spec.loadBalancerClass will be allocated addresses by PureLB from the default ServiceGroup.
+Starting with Kubernetes v1.22, multiple LoadBalancer controllers can be used in a single cluster. This allows each Service's LoadBalancer controller to be selected by adding [`spec.loadBalancerClass`](https://kubernetes.io/docs/concepts/services-networking/service/#load-balancer-class) to the Service definition.
 
 ### Configuring PureLB as Default LoadBalancer
 
-The PureLB allocator listens for a Service Request, the configuration is part of the allocator deployment
+By default, PureLB assumes it is the only Service LoadBalancer, and will therefore allocate addresses to LoadBalancers with no `spec.loadBalancerClass`.
 
 ```yaml
 piVersion: apps/v1
@@ -26,12 +22,10 @@ spec:
           value: PureLB
         ...
 ```
-To disable PureLB as the default loadBalancer delete the DEFAULT_ANNOUNCER environment variable in the allocator deployment yaml
+To disable this, delete the DEFAULT_ANNOUNCER environment variable in the Allocator deployment yaml.
 
 ### Selecting a LoadBalancer
-Once disabled as default, its necessary to specify PureLB as the desired LoadBalancer resulting in the default loadBalancer ignoring the request.
-
-To select PureLB for an individual Service add loadBalancerClass to the service spec.
+Once disabled as default, you need to specify PureLB as the desired LoadBalancer or else it will ignor the request. To select PureLB for an individual Service add loadBalancerClass to the service spec.
 
 ```yaml
 apiVersion: v1
@@ -42,9 +36,9 @@ spec:
   ...
 ```
 
-### Whats the Use Case
-The primary purpose for this feature is use in conjunction with Cloud Controllers.  Cloud providers do not use independent Service LoadBalancers like PureLB.  There is another type of controller called a Cloud Controller, this controller provides multiple functions and is how Cloud providers integrate k8s with their environment.  In addition to providing External Load Balancers it also integrates cloud storage, identity and other capabilities.  The Cloud controller is always the default for LoadBalancer Services.  
+### What's the Use Case?
+The primary purpose for this feature is to use PureLB in conjunction with Cloud Controllers. Cloud providers do not use independent Service LoadBalancers like PureLB. There is another type of controller called a Cloud Controller which provides multiple functions and is how cloud providers integrate Kubernetes with their environments. In addition to providing External Load Balancers, Cloud Controllers also integrate cloud storage, identity, and other capabilities.
 
-A use case could be a k8s cluster deployed in a cloud where there is also a private link to another network.  Routing to these private links uses BGP, therefore PureLB could be deployed with routing to advertise services into the network connected via the Private link.
+A use case could be a Kubernetes cluster deployed in a cloud where there is also a private link to another network.  Routing to these private links could use BGP, therefore PureLB could be deployed with routing to advertise services into the network connected via the private link.
 
-However, this feature is more about innovation, the ability to select between LoadBalancers will enable any organizations, Cloud Providers or independent to add a choice of LoadBalancers for Cloud k8s clusters enabling new functionality not present in the current generic Cloud LoadBalancers. 
+This feature is more about innovation, though: the ability to select LoadBalancers will enable any organization (cloud provider or independent) to add a choice of LoadBalancers for in-cloud Kubernetes clusters, enabling new functionality not present in current cloud LoadBalancers.

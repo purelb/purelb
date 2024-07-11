@@ -212,7 +212,7 @@ spec:
       aggregation: '/32'
 ```
 
-This sets _externalTrafficPolicy: Local_ changing the behavior of both PureLB and kube-proxy.  PureLB will only advertise the allocated address on nodes where the pod with the app label echoserver present.  KubeProxy will not configure forwarding to send traffic over the CNI to pods.  
+This sets _externalTrafficPolicy: Local_ changing the behavior of both PureLB and kube-proxy.  PureLB will only advertise the allocated address on nodes where the pod with the app label echoserver present.  `kube-proxy` will not configure forwarding to send traffic over the CNI to pods.  
 
 
 ```plaintext

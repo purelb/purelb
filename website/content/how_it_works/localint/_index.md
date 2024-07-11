@@ -99,6 +99,6 @@ At startup, the LBNodeAgent running on each node retrieves a list of 5 random no
 ### External Traffic Policy
 Local address ServiceGroups always use `externalTrafficPolicy: Cluster`.  If a service using a pool with local addresses is configured for `externalTrafficPolicy: Local`, PureLB will reset it to `Cluster`.
 
-Many applications consist of multiple pods, those pods can run on multiple nodes, and K8s sometimes moves pods between nodes. Local addresses can only be applied to a single node so all incoming traffic would reach only that node's pods. KubeProxy solves this problem with `externalTrafficPolicy: Cluster`. It distributes traffic over the CNI so the other nodes' pods can contribute.
+Many applications consist of multiple pods, those pods can run on multiple nodes, and K8s sometimes moves pods between nodes. Local addresses can only be applied to a single node so all incoming traffic would reach only that node's pods. `kube-proxy` solves this problem with `externalTrafficPolicy: Cluster`. It distributes traffic over the CNI so the other nodes' pods can contribute.
 
 Enabling `externalTrafficPolicy: Local` would result in the the local network address moving from node to node, which would result in an unstable, poor-performing network.  By using only `externalTrafficPolicy: Cluster`, pods on all nodes can handle requests and the network retains a stable local IP address.
