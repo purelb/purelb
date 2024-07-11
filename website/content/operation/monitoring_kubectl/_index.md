@@ -5,12 +5,12 @@ weight: 15
 hide: [ "toc", "footer" ]
 ---
 
-PureLB attempts to provide all of the information necessary to monitor and troubleshoot the health of Load Balancer services via kubectl without resorting to inspecting PureLB's pod logging.  PureLB's operational status and events are updated in the Load Balancer Services.  PureLB annotates services where it was the source of the allocated address.  If _allocated-by_ is not present, PureLB did not allocate the address. 
+PureLB tries to provide the information needed to monitor and troubleshoot the health of LoadBalancer services via kubectl without resorting to inspecting PureLB's pod logging. PureLB's operational status and events are updated in the LoadBalancer Services. PureLB annotates services where it was the source of the allocated address. If `allocated-by` is not present, then PureLB did not allocate the address.
 
-The simplest way to check the status of services if using the _kubectl describe_ command.
+`kubectl describe` is the simplest way to check Service status:
 
 ```plaintext
-$ kubectl describe service kuard-svc-dual-remote 
+$ kubectl describe service kuard-svc-dual-remote
 Name:                     kuard-svc-dual-remote
 Namespace:                adamd
 Labels:                   <none>
@@ -40,10 +40,10 @@ Events:
   Normal  AnnouncingNonLocal  10s (x2 over 10s)  purelb-lbnodeagent  Announcing fc00:370:155:0:8000:: from node mk8s3 interface kube-lb0
 ```
 
-The example above shows that PureLB allocated the address from the requested ServiceGroup _virtualsg_, this information was added by the _allocator_.  The event messages are added by _lbnodeagent_ and show the nodes where the address was added.  As the address was added to multiple nodes, it is a virtual address as local addresses can only be added to a single node.
+The example above shows that PureLB allocated the address from the `virtualsg` ServiceGroup, this information was added by the _Allocator_. The event messages are added by LBNodeAgent and show the nodes where the address was added. As the address was added to multiple nodes, it is a virtual address as local addresses can only be added to a single node.
 
 ```plaintext
-k describe service kuard-service 
+k describe service kuard-service
 Name:                     kuard-service
 Namespace:                adamd
 Labels:                   app=kuard
@@ -70,10 +70,9 @@ Events:
   Normal  AnnouncingLocal  27m (x4 over 27m)  purelb-lbnodeagent  Node mk8s2 announcing 192.168.10.240 on interface enp1s0
 ```
 
-This example shows that the default pool is part of the local address.  PureLB annotates these services with the node and interface where the address was announced as well us updating the event.  
+This example shows that the default pool is part of the local address. PureLB annotates these services with the node and interface where the address was announced as well as adding events.
 
-This useful command command will show all nodes that are advertising addresses locally.  The annotations make it easier find information in larger k8s clusters.
-
+This useful command shows all nodes that are advertising addresses locally.  PureLB's annotations make it easy to find information in larger k8s clusters.
 
 ```plaintext
 $ kubectl get services -A -o json | jq '.items[].metadata.annotations' | grep announcing
@@ -81,6 +80,3 @@ $ kubectl get services -A -o json | jq '.items[].metadata.annotations' | grep an
   "purelb.io/announcing-IPv6": "mk8s2,enp1s0",
   "purelb.io/announcing-IPv4": "mk8s2,enp1s0"
 ```
-
-
-

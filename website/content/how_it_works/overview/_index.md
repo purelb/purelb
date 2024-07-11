@@ -75,7 +75,7 @@ External IPAM is common in large-scale systems: the combination of static addres
 
 PureLB supports [Netbox](https://github.com/netbox-community/netbox), a popular open source IPAM system. Instead of manually using Netbox to statically allocate a pool of addresses to PureLB, PureLB's Allocator can request addresses directly from Netbox one at a time.
 
-PureLB's IPAM configuration is defined in ServiceGroups. When PureLB fetches an address from Netbox it applies that addess to interfaces in the same way as an address from its internal allocator.
+PureLB's [IPAM configuration](../install/extipam) is defined in ServiceGroups. When PureLB fetches an address from Netbox it applies that addess to interfaces in the same way as an address from its internal allocator.
 
 It is straightforward to add other external IPAM systems to PureLB, and we encourage you to add support for your IPAM system. If the demand is there, we will add more IPAM integrations.
 
@@ -112,14 +112,14 @@ spec:
 Kubernetes supports Dual Stack by default, so IPv4, IPv6, or both are configured in the ServiceGroup.  The Allocator allocates addresses from the requested address families.
 
 ### Local Addresses
-Each Linux host is connected to a network and therefore has a CIDR address.  A Local address is any address in the host's subnet.
+Each Linux host is connected to a network and therefore has a CIDR address.  Addresses in the host's CIDR subnet are considered ["local addresses"](../localint).
 
 > _For example: let's say that a host's CIDR address is 192.168.100.10/24. If a ServiceGroup used a pool of 192.168.100.200-192.168.100.250 from the same subnet (192.168.100.0/24), then addresses from that ServiceGroup would be considered local._
 
-The LBNodeAgent identifies the interface with that subnet, elects a single node on that subnet, and then adds the LoadBalancer address to the physical interface on that node.
+The LBNodeAgent identifies the interface with that subnet, [elects](../localint#memberlist) a single node on that subnet, and then adds the LoadBalancer address to the physical interface on that node.
 
 ### Virtual Addresses
-PureLB can use "virtual addresses", which are addresses that are not currently in use by the cluster. When the LBNodeAgent processes a Service with a virtual address, it adds that address to a virtual interface called `kube-lb0`. This interface is used in conjunction with routing software to advertise routes to the address. Any routing protocol or topology can be used based on the routing software's capabilities.
+PureLB can use ["virtual addresses"](../virtint), which are addresses that are not currently in use by the cluster. When the LBNodeAgent processes a Service with a virtual address, it adds that address to a virtual interface called `kube-lb0`. This interface is used with [routing software](../routers) to advertise routes to the address. Any routing protocol or topology can be used depending on the routing software's capabilities.
 
 LBNodeAgent adds IP addresses to either a _local physical interface_ or a _virtual interface_. It's easy to see which addresses are allocated to which interfaces; that information is added to the LoadBalancer and can be viewed on the host using standard Linux iproute2 tools.
 

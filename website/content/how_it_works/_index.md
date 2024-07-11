@@ -1,6 +1,6 @@
 ---
 title: "How it works"
 description: "Describe Operation"
-weight: 10
+weight: 5
 hide: [ "toc", "footer" ]
 ---
