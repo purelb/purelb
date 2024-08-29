@@ -36,7 +36,7 @@ Instead of re-implementing routing protocols in PureLB, we use proven Linux rout
 {{</mermaid>}}
 
 ## BIRD Pod
-We've built a [BIRD package](https://gitlab.com/purelb/bird_router) that includes the BIRD router container, a [DaemonSet to run BIRD](https://gitlab.com/purelb/bird_router/-/blob/main/bird.yml?ref_type=heads), and a [sample configmap](https://gitlab.com/purelb/bird_router/-/blob/main/bird-cm.yml?ref_type=heads). This can be used with configuration changes, or used as a template for more complex network configurations.
+We've built a [BIRD package](https://gitlab.com/purelb/bird_router) that includes the BIRD router container, a [sample DaemonSet to run BIRD](https://gitlab.com/purelb/bird_router/-/blob/main/bird.yml-SAMPLE), and a [sample configmap](https://gitlab.com/purelb/bird_router/-/blob/main/bird-cm.yml?ref_type=heads). This can be used with configuration changes, or used as a template for more complex network configurations.
 
 A key feature of Kubernetes networking is `hostNetwork: true` in the pod configuration.  Combined with securityContext capabilities, this lets the pod access the host network namespace, so the BIRD router pod is isolated but has access to the host network.  PureLB relies on the same functionality.
 
