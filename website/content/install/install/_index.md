@@ -55,6 +55,22 @@ $ helm install --create-namespace --namespace=purelb purelb purelb/purelb
 ```
 Several options can be overridden during installation. See [the chart's values.yaml file](https://gitlab.com/purelb/purelb/-/blob/main/build/helm/purelb/values.yaml?ref_type=heads) for the complete set.
 
+For example, if you would like to add a toleration to the allocator deployment (so the allocator can run on tainted nodes) you can create a file called `tolerations.yaml` with the following contents:
+
+```yaml
+---
+allocator:
+  tolerations:
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/master
+```
+
+You can then tell helm to use this file to override PureLB's defaults:
+
+```sh
+$ helm install --values=toleration-test.yaml --create-namespace --namespace=purelb purelb purelb/purelb
+```
+
 ### GARP
 PureLB supports gratuitous ARP (GARP) which is required for EVPN/VXLAN environments. GARP is disabled by default but can be enabled during installation by setting the `lbnodeagent.sendgarp` flag in the LBNodeAgent configuration. If you're using Helm, then add `--set=lbnodeagent.sendgarp=true` to the command line:
 
