@@ -16,7 +16,7 @@ RUN go build -tags 'osusergo netgo' -o /tmp/lbnodeagent \
 -ldflags "-X purelb.io/internal/logging.release=${release} -X purelb.io/internal/logging.commit=${commit} -X purelb.io/internal/logging.branch=${branch}" \
 ./cmd/lbnodeagent/
 
-FROM registry.access.redhat.com/ubi8-minimal:8.7-1085 as runtime
+FROM registry.access.redhat.com/ubi8-minimal:8.10-1130 as runtime
 ARG branch
 ARG commit
 
