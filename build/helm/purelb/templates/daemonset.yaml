@@ -73,6 +73,9 @@ spec:
       hostNetwork: true
       nodeSelector:
         kubernetes.io/os: linux
+        {{- with .Values.lbnodeagent.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       serviceAccountName: lbnodeagent
       terminationGracePeriodSeconds: 2
       {{- if .Values.priorityClassName }}

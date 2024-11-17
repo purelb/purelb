@@ -199,6 +199,12 @@ lbnodeagent:
   # tolerations:
   # - effect: NoSchedule
   #   key: node-role.kubernetes.io/master
+  # nodeSelector: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
+  nodeSelector:
+  # For example, run lbnodeagent only on nodes with a specific label:
+  # nodeSelector:
+  #   some.example/label: "value"
+
 
 # Configurable values specific to allocator.
 allocator:
