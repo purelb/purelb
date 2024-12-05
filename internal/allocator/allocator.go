@@ -68,9 +68,8 @@ func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
 	a.pools = pools
 
 	// Refresh or initiate stats
-	for n, p := range a.pools {
-		poolCapacity.WithLabelValues(n).Set(float64(p.Size()))
-		poolActive.WithLabelValues(n).Set(float64(p.InUse()))
+	for n := range a.pools {
+		a.updateStats(n)
 	}
 
 	return nil
@@ -78,7 +77,7 @@ func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
 
 // updateStats unconditionally updates internal state to reflect svc's
 // allocation of alloc. Caller must ensure that this call is safe.
-func (a *Allocator) updateStats(service *v1.Service, poolName string) error {
+func (a *Allocator) updateStats(poolName string) error {
 	pool := a.pools[poolName]
 	poolCapacity.WithLabelValues(poolName).Set(float64(pool.Size()))
 	poolActive.WithLabelValues(poolName).Set(float64(pool.InUse()))
@@ -102,7 +101,7 @@ func (a *Allocator) NotifyExisting(svc *v1.Service) error {
 		if err := pool.Notify(svc); err != nil {
 			return err
 		}
-		return a.updateStats(svc, poolName)
+		return a.updateStats(poolName)
 	}
 }
 
@@ -138,7 +137,7 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, error) {
 		}
 	}
 
-	if err = a.updateStats(svc, poolName); err != nil {
+	if err = a.updateStats(poolName); err != nil {
 		return "", err
 	}
 
@@ -216,8 +215,7 @@ func (a *Allocator) Unassign(svc string) error {
 	// addresses from one pool to another
 	for pname, p := range a.pools {
 		if err = p.Release(svc); err == nil {
-			// This pool released the address
-			poolActive.WithLabelValues(pname).Set(float64(p.InUse()))
+			a.updateStats(pname)  // This pool released the address
 		}
 	}
 
