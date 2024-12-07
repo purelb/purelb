@@ -540,6 +540,7 @@ func TestAllocateAnyIP(t *testing.T) {
 	var svc v1.Service
 
 	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
 	alloc.pools = map[string]Pool{
 		// Start suite with no "default" pool
 		"test1V6": mustLocalPool(t, "1000::4/127"),
@@ -553,10 +554,9 @@ func TestAllocateAnyIP(t *testing.T) {
 	assert.Equal(t, "test1V6", pool, "IP allocated from wrong pool")
 	assert.Equal(t, "1000::4", svc.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 
-	// Allocate specific IP fails if IP and pool disagree
+	// Allocate specific IP fails if IP is already assigned
 	svc = service("t2", ports("tcp/80"), "")
 	svc.Annotations[purelbv1.DesiredAddressAnnotation] = "1000::4"
-	svc.Annotations[purelbv1.DesiredGroupAnnotation] = "not test1V6"
 	_, err = alloc.AllocateAnyIP(&svc)
 	assert.Error(t, err, "specific IP allocation should have failed")
 

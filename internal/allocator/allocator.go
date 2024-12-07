@@ -165,10 +165,11 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (string, error) {
 		return "", fmt.Errorf("%q does not belong to any group", ip)
 	}
 
-	// Check that the address belongs to the requested pool
-	desiredGroup, exists := svc.Annotations[purelbv1.DesiredGroupAnnotation]
-	if exists && desiredGroup != pool {
-		return "", fmt.Errorf("%q belongs to group %s but desired group is %s", ip, pool, desiredGroup)
+	// Warn if the user provided the group annotation - the IP
+	// annotation overrides it.
+	if _, exists := svc.Annotations[purelbv1.DesiredGroupAnnotation]; exists {
+		a.client.Infof(svc, "ConfigurationWarning", "Both the addresses annotation and the service-group annotation were provided. service-group will be ignored.")
+		a.logger.Log("WARNING: addresses annotation overrides service-group annotation, service-group will be ignored.")
 	}
 
 	// If the service had an IP before, release it
