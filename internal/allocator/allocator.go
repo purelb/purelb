@@ -77,12 +77,10 @@ func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
 
 // updateStats unconditionally updates internal state to reflect svc's
 // allocation of alloc. Caller must ensure that this call is safe.
-func (a *Allocator) updateStats(poolName string) error {
+func (a *Allocator) updateStats(poolName string) {
 	pool := a.pools[poolName]
 	poolCapacity.WithLabelValues(poolName).Set(float64(pool.Size()))
 	poolActive.WithLabelValues(poolName).Set(float64(pool.InUse()))
-
-	return nil
 }
 
 // NotifyExisting notifies the allocator of an existing IP assignment,
@@ -95,53 +93,46 @@ func (a *Allocator) NotifyExisting(svc *v1.Service) error {
 	}
 
 	// Tell the pool about the assignment
-	if pool, havePool := a.pools[poolName]; !havePool {
-		return nil
-	} else {
+	if pool, havePool := a.pools[poolName]; havePool {
 		if err := pool.Notify(svc); err != nil {
 			return err
 		}
-		return a.updateStats(poolName)
+		a.updateStats(poolName)
 	}
+	return nil
 }
 
-// AllocateAnyIP allocates an IP address for svc based on svc's
+// Allocate allocates an IP address for svc based on svc's
 // annotations and current configuration. If the user asks for a
 // specific IP then we'll attempt to use that, and if not we'll use
 // the pool specified in the purelbv1.DesiredGroupAnnotation
 // annotation. If neither is specified then we will attempt to
 // allocate from a pool named "default", if it exists.
-func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, error) {
-	var (
-		poolName string
-		err      error
-	)
-
+func (a *Allocator) Allocate(svc *v1.Service) error {
 	// If the user asked for a specific IP, allocate that.
-	poolName, err = a.allocateSpecificIP(svc)
+	allocated, err := a.allocateSpecificIP(svc)
 	if err != nil {
-		return "", err
+		return err
 	}
-	if poolName == "" {
-		// The user didn't ask for a specific IP so we can allocate one
-		// ourselves
 
-		// If no desiredGroup was specified, then try "default"
-		if poolName = svc.Annotations[purelbv1.DesiredGroupAnnotation]; poolName == "" {
-			poolName = defaultPoolName
+	// The user didn't ask for a specific IP so we can allocate one from
+	// a pool.
+	if !allocated {
+		// Start with the default pool name.
+		poolName := defaultPoolName
+
+		// If the user specified a desiredGroup, then use that.
+		if userPool, has := svc.Annotations[purelbv1.DesiredGroupAnnotation]; has {
+			poolName = userPool
 		}
 
-		// Otherwise, allocate from the pool that the user specified
+		// Try to allocate from the pool.
 		if err = a.allocateFromPool(svc, poolName); err != nil {
-			return "", err
+			return err
 		}
 	}
 
-	if err = a.updateStats(poolName); err != nil {
-		return "", err
-	}
-
-	return poolName, nil
+	return nil
 }
 
 // allocateSpecificIP assigns the requested ip to svc, if the
@@ -149,20 +140,23 @@ func (a *Allocator) AllocateAnyIP(svc *v1.Service) (string, error) {
 // a specific address then the return values will be ("", nil). If an
 // address was allocated then the string return value will be
 // non-"". If an error happened then the error return will be non-nil.
-func (a *Allocator) allocateSpecificIP(svc *v1.Service) (string, error) {
+func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 	// See if the user configured a specific address and return if not.
-	ip, err := a.serviceIP(svc)
+	ips, err := a.serviceAddresses(svc)
 	if err != nil {
-		return "", err
+		return false, err
 	}
-	if ip == nil { // no user-configured address
-		return "", err
+	if len(ips) == 0 { // no user-configured address
+		return false, nil
 	}
 
+	// FIXME: temporary shim until we really handle multiple IPs
+	ip := ips[0]
+
 	// Check that the address belongs to a pool
-	pool := poolFor(a.pools, ip)
-	if pool == "" {
-		return "", fmt.Errorf("%q does not belong to any group", ip)
+	poolName := poolFor(a.pools, ip)
+	if poolName == "" {
+		return false, fmt.Errorf("%q does not belong to any group", ip)
 	}
 
 	// Warn if the user provided the group annotation - the IP
@@ -174,17 +168,22 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (string, error) {
 
 	// If the service had an IP before, release it
 	if err := a.Unassign(namespacedName(svc)); err != nil {
-		return "", err
+		return false, err
 	}
 
 	// Does the IP already have allocs? If so, needs to be the same
 	// sharing key, and have non-overlapping ports. If not, the proposed
 	// IP needs to be allowed by configuration.
-	if err := a.pools[pool].Assign(ip, svc); err != nil {
-		return "", err
+	if err := a.pools[poolName].Assign(ip, svc); err != nil {
+		return false, err
 	}
 
-	return pool, nil
+	// annotate the pool from which the address came
+	a.client.Infof(svc, "AddressAssigned", "Assigned %+v from pool %s", svc.Status.LoadBalancer, poolName)
+	svc.Annotations[purelbv1.PoolAnnotation] = poolName
+	a.updateStats(poolName)
+
+	return true, nil
 }
 
 // AllocateFromPool assigns an available IP from pool to service.
@@ -203,6 +202,11 @@ func (a *Allocator) allocateFromPool(svc *v1.Service, poolName string) error {
 		// Woops, no IPs :( Fail.
 		return err
 	}
+
+	// annotate the pool from which the address came
+	a.client.Infof(svc, "AddressAssigned", "Assigned %+v from pool %s", svc.Status.LoadBalancer, poolName)
+	svc.Annotations[purelbv1.PoolAnnotation] = poolName
+	a.updateStats(poolName)
 
 	return nil
 }
@@ -233,12 +237,12 @@ func poolFor(pools map[string]Pool, ip net.IP) string {
 	return ""
 }
 
-// serviceIP returns any IP addresses configured in the provided
+// serviceAddresses returns any IP addresses configured in the provided
 // service. There can be 0-2 addresses: the deprecated
 // svc.Spec.LoadBalancer field can contain one, and the
 // purelbv1.DesiredAddressAnnotation can contain one or two, separated
 // by commas.
-func (a *Allocator) serviceIP(svc *v1.Service) (net.IP, error) {
+func (a *Allocator) serviceAddresses(svc *v1.Service) ([]net.IP, error) {
 
 	// Try our annotation first.
 	rawAddr, exists := svc.Annotations[purelbv1.DesiredAddressAnnotation]
@@ -260,7 +264,7 @@ func (a *Allocator) serviceIP(svc *v1.Service) (net.IP, error) {
 		return nil, fmt.Errorf("invalid user-specified address: \"%q\"", rawAddr)
 	}
 
-	return ip, nil
+	return []net.IP{ip}, nil
 }
 
 // parseGroups parses a slice of ServiceGroups and returns a map of

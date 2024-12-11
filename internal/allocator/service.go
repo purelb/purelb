@@ -26,6 +26,10 @@ import (
 	purelbv1 "purelb.io/pkg/apis/v1"
 )
 
+// SetBalancer is the main entry point that handles LoadBalancer
+// create/change events. It takes a Service and decides what to do
+// based on that Service's configuration. It returns a k8s.SyncState
+// value - SyncStateSuccess or SyncStateError.
 func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
 	nsName := svc.Namespace + "/" + svc.Name
 	log := log.With(c.logger, "svc-name", nsName)
@@ -47,6 +51,12 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 	if !c.isDefault && svc.Spec.LoadBalancerClass == nil {
 		log.Log("event", "ignore", "reason", "service has no explicit LBClass and PureLB is not the default announcer")
 		return k8s.SyncStateSuccess
+	}
+
+	// Ensure that the Service has an annotation map (so we can assume
+	// it has one later).
+	if svc.Annotations == nil {
+		svc.Annotations = map[string]string{}
 	}
 
 	// If the service isn't a LoadBalancer then we might need to clean
@@ -97,7 +107,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		// to warm up our database so we don't allocate the same address
 		// twice. another example is when the user edits a service,
 		// although that would be better handled in a webhook.
-		if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
+		if svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
 			// The service has an IP so we'll attempt to formally allocate
 			// it. If something goes wrong then we'll log it but won't do
 			// anything else so we don't cause more trouble.
@@ -111,21 +121,14 @@ func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState
 		return k8s.SyncStateSuccess
 	}
 
-	pool, err := c.ips.AllocateAnyIP(svc)
-	if err != nil {
+	// Annotate the service as "ours"
+	svc.Annotations[purelbv1.BrandAnnotation] = purelbv1.Brand
+
+	if err := c.ips.Allocate(svc); err != nil {
 		log.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", nsName, err)
 		return k8s.SyncStateSuccess
 	}
-	c.client.Infof(svc, "AddressAssigned", "Assigned %+v from pool %s", svc.Status.LoadBalancer, pool)
-
-	// annotate the service as "ours" and annotate the pool from which
-	// the address came
-	if svc.Annotations == nil {
-		svc.Annotations = map[string]string{}
-	}
-	svc.Annotations[purelbv1.BrandAnnotation] = purelbv1.Brand
-	svc.Annotations[purelbv1.PoolAnnotation] = pool
 
 	return k8s.SyncStateSuccess
 }

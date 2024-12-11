@@ -36,6 +36,7 @@ var (
 
 func TestNotifyExisting(t *testing.T) {
 	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
 	alloc.pools = map[string]Pool{
 		"default": mustLocalPool(t, "192.168.1.2/31"),
 	}
@@ -52,13 +53,14 @@ func TestNotifyExisting(t *testing.T) {
 
 	// Allocate an address to svc2 - it should get ip2 since ip1 is in
 	// use by svc1
-	_, err := alloc.AllocateAnyIP(&svc2)
+	err := alloc.Allocate(&svc2)
 	assert.Nil(t, err, "Allocating an address failed")
 	assert.Equal(t, ip2.String(), svc2.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 }
 
 func TestAssignment(t *testing.T) {
 	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
 	alloc.pools = map[string]Pool{
 		"test0": mustLocalPool(t, "1.2.3.4/31"),
 		"test1": mustLocalPool(t, "1000::4/127"),
@@ -298,6 +300,7 @@ func TestAssignment(t *testing.T) {
 
 func TestPoolAllocation(t *testing.T) {
 	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
 	// This test only allocates from the "test" and "testV6" pools, so
 	// it will run out of IPs quickly even though there are tons
 	// available in other pools.
@@ -536,7 +539,7 @@ func TestPoolAllocation(t *testing.T) {
 	assert.NotNil(t, alloc.allocateFromPool(&service, "nonexistentpool"), "Allocating from non-existent pool succeeded")
 }
 
-func TestAllocateAnyIP(t *testing.T) {
+func TestAllocate(t *testing.T) {
 	var svc v1.Service
 
 	alloc := New(allocatorTestLogger)
@@ -549,35 +552,35 @@ func TestAllocateAnyIP(t *testing.T) {
 	// Allocate specific IP succeeds
 	svc = service("t1", ports("tcp/80"), "")
 	svc.Annotations[purelbv1.DesiredAddressAnnotation] = "1000::4"
-	pool, err := alloc.AllocateAnyIP(&svc)
+	err := alloc.Allocate(&svc)
 	assert.Nil(t, err, "specific IP allocation failed")
-	assert.Equal(t, "test1V6", pool, "IP allocated from wrong pool")
+	assert.Equal(t, "test1V6", svc.Annotations[purelbv1.PoolAnnotation], "IP allocated from wrong pool")
 	assert.Equal(t, "1000::4", svc.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 
 	// Allocate specific IP fails if IP is already assigned
 	svc = service("t2", ports("tcp/80"), "")
 	svc.Annotations[purelbv1.DesiredAddressAnnotation] = "1000::4"
-	_, err = alloc.AllocateAnyIP(&svc)
+	err = alloc.Allocate(&svc)
 	assert.Error(t, err, "specific IP allocation should have failed")
 
 	// Allocate from specific pool succeeds
 	svc = service("t3", ports("tcp/80"), "")
 	svc.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
-	pool, err = alloc.AllocateAnyIP(&svc)
+	err = alloc.Allocate(&svc)
 	assert.Nil(t, err, "specific IP allocation failed")
-	assert.Equal(t, "test1V6", pool, "IP allocated from wrong pool")
+	assert.Equal(t, "test1V6", svc.Annotations[purelbv1.PoolAnnotation], "IP allocated from wrong pool")
 	assert.Equal(t, "1000::5", svc.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 
 	// Pool is empty so allocation fails
 	svc = service("t4", ports("tcp/80"), "")
 	svc.Annotations[purelbv1.DesiredGroupAnnotation] = "test1V6"
-	_, err = alloc.AllocateAnyIP(&svc)
+	err = alloc.Allocate(&svc)
 	assert.Error(t, err, "allocation from exhausted pool should have failed")
 
 	// There's no "default" pool so allocation fails if the pool isn't
 	// specified
 	svc = service("t5", ports("tcp/80"), "")
-	_, err = alloc.AllocateAnyIP(&svc)
+	err = alloc.Allocate(&svc)
 	assert.Error(t, err, "default pool IP allocation should have failed")
 
 	// Add a "default" pool
@@ -585,9 +588,9 @@ func TestAllocateAnyIP(t *testing.T) {
 
 	// Now that there's a "default" pool, allocation succeeds
 	svc = service("t6", ports("tcp/80"), "")
-	pool, err = alloc.AllocateAnyIP(&svc)
+	err = alloc.Allocate(&svc)
 	assert.Nil(t, err, "default pool IP allocation failed")
-	assert.Equal(t, defaultPoolName, pool, "IP allocated from wrong pool")
+	assert.Equal(t, defaultPoolName, svc.Annotations[purelbv1.PoolAnnotation], "IP allocated from wrong pool")
 	assert.Equal(t, "1.2.3.4", svc.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 }
 
@@ -693,9 +696,9 @@ func TestPoolMetrics(t *testing.T) {
 		}
 
 		service.Annotations[purelbv1.DesiredAddressAnnotation] = test.ip
-		pool, err := alloc.AllocateAnyIP(&service)
+		err := alloc.Allocate(&service)
 		assert.Nil(t, err, "%q: Assign(%q, %q)", test.desc, test.svc, test.ip)
-		assert.Equal(t, pool, testSG.ObjectMeta.Name, "incorrect pool assigned")
+		assert.Equal(t, testSG.ObjectMeta.Name, service.Annotations[purelbv1.PoolAnnotation], "incorrect pool assigned")
 		assert.Equal(t, test.ipsInUse, ptu.ToFloat64(poolActive.WithLabelValues(testSG.ObjectMeta.Name)), "incorrect pool active IP count after allocation")
 	}
 }
@@ -740,14 +743,14 @@ func TestSpecificAddress(t *testing.T) {
 			},
 		},
 	}
-	_, err := alloc.AllocateAnyIP(svc1)
+	err := alloc.Allocate(svc1)
 	assert.Error(t, err, "address allocated but shouldn't be")
 
 	// Allocate a specific address in the default pool
 	svc1.Annotations[purelbv1.DesiredAddressAnnotation] = "1.2.3.0"
-	pool, err := alloc.AllocateAnyIP(svc1)
+	err = alloc.Allocate(svc1)
 	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, defaultPoolName, pool, "incorrect pool chosen")
+	assert.Equal(t, defaultPoolName, svc1.Annotations[purelbv1.PoolAnnotation], "incorrect pool chosen")
 	assert.Equal(t, svc1.Annotations[purelbv1.DesiredAddressAnnotation], svc1.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 
 }
@@ -786,9 +789,9 @@ func TestSharingSimple(t *testing.T) {
 		},
 		Spec: spec,
 	}
-	pool, err := alloc.AllocateAnyIP(svc1)
+	err := alloc.Allocate(svc1)
 	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, defaultPoolName, pool, "incorrect pool chosen")
+	assert.Equal(t, defaultPoolName, svc1.Annotations[purelbv1.PoolAnnotation], "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.0", svc1.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 
 	// Mismatched SharingAnnotation so different address
@@ -802,9 +805,9 @@ func TestSharingSimple(t *testing.T) {
 		},
 		Spec: spec,
 	}
-	pool, err = alloc.AllocateAnyIP(svc2)
+	err = alloc.Allocate(svc2)
 	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, defaultPoolName, pool, "incorrect pool chosen")
+	assert.Equal(t, defaultPoolName, svc2.Annotations[purelbv1.PoolAnnotation], "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.1", svc2.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 
 	// Matching SharingAnnotation so same address as svc1
@@ -818,9 +821,9 @@ func TestSharingSimple(t *testing.T) {
 		},
 		Spec: spec,
 	}
-	pool, err = alloc.AllocateAnyIP(svc3)
+	err = alloc.Allocate(svc3)
 	assert.Nil(t, err, "error allocating address")
-	assert.Equal(t, defaultPoolName, pool, "incorrect pool chosen")
+	assert.Equal(t, defaultPoolName, svc3.Annotations[purelbv1.PoolAnnotation], "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.0", svc3.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 }
 
@@ -923,15 +926,15 @@ func TestServiceIP(t *testing.T) {
 	}
 
 	// Test no address configured
-	ip, err := alloc.serviceIP(svc1)
+	ip, err := alloc.serviceAddresses(svc1)
 	assert.Nil(t, err)
 	assert.Nil(t, ip)
 
 	// Test deprecated LoadBalancerIP field
 	svc1.Spec.LoadBalancerIP = addr1
-	ip, err = alloc.serviceIP(svc1)
+	ip, err = alloc.serviceAddresses(svc1)
 	assert.Nil(t, err)
-	assert.Equal(t, ip.String(), addr1)
+	assert.Equal(t, ip[0].String(), addr1)
 
 	// Test the preferred way to assign a specific address (i.e., our
 	// annotation). This overrides LoadBalancerIP.
@@ -940,9 +943,9 @@ func TestServiceIP(t *testing.T) {
 				purelbv1.DesiredAddressAnnotation: addr2,
 			},
 		}
-	ip, err = alloc.serviceIP(svc1)
+	ip, err = alloc.serviceAddresses(svc1)
 	assert.Nil(t, err)
-	assert.Equal(t, ip.String(), addr2)
+	assert.Equal(t, ip[0].String(), addr2)
 }
 
 // Some helpers
