@@ -56,6 +56,6 @@ url = "https://gitlab.com/purelb/purelb"
 weight = 10
 
 [[menu.shortcuts]]
-name = "Sponsor"
+name = "Sponsored By"
 url = "https://www.acnodal.io"
 weight = 30
