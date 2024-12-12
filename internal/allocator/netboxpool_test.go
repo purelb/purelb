@@ -31,7 +31,7 @@ func TestNetboxContains(t *testing.T) {
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
 	nsName := namespacedName(&svc1)
 
-	nbp, err := NewNetboxPool(netboxPoolTestLogger, purelbv1.ServiceGroupNetboxSpec{URL: "url", Tenant: "tenant"})
+	nbp, err := NewNetboxPool("unittest", netboxPoolTestLogger, purelbv1.ServiceGroupNetboxSpec{URL: "url", Tenant: "tenant"})
 	assert.Nil(t, err, "NewNetboxPool()")
 	nbp.netbox = fake.NewNetbox("base", "tenant", "token") // patch the pool with a fake Netbox client
 

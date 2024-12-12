@@ -29,6 +29,8 @@ import (
 
 // Pool is the configuration of an IP address pool.
 type LocalPool struct {
+	name string
+
 	logger log.Logger
 
 	// v4Ranges contains the IPV4 addresses that are part of this
@@ -50,8 +52,9 @@ type LocalPool struct {
 	portsInUse map[string]map[Port]string // ip.String() -> Port -> svc
 }
 
-func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPool, error) {
+func NewLocalPool(name string, log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (LocalPool, error) {
 	pool := LocalPool{
+		name:           name,
 		logger:         log,
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
@@ -70,16 +73,16 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 	for _, v6pool := range spec.V6Pools {
 		iprange, err := purelbv1.NewIPRange(v6pool.Pool)
 		if err != nil {
-			return nil, err
+			return pool, err
 		}
 
 		// Validate that the range is contained by the subnet.
 		_, subnet, err := net.ParseCIDR(v6pool.Subnet)
 		if err != nil {
-			return nil, err
+			return pool, err
 		}
 		if !iprange.ContainedBy(*subnet) {
-			return nil, fmt.Errorf("IPV6 range %s not contained by network %s", iprange, subnet)
+			return pool, fmt.Errorf("IPV6 range %s not contained by network %s", iprange, subnet)
 		}
 
 		pool.v6Ranges = append(pool.v6Ranges, &iprange)
@@ -89,16 +92,16 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 	for _, v4pool := range spec.V4Pools {
 		iprange, err := purelbv1.NewIPRange(v4pool.Pool)
 		if err != nil {
-			return nil, err
+			return pool, err
 		}
 
 		// Validate that the range is contained by the subnet.
 		_, subnet, err := net.ParseCIDR(v4pool.Subnet)
 		if err != nil {
-			return nil, err
+			return pool, err
 		}
 		if !iprange.ContainedBy(*subnet) {
-			return nil, fmt.Errorf("IPV4 range %s not contained by network %s", iprange, subnet)
+			return pool, fmt.Errorf("IPV4 range %s not contained by network %s", iprange, subnet)
 		}
 
 		pool.v4Ranges = append(pool.v4Ranges, &iprange)
@@ -112,10 +115,10 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 			// Validate that the range is contained by the subnet.
 			_, subnet, err := net.ParseCIDR(spec.Subnet)
 			if err != nil {
-				return nil, err
+				return pool, err
 			}
 			if !iprange.ContainedBy(*subnet) {
-				return nil, fmt.Errorf("Legacy range %s not contained by network %s", iprange, subnet)
+				return pool, fmt.Errorf("Legacy range %s not contained by network %s", iprange, subnet)
 			}
 
 			// We have a legacy (i.e., top-level) range, let's see where it
@@ -124,13 +127,13 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 				if pool.v6Ranges == nil {
 					pool.v6Ranges = append(pool.v6Ranges, &iprange)
 				} else {
-					return nil, fmt.Errorf("Invalid Spec: both legacy Pool and V6Pool are IPV6")
+					return pool, fmt.Errorf("Invalid Spec: both legacy Pool and V6Pool are IPV6")
 				}
 			} else if iprange.Family() == nl.FAMILY_V4 {
 				if pool.v4Ranges == nil {
 					pool.v4Ranges = append(pool.v4Ranges, &iprange)
 				} else {
-					return nil, fmt.Errorf("Invalid Spec: both legacy Pool and V4Pool are IPV4")
+					return pool, fmt.Errorf("Invalid Spec: both legacy Pool and V4Pool are IPV4")
 				}
 			}
 		}
@@ -139,10 +142,10 @@ func NewLocalPool(log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (*LocalPo
 	// Last check: if we don't have *any* valid range then it's a bad
 	// Spec
 	if pool.v6Ranges == nil && pool.v4Ranges == nil {
-		return nil, fmt.Errorf("no valid address range found")
+		return pool, fmt.Errorf("no valid address range found")
 	}
 
-	return &pool, nil
+	return pool, nil
 }
 
 func (p LocalPool) Notify(service *v1.Service) error {
@@ -459,4 +462,8 @@ func (p LocalPool) whichFamilies(service *v1.Service) ([]int, error) {
 	}
 
 	return families, nil
+}
+
+func (p LocalPool) String() string {
+	return p.name
 }

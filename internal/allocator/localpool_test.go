@@ -49,7 +49,7 @@ func TestNewLocalPool(t *testing.T) {
 	ip6 := "2001:470:1f07:98e:d62a:159b:41a3:93d3"
 
 	// Test old-fashioned config (i.e., using the top-level Pool)
-	p, err := NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+	p, err := NewLocalPool("testpool", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		Pool:   "192.168.1.1/32",
 		Subnet: "192.168.1.1/32",
 	})
@@ -59,7 +59,7 @@ func TestNewLocalPool(t *testing.T) {
 	assert.Equal(t, ip4, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
 	// Test IPV4 config
-	p, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+	p, err = NewLocalPool("v4pool", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		V4Pool: &purelbv1.ServiceGroupAddressPool{
 			Pool:   "192.168.1.1/32",
 			Subnet: "192.168.1.1/32",
@@ -73,7 +73,7 @@ func TestNewLocalPool(t *testing.T) {
 	assert.Equal(t, ip4, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
 	// Test IPV6 config
-	p, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+	p, err = NewLocalPool("v6pool", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		Pool:   "192.168.1.1/32",
 		Subnet: "192.168.1.1/32",
 		V6Pool: &purelbv1.ServiceGroupAddressPool{
@@ -89,7 +89,7 @@ func TestNewLocalPool(t *testing.T) {
 	assert.Equal(t, ip6, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
 	// Test IPV6 config
-	p, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+	p, err = NewLocalPool("bothpools", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		V4Pool: &purelbv1.ServiceGroupAddressPool{
 			Pool:   "192.168.1.1/32",
 			Subnet: "192.168.1.1/32",
@@ -106,21 +106,21 @@ func TestNewLocalPool(t *testing.T) {
 	assert.Equal(t, ip6, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
 	// Test invalid ranges
-	_, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+	_, err = NewLocalPool("uncontained", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		V4Pool: &purelbv1.ServiceGroupAddressPool{
 			Pool:   "192.168.1.0-192.168.1.1",
 			Subnet: "192.168.1.0/32",
 		},
 	})
 	assert.Error(t, err, "pool isn't contained in its subnet")
-	_, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+	_, err = NewLocalPool("uncontained", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		V6Pool: &purelbv1.ServiceGroupAddressPool{
 			Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3-2001:470:1f07:98e:d62a:159b:41a3:93d4",
 			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
 		},
 	})
 	assert.Error(t, err, "pool isn't contained in its subnet")
-	_, err = NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+	_, err = NewLocalPool("uncontained", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		Pool:   "192.168.1.0-192.168.1.1",
 		Subnet: "192.168.1.0/32",
 	})
@@ -154,7 +154,7 @@ func TestFirstNext(t *testing.T) {
 func TestNotify(t *testing.T) {
 	ip1 := net.ParseIP("192.168.1.2")
 	ip2 := net.ParseIP("192.168.1.3")
-	p := mustLocalPool(t, "192.168.1.2/31")
+	p := mustLocalPool(t, "notify", "192.168.1.2/31")
 
 	svc1 := service("svc1", ports("tcp/80"), "")
 	svc2 := service("svc2", ports("tcp/80"), "")
@@ -172,7 +172,7 @@ func TestNotify(t *testing.T) {
 func TestInUse(t *testing.T) {
 	ip := net.ParseIP("192.168.1.1")
 	ip2 := net.ParseIP("192.168.1.2")
-	p := mustLocalPool(t, "192.168.1.1/32")
+	p := mustLocalPool(t, "inuse", "192.168.1.1/32")
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
 	svc2 := service("svc2", ports("tcp/80"), "sharing2")
 	svc3 := service("svc3", ports("tcp/25"), "sharing2")
@@ -193,7 +193,7 @@ func TestInUse(t *testing.T) {
 
 func TestServicesOn(t *testing.T) {
 	ip2 := net.ParseIP("192.168.1.2")
-	p := mustLocalPool(t, "192.168.1.1/32")
+	p := mustLocalPool(t, "serviceson", "192.168.1.1/32")
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
 	svc2 := service("svc2", ports("tcp/25"), "sharing1")
 
@@ -283,7 +283,7 @@ func TestAssignNext(t *testing.T) {
 }
 
 func TestPoolSize(t *testing.T) {
-	p, err := NewLocalPool(localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+	p, err := NewLocalPool("sizetest", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
 		V4Pool: &purelbv1.ServiceGroupAddressPool{
 			Pool:   "192.168.1.0/31",
 			Subnet: "192.168.1.0/31",
@@ -302,7 +302,7 @@ func TestWhichFamilies(t *testing.T) {
 		families []int
 		err      error
 	)
-	p := mustLocalPool(t, "2001:470:1f07:98e:d62a:159b:41a3:93d3/128")
+	p := mustLocalPool(t, "ipv6", "2001:470:1f07:98e:d62a:159b:41a3:93d3/128")
 	svc := service("svc1", ports("tcp/80"), "sharing1")
 
 	svc.Spec.IPFamilies = []v1.IPFamily{}
@@ -345,12 +345,12 @@ func sameStrings(t *testing.T, want []string, got []string) {
 	assert.Equal(t, want, got)
 }
 
-func mustLocalPool(t *testing.T, r string) LocalPool {
-	p, err := NewLocalPool(allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{Pool: r, Subnet: r})
+func mustLocalPool(t *testing.T, name string, r string) LocalPool {
+	p, err := NewLocalPool(name, allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{Pool: r, Subnet: r})
 	if err != nil {
 		panic(err)
 	}
-	return *p
+	return p
 }
 
 func mustDualStackPool(t *testing.T, pools4 []string, pools6 []string) LocalPool {
@@ -361,9 +361,9 @@ func mustDualStackPool(t *testing.T, pools4 []string, pools6 []string) LocalPool
 	for _, pool4 := range pools4 {
 		spec.V4Pools = append(spec.V4Pools, &purelbv1.ServiceGroupAddressPool{Pool: pool4, Subnet: pool4})
 	}
-	p, err := NewLocalPool(allocatorTestLogger, spec)
+	p, err := NewLocalPool("unittest", allocatorTestLogger, spec)
 	if err != nil {
 		panic(err)
 	}
-	return *p
+	return p
 }

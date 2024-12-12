@@ -31,6 +31,8 @@ import (
 // NetboxPool is the IP address pool that requests IP addresses from a
 // Netbox IPAM system.
 type NetboxPool struct {
+	name string
+
 	logger log.Logger
 
 	url       string
@@ -50,7 +52,7 @@ type NetboxPool struct {
 
 // NewNetboxPool initializes a new instance of NetboxPool. If error is
 // non-nil then the returned NetboxPool should not be used.
-func NewNetboxPool(log log.Logger, spec purelbv1.ServiceGroupNetboxSpec) (*NetboxPool, error) {
+func NewNetboxPool(name string, log log.Logger, spec purelbv1.ServiceGroupNetboxSpec) (*NetboxPool, error) {
 	// Make sure that we've got credentials for Netbox
 	userToken, ok := os.LookupEnv("NETBOX_USER_TOKEN")
 	if !ok {
@@ -64,6 +66,7 @@ func NewNetboxPool(log log.Logger, spec purelbv1.ServiceGroupNetboxSpec) (*Netbo
 	}
 
 	return &NetboxPool{
+		name: name,
 		logger:         log,
 		url:            url.String(),
 		userToken:      userToken,
@@ -163,4 +166,8 @@ func (p NetboxPool) Overlaps(other Pool) bool {
 func (p NetboxPool) Contains(ip net.IP) bool {
 	_, allocated := p.addressesInUse[ip.String()]
 	return allocated
+}
+
+func (p NetboxPool) String() string {
+	return p.name
 }

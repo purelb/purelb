@@ -38,7 +38,7 @@ func TestNotifyExisting(t *testing.T) {
 	alloc := New(allocatorTestLogger)
 	alloc.SetClient(&testK8S{t: t})
 	alloc.pools = map[string]Pool{
-		"default": mustLocalPool(t, "192.168.1.2/31"),
+		"default": mustLocalPool(t, "default", "192.168.1.2/31"),
 	}
 	ip1 := net.ParseIP("192.168.1.2")
 	ip2 := net.ParseIP("192.168.1.3")
@@ -62,10 +62,10 @@ func TestAssignment(t *testing.T) {
 	alloc := New(allocatorTestLogger)
 	alloc.SetClient(&testK8S{t: t})
 	alloc.pools = map[string]Pool{
-		"test0": mustLocalPool(t, "1.2.3.4/31"),
-		"test1": mustLocalPool(t, "1000::4/127"),
-		"test2": mustLocalPool(t, "1.2.4.0/24"),
-		"test3": mustLocalPool(t, "1000::4:0/120"),
+		"test0": mustLocalPool(t, "test0", "1.2.3.4/31"),
+		"test1": mustLocalPool(t, "test1", "1000::4/127"),
+		"test2": mustLocalPool(t, "test2", "1.2.4.0/24"),
+		"test3": mustLocalPool(t, "test3", "1000::4:0/120"),
 	}
 
 	tests := []struct {
@@ -305,10 +305,10 @@ func TestPoolAllocation(t *testing.T) {
 	// it will run out of IPs quickly even though there are tons
 	// available in other pools.
 	alloc.pools = map[string]Pool{
-		"not_this_one": mustLocalPool(t, "192.168.0.0/16"),
-		"test":         mustLocalPool(t, "1.2.3.4/30"),
-		"testV6":       mustLocalPool(t, "1000::/126"),
-		"test2":        mustLocalPool(t, "10.20.30.0/24"),
+		"not_this_one": mustLocalPool(t, "not_this_one", "192.168.0.0/16"),
+		"test":         mustLocalPool(t, "test", "1.2.3.4/30"),
+		"testV6":       mustLocalPool(t, "testV6", "1000::/126"),
+		"test2":        mustLocalPool(t, "test2", "10.20.30.0/24"),
 	}
 
 	validIP4s := map[string]bool{
@@ -520,7 +520,7 @@ func TestPoolAllocation(t *testing.T) {
 		if test.isIPv6 {
 			pool = "testV6"
 		}
-		err := alloc.allocateFromPool(&service, pool)
+		err := alloc.allocateFromPool(&service, alloc.pools[pool])
 		if test.wantErr {
 			assert.NotNil(t, err, "%s: should have caused an error, but did not", test.desc)
 			continue
@@ -533,10 +533,6 @@ func TestPoolAllocation(t *testing.T) {
 		ip := service.Status.LoadBalancer.Ingress[0].IP
 		assert.True(t, validIPs[ip], "%s: allocated unexpected IP %q", test.desc, ip)
 	}
-
-	alloc.Unassign("unit/s5")
-	service := service("s5", []v1.ServicePort{}, "")
-	assert.NotNil(t, alloc.allocateFromPool(&service, "nonexistentpool"), "Allocating from non-existent pool succeeded")
 }
 
 func TestAllocate(t *testing.T) {
@@ -546,7 +542,7 @@ func TestAllocate(t *testing.T) {
 	alloc.SetClient(&testK8S{t: t})
 	alloc.pools = map[string]Pool{
 		// Start suite with no "default" pool
-		"test1V6": mustLocalPool(t, "1000::4/127"),
+		"test1V6": mustLocalPool(t, "test1V6", "1000::4/127"),
 	}
 
 	// Allocate specific IP succeeds
@@ -584,7 +580,7 @@ func TestAllocate(t *testing.T) {
 	assert.Error(t, err, "default pool IP allocation should have failed")
 
 	// Add a "default" pool
-	alloc.pools[defaultPoolName] = mustLocalPool(t, "1.2.3.4/30")
+	alloc.pools[defaultPoolName] = mustLocalPool(t, "default", "1.2.3.4/30")
 
 	// Now that there's a "default" pool, allocation succeeds
 	svc = service("t6", ports("tcp/80"), "")
@@ -846,10 +842,10 @@ func TestParseGroups(t *testing.T) {
 				localServiceGroup("pool4", "2001:db8::/126"),
 			},
 			want: map[string]Pool{
-				"pool1": mustLocalPool(t, "10.20.0.0/16"),
-				"pool2": mustLocalPool(t, "30.0.0.0/8"),
-				"pool3": mustLocalPool(t, "40.0.0.0/25"),
-				"pool4": mustLocalPool(t, "2001:db8::/126"),
+				"pool1": mustLocalPool(t, "pool1", "10.20.0.0/16"),
+				"pool2": mustLocalPool(t, "pool2", "30.0.0.0/8"),
+				"pool3": mustLocalPool(t, "pool3", "40.0.0.0/25"),
+				"pool4": mustLocalPool(t, "pool4", "2001:db8::/126"),
 			},
 		},
 
@@ -873,7 +869,7 @@ func TestParseGroups(t *testing.T) {
 				localServiceGroup("pool1", "30.0.0.0/8"),
 			},
 			want: map[string]Pool{
-				"pool1": mustLocalPool(t, "10.20.0.0/16"),
+				"pool1": mustLocalPool(t, "pool1", "10.20.0.0/16"),
 			},
 		},
 
@@ -883,7 +879,7 @@ func TestParseGroups(t *testing.T) {
 				localServiceGroup("pool2", "10.0.0.0/8"),
 			},
 			want: map[string]Pool{
-				"pool1": mustLocalPool(t, "10.0.0.0/8"),
+				"pool1": mustLocalPool(t, "pool1", "10.0.0.0/8"),
 			},
 		},
 
@@ -893,7 +889,7 @@ func TestParseGroups(t *testing.T) {
 				localServiceGroup("pool2", "10.0.0.0/16"),
 			},
 			want: map[string]Pool{
-				"pool1": mustLocalPool(t, "10.0.0.0/8"),
+				"pool1": mustLocalPool(t, "pool1", "10.0.0.0/8"),
 			},
 		},
 	}
@@ -912,7 +908,7 @@ func TestParseGroups(t *testing.T) {
 	}
 }
 
-func TestServiceIP(t *testing.T) {
+func TestServiceAddresses(t *testing.T) {
 	alloc := New(allocatorTestLogger)
 	alloc.client = &testK8S{t: t}
 
@@ -926,15 +922,16 @@ func TestServiceIP(t *testing.T) {
 	}
 
 	// Test no address configured
-	ip, err := alloc.serviceAddresses(svc1)
+	ips, err := alloc.serviceAddresses(svc1)
 	assert.Nil(t, err)
-	assert.Nil(t, ip)
+	assert.Nil(t, ips)
 
 	// Test deprecated LoadBalancerIP field
 	svc1.Spec.LoadBalancerIP = addr1
-	ip, err = alloc.serviceAddresses(svc1)
+	ips, err = alloc.serviceAddresses(svc1)
 	assert.Nil(t, err)
-	assert.Equal(t, ip[0].String(), addr1)
+	assert.Equal(t, 1, len(ips))
+	assert.Equal(t, ips[0].String(), addr1)
 
 	// Test the preferred way to assign a specific address (i.e., our
 	// annotation). This overrides LoadBalancerIP.
@@ -943,9 +940,22 @@ func TestServiceIP(t *testing.T) {
 				purelbv1.DesiredAddressAnnotation: addr2,
 			},
 		}
-	ip, err = alloc.serviceAddresses(svc1)
+	ips, err = alloc.serviceAddresses(svc1)
 	assert.Nil(t, err)
-	assert.Equal(t, ip[0].String(), addr2)
+	assert.Equal(t, 1, len(ips))
+	assert.Equal(t, ips[0].String(), addr2)
+
+	// Test multiple addresses
+	svc1.ObjectMeta = metav1.ObjectMeta{
+			Annotations: map[string]string{
+				purelbv1.DesiredAddressAnnotation: addr1 + "," + addr2,
+			},
+		}
+	ips, err = alloc.serviceAddresses(svc1)
+	assert.Nil(t, err)
+	assert.Equal(t, 2, len(ips))
+	assert.Equal(t, ips[0].String(), addr1)
+	assert.Equal(t, ips[1].String(), addr2)
 }
 
 // Some helpers

@@ -54,6 +54,7 @@ type Pool interface {
 	Overlaps(Pool) bool
 	Contains(net.IP) bool // FIXME: I'm not sure that we need this. It might be the case that we can always rely on the service's pool annotation to find to which pool an address belongs
 	Size() uint64
+	String() string
 }
 
 func sharingOK(existing, new *Key) error {
@@ -71,17 +72,9 @@ func sharingOK(existing, new *Key) error {
 
 func parsePool(log log.Logger, name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
-		ret, err := NewLocalPool(log, *group.Local)
-		if err != nil {
-			return nil, err
-		}
-		return *ret, nil
+		return NewLocalPool(name, log, *group.Local)
 	} else if group.Netbox != nil {
-		ret, err := NewNetboxPool(log, *group.Netbox)
-		if err != nil {
-			return nil, err
-		}
-		return *ret, nil
+		return NewNetboxPool(name, log, *group.Netbox)
 	}
 
 	return nil, fmt.Errorf("Pool is not local or Netbox")
