@@ -47,7 +47,7 @@ tabWidth = 2
 #
 [[menu.shortcuts]]
 name = "Support"
-url = "help_contribution"
+url = "/help_contribution"
 weight = 5
 
 [[menu.shortcuts]]
