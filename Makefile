@@ -7,9 +7,10 @@ MANIFEST_SUFFIX = ${SUFFIX}
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
+CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml
 
 # Tools that we use.
-CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.7.0
+CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0
 KUSTOMIZE = go run sigs.k8s.io/kustomize/kustomize/v4@v4.5.2
 HELM = go run helm.sh/helm/v3/cmd/helm@v3.11
 
@@ -26,7 +27,6 @@ help: ## Display help message
 		/^##@/ { printf "\n%s\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
 ##@ Development Goals
-.PHONY: all
 all: check crd image ## Build it all!
 
 .PHONY: check
@@ -60,10 +60,9 @@ clean-gen:  ## Delete generated files
 generate:  ## Generate client-side stubs for our custom resources
 	hack/update-codegen.sh
 
-.PHONY: crd
-crd: ## Generate CRDs from golang api structs
+crd: $(CRDS) ## Generate CRDs from golang api structs
+$(CRDS) &: pkg/apis/v1/*.go
 	$(CONTROLLER_GEN) crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
-	cp deployments/crds/purelb.io_*.yaml build/helm/purelb/crds
 
 .ONESHELL:
 .PHONY: manifest
@@ -89,6 +88,7 @@ helm:  ## Package PureLB using Helm
 	rm -rf build/build
 	mkdir -p build/build
 	cp -r build/helm/purelb build/build/
+	cp deployments/crds/purelb.io_*.yaml build/build/purelb/crds
 	cp README.md build/build/purelb
 
 	sed \
