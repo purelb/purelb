@@ -83,17 +83,25 @@ func (a *Allocator) updateStats(pool Pool) {
 	poolActive.WithLabelValues(pool.String()).Set(float64(pool.InUse()))
 }
 
-// NotifyExisting notifies the allocator of an existing IP assignment,
+// NotifyExisting notifies the allocator of existing IP assignments,
 // for example, at startup time.
 func (a *Allocator) NotifyExisting(svc *v1.Service) error {
-	// Get the pool name from our annotation
-	poolName, exists := svc.Annotations[purelbv1.PoolAnnotation]
-	if !exists {
-		return fmt.Errorf("Service %s no pool", namespacedName(svc))
-	}
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		// validate the allocated address
+		lbIP := net.ParseIP(ingress.IP)
+		if lbIP == nil {
+			a.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
+			continue
+		}
 
-	// Tell the pool about the assignment
-	if pool, havePool := a.pools[poolName]; havePool {
+		// Find the pool which contains the address
+		pool := poolFor(a.pools, lbIP)
+		if (pool == nil ) {
+			a.logger.Log("op", "setBalancer", "error", "unknown LoadBalancer IP: no pool found", "ip", ingress.IP)
+			continue
+		}
+
+		// Tell the pool about the assignment
 		if err := pool.Notify(svc); err != nil {
 			return err
 		}
@@ -161,7 +169,7 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 	// annotation overrides it.
 	if _, exists := svc.Annotations[purelbv1.DesiredGroupAnnotation]; exists {
 		a.client.Infof(svc, "ConfigurationWarning", "Both the addresses annotation and the service-group annotation were provided. service-group will be ignored.")
-		a.logger.Log("WARNING: addresses annotation overrides service-group annotation, service-group will be ignored.")
+		a.logger.Log("configWarning", "WARNING: addresses annotation overrides service-group annotation, service-group will be ignored.")
 	}
 
 	// If the service had addresses before, release them.

@@ -55,8 +55,8 @@ const (
 	Brand string = "PureLB"
 
 	// PoolAnnotation is the key for the annotation that indicates from
-	// which pool the IP address was allocated. Pools are configured by
-	// the PureLB ServiceGroup custom resource.
+	// which pools the IP addresses were allocated. Pools are configured
+	// by the PureLB ServiceGroup custom resource.
 	PoolAnnotation string = "purelb.io/allocated-from"
 
 	// AnnounceAnnotation is the key for the annotation that indicates

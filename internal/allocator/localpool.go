@@ -157,10 +157,10 @@ func (p LocalPool) Notify(service *v1.Service) error {
 		ipstr := ingress.IP
 		ip := net.ParseIP(ipstr)
 		if ip == nil {
-			p.logger.Log("localpool", "notify-failure", "service", nsName, "ip", ipstr)
+			p.logger.Log("localpool", "notify-failure", "svc-name", nsName, "ip", ipstr)
 			continue
 		}
-		p.logger.Log("localpool", "notify-existing", "service", nsName, "ip", ipstr)
+		p.logger.Log("localpool", "notify-existing", "svc-name", nsName, "ip", ipstr)
 
 		p.sharingKeys[ipstr] = sharingKey
 		if p.addressesInUse[ipstr] == nil {

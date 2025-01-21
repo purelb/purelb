@@ -157,7 +157,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 		// validate the allocated address
 		lbIP := net.ParseIP(ingress.IP)
 		if lbIP == nil {
-			l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", svc.Status.LoadBalancer.Ingress[0].IP)
+			l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
 			continue
 		}
 
@@ -282,22 +282,27 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 
 	// add this address to the "dummy" interface so routing software
 	// (e.g., bird) will announce routes for it
-	poolName, gotName := svc.Annotations[purelbv1.PoolAnnotation]
-	if gotName {
-		allocPool := a.groups[poolName]
-		l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName)
-		a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, a.dummyInt.Attrs().Name)
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		// validate the allocated address
+		lbIP := net.ParseIP(ingress.IP)
+		if lbIP == nil {
+			l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
+			continue
+		}
 
-		// Find the pool from which this address was allocated, which
+		// Find the group from which this address was allocated, which
 		// gives us the subnet and aggregation that we need.
-		pool, err := allocPool.PoolForAddress(lbIP)
+		groupName, group, err := poolFor(a.groups, lbIP)
 		if err != nil {
 			return err
 		}
 
+		l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "interface", a.dummyInt.Attrs().Name, "group", groupName)
+		a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, a.dummyInt.Attrs().Name)
+
 		// Add the address to the dummy interface.
-		l.Log("msg", "subnet", "node", a.myNode, "service", nsName, "pool", pool)
-		if err := addVirtualInt(lbIP, a.dummyInt, pool.Subnet, pool.Aggregation); err != nil {
+		l.Log("msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
+		if err := addVirtualInt(lbIP, a.dummyInt, group.Subnet, group.Aggregation); err != nil {
 			return err
 		}
 
@@ -306,8 +311,6 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 			"node":    a.myNode,
 			"ip":      lbIP.String(),
 		}).Set(1)
-	} else {
-		return fmt.Errorf("PoolAnnotation missing from service %s", nsName)
 	}
 
 	return nil
@@ -435,4 +438,19 @@ func addrFamilyName(lbIP net.IP) (lbIPFamily string) {
 	}
 
 	return
+}
+
+// poolFor returns the name of the ServiceGroupLocalSpec that contains
+// lbIP. If error is not nil then no pool was found
+func poolFor(groups map[string]*purelbv1.ServiceGroupLocalSpec, lbIP net.IP) (string, *purelbv1.ServiceGroupAddressPool, error) {
+	for groupName, group := range groups {
+		if _, err := groups[groupName].PoolForAddress(lbIP); err == nil {
+			pool, err := group.PoolForAddress(lbIP)
+			if err != nil {
+				return "", nil, err
+			}
+			return groupName, pool, nil
+		}
+	}
+	return "", nil, fmt.Errorf("Can't find pool for address %+v", lbIP)
 }
