@@ -71,7 +71,7 @@ docker-manifest:
 
 k8s-manifest:
   stage: manifest
-  image: golang:1.19-bullseye
+  image: golang:1.23-bullseye
   services: []
   before_script: [ *tag-setup ]
   script:
