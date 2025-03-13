@@ -144,7 +144,7 @@ func defaultInterface(family int) (netlink.Link, error) {
 	// If none of our routes matched our criteria then we can't pick an
 	// interface
 	if defaultifindex == 0 {
-		return nil, fmt.Errorf("No default interface can be determined")
+		return nil, fmt.Errorf("No default interface for family %d can be determined", family)
 	}
 
 	// there's only one default route

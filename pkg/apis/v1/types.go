@@ -174,7 +174,7 @@ func (s *ServiceGroupLocalSpec) PoolForAddress(address net.IP) (*ServiceGroupAdd
 			Aggregation: s.Aggregation,
 		}, nil
 	}
-	return nil, fmt.Errorf("unable to find subnet for addres %+v", address)
+	return nil, fmt.Errorf("unable to find pool for address %+v", address)
 }
 
 // addrFamily returns whether lbIP is an IPV4 or IPV6 address.  The
