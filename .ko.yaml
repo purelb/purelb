@@ -1,0 +1,18 @@
+builds:
+
+- id: allocator
+  dir: ./cmd/allocator
+  ldflags: &build-meta
+  - -X purelb.io/internal/logging.commit={{.Git.ShortCommit}}
+  - -X purelb.io/internal/logging.branch={{.Git.Branch}}
+  - -X purelb.io/internal/logging.release={{.Env.TAG}}
+
+- id: lbnodeagent
+  dir: ./cmd/lbnodeagent
+  ldflags: *build-meta
+
+defaultPlatforms:
+- linux/arm64
+- linux/amd64
+
+defaultBaseImage: cgr.dev/chainguard/static:latest@sha256:1ff7590cbc50eaaa917c34b092de0720d307f67d6d795e4f749a0b80a2e95a2c

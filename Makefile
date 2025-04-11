@@ -1,5 +1,6 @@
 PROJECT ?= purelb
-REPO ?= registry.gitlab.com/${PROJECT}
+REPO ?= ko.local
+
 PREFIX ?= ${PROJECT}
 REGISTRY_IMAGE ?= ${REPO}/${PREFIX}
 SUFFIX = v0.0.0-dev
@@ -14,6 +15,7 @@ CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0
 KUSTOMIZE = go run sigs.k8s.io/kustomize/kustomize/v4@v4.5.2
 HELM = go run helm.sh/helm/v3/cmd/helm@v3.11
 HUGO = go run -tags extended github.com/gohugoio/hugo@v0.111.3
+KO = go run github.com/google/ko@v0.17.1
 
 ##@ Default Goal
 .PHONY: help
@@ -36,17 +38,9 @@ check:	## Run "short" tests
 	NETBOX_BASE_URL=${NETBOX_BASE_URL} NETBOX_USER_TOKEN=${NETBOX_USER_TOKEN} go test -race -short ./...
 
 .PHONY: image
-image: TAG=${REGISTRY_IMAGE}/${PROJECT}:${SUFFIX}
-image:
-	docker build -t ${TAG} \
-	--build-arg commit=`git describe --dirty --always` \
-	--build-arg branch=`git rev-parse --abbrev-ref HEAD` \
-	.
-
-.PHONY: install
-install: TAG=${REGISTRY_IMAGE}/${PROJECT}:${SUFFIX}
-install:
-	docker push ${TAG}
+image:  ## Build executables and containers
+	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/allocator
+	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/lbnodeagent
 
 .PHONY: run-%
 run-%:  ## Run PureLB command locally (e.g., 'make run-allocator')
@@ -76,13 +70,6 @@ manifest:  ## Generate deployment manifest
 	$(KUSTOMIZE) build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml
-
-.ONESHELL:
-.PHONY: docker-manifest
-docker-manifest: IMG=${REGISTRY_IMAGE}/${PROJECT}
-docker-manifest:  ## Generate and push Docker multiarch manifest
-	docker manifest create ${IMG}:${MANIFEST_SUFFIX} ${IMG}:amd64-${SUFFIX} ${IMG}:arm64-${SUFFIX}
-	docker manifest push ${IMG}:${MANIFEST_SUFFIX}
 
 .PHONY: helm
 helm:  ## Package PureLB using Helm

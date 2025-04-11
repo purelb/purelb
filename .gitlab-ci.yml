@@ -48,22 +48,10 @@ check:
 
 arm64:
   stage: image
-  tags:
-  - arm64
-  script: make SUFFIX=arm64-${TAG_SPECIFIC} image install
-
-amd:
-  stage: image
-  script: make SUFFIX=amd64-${TAG_SPECIFIC} image install
-
-docker-manifest:
-  stage: manifest
-  script:
-    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} docker-manifest
-    - |
-      if [ -n "${TAG_LATEST}" ] ; then
-        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_SPECIFIC} docker-manifest
-      fi
+  before_script:
+  - *tag-setup
+  - *docker-setup
+  script: make SUFFIX=${TAG_SPECIFIC} image
 
 k8s-manifest:
   stage: manifest
