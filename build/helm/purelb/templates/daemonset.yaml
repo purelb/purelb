@@ -30,9 +30,7 @@ spec:
       {{- toYaml . | nindent 6 }}
       {{- end }}
       containers:
-      - name: lbnodeagent
-        command: ["/usr/local/bin/lbnodeagent"]
-        env:
+      - env:
         - name: NETBOX_USER_TOKEN
           valueFrom:
             secretKeyRef:
@@ -57,8 +55,9 @@ spec:
           value: "{{- include "purelb.memberlistLabels" . }}"
         - name: ML_GROUP
           value: "{{ .Values.memberlistSecretKey }}"
-        image: "{{ .Values.image.repository }}/purelb:{{ .Values.image.tag }}"
+        image: "{{ .Values.image.repository }}/lbnodeagent:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
+        name: lbnodeagent
         ports:
         - containerPort: 7472
           name: monitoring

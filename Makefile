@@ -66,7 +66,7 @@ manifest:  ## Generate deployment manifest
 	cd deployments/samples
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
-	$(KUSTOMIZE) edit set image registry.gitlab.com/purelb/purelb/purelb=${REGISTRY_IMAGE}/purelb:${SUFFIX}
+	$(KUSTOMIZE) edit set image registry.gitlab.com/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} registry.gitlab.com/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
 	$(KUSTOMIZE) build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml

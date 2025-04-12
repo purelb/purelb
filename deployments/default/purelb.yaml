@@ -197,9 +197,7 @@ spec:
         component: lbnodeagent
     spec:
       containers:
-      - name: lbnodeagent
-        command: ["/usr/local/bin/lbnodeagent"]
-        env:
+      - env:
         - name: NETBOX_USER_TOKEN
           valueFrom:
             secretKeyRef:
@@ -220,8 +218,9 @@ spec:
               fieldPath: metadata.namespace
         - name: ML_GROUP
           value: 8sb7ikA5qHwQQqxc
-        image: registry.gitlab.com/purelb/purelb/purelb:main-latest
+        image: registry.gitlab.com/purelb/purelb/lbnodeagent:main-latest
         imagePullPolicy: Always
+        name: lbnodeagent
         ports:
         - containerPort: 7472
           name: monitoring
@@ -269,9 +268,7 @@ spec:
         component: allocator
     spec:
       containers:
-      - name: allocator
-        image: registry.gitlab.com/purelb/purelb/purelb:main-latest
-        command: ["/usr/local/bin/allocator"]
+      - image: registry.gitlab.com/purelb/purelb/allocator:main-latest
         env:
         - name: NETBOX_USER_TOKEN
           valueFrom:
@@ -282,6 +279,7 @@ spec:
         - name: DEFAULT_ANNOUNCER
           value: "PureLB"
         imagePullPolicy: Always
+        name: allocator
         ports:
         - containerPort: 7472
           name: monitoring

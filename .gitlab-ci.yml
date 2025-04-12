@@ -17,12 +17,7 @@
 - mkdir -p ~/.ssh && chmod 700 ~/.ssh
 - ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
 
-.alpine-setup: &alpine-setup
-- apk add make git wget
-
-image: docker:20.10.3
-services:
-- docker:20.10.3-dind
+image: golang:1.23-bullseye
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
   PROJECT: $CI_PROJECT_NAME
@@ -30,23 +25,17 @@ variables:
   NETBOX_USER_TOKEN: no-op
   # https://docs.gitlab.com/12.10/ee/ci/docker/using_docker_build.html#tls-enabled
   DOCKER_TLS_CERTDIR: "/certs"
-before_script:
-- *tag-setup
-- *docker-setup
-- *alpine-setup
 stages:
-  - image
-  - manifest
-  - pages
+- image
+- manifest
+- pages
 
 check:
   stage: image
   image: golang:1.19-bullseye
-  services: []
-  before_script: []
   script: make website check
 
-arm64:
+build:
   stage: image
   before_script:
   - *tag-setup
@@ -55,34 +44,32 @@ arm64:
 
 k8s-manifest:
   stage: manifest
-  image: golang:1.23-bullseye
-  services: []
-  before_script: [ *tag-setup ]
+  before_script:
+  - *tag-setup
+  - *docker-setup
   script:
-    - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} crd manifest
-    - make SUFFIX=${TAG_SPECIFIC} helm
-    - curl --request POST --form "chart=@purelb-${TAG_SPECIFIC}.tgz" --user gitlab-ci-token:${CI_JOB_TOKEN} "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/helm/api/stable/charts"
-    - |
-      if [ -n "${TAG_LATEST}" ] ; then
-        make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} manifest
-        make SUFFIX=${TAG_LATEST} helm
-        curl --request POST --form "chart=@purelb-${TAG_LATEST}.tgz" --user gitlab-ci-token:${CI_JOB_TOKEN} "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/helm/api/stable/charts"
-      else
-        # to make our documention more stable we upload a "latest"
-        # deployment manifest to a fixed location. This means that we
-        # don't need to update the docs for every release.
-        wget --no-verbose --header "JOB-TOKEN: $CI_JOB_TOKEN" --method=PUT --body-file=deployments/purelb-${TAG_SPECIFIC}.yaml "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/manifest/0.0.1/purelb-complete.yaml"
-      fi
+  - make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_SPECIFIC} SUFFIX=${TAG_SPECIFIC} crd manifest
+  - make SUFFIX=${TAG_SPECIFIC} helm
+  - curl --request POST --form "chart=@purelb-${TAG_SPECIFIC}.tgz" --user gitlab-ci-token:${CI_JOB_TOKEN} "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/helm/api/stable/charts"
+  - |
+    if [ -n "${TAG_LATEST}" ] ; then
+      make REGISTRY_IMAGE=${CI_REGISTRY_IMAGE} MANIFEST_SUFFIX=${TAG_LATEST} SUFFIX=${TAG_LATEST} manifest
+      make SUFFIX=${TAG_LATEST} helm
+      curl --request POST --form "chart=@purelb-${TAG_LATEST}.tgz" --user gitlab-ci-token:${CI_JOB_TOKEN} "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/helm/api/stable/charts"
+    else
+      # to make our documention more stable we upload a "latest"
+      # deployment manifest to a fixed location. This means that we
+      # don't need to update the docs for every release.
+      wget --no-verbose --header "JOB-TOKEN: $CI_JOB_TOKEN" --method=PUT --body-file=deployments/purelb-${TAG_SPECIFIC}.yaml "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/manifest/0.0.1/purelb-complete.yaml"
+    fi
   artifacts:
     paths:
-      - deployments/*
-      - configs/*
-      - purelb-v*.tgz
+    - deployments/*
+    - configs/*
+    - purelb-v*.tgz
 
 pages:
   stage: pages
-  image: golang:1.19-bullseye
-  services: []
   before_script:
   - *tag-setup
   script:
