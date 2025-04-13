@@ -20,10 +20,6 @@
 .alpine-setup: &alpine-setup
 - apk add make git wget
 
-.hugo-setup: &hugo-setup
-- apt-get update
-- apt-get install -y hugo
-
 image: docker:20.10.3
 services:
 - docker:20.10.3-dind
@@ -47,7 +43,7 @@ check:
   stage: image
   image: golang:1.19-bullseye
   services: []
-  before_script: [ *hugo-setup ]
+  before_script: []
   script: make website check
 
 arm64:
@@ -101,7 +97,6 @@ pages:
   services: []
   before_script:
   - *tag-setup
-  - *hugo-setup
   script:
   - make website
   artifacts:
