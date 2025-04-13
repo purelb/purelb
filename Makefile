@@ -13,6 +13,7 @@ CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_s
 CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0
 KUSTOMIZE = go run sigs.k8s.io/kustomize/kustomize/v4@v4.5.2
 HELM = go run helm.sh/helm/v3/cmd/helm@v3.11
+HUGO = go run -tags extended github.com/gohugoio/hugo@v0.111.3
 
 ##@ Default Goal
 .PHONY: help
@@ -106,4 +107,4 @@ scan: ## Scan for vulnerabilities using govulncheck
 
 .PHONY: website
 website: ## Generate documentation website
-	hugo --source website
+	${HUGO} --source website

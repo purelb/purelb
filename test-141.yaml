@@ -1,0 +1,67 @@
+---
+# test case for https://gitlab.com/purelb/purelb/-/issues/141
+apiVersion: purelb.io/v1
+kind: ServiceGroup
+metadata:
+  name: test-141
+spec:
+  local:
+    v4pools:
+    - subnet: 192.168.40.0/24
+      pool: 192.168.40.0-192.168.40.128
+      aggregation: /32
+    v6pools:
+    - subnet: fd53:9ef0:8683::/120
+      pool: fd53:9ef0:8683::-fd53:9ef0:8683::ff
+      aggregation: /128
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: purelb
+    component: echoserver
+  name: echoserver
+spec:
+  selector:
+    matchLabels:
+      app: purelb
+      component: echoserver
+  template:
+    metadata:
+      labels:
+        app: purelb
+        component: echoserver
+    spec:
+      containers:
+      - image: k8s.gcr.io/echoserver:1.10
+        imagePullPolicy: Always
+        name: echoserver
+        ports:
+        - containerPort: 8080
+          name: echoserver
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    purelb.io/service-group: test-141
+    purelb.io/addresses: fd53:9ef0:8683::0,192.168.40.0
+  labels:
+    app: purelb
+    component: echoserver
+  name: test-141
+spec:
+  ipFamilies:
+  - IPv4
+  - IPv6
+  ipFamilyPolicy: RequireDualStack
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: purelb
+    component: echoserver
+  type: LoadBalancer
