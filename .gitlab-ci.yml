@@ -13,11 +13,12 @@
   fi
 
 .docker-setup: &docker-setup
+- apt-get update && apt-get install -y docker.io
 - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
 - mkdir -p ~/.ssh && chmod 700 ~/.ssh
 - ssh-keyscan -H gitlab.com >> ~/.ssh/known_hosts
 
-image: golang:1.23-bullseye
+image: golang:1.24.2-bookworm
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
   PROJECT: $CI_PROJECT_NAME
@@ -32,7 +33,6 @@ stages:
 
 check:
   stage: image
-  image: golang:1.19-bullseye
   script: make website check
 
 build:
