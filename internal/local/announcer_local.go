@@ -24,7 +24,7 @@ import (
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 
 	"github.com/go-kit/kit/log"
 	"github.com/prometheus/client_golang/prometheus"

@@ -24,7 +24,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 )
 
 // findLocal tries to find a "local" network interface based on the

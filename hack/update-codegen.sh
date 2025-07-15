@@ -19,21 +19,18 @@ set -o nounset
 set -o pipefail
 
 SCRIPT_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
-CODEGEN_PKG=${CODEGEN_PKG:-$(cd "${SCRIPT_ROOT}"; ls -d -1 ./vendor/k8s.io/code-generator 2>/dev/null || echo ../code-generator)}
+CODEGEN_PKG=$(go env GOMODCACHE)/k8s.io/code-generator@v0.33.3
+source "${CODEGEN_PKG}/kube_codegen.sh"
 
-bash "${CODEGEN_PKG}"/generate-groups.sh all \
-  purelb.io/pkg/generated \
-  purelb.io/pkg \
-  apis:v1 \
-  --go-header-file "${SCRIPT_ROOT}/hack/custom-boilerplate.go.txt"
+THIS_PKG="purelb.io"
 
-# KLUDGE: the generators put the generated files in the wrong place.
-#
-# Should be: ./pkg
-# Is: purelb.io/pkg
-#
-# There doesn't seem to be any way to control it via command-line
-# flags so for now I'll just move the files to where they're supposed
-# to be.
-tar "--directory=${SCRIPT_ROOT}/purelb.io" --create --file=- . | tar xf -
-rm -r "${SCRIPT_ROOT}/purelb.io"
+kube::codegen::gen_helpers \
+    --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
+    "${SCRIPT_ROOT}/pkg/apis"
+
+kube::codegen::gen_client \
+    --with-watch \
+    --output-dir "${SCRIPT_ROOT}/pkg/generated" \
+    --output-pkg "${THIS_PKG}/pkg/generated" \
+    --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
+    "${SCRIPT_ROOT}/pkg/apis"

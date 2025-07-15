@@ -33,12 +33,12 @@ help: ## Display help message
 all: check crd image ## Build it all!
 
 .PHONY: check
-check:	## Run "short" tests
+check: generate ## Run "short" tests
 	go vet ./...
 	NETBOX_BASE_URL=${NETBOX_BASE_URL} NETBOX_USER_TOKEN=${NETBOX_USER_TOKEN} go test -race -short ./...
 
 .PHONY: image
-image:  ## Build executables and containers
+image: generate ## Build executables and containers
 	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/allocator
 	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/lbnodeagent
 
@@ -49,14 +49,16 @@ run-%:  ## Run PureLB command locally (e.g., 'make run-allocator')
 .PHONY: clean-gen
 clean-gen:  ## Delete generated files
 	rm -fr pkg/generated/
+	rm -f pkg/apis/purelb/v1/zz_generated.deepcopy.go
 	rm -fr deployments/${PROJECT}-*.yaml
 
 .PHONY: generate
 generate:  ## Generate client-side stubs for our custom resources
+	go mod download
 	hack/update-codegen.sh
 
 crd: $(CRDS) ## Generate CRDs from golang api structs
-$(CRDS) &: pkg/apis/v1/*.go
+$(CRDS) &: pkg/apis/purelb/v1/*.go
 	$(CONTROLLER_GEN) crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
 
 .ONESHELL:
