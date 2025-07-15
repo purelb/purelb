@@ -16,6 +16,9 @@ KUSTOMIZE = go run sigs.k8s.io/kustomize/kustomize/v4@v4.5.2
 HELM = go run helm.sh/helm/v3/cmd/helm@v3.11
 HUGO = go run -tags extended github.com/gohugoio/hugo@v0.111.3
 KO = go run github.com/google/ko@v0.17.1
+# This is a shell script, not a Go program, so we can't run it using
+# "go run". We use "go env" to find the script and run it from there.
+CODE_GEN = $(shell go env GOMODCACHE)/k8s.io/code-generator@v0.26.1/generate-groups.sh
 
 ##@ Default Goal
 .PHONY: help
@@ -33,12 +36,12 @@ help: ## Display help message
 all: check crd image ## Build it all!
 
 .PHONY: check
-check:	## Run "short" tests
+check: generate ## Run "short" tests
 	go vet ./...
 	NETBOX_BASE_URL=${NETBOX_BASE_URL} NETBOX_USER_TOKEN=${NETBOX_USER_TOKEN} go test -race -short ./...
 
 .PHONY: image
-image:  ## Build executables and containers
+image: generate ## Build executables and containers
 	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/allocator
 	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/lbnodeagent
 
@@ -49,11 +52,28 @@ run-%:  ## Run PureLB command locally (e.g., 'make run-allocator')
 .PHONY: clean-gen
 clean-gen:  ## Delete generated files
 	rm -fr pkg/generated/
+	rm -f pkg/apis/v1/zz_generated.deepcopy.go
 	rm -fr deployments/${PROJECT}-*.yaml
 
 .PHONY: generate
 generate:  ## Generate client-side stubs for our custom resources
-	hack/update-codegen.sh
+	go mod download
+	bash -x ${CODE_GEN} all \
+	purelb.io/pkg/generated \
+	purelb.io/pkg \
+	apis:v1 \
+	--go-header-file hack/custom-boilerplate.go.txt
+
+# KLUDGE: the generators put the generated files in the wrong place.
+#
+# Should be: ./pkg
+# Is: purelb.io/pkg
+#
+# There doesn't seem to be any way to control it via command-line
+# flags so for now I'll just move the files to where they're supposed
+# to be.
+	tar --directory=purelb.io --create --file=- . | tar xf -
+	rm -r purelb.io
 
 crd: $(CRDS) ## Generate CRDs from golang api structs
 $(CRDS) &: pkg/apis/v1/*.go
