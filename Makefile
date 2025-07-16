@@ -16,9 +16,6 @@ KUSTOMIZE = go run sigs.k8s.io/kustomize/kustomize/v4@v4.5.2
 HELM = go run helm.sh/helm/v3/cmd/helm@v3.11
 HUGO = go run -tags extended github.com/gohugoio/hugo@v0.111.3
 KO = go run github.com/google/ko@v0.17.1
-# This is a shell script, not a Go program, so we can't run it using
-# "go run". We use "go env" to find the script and run it from there.
-CODE_GEN = $(shell go env GOMODCACHE)/k8s.io/code-generator@v0.26.1/generate-groups.sh
 
 ##@ Default Goal
 .PHONY: help
@@ -52,15 +49,16 @@ run-%:  ## Run PureLB command locally (e.g., 'make run-allocator')
 .PHONY: clean-gen
 clean-gen:  ## Delete generated files
 	rm -fr pkg/generated/
-	rm -f pkg/apis/v1/zz_generated.deepcopy.go
+	rm -f pkg/apis/purelb/v1/zz_generated.deepcopy.go
 	rm -fr deployments/${PROJECT}-*.yaml
 
 .PHONY: generate
 generate:  ## Generate client-side stubs for our custom resources
+	go mod download
 	hack/update-codegen.sh
 
 crd: $(CRDS) ## Generate CRDs from golang api structs
-$(CRDS) &: pkg/apis/v1/*.go
+$(CRDS) &: pkg/apis/purelb/v1/*.go
 	$(CONTROLLER_GEN) crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
 
 .ONESHELL:
