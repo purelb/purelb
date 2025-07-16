@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"purelb.io/internal/k8s"
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 
 	"github.com/go-kit/kit/log"
 	"github.com/google/go-cmp/cmp"

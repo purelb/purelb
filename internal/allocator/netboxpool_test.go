@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"purelb.io/internal/netbox/fake"
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 )
 
 var (

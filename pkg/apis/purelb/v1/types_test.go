@@ -19,7 +19,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	v1 "purelb.io/pkg/apis/v1"
+	v1 "purelb.io/pkg/apis/purelb/v1"
 )
 
 func TestSubnet(t *testing.T) {

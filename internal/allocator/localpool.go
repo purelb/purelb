@@ -24,7 +24,7 @@ import (
 	"github.com/vishvananda/netlink/nl"
 	v1 "k8s.io/api/core/v1"
 
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 )
 
 // Pool is the configuration of an IP address pool.

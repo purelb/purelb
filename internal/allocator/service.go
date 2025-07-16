@@ -23,7 +23,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/k8s"
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 )
 
 // SetBalancer is the main entry point that handles LoadBalancer

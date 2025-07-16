@@ -23,7 +23,7 @@ import (
 	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
 
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 )
 
 // Port represents one port in use by a service.

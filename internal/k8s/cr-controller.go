@@ -32,11 +32,11 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 	clientset "purelb.io/pkg/generated/clientset/versioned"
 	purelbscheme "purelb.io/pkg/generated/clientset/versioned/scheme"
 	"purelb.io/pkg/generated/informers/externalversions"
-	listers "purelb.io/pkg/generated/listers/apis/v1"
+	listers "purelb.io/pkg/generated/listers/purelb/v1"
 )
 
 const controllerAgentName = "cr-controller"

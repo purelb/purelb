@@ -57,23 +57,7 @@ clean-gen:  ## Delete generated files
 
 .PHONY: generate
 generate:  ## Generate client-side stubs for our custom resources
-	go mod download
-	bash -x ${CODE_GEN} all \
-	purelb.io/pkg/generated \
-	purelb.io/pkg \
-	apis:v1 \
-	--go-header-file hack/custom-boilerplate.go.txt
-
-# KLUDGE: the generators put the generated files in the wrong place.
-#
-# Should be: ./pkg
-# Is: purelb.io/pkg
-#
-# There doesn't seem to be any way to control it via command-line
-# flags so for now I'll just move the files to where they're supposed
-# to be.
-	tar --directory=purelb.io --create --file=- . | tar xf -
-	rm -r purelb.io
+	hack/update-codegen.sh
 
 crd: $(CRDS) ## Generate CRDs from golang api structs
 $(CRDS) &: pkg/apis/v1/*.go

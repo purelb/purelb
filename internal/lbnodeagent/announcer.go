@@ -21,7 +21,7 @@ import (
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 )
 
 // Announcer announces service IP addresses.

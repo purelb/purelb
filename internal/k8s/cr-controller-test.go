@@ -33,7 +33,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 	"purelb.io/pkg/generated/clientset/versioned/fake"
 	informers "purelb.io/pkg/generated/informers/externalversions"
 )

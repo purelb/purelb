@@ -20,7 +20,7 @@ import (
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
 	"purelb.io/internal/local"
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 
 	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"

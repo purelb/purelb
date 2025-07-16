@@ -22,7 +22,7 @@ import (
 	"reflect"
 	"time"
 
-	purelbv1 "purelb.io/pkg/apis/v1"
+	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 	"purelb.io/pkg/generated/clientset/versioned"
 	"purelb.io/pkg/generated/informers/externalversions"
 
