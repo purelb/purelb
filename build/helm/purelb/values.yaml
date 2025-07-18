@@ -182,9 +182,6 @@ lbnodeagent:
   sendgarp: false
   podSecurityPolicy:
     enabled: false
-  resources:
-    limits:
-      memory: 100Mi
   containerSecurityContext:
     runAsUser: 0
     runAsGroup: 0
@@ -212,9 +209,6 @@ lbnodeagent:
 allocator:
   podSecurityPolicy:
     enabled: false
-  resources:
-    limits:
-      memory: 100Mi
   # Set the container security context
   containerSecurityContext:
     allowPrivilegeEscalation: false
