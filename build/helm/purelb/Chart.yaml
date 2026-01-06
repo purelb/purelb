@@ -9,7 +9,7 @@ appVersion: 0.0.0
 version: 0.0.0
 
 sources:
-  - https://gitlab.com/purelb/purelb
+  - https://github.com/purelb/purelb
 
 keywords:
 - load-balancer

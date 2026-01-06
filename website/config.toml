@@ -1,4 +1,4 @@
-baseURL = "https://purelb.gitlab.io/purelb/"
+baseURL = "https://purelb.github.io/purelb/"
 languageCode = "en-us"
 title = "PureLB"
 theme = "docport"
@@ -24,7 +24,7 @@ disableSearch = false # default is false
 disableNavChevron = false # set true to hide next/prev chevron, default is false
 menushortcutsnewtab = false # set true to open shortcuts links to a new tab/window
 
-editURL = "https://gitlab.com/purelb/purelb/edit/main/website/content/"
+editURL = "https://github.com/purelb/purelb/edit/main/website/content/"
 enableGitInfo = true
 
 [markup.goldmark.renderer]
@@ -52,7 +52,7 @@ weight = 5
 
 [[menu.shortcuts]]
 name = "Code"
-url = "https://gitlab.com/purelb/purelb"
+url = "https://github.com/purelb/purelb"
 weight = 10
 
 [[menu.shortcuts]]
