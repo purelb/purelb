@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../home/adamd/purelb/deployments/samples
+
+images:
+- name: purelb/allocator
+  newName: ghcr.io/purelb/purelb/allocator
+  newTag: general_k8_update
+- name: purelb/lbnodeagent
+  newName: ghcr.io/purelb/purelb/lbnodeagent
+  newTag: general_k8_update
+
+patches:
+- patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/imagePullPolicy
+      value: IfNotPresent
+  target:
+    kind: Deployment
+    name: allocator
+- patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/imagePullPolicy
+      value: IfNotPresent
+  target:
+    kind: DaemonSet
+    name: lbnodeagent

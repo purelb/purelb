@@ -38,9 +38,17 @@ var (
 		Name:      "addresses_in_use",
 		Help:      "Number of addresses allocated from the pool",
 	}, labelNames)
+
+	allocationRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: purelbv1.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "allocation_rejected_total",
+		Help:      "Number of allocation requests rejected due to sharing constraints or exhaustion",
+	}, []string{"pool", "reason"})
 )
 
 func init() {
 	prometheus.MustRegister(poolCapacity)
 	prometheus.MustRegister(poolActive)
+	prometheus.MustRegister(allocationRejected)
 }

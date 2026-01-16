@@ -50,6 +50,12 @@ type LocalPool struct {
 	sharingKeys map[string]*Key // ip.String() -> pointer to sharing key
 
 	portsInUse map[string]map[Port]string // ip.String() -> Port -> svc
+
+	// sharingKeyToIP is a reverse index mapping sharing keys to their bound IP,
+	// per address family. Once a sharing key is assigned to an IP in a family,
+	// all services with that key must use the same IP in that family.
+	// Key format: "sharingKey:4" or "sharingKey:6" for IPv4/IPv6 respectively.
+	sharingKeyToIP map[string]string // "sharingKey:family" -> ip.String()
 }
 
 func NewLocalPool(name string, log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (LocalPool, error) {
@@ -59,6 +65,7 @@ func NewLocalPool(name string, log log.Logger, spec purelbv1.ServiceGroupLocalSp
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
+		sharingKeyToIP: map[string]string{},
 	}
 
 	// If there ranges in the "legacy" slots, add them to the slices.
@@ -173,6 +180,13 @@ func (p LocalPool) Notify(service *v1.Service) error {
 		for _, port := range ports {
 			p.portsInUse[ipstr][port] = nsName
 		}
+
+		// Update reverse index: sharing key -> IP (per address family)
+		if sharingKey.Sharing != "" {
+			family := purelbv1.AddrFamily(ip)
+			indexKey := fmt.Sprintf("%s:%d", sharingKey.Sharing, family)
+			p.sharingKeyToIP[indexKey] = ipstr
+		}
 	}
 
 	return nil
@@ -187,9 +201,16 @@ func (p LocalPool) available(ip net.IP, service *v1.Service) error {
 	key := &Key{Sharing: SharingKey(service)}
 	ports := Ports(service)
 
-	// No key: no sharing
-	if key == nil {
-		key = &Key{}
+	// If this service has a sharing key, check if that key is already
+	// bound to a different IP in this address family. If so, this service
+	// MUST use that IP - it cannot be assigned to any other IP.
+	if key.Sharing != "" {
+		family := purelbv1.AddrFamily(ip)
+		boundIP := p.ipForSharingKey(key.Sharing, family)
+		if boundIP != nil && !boundIP.Equal(ip) {
+			return fmt.Errorf("sharing key %q is bound to %s, cannot use %s",
+				key.Sharing, boundIP, ip)
+		}
 	}
 
 	// Does the IP already have allocs? If so, needs to be the same
@@ -248,14 +269,57 @@ func (p LocalPool) AssignNext(service *v1.Service) error {
 }
 
 func (p LocalPool) assignFamily(family int, service *v1.Service) error {
+	var lastErr error
+	var boundIPErr error
+
+	// Pre-compute the bound IP for this service's sharing key (if any)
+	sharingKey := SharingKey(service)
+	boundIP := p.ipForSharingKey(sharingKey, family)
+
 	for pos := p.first(family); pos != nil; pos = p.next(pos) {
 		if err := p.Assign(pos, service); err == nil {
 			// we found an available address
-			return err
+			return nil
+		} else {
+			lastErr = err
+			// Capture the error from the bound IP specifically -
+			// this is the most relevant error for sharing conflicts
+			if boundIP != nil && boundIP.Equal(pos) {
+				boundIPErr = err
+			}
 		}
 	}
 
-	return fmt.Errorf("no available addresses for service %s in family %d", namespacedName(service), family)
+	// Determine final error - prefer bound IP error (e.g., port conflict)
+	finalErr := boundIPErr
+	if finalErr == nil {
+		finalErr = lastErr
+	}
+	if finalErr == nil {
+		finalErr = fmt.Errorf("no available addresses for service %s in family %d",
+			namespacedName(service), family)
+	}
+
+	// Categorize the error for metrics
+	reason := "exhausted"
+	errStr := finalErr.Error()
+	if strings.Contains(errStr, "port") && strings.Contains(errStr, "already in use") {
+		reason = "port_conflict"
+	} else if strings.Contains(errStr, "sharing key") {
+		reason = "sharing_key_conflict"
+	}
+
+	// Log and record metric once per failed allocation
+	if p.logger != nil {
+		p.logger.Log("op", "assignFamily", "result", "failed",
+			"service", namespacedName(service),
+			"family", family,
+			"reason", reason,
+			"error", finalErr.Error())
+	}
+	allocationRejected.WithLabelValues(p.name, reason).Inc()
+
+	return finalErr
 }
 
 // Assign assigns a service to an IP.
@@ -277,6 +341,14 @@ func (p LocalPool) Release(service string) error {
 		delete(allocs, service)
 		if len(allocs) == 0 {
 			delete(p.addressesInUse, ipstr)
+
+			// Clean up sharing key reverse index before deleting the forward mapping
+			if key := p.sharingKeys[ipstr]; key != nil && key.Sharing != "" {
+				ip := net.ParseIP(ipstr)
+				family := purelbv1.AddrFamily(ip)
+				indexKey := fmt.Sprintf("%s:%d", key.Sharing, family)
+				delete(p.sharingKeyToIP, indexKey)
+			}
 			delete(p.sharingKeys, ipstr)
 		}
 		for port, svc := range p.portsInUse[ipstr] {
@@ -315,6 +387,21 @@ func (p LocalPool) servicesOnIP(ip net.IP) []string {
 // SharingKey returns the "sharing key" for the specified address.
 func (p LocalPool) SharingKey(ip net.IP) *Key {
 	return p.sharingKeys[ip.String()]
+}
+
+// ipForSharingKey returns the IP address that's already bound to the
+// given sharing key in the specified address family, or nil if no IP
+// has that sharing key yet. This is an O(1) lookup using the reverse index.
+// family should be nl.FAMILY_V4 or nl.FAMILY_V6.
+func (p LocalPool) ipForSharingKey(key string, family int) net.IP {
+	if key == "" {
+		return nil
+	}
+	indexKey := fmt.Sprintf("%s:%d", key, family)
+	if ipstr, exists := p.sharingKeyToIP[indexKey]; exists {
+		return net.ParseIP(ipstr)
+	}
+	return nil
 }
 
 // first returns the first net.IP within this Pool, or nil if the pool
