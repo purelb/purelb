@@ -66,11 +66,11 @@ func main() {
 	}
 
 	client, err := k8s.New(&k8s.Config{
-		ProcessName:   "purelb-lbnodeagent",
-		NodeName:      *myNode,
-		Logger:        logger,
-		Kubeconfig:    *kubeconfig,
-		ReadEndpoints: true,
+		ProcessName:        "purelb-lbnodeagent",
+		NodeName:           *myNode,
+		Logger:             logger,
+		Kubeconfig:         *kubeconfig,
+		ReadEndpointSlices: true,
 
 		ServiceChanged: ctrl.ServiceChanged,
 		ServiceDeleted: ctrl.DeleteBalancer,

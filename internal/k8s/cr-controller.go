@@ -20,7 +20,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -61,7 +61,7 @@ type Controller struct {
 	// happens. This means we can ensure we only process a fixed amount
 	// of resources at a time, and makes it easy to ensure we are never
 	// processing the same item simultaneously in two different workers.
-	workqueue workqueue.RateLimitingInterface
+	workqueue workqueue.TypedRateLimitingInterface[string]
 	// recorder is an event recorder for recording Event resources to
 	// the Kubernetes API.
 	recorder record.EventRecorder
@@ -100,7 +100,7 @@ func NewCRController(
 		lbnasSynced:     lbnaInformer.Informer().HasSynced,
 		sgLister:        sgInformer.Lister(),
 		sgsSynced:       sgInformer.Informer().HasSynced,
-		workqueue:       workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "ServiceGroups"),
+		workqueue:       workqueue.NewTypedRateLimitingQueueWithConfig(workqueue.DefaultTypedControllerRateLimiter[string](), workqueue.TypedRateLimitingQueueConfig[string]{Name: "ServiceGroups"}),
 		recorder:        recorder,
 	}
 
@@ -168,55 +168,33 @@ func (c *Controller) runWorker() {
 // processNextWorkItem will read a single work item off the workqueue
 // and attempt to process it, by calling the syncHandler.
 func (c *Controller) processNextWorkItem() bool {
-	obj, shutdown := c.workqueue.Get()
+	key, shutdown := c.workqueue.Get()
 
 	if shutdown {
 		return false
 	}
 
-	// We wrap this block in a func so we can defer c.workqueue.Done.
-	err := func(obj interface{}) error {
-		// We call Done here so the workqueue knows we have finished
-		// processing this item. We also must remember to call Forget if
-		// we do not want this work item being re-queued. For example, we
-		// do not call Forget if a transient error occurs, instead the
-		// item is put back on the workqueue and attempted again after a
-		// back-off period.
-		defer c.workqueue.Done(obj)
-		var key string
-		var ok bool
-		// We expect strings to come off the workqueue. These are of the
-		// form namespace/name. We do this as the delayed nature of the
-		// workqueue means the items in the informer cache may actually be
-		// more up to date that when the item was initially put onto the
-		// workqueue.
-		if key, ok = obj.(string); !ok {
-			// As the item in the workqueue is actually invalid, we call
-			// Forget here else we'd go into a loop of attempting to
-			// process a work item that is invalid.
-			c.workqueue.Forget(obj)
-			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
-			return nil
-		}
-		// Run the syncHandler, passing it the namespace/name string of
-		// the ServiceGroup resource to be synced.
-		if err := c.syncHandler(); err != nil {
-			// Put the item back on the workqueue to handle any transient
-			// errors.
-			c.workqueue.AddRateLimited(key)
-			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
-		}
-		// Finally, if no error occurs we Forget this item so it does not
-		// get queued again until another change happens.
-		c.workqueue.Forget(obj)
-		return nil
-	}(obj)
+	// We call Done here so the workqueue knows we have finished
+	// processing this item. We also must remember to call Forget if
+	// we do not want this work item being re-queued. For example, we
+	// do not call Forget if a transient error occurs, instead the
+	// item is put back on the workqueue and attempted again after a
+	// back-off period.
+	defer c.workqueue.Done(key)
 
-	if err != nil {
-		utilruntime.HandleError(err)
+	// Run the syncHandler, passing it the namespace/name string of
+	// the ServiceGroup resource to be synced.
+	if err := c.syncHandler(); err != nil {
+		// Put the item back on the workqueue to handle any transient
+		// errors.
+		c.workqueue.AddRateLimited(key)
+		utilruntime.HandleError(fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error()))
 		return true
 	}
 
+	// Finally, if no error occurs we Forget this item so it does not
+	// get queued again until another change happens.
+	c.workqueue.Forget(key)
 	return true
 }
 

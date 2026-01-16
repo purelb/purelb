@@ -20,14 +20,16 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync/atomic"
 	"time"
 
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 	"purelb.io/pkg/generated/clientset/versioned"
 	"purelb.io/pkg/generated/informers/externalversions"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,6 +43,10 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
+// serviceNameIndexName is the name of the custom indexer that maps
+// EndpointSlices to their parent Service name.
+const serviceNameIndexName = "serviceName"
+
 // Client watches a Kubernetes cluster and translates events into
 // Controller method calls.
 type Client struct {
@@ -48,19 +54,23 @@ type Client struct {
 
 	client *kubernetes.Clientset
 	events record.EventRecorder
-	queue  workqueue.RateLimitingInterface
+	queue  workqueue.TypedRateLimitingInterface[queueItem]
 
-	svcIndexer  cache.Indexer
-	svcInformer cache.Controller
-	epIndexer   cache.Indexer
-	epInformer  cache.Controller
+	// shuttingDown is set to true when stopCh closes, signaling that
+	// API calls should use shorter timeouts to allow graceful shutdown.
+	shuttingDown atomic.Bool
+
+	svcIndexer       cache.Indexer
+	svcInformer      cache.Controller
+	epSliceIndexer   cache.Indexer
+	epSliceInformer  cache.Controller
 
 	crInformerFactory externalversions.SharedInformerFactory
 	crController      Controller
 
 	syncFuncs []cache.InformerSynced
 
-	serviceChanged func(*corev1.Service, *corev1.Endpoints) SyncState
+	serviceChanged func(*corev1.Service, []*discoveryv1.EndpointSlice) SyncState
 	serviceDeleted func(string) SyncState
 	configChanged  func(*purelbv1.Config) SyncState
 	synced         func()
@@ -91,21 +101,33 @@ const (
 // Config specifies the configuration of the Kubernetes
 // client/watcher.
 type Config struct {
-	ProcessName   string
-	NodeName      string
-	ReadEndpoints bool
-	Logger        log.Logger
-	Kubeconfig    string
+	ProcessName        string
+	NodeName           string
+	ReadEndpointSlices bool
+	Logger             log.Logger
+	Kubeconfig         string
 
-	ServiceChanged func(*corev1.Service, *corev1.Endpoints) SyncState
+	ServiceChanged func(*corev1.Service, []*discoveryv1.EndpointSlice) SyncState
 	ServiceDeleted func(string) SyncState
 	ConfigChanged  func(*purelbv1.Config) SyncState
 	Synced         func()
 	Shutdown       func()
 }
 
+// queueItem is a union type for items that can be added to the work queue.
+// Using an interface with a marker method provides compile-time type safety
+// with the TypedRateLimitingQueue.
+type queueItem interface {
+	isQueueItem()
+}
+
 type svcKey string
+
+func (svcKey) isQueueItem() {}
+
 type synced string
+
+func (synced) isQueueItem() {}
 
 // New connects to masterAddr, using kubeconfig to authenticate.
 //
@@ -134,7 +156,7 @@ func New(cfg *Config) (*Client, error) {
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: typedcorev1.New(clientset.CoreV1().RESTClient()).Events("")})
 	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: cfg.ProcessName})
 
-	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	queue := workqueue.NewTypedRateLimitingQueue[queueItem](workqueue.DefaultTypedControllerRateLimiter[queueItem]())
 
 	c := &Client{
 		logger: cfg.Logger,
@@ -177,33 +199,73 @@ func New(cfg *Config) (*Client, error) {
 	c.serviceDeleted = cfg.ServiceDeleted
 	c.syncFuncs = append(c.syncFuncs, c.svcInformer.HasSynced)
 
-	// Endpoint Watcher (used by node agents, not the allocator)
+	// EndpointSlice Watcher (used by node agents, not the allocator)
 
-	if cfg.ReadEndpoints {
-		epHandlers := cache.ResourceEventHandlerFuncs{
+	if cfg.ReadEndpointSlices {
+		// Custom indexer function to map EndpointSlices to their parent Service.
+		// This allows us to efficiently fetch all slices for a given service.
+		serviceNameIndexFunc := func(obj interface{}) ([]string, error) {
+			slice, ok := obj.(*discoveryv1.EndpointSlice)
+			if !ok {
+				return nil, nil
+			}
+			serviceName, ok := slice.Labels[discoveryv1.LabelServiceName]
+			if !ok {
+				return nil, nil
+			}
+			return []string{slice.Namespace + "/" + serviceName}, nil
+		}
+
+		epSliceHandlers := cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				key, err := cache.MetaNamespaceKeyFunc(obj)
-				if err == nil {
-					c.queue.Add(svcKey(key))
+				slice, ok := obj.(*discoveryv1.EndpointSlice)
+				if !ok {
+					return
 				}
+				// Extract the service name from the label, not the slice name
+				serviceName, ok := slice.Labels[discoveryv1.LabelServiceName]
+				if !ok {
+					return
+				}
+				c.queue.Add(svcKey(slice.Namespace + "/" + serviceName))
 			},
 			UpdateFunc: func(old interface{}, new interface{}) {
-				key, err := cache.MetaNamespaceKeyFunc(new)
-				if err == nil {
-					c.queue.Add(svcKey(key))
+				slice, ok := new.(*discoveryv1.EndpointSlice)
+				if !ok {
+					return
 				}
+				serviceName, ok := slice.Labels[discoveryv1.LabelServiceName]
+				if !ok {
+					return
+				}
+				c.queue.Add(svcKey(slice.Namespace + "/" + serviceName))
 			},
 			DeleteFunc: func(obj interface{}) {
-				key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-				if err == nil {
-					c.queue.Add(svcKey(key))
+				slice, ok := obj.(*discoveryv1.EndpointSlice)
+				if !ok {
+					// Handle DeletedFinalStateUnknown
+					tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+					if !ok {
+						return
+					}
+					slice, ok = tombstone.Obj.(*discoveryv1.EndpointSlice)
+					if !ok {
+						return
+					}
 				}
+				serviceName, ok := slice.Labels[discoveryv1.LabelServiceName]
+				if !ok {
+					return
+				}
+				c.queue.Add(svcKey(slice.Namespace + "/" + serviceName))
 			},
 		}
-		epWatcher := cache.NewListWatchFromClient(c.client.CoreV1().RESTClient(), "endpoints", corev1.NamespaceAll, fields.Everything())
-		c.epIndexer, c.epInformer = cache.NewIndexerInformer(epWatcher, &corev1.Endpoints{}, 0, epHandlers, cache.Indexers{})
+		epSliceWatcher := cache.NewListWatchFromClient(c.client.DiscoveryV1().RESTClient(), "endpointslices", corev1.NamespaceAll, fields.Everything())
+		c.epSliceIndexer, c.epSliceInformer = cache.NewIndexerInformer(epSliceWatcher, &discoveryv1.EndpointSlice{}, 0, epSliceHandlers, cache.Indexers{
+			serviceNameIndexName: serviceNameIndexFunc,
+		})
 
-		c.syncFuncs = append(c.syncFuncs, c.epInformer.HasSynced)
+		c.syncFuncs = append(c.syncFuncs, c.epSliceInformer.HasSynced)
 	}
 
 	// Sync Watcher
@@ -219,7 +281,9 @@ func New(cfg *Config) (*Client, error) {
 
 // GetPods get the pods in the namespace matched by the labels string.
 func (c *Client) getPods(namespace string, labels string) (*corev1.PodList, error) {
-	pl, err := c.client.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: labels})
+	ctx, cancel := c.apiContext()
+	defer cancel()
+	pl, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: labels})
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +304,25 @@ func (c *Client) GetPodsIPs(namespace string, labels string) ([]string, error) {
 	return iplist, nil
 }
 
+// apiContext returns a context with an appropriate timeout for API calls.
+// During normal operation, a 10-second timeout is used. During shutdown,
+// a much shorter 500ms timeout is used to ensure graceful termination.
+func (c *Client) apiContext() (context.Context, context.CancelFunc) {
+	if c.shuttingDown.Load() {
+		return context.WithTimeout(context.Background(), 500*time.Millisecond)
+	}
+	return context.WithTimeout(context.Background(), 10*time.Second)
+}
+
+// isShutdownError returns true if the error is due to context cancellation
+// or timeout during shutdown, which should be treated as non-fatal.
+func (c *Client) isShutdownError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return c.shuttingDown.Load() && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled))
+}
+
 // Run watches for events on the Kubernetes cluster, and dispatches
 // calls to the Controller.
 func (c *Client) Run(stopCh <-chan struct{}) error {
@@ -253,8 +336,8 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 	if c.svcInformer != nil {
 		go c.svcInformer.Run(stopCh)
 	}
-	if c.epInformer != nil {
-		go c.epInformer.Run(stopCh)
+	if c.epSliceInformer != nil {
+		go c.epSliceInformer.Run(stopCh)
 	}
 
 	if !cache.WaitForCacheSync(stopCh, c.syncFuncs...) {
@@ -266,6 +349,7 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 	if stopCh != nil {
 		go func() {
 			<-stopCh
+			c.shuttingDown.Store(true) // Signal API calls to use short timeouts
 			c.queue.ShutDown()
 		}()
 	}
@@ -309,9 +393,16 @@ func (c *Client) maybeUpdateService(was, is *corev1.Service) error {
 		err        error
 	)
 
+	ctx, cancel := c.apiContext()
+	defer cancel()
+
 	if !reflect.DeepEqual(was.Status, is.Status) {
-		svcUpdated, err = c.client.CoreV1().Services(is.Namespace).UpdateStatus(context.TODO(), is, metav1.UpdateOptions{})
+		svcUpdated, err = c.client.CoreV1().Services(is.Namespace).UpdateStatus(ctx, is, metav1.UpdateOptions{})
 		if err != nil {
+			if c.isShutdownError(err) {
+				c.logger.Log("op", "updateServiceStatus", "msg", "skipping update during shutdown")
+				return nil
+			}
 			c.logger.Log("op", "updateServiceStatus", "error", err, "msg", "failed to update service status")
 			return err
 		}
@@ -326,7 +417,11 @@ func (c *Client) maybeUpdateService(was, is *corev1.Service) error {
 		}
 		is.Annotations = ann
 		spec.DeepCopyInto(&is.Spec)
-		if _, err = c.client.CoreV1().Services(is.Namespace).Update(context.TODO(), is, metav1.UpdateOptions{}); err != nil {
+		if _, err = c.client.CoreV1().Services(is.Namespace).Update(ctx, is, metav1.UpdateOptions{}); err != nil {
+			if c.isShutdownError(err) {
+				c.logger.Log("op", "updateService", "msg", "skipping update during shutdown")
+				return nil
+			}
 			c.logger.Log("op", "updateService", "error", err, "msg", "failed to update service")
 			return err
 		}
@@ -345,12 +440,12 @@ func (c *Client) Errorf(obj runtime.Object, kind, msg string, args ...interface{
 	c.events.Eventf(obj, corev1.EventTypeWarning, kind, msg, args...)
 }
 
-func (c *Client) sync(key interface{}) SyncState {
+func (c *Client) sync(key queueItem) SyncState {
 	defer c.queue.Done(key)
 
-	switch key.(type) {
+	switch k := key.(type) {
 	case svcKey:
-		svcName := string(key.(svcKey))
+		svcName := string(k)
 		l := log.With(c.logger, "service", svcName)
 
 		// there are two "special" services: "kubernetes" and
@@ -383,15 +478,18 @@ func (c *Client) sync(key interface{}) SyncState {
 		}
 		svc := svcMaybe.(*corev1.Service)
 
-		var eps *corev1.Endpoints = &corev1.Endpoints{}
-		if c.epIndexer != nil {
-			epsIntf, exists, err := c.epIndexer.GetByKey(svcName)
+		// Fetch all EndpointSlices for this service using our custom indexer
+		var epSlices []*discoveryv1.EndpointSlice
+		if c.epSliceIndexer != nil {
+			sliceObjs, err := c.epSliceIndexer.ByIndex(serviceNameIndexName, svcName)
 			if err != nil {
-				l.Log("op", "getEndpoints", "error", err, "msg", "failed to get endpoints")
+				l.Log("op", "getEndpointSlices", "error", err, "msg", "failed to get endpoint slices")
 				return SyncStateError
 			}
-			if exists {
-				eps = epsIntf.(*corev1.Endpoints)
+			for _, obj := range sliceObjs {
+				if slice, ok := obj.(*discoveryv1.EndpointSlice); ok {
+					epSlices = append(epSlices, slice)
+				}
 			}
 		}
 
@@ -400,7 +498,7 @@ func (c *Client) sync(key interface{}) SyncState {
 		svcOriginal := svc.DeepCopy()
 
 		// tell the app about the service change
-		status := c.serviceChanged(svc, eps)
+		status := c.serviceChanged(svc, epSlices)
 
 		// write any changes to the service back to the cluster
 		if status == SyncStateSuccess {

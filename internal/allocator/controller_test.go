@@ -20,7 +20,7 @@ import (
 	"purelb.io/internal/k8s"
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
@@ -33,11 +33,13 @@ func diffService(a, b *v1.Service) string {
 }
 
 func statusAssigned(ip string) v1.ServiceStatus {
+	ipModeVIP := v1.LoadBalancerIPModeVIP
 	return v1.ServiceStatus{
 		LoadBalancer: v1.LoadBalancerStatus{
 			Ingress: []v1.LoadBalancerIngress{
 				{
-					IP: ip,
+					IP:     ip,
+					IPMode: &ipModeVIP,
 				},
 			},
 		},

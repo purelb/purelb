@@ -16,12 +16,16 @@ package allocator
 import (
 	"net"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	v1 "k8s.io/api/core/v1"
 )
 
 // addIngress adds "address" to the Spec.Ingress field of "svc".
 func addIngress(log log.Logger, svc *v1.Service, address net.IP) {
-	svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, v1.LoadBalancerIngress{IP: address.String()})
+	ipModeVIP := v1.LoadBalancerIPModeVIP
+	svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, v1.LoadBalancerIngress{
+		IP:     address.String(),
+		IPMode: &ipModeVIP,
+	})
 	log.Log("op", "program ingress address", "dest", "IP", "address", address.String())
 }

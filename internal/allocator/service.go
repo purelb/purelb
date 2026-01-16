@@ -19,8 +19,9 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 
 	"purelb.io/internal/k8s"
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
@@ -30,7 +31,8 @@ import (
 // create/change events. It takes a Service and decides what to do
 // based on that Service's configuration. It returns a k8s.SyncState
 // value - SyncStateSuccess or SyncStateError.
-func (c *controller) SetBalancer(svc *v1.Service, _ *v1.Endpoints) k8s.SyncState {
+// Note: The allocator ignores EndpointSlices - they are only used by lbnodeagent.
+func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice) k8s.SyncState {
 	nsName := svc.Namespace + "/" + svc.Name
 	log := log.With(c.logger, "svc-name", nsName)
 

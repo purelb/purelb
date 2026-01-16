@@ -45,11 +45,3 @@ rules:
   verbs:
   - get
   - list
-- apiGroups:
-  - policy
-  resourceNames:
-  - allocator
-  resources:
-  - podsecuritypolicies
-  verbs:
-  - use

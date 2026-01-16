@@ -82,30 +82,16 @@ func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error)
 		}
 
 	} else {
+		// IPv6 address flags that indicate an address should NOT be used:
+		// - IFA_F_DADFAILED (0x08): Duplicate address detection failed
+		// - IFA_F_DEPRECATED (0x20): Address is deprecated, don't use for new connections
+		// - IFA_F_TENTATIVE (0x40): DAD not complete, address not yet usable
+		const badFlags = 0x08 | 0x20 | 0x40
+
 		for _, addrs := range defaddrs {
-
-			/*  ifa_flags from linux source if_addr.h
-
-			#define IFA_F_SECONDARY		0x01
-			#define IFA_F_TEMPORARY		IFA_F_SECONDARY
-
-			#define	IFA_F_NODAD		0x02
-			#define IFA_F_OPTIMISTIC	0x04
-			#define IFA_F_DADFAILED		0x08
-			#define	IFA_F_HOMEADDRESS	0x10
-			#define IFA_F_DEPRECATED	0x20
-			#define IFA_F_TENTATIVE		0x40
-			#define IFA_F_PERMANENT		0x80
-			#define IFA_F_MANAGETEMPADDR	0x100
-			#define IFA_F_NOPREFIXROUTE	0x200
-			#define IFA_F_MCAUTOJOIN	0x400
-			#define IFA_F_STABLE_PRIVACY	0x800
-
-			*/
-
 			localnet := addrs.IPNet
 
-			if localnet.Contains(lbIPNet.IP) == true && addrs.Flags < 256 {
+			if localnet.Contains(lbIPNet.IP) && (addrs.Flags&badFlags) == 0 {
 				lbIPNet.Mask = localnet.Mask
 			}
 		}

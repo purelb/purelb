@@ -24,7 +24,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	"k8s.io/klog"
 )
 

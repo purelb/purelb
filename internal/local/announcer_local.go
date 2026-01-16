@@ -20,13 +20,14 @@ import (
 	"regexp"
 
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vishvananda/netlink"
 )
@@ -132,7 +133,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	return nil
 }
 
-func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
+func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.EndpointSlice) error {
 	// retErr caches an error while we try other operations. Because we
 	// might have more than one interface to announce, if an error
 	// happens on the first one we still want to try the second. Instead
@@ -172,7 +173,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 				}
 			} else {
 				// lbIP isn't local to any interfaces so add it to dummyInt
-				if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+				if err := a.announceRemote(svc, epSlices, a.dummyInt, lbIP); err != nil {
 					retErr = err
 				}
 			}
@@ -193,7 +194,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 				}
 			} else {
 				// The default interface is remote, so add lbIP to dummyInt
-				if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+				if err := a.announceRemote(svc, epSlices, a.dummyInt, lbIP); err != nil {
 					retErr = err
 				}
 			}
@@ -265,7 +266,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	return nil
 }
 
-func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, announceInt netlink.Link, lbIP net.IP) error {
+func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.EndpointSlice, announceInt netlink.Link, lbIP net.IP) error {
 	l := log.With(a.logger, "service", svc.Name)
 	nsName := svc.Namespace + "/" + svc.Name
 
@@ -275,43 +276,33 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 	// Should we announce?
 	// No, if externalTrafficPolicy is Local && there's no ready local endpoint
 	// Yes, in all other cases
-	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, a.myNode) {
+	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(epSlices, a.myNode) {
 		l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
 		return a.deleteAddress(nsName, "noEndpoints", lbIP)
 	}
 
-	// add this address to the "dummy" interface so routing software
-	// (e.g., bird) will announce routes for it
-	for _, ingress := range svc.Status.LoadBalancer.Ingress {
-		// validate the allocated address
-		lbIP := net.ParseIP(ingress.IP)
-		if lbIP == nil {
-			l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
-			continue
-		}
-
-		// Find the group from which this address was allocated, which
-		// gives us the subnet and aggregation that we need.
-		groupName, group, err := poolFor(a.groups, lbIP)
-		if err != nil {
-			return err
-		}
-
-		l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "interface", a.dummyInt.Attrs().Name, "group", groupName)
-		a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, a.dummyInt.Attrs().Name)
-
-		// Add the address to the dummy interface.
-		l.Log("msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
-		if err := addVirtualInt(lbIP, a.dummyInt, group.Subnet, group.Aggregation); err != nil {
-			return err
-		}
-
-		announcing.With(prometheus.Labels{
-			"service": nsName,
-			"node":    a.myNode,
-			"ip":      lbIP.String(),
-		}).Set(1)
+	// Find the group from which this address was allocated, which
+	// gives us the subnet and aggregation that we need.
+	groupName, group, err := poolFor(a.groups, lbIP)
+	if err != nil {
+		return err
 	}
+
+	l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "interface", a.dummyInt.Attrs().Name, "group", groupName)
+	a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, a.dummyInt.Attrs().Name)
+
+	// Add this address to the dummy interface so routing software
+	// (e.g., bird) will announce routes for it.
+	l.Log("msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
+	if err := addVirtualInt(lbIP, a.dummyInt, group.Subnet, group.Aggregation); err != nil {
+		return err
+	}
+
+	announcing.With(prometheus.Labels{
+		"service": nsName,
+		"node":    a.myNode,
+		"ip":      lbIP.String(),
+	}).Set(1)
 
 	return nil
 }
@@ -394,23 +385,39 @@ func (a *announcer) SetElection(election *election.Election) {
 }
 
 // nodeHasHealthyEndpoint returns true if node has at least one
-// healthy endpoint.
-func nodeHasHealthyEndpoint(eps *v1.Endpoints, node string) bool {
+// healthy endpoint. An endpoint is considered healthy if it is Ready
+// OR Serving (for graceful termination support) across ALL EndpointSlices.
+//
+// EndpointSlices may be split by port, so the same endpoint IP may appear
+// in multiple slices. We track readiness per-IP and require ALL appearances
+// to be healthy for the endpoint to be considered fully healthy.
+func nodeHasHealthyEndpoint(slices []*discoveryv1.EndpointSlice, node string) bool {
+	// Track per-IP readiness across all slices
+	// Same IP may appear in multiple slices with different ready states
 	ready := map[string]bool{}
-	for _, subset := range eps.Subsets {
-		for _, ep := range subset.Addresses {
-			if ep.NodeName == nil || *ep.NodeName != node {
+
+	for _, slice := range slices {
+		if slice == nil {
+			continue
+		}
+		for _, endpoint := range slice.Endpoints {
+			if endpoint.NodeName == nil || *endpoint.NodeName != node {
 				continue
 			}
-			if _, ok := ready[ep.IP]; !ok {
-				// Only set true if nothing else has expressed an
-				// opinion. This means that false will take precedence
-				// if there's any unready ports for a given endpoint.
-				ready[ep.IP] = true
+
+			// Check Ready OR Serving (for graceful termination)
+			isHealthy := (endpoint.Conditions.Ready != nil && *endpoint.Conditions.Ready) ||
+				(endpoint.Conditions.Serving != nil && *endpoint.Conditions.Serving)
+
+			for _, addr := range endpoint.Addresses {
+				if existing, ok := ready[addr]; ok {
+					// If ANY slice shows this endpoint as not healthy, mark it not healthy
+					// This preserves the original semantics where all ports must be ready
+					ready[addr] = existing && isHealthy
+				} else {
+					ready[addr] = isHealthy
+				}
 			}
-		}
-		for _, ep := range subset.NotReadyAddresses {
-			ready[ep.IP] = false
 		}
 	}
 

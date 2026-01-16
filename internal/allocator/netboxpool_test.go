@@ -16,7 +16,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
 
 	"purelb.io/internal/netbox/fake"

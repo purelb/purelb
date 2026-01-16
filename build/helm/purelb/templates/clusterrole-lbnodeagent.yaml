@@ -19,8 +19,15 @@ rules:
 - apiGroups:
   - ''
   resources:
-  - endpoints
   - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
   verbs:
   - get
   - list
@@ -48,11 +55,3 @@ rules:
   verbs:
   - get
   - list
-- apiGroups:
-  - policy
-  resourceNames:
-  - lbnodeagent
-  resources:
-  - podsecuritypolicies
-  verbs:
-  - use

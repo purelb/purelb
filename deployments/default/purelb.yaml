@@ -54,14 +54,6 @@ rules:
   verbs:
   - create
   - patch
-- apiGroups:
-  - policy
-  resourceNames:
-  - allocator
-  resources:
-  - podsecuritypolicies
-  verbs:
-  - use
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -83,8 +75,15 @@ rules:
 - apiGroups:
   - ''
   resources:
-  - endpoints
   - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
   verbs:
   - get
   - list
@@ -105,14 +104,6 @@ rules:
   verbs:
   - create
   - patch
-- apiGroups:
-  - policy
-  resourceNames:
-  - lbnodeagent
-  resources:
-  - podsecuritypolicies
-  verbs:
-  - use
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -192,18 +183,14 @@ spec:
       annotations:
         prometheus.io/port: '7472'
         prometheus.io/scrape: 'true'
+        # Required to allow signal delivery for graceful termination
+        container.apparmor.security.beta.kubernetes.io/lbnodeagent: unconfined
       labels:
         app: purelb
         component: lbnodeagent
     spec:
       containers:
       - env:
-        - name: NETBOX_USER_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: netbox-client
-              key: user-token
-              optional: true
         - name: PURELB_NODE_NAME
           valueFrom:
             fieldRef:
@@ -218,8 +205,8 @@ spec:
               fieldPath: metadata.namespace
         - name: ML_GROUP
           value: 8sb7ikA5qHwQQqxc
-        image: registry.gitlab.com/purelb/purelb/lbnodeagent:main-latest
-        imagePullPolicy: Always
+        image: purelb/lbnodeagent:test-local
+        imagePullPolicy: Never
         name: lbnodeagent
         ports:
         - containerPort: 7472
@@ -228,6 +215,7 @@ spec:
           limits:
             memory: 100Mi
         securityContext:
+          allowPrivilegeEscalation: false
           capabilities:
             add:
             - NET_ADMIN
@@ -235,11 +223,13 @@ spec:
             drop:
             - ALL
           readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
       hostNetwork: true
       nodeSelector:
         kubernetes.io/os: linux
       serviceAccountName: lbnodeagent
-      terminationGracePeriodSeconds: 2
+      terminationGracePeriodSeconds: 10
       tolerations:
       - effect: NoSchedule
         key: node-role.kubernetes.io/master
@@ -268,7 +258,8 @@ spec:
         component: allocator
     spec:
       containers:
-      - image: registry.gitlab.com/purelb/purelb/allocator:main-latest
+      - image: purelb/allocator:test-local
+        imagePullPolicy: Never
         env:
         - name: NETBOX_USER_TOKEN
           valueFrom:
@@ -278,7 +269,6 @@ spec:
               optional: true
         - name: DEFAULT_ANNOUNCER
           value: "PureLB"
-        imagePullPolicy: Always
         name: allocator
         ports:
         - containerPort: 7472
@@ -292,10 +282,14 @@ spec:
             drop:
             - all
           readOnlyRootFilesystem: true
+          seccompProfile:
+            type: RuntimeDefault
       nodeSelector:
         kubernetes.io/os: linux
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
       serviceAccountName: allocator
       terminationGracePeriodSeconds: 0

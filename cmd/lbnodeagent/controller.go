@@ -22,8 +22,9 @@ import (
 	"purelb.io/internal/local"
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 )
 
 type controller struct {
@@ -56,7 +57,7 @@ func (c *controller) SetClient(client *k8s.Client) {
 	}
 }
 
-func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8s.SyncState {
+func (c *controller) ServiceChanged(svc *v1.Service, epSlices []*discoveryv1.EndpointSlice) k8s.SyncState {
 	nsName := svc.Namespace + "/" + svc.Name
 
 	// If the service isn't a LoadBalancer Type then we might need to
@@ -99,7 +100,7 @@ func (c *controller) ServiceChanged(svc *v1.Service, endpoints *v1.Endpoints) k8
 	// give each announcer a chance to announce
 	announceError := k8s.SyncStateSuccess
 	for _, announcer := range c.announcers {
-		if err := announcer.SetBalancer(svc, endpoints); err != nil {
+		if err := announcer.SetBalancer(svc, epSlices); err != nil {
 			c.logger.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
 			announceError = k8s.SyncStateError
 		}
