@@ -138,6 +138,42 @@ func (p NetboxPool) Release(service string) error {
 	return nil
 }
 
+// ReleaseIP releases a specific IP address for a service. Used during
+// IP family transitions (e.g., DualStack → SingleStack).
+func (p NetboxPool) ReleaseIP(service string, ip net.IP) error {
+	ipstr := ip.String()
+
+	// Check if this IP is tracked in our pool
+	_, exists := p.addressesInUse[ipstr]
+	if !exists {
+		return nil // IP not in this pool, nothing to do
+	}
+
+	// Remove service from this IP's allocations
+	delete(p.addressesInUse[ipstr], service)
+	if len(p.addressesInUse[ipstr]) == 0 {
+		delete(p.addressesInUse, ipstr)
+	}
+
+	// Remove from services map - filter out this specific IP
+	if ips, exists := p.services[service]; exists {
+		newIPs := make([]net.IP, 0, len(ips))
+		for _, existingIP := range ips {
+			if !existingIP.Equal(ip) {
+				newIPs = append(newIPs, existingIP)
+			}
+		}
+		if len(newIPs) > 0 {
+			p.services[service] = newIPs
+		} else {
+			delete(p.services, service)
+		}
+	}
+
+	p.logger.Log("netboxpool", "release-ip", "service", service, "ip", ipstr)
+	return nil
+}
+
 // InUse returns the count of addresses that currently have services
 // assigned.
 func (p NetboxPool) InUse() int {

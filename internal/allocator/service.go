@@ -27,6 +27,62 @@ import (
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 )
 
+// ipFamilyFromIP returns the IP family (IPv4 or IPv6) for a given IP address.
+func ipFamilyFromIP(ip net.IP) v1.IPFamily {
+	if ip.To4() != nil {
+		return v1.IPv4Protocol
+	}
+	return v1.IPv6Protocol
+}
+
+// analyzeIPFamilyTransition compares the requested IP families with the
+// current ingress addresses to determine what needs to be allocated or released.
+// Returns:
+//   - missingFamilies: families that need new addresses allocated
+//   - excessIPs: ingress IPs that should be released (family no longer requested)
+//   - keepIPs: ingress IPs that should be kept
+func analyzeIPFamilyTransition(svc *v1.Service) (missingFamilies []v1.IPFamily, excessIPs []string, keepIPs []string) {
+	// Build set of requested families
+	requestedFamilies := make(map[v1.IPFamily]bool)
+	for _, family := range svc.Spec.IPFamilies {
+		requestedFamilies[family] = true
+	}
+	// Default to IPv4 if no families specified
+	if len(requestedFamilies) == 0 {
+		requestedFamilies[v1.IPv4Protocol] = true
+	}
+
+	// Track which families we already have addresses for
+	haveFamilies := make(map[v1.IPFamily]bool)
+
+	// Categorize current ingress IPs
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		ip := net.ParseIP(ingress.IP)
+		if ip == nil {
+			continue
+		}
+		family := ipFamilyFromIP(ip)
+
+		if requestedFamilies[family] {
+			// This IP's family is still requested - keep it
+			keepIPs = append(keepIPs, ingress.IP)
+			haveFamilies[family] = true
+		} else {
+			// This IP's family is no longer requested - mark for release
+			excessIPs = append(excessIPs, ingress.IP)
+		}
+	}
+
+	// Determine which requested families don't have addresses yet
+	for family := range requestedFamilies {
+		if !haveFamilies[family] {
+			missingFamilies = append(missingFamilies, family)
+		}
+	}
+
+	return missingFamilies, excessIPs, keepIPs
+}
+
 // SetBalancer is the main entry point that handles LoadBalancer
 // create/change events. It takes a Service and decides what to do
 // based on that Service's configuration. It returns a k8s.SyncState
@@ -98,29 +154,50 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 		return k8s.SyncStateSuccess
 	}
 
-	// Check if the service already has an address
-	if len(svc.Status.LoadBalancer.Ingress) > 0 {
-		log.Log("event", "hasIngress", "ingress", svc.Status.LoadBalancer.Ingress)
+	// Analyze whether the service needs IP family transitions
+	// (e.g., SingleStack → DualStack or DualStack → SingleStack)
+	missingFamilies, excessIPs, keepIPs := analyzeIPFamilyTransition(svc)
 
-		// if it's one of ours then we'll tell the allocator about it, in
-		// case it didn't know but needs to. one example of this is at
-		// startup where our allocation database is empty and we get
-		// notifications of all the services. we can use the notifications
-		// to warm up our database so we don't allocate the same address
-		// twice. another example is when the user edits a service,
-		// although that would be better handled in a webhook.
+	// Check if the service already has addresses
+	if len(svc.Status.LoadBalancer.Ingress) > 0 {
+		log.Log("event", "hasIngress", "ingress", svc.Status.LoadBalancer.Ingress,
+			"missingFamilies", missingFamilies, "excessIPs", excessIPs)
+
+		// If it's one of ours, notify the allocator about existing IPs
+		// (for database warmup at startup or after config changes)
 		if svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
-			// The service has an IP so we'll attempt to formally allocate
-			// it. If something goes wrong then we'll log it but won't do
-			// anything else so we don't cause more trouble.
 			if err := c.ips.NotifyExisting(svc); err != nil {
 				log.Log("event", "notifyFailure", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", err.Error())
 			}
 		}
 
-		// If the service already has an address then we don't need to
-		// allocate one.
-		return k8s.SyncStateSuccess
+		// Handle DualStack → SingleStack transition: release excess IPs
+		if len(excessIPs) > 0 {
+			log.Log("event", "ipFamilyTransition", "action", "releaseExcess", "excessIPs", excessIPs)
+
+			// Release the excess IPs from the pool
+			if err := c.ips.ReleaseIPs(nsName, excessIPs); err != nil {
+				log.Log("event", "releaseExcess", "error", err)
+				// Continue anyway - we'll update the ingress to remove them
+			}
+
+			// Update ingress to only keep the IPs that match requested families
+			ipModeVIP := v1.LoadBalancerIPModeVIP
+			svc.Status.LoadBalancer.Ingress = nil
+			for _, ipStr := range keepIPs {
+				svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress,
+					v1.LoadBalancerIngress{IP: ipStr, IPMode: &ipModeVIP})
+			}
+			c.client.Infof(svc, "AddressReleased", "Released addresses no longer needed after IP family transition: %v", excessIPs)
+		}
+
+		// If no families are missing, we're done
+		if len(missingFamilies) == 0 {
+			return k8s.SyncStateSuccess
+		}
+
+		// Handle SingleStack → DualStack transition: allocate missing families
+		log.Log("event", "ipFamilyTransition", "action", "allocateMissing", "missingFamilies", missingFamilies)
 	}
 
 	// Annotate the service as "ours"

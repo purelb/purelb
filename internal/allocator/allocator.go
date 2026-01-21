@@ -210,9 +210,14 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 
 // AllocateFromPool assigns an available IP from pool to service.
 func (a *Allocator) allocateFromPool(svc *v1.Service, pool Pool) error {
-	// If the service had an IP before, release it
-	if err := a.Unassign(namespacedName(svc)); err != nil {
-		return err
+	// Only release existing IPs if service has no ingress addresses.
+	// If it already has addresses, this might be an IP family transition
+	// (e.g., SingleStack → DualStack) where we want to keep existing IPs
+	// and only allocate missing families.
+	if len(svc.Status.LoadBalancer.Ingress) == 0 {
+		if err := a.Unassign(namespacedName(svc)); err != nil {
+			return err
+		}
 	}
 
 	if err := pool.AssignNext(svc); err != nil {
@@ -239,6 +244,34 @@ func (a *Allocator) Unassign(svc string) error {
 		if err = p.Release(svc); err == nil {
 			a.updateStats(p)  // This pool released the address
 		}
+	}
+
+	return nil
+}
+
+// ReleaseIPs releases specific IP addresses for a service. Used during
+// IP family transitions (e.g., DualStack → SingleStack) when only some
+// addresses need to be released.
+func (a *Allocator) ReleaseIPs(svc string, ips []string) error {
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			a.logger.Log("op", "releaseIPs", "error", "invalid IP", "ip", ipStr)
+			continue
+		}
+
+		// Find which pool contains this IP and release it
+		pool := poolFor(a.pools, ip)
+		if pool == nil {
+			a.logger.Log("op", "releaseIPs", "warning", "no pool found for IP", "ip", ipStr)
+			continue
+		}
+
+		if err := pool.ReleaseIP(svc, ip); err != nil {
+			a.logger.Log("op", "releaseIPs", "error", err, "ip", ipStr)
+			// Continue releasing other IPs even if one fails
+		}
+		a.updateStats(pool)
 	}
 
 	return nil

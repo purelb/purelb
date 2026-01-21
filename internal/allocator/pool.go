@@ -50,6 +50,9 @@ type Pool interface {
 	AssignNext(*v1.Service) error
 	Assign(net.IP, *v1.Service) error
 	Release(string) error
+	// ReleaseIP releases a specific IP address for a service. Used during
+	// IP family transitions (e.g., DualStack → SingleStack).
+	ReleaseIP(service string, ip net.IP) error
 	InUse() int
 	Overlaps(Pool) bool
 	Contains(net.IP) bool // FIXME: I'm not sure that we need this. It might be the case that we can always rely on the service's pool annotation to find to which pool an address belongs

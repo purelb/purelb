@@ -269,6 +269,26 @@ func (p LocalPool) AssignNext(service *v1.Service) error {
 }
 
 func (p LocalPool) assignFamily(family int, service *v1.Service) error {
+	// Check if the service already has an address for this family
+	// This supports IP family transitions (e.g., SingleStack → DualStack)
+	// where we want to keep existing addresses and only allocate missing ones
+	for _, ingress := range service.Status.LoadBalancer.Ingress {
+		ip := net.ParseIP(ingress.IP)
+		if ip == nil {
+			continue
+		}
+		ingressFamily := nl.FAMILY_V4
+		if ip.To4() == nil {
+			ingressFamily = nl.FAMILY_V6
+		}
+		if ingressFamily == family {
+			// Already have an address for this family, skip allocation
+			p.logger.Log("localpool", "skip-assign", "service", namespacedName(service),
+				"family", family, "existing-ip", ingress.IP)
+			return nil
+		}
+	}
+
 	var lastErr error
 	var boundIPErr error
 
@@ -360,6 +380,47 @@ func (p LocalPool) Release(service string) error {
 			delete(p.portsInUse, ipstr)
 		}
 	}
+	return nil
+}
+
+// ReleaseIP releases a specific IP address for a service. Used during
+// IP family transitions (e.g., DualStack → SingleStack).
+func (p LocalPool) ReleaseIP(service string, ip net.IP) error {
+	ipstr := ip.String()
+
+	// Check if this IP is in our pool
+	allocs, exists := p.addressesInUse[ipstr]
+	if !exists {
+		return nil // IP not in this pool, nothing to do
+	}
+
+	// Remove service from this IP's allocations
+	delete(allocs, service)
+
+	// If no services are using this IP, clean up completely
+	if len(allocs) == 0 {
+		delete(p.addressesInUse, ipstr)
+
+		// Clean up sharing key reverse index before deleting the forward mapping
+		if key := p.sharingKeys[ipstr]; key != nil && key.Sharing != "" {
+			family := purelbv1.AddrFamily(ip)
+			indexKey := fmt.Sprintf("%s:%d", key.Sharing, family)
+			delete(p.sharingKeyToIP, indexKey)
+		}
+		delete(p.sharingKeys, ipstr)
+	}
+
+	// Clean up ports for this service on this IP
+	for port, svc := range p.portsInUse[ipstr] {
+		if svc == service {
+			delete(p.portsInUse[ipstr], port)
+		}
+	}
+	if len(p.portsInUse[ipstr]) == 0 {
+		delete(p.portsInUse, ipstr)
+	}
+
+	p.logger.Log("localpool", "release-ip", "service", service, "ip", ipstr)
 	return nil
 }
 

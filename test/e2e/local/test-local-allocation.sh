@@ -7,6 +7,9 @@ if [[ ${BASH_VERSINFO[0]} -lt 4 ]]; then
     exit 1
 fi
 
+# Determine script directory for relative file paths
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 CONTEXT="proxmox"
 NAMESPACE="test"
 
@@ -70,7 +73,7 @@ test_ipv4_singlestack() {
     echo "=========================================="
 
     info "Creating IPv4-only service..."
-    kubectl apply -f /tmp/purelb-install/nginx-svc-ipv4.yaml
+    kubectl apply -f ${SCRIPT_DIR}/nginx-svc-ipv4.yaml
 
     info "Waiting for IP allocation..."
     kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
@@ -137,7 +140,7 @@ test_ipv6_singlestack() {
     echo "=========================================="
 
     info "Creating IPv6-only service..."
-    kubectl apply -f /tmp/purelb-install/nginx-svc-ipv6.yaml
+    kubectl apply -f ${SCRIPT_DIR}/nginx-svc-ipv6.yaml
 
     info "Waiting for IP allocation..."
     kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
@@ -186,7 +189,7 @@ test_dualstack() {
     echo "=========================================="
 
     info "Creating dual-stack service..."
-    kubectl apply -f /tmp/purelb-install/nginx-svc-dualstack.yaml
+    kubectl apply -f ${SCRIPT_DIR}/nginx-svc-dualstack.yaml
 
     info "Waiting for IP allocation..."
     sleep 5
@@ -339,7 +342,7 @@ test_service_cleanup() {
 
     # Recreate for other tests
     info "Recreating IPv4 service..."
-    kubectl apply -f /tmp/purelb-install/nginx-svc-ipv4.yaml
+    kubectl apply -f ${SCRIPT_DIR}/nginx-svc-ipv4.yaml
     kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
         svc/nginx-lb-ipv4 -n $NAMESPACE --timeout=30s
 }
