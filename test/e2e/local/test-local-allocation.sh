@@ -786,6 +786,20 @@ EOF
     wait_for_ip_announced "$ALLOCATED_IP" 30 || fail "IP $ALLOCATED_IP not announced within 30s"
     pass "IP announced on a node"
 
+    # Verify specific IP is on eth0 (local pool), NOT on kube-lb0
+    info "Verifying specific IP is on eth0 (not kube-lb0)..."
+    FOUND_ON_ETH0=false
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $ALLOCATED_IP/'" 2>/dev/null; then
+            pass "Specific IP $ALLOCATED_IP on eth0 on $node"
+            FOUND_ON_ETH0=true
+        fi
+        if ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $ALLOCATED_IP/'" 2>/dev/null; then
+            fail "Specific IP $ALLOCATED_IP found on kube-lb0 (should be on eth0 for local pool)"
+        fi
+    done
+    [ "$FOUND_ON_ETH0" = "true" ] || fail "Specific IP not found on eth0 on any node"
+
     # Verify service is reachable on the specific IP
     info "Testing connectivity to $ALLOCATED_IP:8080..."
     RESPONSE=$(curl -s --connect-timeout 5 "http://$ALLOCATED_IP:8080/" || true)
@@ -799,12 +813,153 @@ EOF
 }
 
 #---------------------------------------------------------------------
-# Test 10: No Duplicate VIPs (Split-Brain Check)
+# Test 10: ETP Local Override (purelb.io/allow-local annotation)
+#---------------------------------------------------------------------
+test_etp_local_override() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 10: ETP Local Override (purelb.io/allow-local)"
+    echo "=========================================="
+
+    # For local pools, ETP Local is normally overridden to Cluster.
+    # The allow-local annotation allows ETP Local on local pools.
+    # This is risky because only the elected node announces, but
+    # if that node doesn't have an endpoint, traffic blackholes.
+
+    # First, test WITHOUT the annotation - ETP Local should be converted to Cluster
+    info "Creating ETP Local service WITHOUT allow-local annotation..."
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-etp-local-no-override
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: default
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 8091
+    targetPort: 80
+EOF
+
+    info "Waiting for IP allocation..."
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-etp-local-no-override -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+    sleep 5
+
+    IP_NO_OVERRIDE=$(kubectl get svc nginx-etp-local-no-override -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    info "Allocated IP: $IP_NO_OVERRIDE"
+
+    # Verify LocalOverride event was generated (ETP switched from Local to Cluster)
+    info "Checking for LocalOverride event..."
+    EVENTS=$(kubectl get events -n $NAMESPACE --field-selector reason=LocalOverride -o jsonpath='{.items[*].message}' 2>/dev/null || true)
+    if [ -n "$EVENTS" ]; then
+        info "LocalOverride event: $EVENTS"
+        pass "ETP Local was overridden to Cluster (expected for local pool without annotation)"
+    else
+        info "No LocalOverride event found (may have already been cleaned up)"
+    fi
+
+    # Verify IP is on eth0 (local pool behavior)
+    info "Verifying IP is on eth0..."
+    wait_for_ip_announced "$IP_NO_OVERRIDE" 30 || fail "IP not announced within 30s"
+    FOUND_ON_ETH0=false
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP_NO_OVERRIDE/'" 2>/dev/null; then
+            FOUND_ON_ETH0=true
+            pass "IP $IP_NO_OVERRIDE on eth0 on $node (election working)"
+        fi
+    done
+    [ "$FOUND_ON_ETH0" = "true" ] || fail "IP not on eth0 on any node"
+
+    # Verify connectivity (should work because ETP was converted to Cluster)
+    info "Testing connectivity (should work with ETP Cluster)..."
+    RESPONSE=$(curl -s --connect-timeout 5 "http://$IP_NO_OVERRIDE:8091/" || true)
+    echo "$RESPONSE" | grep -q "Pod:" || fail "Service not reachable"
+    pass "Service reachable with overridden ETP"
+
+    # Cleanup first service
+    kubectl delete svc nginx-etp-local-no-override -n $NAMESPACE
+
+    # Now test WITH the annotation - ETP Local should be allowed
+    info "Creating ETP Local service WITH allow-local annotation..."
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-etp-local-with-override
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: default
+    purelb.io/allow-local: "true"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 8092
+    targetPort: 80
+EOF
+
+    info "Waiting for IP allocation..."
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-etp-local-with-override -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+    sleep 5
+
+    IP_WITH_OVERRIDE=$(kubectl get svc nginx-etp-local-with-override -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    info "Allocated IP: $IP_WITH_OVERRIDE"
+
+    # Verify LocalOverride event mentions the override annotation was found
+    info "Checking that allow-local annotation was recognized..."
+    OVERRIDE_EVENTS=$(kubectl get events -n $NAMESPACE --field-selector involvedObject.name=nginx-etp-local-with-override,reason=LocalOverride -o jsonpath='{.items[*].message}' 2>/dev/null || true)
+    if echo "$OVERRIDE_EVENTS" | grep -q "override annotation found"; then
+        pass "Allow-local annotation recognized by PureLB"
+    else
+        info "Override event: $OVERRIDE_EVENTS"
+        # Not a failure - event may have been cleaned up
+    fi
+
+    # Verify IP is on eth0 (local pool behavior still applies)
+    info "Verifying IP is on eth0..."
+    wait_for_ip_announced "$IP_WITH_OVERRIDE" 30 || fail "IP not announced within 30s"
+    FOUND_ON_ETH0=false
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP_WITH_OVERRIDE/'" 2>/dev/null; then
+            FOUND_ON_ETH0=true
+            WINNER_NODE=$node
+            pass "IP $IP_WITH_OVERRIDE on eth0 on $node"
+        fi
+    done
+    [ "$FOUND_ON_ETH0" = "true" ] || fail "IP not on eth0 on any node"
+
+    # Note: With ETP Local allowed on local pool, traffic may or may not work
+    # depending on whether the elected node has an endpoint.
+    # We'll just verify the IP was placed - connectivity is best-effort.
+    info "Note: ETP Local on local pool - connectivity depends on elected node having endpoint"
+
+    # Cleanup
+    kubectl delete svc nginx-etp-local-with-override -n $NAMESPACE
+    pass "ETP Local override test completed"
+}
+
+#---------------------------------------------------------------------
+# Test 11: No Duplicate VIPs (Split-Brain Check)
 #---------------------------------------------------------------------
 test_no_duplicate_vips() {
     echo ""
     echo "=========================================="
-    echo "TEST 10: No Duplicate VIPs (Split-Brain Check)"
+    echo "TEST 11: No Duplicate VIPs (Split-Brain Check)"
     echo "=========================================="
 
     # This test catches split-brain scenarios where multiple nodes think they won election
@@ -875,6 +1030,7 @@ run_all_tests() {
     test_specific_ip_request
     test_multi_pod_lb
     test_node_failover
+    test_etp_local_override
     test_no_duplicate_vips
 
     # Cleanup all test services

@@ -276,9 +276,29 @@ func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.Endp
 	// Should we announce?
 	// No, if externalTrafficPolicy is Local && there's no ready local endpoint
 	// Yes, in all other cases
-	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(epSlices, a.myNode) {
-		l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
-		return a.deleteAddress(nsName, "noEndpoints", lbIP)
+	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal {
+		// Debug: log endpoint slice info
+		sliceCount := len(epSlices)
+		var endpointNodes []string
+		for _, slice := range epSlices {
+			if slice == nil {
+				continue
+			}
+			for _, ep := range slice.Endpoints {
+				if ep.NodeName != nil {
+					isReady := ep.Conditions.Ready != nil && *ep.Conditions.Ready
+					isServing := ep.Conditions.Serving != nil && *ep.Conditions.Serving
+					endpointNodes = append(endpointNodes, fmt.Sprintf("%s(ready=%v,serving=%v)", *ep.NodeName, isReady, isServing))
+				}
+			}
+		}
+		hasEndpoint := nodeHasHealthyEndpoint(epSlices, a.myNode)
+		l.Log("msg", "etpLocalCheck", "node", a.myNode, "sliceCount", sliceCount, "endpointNodes", endpointNodes, "hasHealthyEndpoint", hasEndpoint)
+
+		if !hasEndpoint {
+			l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
+			return a.deleteAddress(nsName, "noEndpoints", lbIP)
+		}
 	}
 
 	// Find the group from which this address was allocated, which

@@ -376,11 +376,15 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 	}
 }
 
-// ForceSync reprocess all watched services
+// ForceSync reprocesses all watched services. This is called when
+// membership changes (memberlist events) and we need to re-evaluate
+// all services immediately. We use Add() instead of AddRateLimited()
+// because this is not an error retry - it's a legitimate need to
+// reprocess due to cluster state changes.
 func (c *Client) ForceSync() {
 	if c.svcIndexer != nil {
 		for _, k := range c.svcIndexer.ListKeys() {
-			c.queue.AddRateLimited(svcKey(k))
+			c.queue.Add(svcKey(k))
 		}
 	}
 }

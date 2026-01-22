@@ -96,7 +96,7 @@ dump_debug_state() {
     local FIRST_NODE=${NODES%% *}
     ssh $FIRST_NODE "sudo nft list map ip kube-proxy service-ips 2>/dev/null | head -50" 2>/dev/null || echo "  (failed)"
     echo "--- lbnodeagent pods ---"
-    kubectl get pods -n purelb -l app.kubernetes.io/component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
+    kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
     echo "--- allocator logs (last 20 lines) ---"
     kubectl logs -n purelb deployment/allocator --tail=20 2>/dev/null || echo "(failed)"
     echo "========================="
@@ -228,7 +228,11 @@ verify_kube_proxy_nftables() {
     pass "kube-proxy running in nftables mode"
 }
 
-# Wait for kube-proxy to program nftables rules for a VIP
+# Wait for kube-proxy to FULLY program nftables rules for a VIP
+# This checks that:
+# 1. The IP:port is in the service-ips map (basic routing)
+# 2. The service chain has a vmap with endpoints (actual backends ready)
+# Just checking service-ips is insufficient - the backend chain may not be ready yet.
 wait_for_nftables_rules() {
     local IP=$1
     local PORT=$2
@@ -239,17 +243,34 @@ wait_for_nftables_rules() {
 
     local ELAPSED=0
     while [ $ELAPSED -lt $TIMEOUT ]; do
-        if ssh_or_fail $NODE "sudo nft list map ip kube-proxy service-ips 2>/dev/null | grep -q '$IP.*$PORT'"; then
-            pass "nftables rules programmed for $IP:$PORT"
-            return 0
+        # Check if IP:port is in service-ips map and get the chain name
+        local CHAIN_INFO=$(ssh_or_fail $NODE "sudo nft list map ip kube-proxy service-ips 2>/dev/null | grep '$IP.*$PORT'" 2>/dev/null || echo "")
+        if [ -n "$CHAIN_INFO" ]; then
+            # Extract the service chain name (e.g., "service-XXXX-test/nginx/tcp/")
+            # The external chain jumps to service chain, which has the vmap
+            local SVC_CHAIN=$(echo "$CHAIN_INFO" | grep -oP 'goto \K(service|external)-[^,]+' | head -1)
+            if [ -n "$SVC_CHAIN" ]; then
+                # If it's an external chain, we need to find the service chain it jumps to
+                if [[ "$SVC_CHAIN" == external-* ]]; then
+                    SVC_CHAIN=$(ssh_or_fail $NODE "sudo nft list chain ip kube-proxy '$SVC_CHAIN' 2>/dev/null | grep -oP 'goto \Kservice-[^}]+'" 2>/dev/null | tr -d ' ' || echo "")
+                fi
+                # Now check if the service chain has endpoints (vmap with endpoint- entries)
+                if [ -n "$SVC_CHAIN" ]; then
+                    local HAS_ENDPOINTS=$(ssh_or_fail $NODE "sudo nft list chain ip kube-proxy '$SVC_CHAIN' 2>/dev/null | grep -q 'endpoint-'" 2>/dev/null && echo "yes" || echo "no")
+                    if [ "$HAS_ENDPOINTS" = "yes" ]; then
+                        pass "nftables rules fully programmed for $IP:$PORT (endpoints ready)"
+                        return 0
+                    fi
+                fi
+            fi
         fi
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
+        sleep 1
+        ELAPSED=$((ELAPSED + 1))
     done
-    fail "kube-proxy did not program nftables rules for $IP:$PORT within ${TIMEOUT}s"
+    fail "kube-proxy did not fully program nftables rules for $IP:$PORT within ${TIMEOUT}s"
 }
 
-# Wait for IPv6 nftables rules
+# Wait for IPv6 nftables rules (fully programmed with endpoints)
 wait_for_nftables_rules_v6() {
     local IP=$1
     local PORT=$2
@@ -260,14 +281,30 @@ wait_for_nftables_rules_v6() {
 
     local ELAPSED=0
     while [ $ELAPSED -lt $TIMEOUT ]; do
-        if ssh_or_fail $NODE "sudo nft list map ip6 kube-proxy service-ips 2>/dev/null | grep -q '$IP.*$PORT'"; then
-            pass "nftables rules programmed for [$IP]:$PORT"
-            return 0
+        # Check if IP:port is in service-ips map and get the chain name
+        local CHAIN_INFO=$(ssh_or_fail $NODE "sudo nft list map ip6 kube-proxy service-ips 2>/dev/null | grep '$IP.*$PORT'" 2>/dev/null || echo "")
+        if [ -n "$CHAIN_INFO" ]; then
+            # Extract the service chain name
+            local SVC_CHAIN=$(echo "$CHAIN_INFO" | grep -oP 'goto \K(service|external)-[^,]+' | head -1)
+            if [ -n "$SVC_CHAIN" ]; then
+                # If it's an external chain, find the service chain it jumps to
+                if [[ "$SVC_CHAIN" == external-* ]]; then
+                    SVC_CHAIN=$(ssh_or_fail $NODE "sudo nft list chain ip6 kube-proxy '$SVC_CHAIN' 2>/dev/null | grep -oP 'goto \Kservice-[^}]+'" 2>/dev/null | tr -d ' ' || echo "")
+                fi
+                # Check if the service chain has endpoints
+                if [ -n "$SVC_CHAIN" ]; then
+                    local HAS_ENDPOINTS=$(ssh_or_fail $NODE "sudo nft list chain ip6 kube-proxy '$SVC_CHAIN' 2>/dev/null | grep -q 'endpoint-'" 2>/dev/null && echo "yes" || echo "no")
+                    if [ "$HAS_ENDPOINTS" = "yes" ]; then
+                        pass "nftables rules fully programmed for [$IP]:$PORT (endpoints ready)"
+                        return 0
+                    fi
+                fi
+            fi
         fi
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
+        sleep 1
+        ELAPSED=$((ELAPSED + 1))
     done
-    fail "kube-proxy did not program nftables rules for [$IP]:$PORT within ${TIMEOUT}s"
+    fail "kube-proxy did not fully program nftables rules for [$IP]:$PORT within ${TIMEOUT}s"
 }
 
 # Verify nftables rules are REMOVED after service deletion
@@ -1255,7 +1292,7 @@ EOF
 }
 
 #---------------------------------------------------------------------
-# Test 11: IP Sharing with Remote Addresses
+# Test 13: IP Sharing with Remote Addresses
 #---------------------------------------------------------------------
 test_ip_sharing() {
     echo ""
@@ -1372,12 +1409,12 @@ EOF
 }
 
 #---------------------------------------------------------------------
-# Test 12: Specific IP Request
+# Test 14: Specific IP Request (purelb.io/addresses)
 #---------------------------------------------------------------------
 test_specific_ip_request() {
     echo ""
     echo "=========================================="
-    echo "TEST 14: Specific IP Request"
+    echo "TEST 14: Specific IP Request (purelb.io/addresses)"
     echo "=========================================="
 
     REQUESTED_IP="10.255.0.125"
@@ -1412,8 +1449,11 @@ EOF
     [ "$IP" = "$REQUESTED_IP" ] || fail "Got wrong IP: $IP (requested $REQUESTED_IP)"
     pass "Got exact requested IP: $IP"
 
-    # Verify on all nodes
+    # Verify on all nodes (on kube-lb0, not eth0)
     wait_for_all_nodes_announce "$IP" kube-lb0 $NODE_COUNT 30
+
+    # Verify specific IP is on kube-lb0 and NOT on eth0 (remote pool)
+    verify_remote_ip_placement "$IP"
 
     # Test connectivity from pod (bypasses hairpin NAT)
     wait_for_nftables_rules "$IP" 8082
@@ -1426,7 +1466,7 @@ EOF
 }
 
 #---------------------------------------------------------------------
-# Test 13: Mixed Local and Remote Services
+# Test 15: Mixed Local and Remote Services
 #---------------------------------------------------------------------
 test_mixed_local_remote() {
     echo ""
@@ -1503,7 +1543,7 @@ EOF
 }
 
 #---------------------------------------------------------------------
-# Test 14: No Cross-Contamination Check
+# Test 16: No Cross-Contamination Check
 #---------------------------------------------------------------------
 test_no_cross_contamination() {
     echo ""
@@ -1535,7 +1575,7 @@ test_no_cross_contamination() {
 }
 
 #---------------------------------------------------------------------
-# Test 15: Node Failure - Continued Announcement
+# Test 17: Node Failure - Continued Announcement
 #---------------------------------------------------------------------
 test_node_failure() {
     echo ""
@@ -1554,7 +1594,7 @@ test_node_failure() {
     kubectl taint node "$FAIL_NODE" purelb-test=failover:NoExecute --overwrite
 
     # Delete the pod to speed things up
-    AGENT_POD=$(kubectl get pods -n purelb -l app.kubernetes.io/component=lbnodeagent -o wide 2>/dev/null | grep "$FAIL_NODE" | awk '{print $1}')
+    AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null | grep "$FAIL_NODE" | awk '{print $1}')
     if [ -n "$AGENT_POD" ]; then
         kubectl delete pod -n purelb "$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
     fi
@@ -1615,7 +1655,7 @@ test_node_failure() {
 }
 
 #---------------------------------------------------------------------
-# Test 16: Pool Exhaustion
+# Test 18: Pool Exhaustion
 #---------------------------------------------------------------------
 test_pool_exhaustion() {
     echo ""
@@ -1751,7 +1791,7 @@ EOF
 }
 
 #---------------------------------------------------------------------
-# Test 17: Out-of-Pool IP Request
+# Test 19: Out-of-Pool IP Request
 #---------------------------------------------------------------------
 test_out_of_pool_request() {
     echo ""
@@ -1807,7 +1847,7 @@ EOF
 }
 
 #---------------------------------------------------------------------
-# Test 18: Specific IP Already In Use
+# Test 20: Specific IP Already In Use
 #---------------------------------------------------------------------
 test_specific_ip_in_use() {
     echo ""
@@ -1859,7 +1899,7 @@ EOF
 }
 
 #---------------------------------------------------------------------
-# Test 19: Final Validation
+# Test 21: Final Validation
 #---------------------------------------------------------------------
 test_final_validation() {
     echo ""
@@ -1890,7 +1930,7 @@ test_final_validation() {
 }
 
 #---------------------------------------------------------------------
-# Test 20: ETP Cluster to Local Transition
+# Test 22: ETP Cluster to Local Transition
 #---------------------------------------------------------------------
 test_etp_transition() {
     echo ""
@@ -1978,7 +2018,7 @@ EOF
 }
 
 #---------------------------------------------------------------------
-# Test 21: Add Sharing Annotation to Existing Service
+# Test 23: Add Sharing Annotation to Existing Service
 #---------------------------------------------------------------------
 test_add_sharing_annotation() {
     echo ""
@@ -2100,7 +2140,7 @@ EOF
 }
 
 #---------------------------------------------------------------------
-# Test 22: SingleStack to DualStack Transition
+# Test 24: SingleStack to DualStack Transition
 #---------------------------------------------------------------------
 test_singlestack_to_dualstack() {
     echo ""
@@ -2212,7 +2252,7 @@ EOF
 }
 
 #---------------------------------------------------------------------
-# Test 23: LBNodeAgent Restart Recovery
+# Test 25: LBNodeAgent Restart Recovery
 #---------------------------------------------------------------------
 test_lbnodeagent_restart() {
     echo ""
@@ -2232,7 +2272,7 @@ test_lbnodeagent_restart() {
         fail "IP should be on $RESTART_NODE before restart"
 
     # Kill the agent pod (not evict - just restart)
-    AGENT_POD=$(kubectl get pods -n purelb -l app.kubernetes.io/component=lbnodeagent -o wide 2>/dev/null | grep "$RESTART_NODE" | awk '{print $1}')
+    AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null | grep "$RESTART_NODE" | awk '{print $1}')
     info "Killing agent pod $AGENT_POD..."
     kubectl delete pod -n purelb "$AGENT_POD" --grace-period=1
 
@@ -2266,7 +2306,7 @@ test_lbnodeagent_restart() {
 }
 
 #---------------------------------------------------------------------
-# Test 22: LBNodeAgent Restart During ETP Local
+# Test 26: LBNodeAgent Restart During ETP Local
 #---------------------------------------------------------------------
 test_lbnodeagent_restart_etp_local() {
     echo ""
@@ -2316,7 +2356,7 @@ test_lbnodeagent_restart_etp_local() {
             fail "IP should be on $WITH_ENDPOINT before restart"
 
         # Kill agent
-        AGENT_POD=$(kubectl get pods -n purelb -l app.kubernetes.io/component=lbnodeagent -o wide 2>/dev/null | grep "$WITH_ENDPOINT" | awk '{print $1}')
+        AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null | grep "$WITH_ENDPOINT" | awk '{print $1}')
         kubectl delete pod -n purelb "$AGENT_POD" --grace-period=1
 
         # Wait for restart
@@ -2347,7 +2387,7 @@ test_lbnodeagent_restart_etp_local() {
         fi
 
         # Kill agent
-        AGENT_POD=$(kubectl get pods -n purelb -l app.kubernetes.io/component=lbnodeagent -o wide 2>/dev/null | grep "$WITHOUT_ENDPOINT" | awk '{print $1}')
+        AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null | grep "$WITHOUT_ENDPOINT" | awk '{print $1}')
         kubectl delete pod -n purelb "$AGENT_POD" --grace-period=1
 
         # Wait for restart

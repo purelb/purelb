@@ -17,7 +17,7 @@ All commands via `make`:
 make check          # Run go vet and go test -race -short
 make generate       # Generate k8s client code (pkg/generated/)
 make crd            # Generate CRD manifests (deployments/crds/)
-make image          # Build container images using ko
+make image          # Build container images using ko (see below for deployment)
 make manifest       # Generate k8s deployment YAML via kustomize
 make helm           # Package Helm chart
 make scan           # Run govulncheck for vulnerabilities
@@ -31,6 +31,49 @@ go test -race -run TestName ./internal/allocator/...
 ```
 
 For tests requiring Netbox integration, set `NETBOX_BASE_URL` and `NETBOX_USER_TOKEN` environment variables.
+
+## Building and Deploying to Test Cluster
+
+**IMPORTANT**: The default `make image` builds to `ko.local/` which requires local Docker. For deploying to the test cluster, you must use `ko` directly with the correct registry and tag.
+
+### Check Current Cluster Image Tags
+
+First, check what image tags the cluster is currently using:
+```bash
+kubectl --context proxmox get daemonset lbnodeagent -n purelb -o jsonpath='{.spec.template.spec.containers[0].image}'
+# Example output: ghcr.io/purelb/purelb/lbnodeagent:general_k8_update
+```
+
+### Build and Push with ko
+
+Use `ko` directly with the correct registry (`ghcr.io/purelb/purelb`) and tag (matching the current branch/deployment):
+```bash
+# Set the registry and TAG (both required - TAG is used by .ko.yaml for ldflags)
+export KO_DOCKER_REPO=ghcr.io/purelb/purelb
+export TAG=general_k8_update  # Must match the tag you're deploying
+
+# Build and push with the correct tag (match current cluster deployment)
+go run github.com/google/ko@v0.17.1 build --base-import-paths --tags=$TAG ./cmd/lbnodeagent
+go run github.com/google/ko@v0.17.1 build --base-import-paths --tags=$TAG ./cmd/allocator
+```
+
+### Restart Pods to Pick Up New Images
+
+After pushing new images, restart the pods to pull the updated images:
+```bash
+kubectl --context proxmox rollout restart daemonset/lbnodeagent -n purelb
+kubectl --context proxmox rollout restart deployment/allocator -n purelb
+
+# Wait for rollout to complete
+kubectl --context proxmox rollout status daemonset/lbnodeagent -n purelb
+kubectl --context proxmox rollout status deployment/allocator -n purelb
+```
+
+### Common Mistakes to Avoid
+
+1. **Don't use `make image`** for cluster deployment - it builds to `ko.local/` which requires local Docker daemon
+2. **Always check the current image tag** before building - use the same tag the cluster expects
+3. **Remember to restart pods** after pushing - Kubernetes won't automatically pull updated images with the same tag
 
 ## Architecture
 
@@ -102,13 +145,3 @@ go test -race -short ./...
 
 Mock implementations exist in `internal/netbox/fake/` for Netbox testing.
 
-## Known Issues
-
-### IPv6 Local Interface Detection Bug
-**File:** `internal/local/network.go:108`
-
-The `checkLocal()` function filters IPv6 addresses with `addrs.Flags < 256`, which excludes addresses with `IFA_F_MANAGETEMPADDR` (0x100) flag. Modern Linux systems with SLAAC commonly have this flag on their primary IPv6 addresses, causing local IPv6 addresses to be incorrectly announced on kube-lb0 instead of the primary NIC.
-
-**Impact:** IPv6 addresses from a "local" pool (same subnet as node) are placed on the dummy interface instead of the real network interface.
-
-**To be addressed:** During the updated allocation process work.
