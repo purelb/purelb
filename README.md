@@ -6,11 +6,11 @@ system to announce service addresses.
 
 ## Documentation
 
-https://purelb.gitlab.io/purelb/
+https://purelb.io/
 
 ## Quick Start
 
-Installation is easy. For production systems we recommend installing using either Helm or a CI-built manifest file. These approaches use versioned image tags so they are stable. Instructions are on our install page at https://purelb.gitlab.io/purelb/install/ .
+Installation is easy. For production systems we recommend installing using either Helm or a CI-built manifest file. These approaches use versioned image tags so they are stable. Instructions are on our install page at https://purelb.github.io/purelb/install/ .
 
 For development, you can install PureLB from the source tree. This isn't recommended for production because it will install PureLB using an unstable image tag that changes over time so you could have unintended upgrades.
 

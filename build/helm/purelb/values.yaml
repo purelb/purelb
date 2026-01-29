@@ -111,7 +111,7 @@ Prometheus:
       rules: []
 
 # You may define a valid spec and set create: true to create a ServiceGroup.
-# See https://purelb.gitlab.io/purelb/install/config/
+# See https://purelb.github.io/purelb/install/config/
 serviceGroup:
   name: "default"
   create: false
@@ -175,7 +175,7 @@ memberlistSecretKey: "8sb7ikA5qHwQQqxc"
 priorityClassName: ""
 
 # Configurable values specific to lbnodeagent.
-# See https://purelb.gitlab.io/purelb/install/config/
+# See https://purelb.github.io/purelb/install/config/
 lbnodeagent:
   localint: default
   extlbint: kube-lb0
