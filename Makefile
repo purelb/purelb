@@ -3,8 +3,8 @@ REPO ?= ko.local
 
 PREFIX ?= ${PROJECT}
 REGISTRY_IMAGE ?= ${REPO}/${PREFIX}
-SUFFIX = v0.0.0-dev
-MANIFEST_SUFFIX = ${SUFFIX}
+SUFFIX ?= v0.0.0-dev
+MANIFEST_SUFFIX ?= ${SUFFIX}
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
