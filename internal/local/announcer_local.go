@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sync"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -51,6 +53,20 @@ type announcer struct {
 	// localNameRegex is the pattern that we use to determine if an
 	// interface is local or not.
 	localNameRegex *regexp.Regexp
+
+	// addressRenewals tracks addresses that need periodic renewal.
+	// Key format: "namespace/servicename:ip" to support shared IPs.
+	addressRenewals sync.Map // map[string]*addressRenewal
+}
+
+// addressRenewal holds the state needed to periodically refresh an address
+// before its lifetime expires.
+type addressRenewal struct {
+	ipNet    net.IPNet
+	link     netlink.Link
+	opts     AddressOptions
+	timer    *time.Timer
+	interval time.Duration
 }
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -246,7 +262,12 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
 	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
-	addNetwork(lbIPNet, announceInt)
+	opts := a.getLocalAddressOptions()
+	if err := addNetworkWithOptions(lbIPNet, announceInt, opts); err != nil {
+		return err
+	}
+	a.scheduleRenewal(nsName, lbIPNet, announceInt, opts)
+
 	if svc.Annotations == nil {
 		svc.Annotations = map[string]string{}
 	}
@@ -314,9 +335,12 @@ func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.Endp
 	// Add this address to the dummy interface so routing software
 	// (e.g., bird) will announce routes for it.
 	l.Log("msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
-	if err := addVirtualInt(lbIP, a.dummyInt, group.Subnet, group.Aggregation); err != nil {
+	opts := a.getDummyAddressOptions()
+	lbIPNet, err := addVirtualInt(lbIP, a.dummyInt, group.Subnet, group.Aggregation, opts)
+	if err != nil {
 		return err
 	}
+	a.scheduleRenewal(nsName, lbIPNet, a.dummyInt, opts)
 
 	announcing.With(prometheus.Labels{
 		"service": nsName,
@@ -361,6 +385,9 @@ func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 // svcAdvs map, so the service's address wasn't removed. For now, this
 // is a "belt and suspenders" double-check.
 func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
+	// Cancel any pending renewal timer for this service/IP
+	a.cancelRenewal(nsName, svcAddr.String())
+
 	// delete the service from Prometheus, i.e., it won't show up in the
 	// metrics anymore
 	announcing.Delete(prometheus.Labels{
@@ -389,6 +416,12 @@ func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 // Shutdown cleans up changes that we've made to the local networking
 // configuration.
 func (a *announcer) Shutdown() {
+	// Cancel all renewal timers to prevent goroutine leaks
+	a.addressRenewals.Range(func(key, val interface{}) bool {
+		val.(*addressRenewal).timer.Stop()
+		return true
+	})
+
 	// withdraw any announcements that we have made
 	for nsName := range a.svcIngresses {
 		if err := a.DeleteBalancer(nsName, "shutdown", nil); err != nil {
@@ -480,4 +513,150 @@ func poolFor(groups map[string]*purelbv1.ServiceGroupLocalSpec, lbIP net.IP) (st
 		}
 	}
 	return "", nil, fmt.Errorf("Can't find pool for address %+v", lbIP)
+}
+
+// renewalKey generates the map key for a service's address renewal.
+// Format: "namespace/servicename:ip" to support shared IPs across services.
+func renewalKey(svcName, ip string) string {
+	return svcName + ":" + ip
+}
+
+// scheduleRenewal sets up a timer to periodically refresh an address before
+// its lifetime expires. This is necessary because addresses with finite
+// lifetimes will be removed by the kernel when they expire.
+func (a *announcer) scheduleRenewal(svcName string, lbIPNet net.IPNet, link netlink.Link, opts AddressOptions) {
+	if opts.ValidLft == 0 {
+		return // Permanent address, no renewal needed
+	}
+
+	// Renew at 50% of lifetime, with a minimum of 30 seconds
+	interval := time.Duration(opts.ValidLft/2) * time.Second
+	if interval < 30*time.Second {
+		interval = 30 * time.Second
+	}
+
+	key := renewalKey(svcName, lbIPNet.IP.String())
+
+	renewal := &addressRenewal{
+		ipNet:    lbIPNet,
+		link:     link,
+		opts:     opts,
+		interval: interval,
+	}
+
+	// Cancel existing timer if any
+	if old, loaded := a.addressRenewals.LoadAndDelete(key); loaded {
+		old.(*addressRenewal).timer.Stop()
+	}
+
+	renewal.timer = time.AfterFunc(interval, func() {
+		a.renewAddress(key)
+	})
+
+	a.addressRenewals.Store(key, renewal)
+	a.logger.Log("op", "scheduleRenewal", "key", key, "interval", interval)
+}
+
+// renewAddress refreshes an address's lifetime. Called by the renewal timer.
+func (a *announcer) renewAddress(key string) {
+	val, ok := a.addressRenewals.Load(key)
+	if !ok {
+		return // Cancelled, nothing to do
+	}
+	renewal := val.(*addressRenewal)
+
+	if err := addNetworkWithOptions(renewal.ipNet, renewal.link, renewal.opts); err != nil {
+		a.logger.Log("op", "renewAddress", "key", key, "error", err)
+		// Still reschedule - transient errors shouldn't stop renewal
+	} else {
+		a.logger.Log("op", "renewAddress", "key", key, "msg", "renewed", "next", renewal.interval)
+	}
+
+	// Reschedule for next renewal
+	renewal.timer = time.AfterFunc(renewal.interval, func() {
+		a.renewAddress(key)
+	})
+}
+
+// cancelRenewal stops the renewal timer for a specific service/IP combination.
+func (a *announcer) cancelRenewal(svcName, ip string) {
+	key := renewalKey(svcName, ip)
+	if val, loaded := a.addressRenewals.LoadAndDelete(key); loaded {
+		val.(*addressRenewal).timer.Stop()
+		a.logger.Log("op", "cancelRenewal", "key", key)
+	}
+}
+
+// getLocalAddressOptions returns the AddressOptions for addresses added to
+// the local interface. Defaults to finite lifetime (300s) with NoPrefixRoute
+// to prevent CNI plugins like Flannel from selecting VIPs as node addresses.
+func (a *announcer) getLocalAddressOptions() AddressOptions {
+	opts := AddressOptions{
+		ValidLft:      300, // default 5 minutes
+		PreferedLft:   300,
+		NoPrefixRoute: true,
+	}
+
+	if a.config != nil && a.config.AddressConfig != nil && a.config.AddressConfig.LocalInterface != nil {
+		cfg := a.config.AddressConfig.LocalInterface
+		if cfg.ValidLifetime != nil {
+			v := *cfg.ValidLifetime
+			// Enforce minimum 60s if non-zero to prevent DoS via tiny lifetime
+			if v > 0 && v < 60 {
+				v = 60
+			}
+			opts.ValidLft = v
+			opts.PreferedLft = v // default preferred to same as valid
+		}
+		if cfg.PreferredLifetime != nil {
+			opts.PreferedLft = *cfg.PreferredLifetime
+		}
+		if cfg.NoPrefixRoute != nil {
+			opts.NoPrefixRoute = *cfg.NoPrefixRoute
+		}
+	}
+
+	// Ensure PreferredLft <= ValidLft
+	if opts.PreferedLft > opts.ValidLft {
+		opts.PreferedLft = opts.ValidLft
+	}
+
+	return opts
+}
+
+// getDummyAddressOptions returns the AddressOptions for addresses added to
+// the dummy interface. Defaults to permanent (0) since these don't conflict
+// with CNI plugins and permanent addresses provide routing stability.
+func (a *announcer) getDummyAddressOptions() AddressOptions {
+	opts := AddressOptions{
+		ValidLft:      0, // default permanent
+		PreferedLft:   0,
+		NoPrefixRoute: false,
+	}
+
+	if a.config != nil && a.config.AddressConfig != nil && a.config.AddressConfig.DummyInterface != nil {
+		cfg := a.config.AddressConfig.DummyInterface
+		if cfg.ValidLifetime != nil {
+			v := *cfg.ValidLifetime
+			// Enforce minimum 60s if non-zero
+			if v > 0 && v < 60 {
+				v = 60
+			}
+			opts.ValidLft = v
+			opts.PreferedLft = v
+		}
+		if cfg.PreferredLifetime != nil {
+			opts.PreferedLft = *cfg.PreferredLifetime
+		}
+		if cfg.NoPrefixRoute != nil {
+			opts.NoPrefixRoute = *cfg.NoPrefixRoute
+		}
+	}
+
+	// Ensure PreferredLft <= ValidLft
+	if opts.PreferedLft > opts.ValidLft {
+		opts.PreferedLft = opts.ValidLft
+	}
+
+	return opts
 }

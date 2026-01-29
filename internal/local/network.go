@@ -150,6 +150,39 @@ func addNetwork(lbIPNet net.IPNet, link netlink.Link) error {
 	return nil
 }
 
+// AddressOptions configures how an address is added to an interface.
+type AddressOptions struct {
+	// ValidLft is the valid lifetime in seconds. 0 means permanent.
+	ValidLft int
+	// PreferedLft is the preferred lifetime in seconds. 0 means permanent.
+	PreferedLft int
+	// NoPrefixRoute prevents automatic prefix route creation when true.
+	NoPrefixRoute bool
+}
+
+// addNetworkWithOptions adds lbIPNet to link with the specified options.
+// When ValidLft and PreferedLft are non-zero, the kernel will NOT set
+// IFA_F_PERMANENT on the address, which prevents CNI plugins like Flannel
+// from incorrectly selecting VIPs as node addresses.
+func addNetworkWithOptions(lbIPNet net.IPNet, link netlink.Link, opts AddressOptions) error {
+	addr, err := netlink.ParseAddr(lbIPNet.String())
+	if err != nil {
+		return err
+	}
+
+	addr.ValidLft = opts.ValidLft
+	addr.PreferedLft = opts.PreferedLft
+
+	if opts.NoPrefixRoute {
+		addr.Flags |= 0x200 // IFA_F_NOPREFIXROUTE
+	}
+
+	if err := netlink.AddrReplace(link, addr); err != nil {
+		return fmt.Errorf("could not add %v to %v: %w", addr, link, err)
+	}
+	return nil
+}
+
 // addDummyInterface creates a "dummy" interface whose name is
 // specified by dummyint.
 func addDummyInterface(name string) (netlink.Link, error) {
@@ -220,7 +253,7 @@ func deleteAddr(lbIP net.IP) error {
 	return nil
 }
 
-func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) error {
+func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string, opts AddressOptions) (net.IPNet, error) {
 
 	lbIPNet := net.IPNet{IP: lbIP}
 
@@ -230,25 +263,25 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 		case (nl.FAMILY_V4):
 			_, poolipnet, err := net.ParseCIDR(subnet)
 			if err != nil {
-				return err
+				return lbIPNet, err
 			}
 
 			lbIPNet.Mask = poolipnet.Mask
 
-			if err := addNetwork(lbIPNet, link); err != nil {
-				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
+			if err := addNetworkWithOptions(lbIPNet, link, opts); err != nil {
+				return lbIPNet, fmt.Errorf("could not add %v to %v: %w", lbIPNet, link, err)
 			}
 
 		case (nl.FAMILY_V6):
 			_, poolipnet, err := net.ParseCIDR(subnet)
 			if err != nil {
-				return err
+				return lbIPNet, err
 			}
 
 			lbIPNet.Mask = poolipnet.Mask
 
-			if err := addNetwork(lbIPNet, link); err != nil {
-				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
+			if err := addNetworkWithOptions(lbIPNet, link, opts); err != nil {
+				return lbIPNet, fmt.Errorf("could not add %v to %v: %w", lbIPNet, link, err)
 			}
 		}
 
@@ -258,30 +291,30 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 		case (nl.FAMILY_V4):
 			_, poolaggr, err := net.ParseCIDR("0.0.0.0" + aggregation)
 			if err != nil {
-				return err
+				return lbIPNet, err
 			}
 
 			lbIPNet.Mask = poolaggr.Mask
 
-			if err := addNetwork(lbIPNet, link); err != nil {
-				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
+			if err := addNetworkWithOptions(lbIPNet, link, opts); err != nil {
+				return lbIPNet, fmt.Errorf("could not add %v to %v: %w", lbIPNet, link, err)
 			}
 
 		case (nl.FAMILY_V6):
 			_, poolaggr, err := net.ParseCIDR("::" + aggregation)
 			if err != nil {
-				return err
+				return lbIPNet, err
 			}
 
 			lbIPNet.Mask = poolaggr.Mask
 
-			if err := addNetwork(lbIPNet, link); err != nil {
-				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
+			if err := addNetworkWithOptions(lbIPNet, link, opts); err != nil {
+				return lbIPNet, fmt.Errorf("could not add %v to %v: %w", lbIPNet, link, err)
 			}
 		}
 	}
 
-	return nil
+	return lbIPNet, nil
 }
 
 // sendGARP sends a gratuitous ARP message for ip on ifi. This is

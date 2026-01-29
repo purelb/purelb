@@ -276,10 +276,57 @@ type LBNodeAgentLocalSpec struct {
 	// the IP-to-MAC binding has changed.
 	// +kubebuilder:default=false
 	SendGratuitousARP bool `json:"sendgarp"`
+
+	// AddressConfig configures how VIP addresses are added to interfaces.
+	// This allows control over address lifetimes and flags to prevent
+	// conflicts with CNI plugins like Flannel that inspect address flags.
+	// +optional
+	AddressConfig *AddressConfig `json:"addressConfig,omitempty"`
 }
 
 // LBNodeAgentStatus is currently unused.
 type LBNodeAgentStatus struct {
+}
+
+// AddressConfig specifies how IP addresses should be configured on different
+// interface types. This allows fine-grained control over address lifetimes
+// and flags to avoid conflicts with CNI plugins like Flannel.
+type AddressConfig struct {
+	// LocalInterface configures addresses on the local interface (e.g., eth0).
+	// These are addresses announced when the node has a local endpoint.
+	// +optional
+	LocalInterface *InterfaceAddressConfig `json:"localInterface,omitempty"`
+
+	// DummyInterface configures addresses on the dummy interface (e.g., kube-lb0).
+	// These are addresses announced when the node wins election for a remote service.
+	// +optional
+	DummyInterface *InterfaceAddressConfig `json:"dummyInterface,omitempty"`
+}
+
+// InterfaceAddressConfig specifies address configuration for an interface type.
+type InterfaceAddressConfig struct {
+	// ValidLifetime is the valid lifetime in seconds for addresses added to this
+	// interface. A value of 0 means permanent (no expiry). When non-zero, addresses
+	// will not have the IFA_F_PERMANENT flag, which prevents CNI plugins like
+	// Flannel from incorrectly selecting VIPs as node addresses.
+	// Minimum value when non-zero is 60 seconds.
+	// Default: 300 for local interface, 0 for dummy interface.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ValidLifetime *int `json:"validLifetime,omitempty"`
+
+	// PreferredLifetime is the preferred lifetime in seconds. Must be <= ValidLifetime.
+	// A value of 0 means permanent. Defaults to ValidLifetime if not specified.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	PreferredLifetime *int `json:"preferredLifetime,omitempty"`
+
+	// NoPrefixRoute when true prevents the kernel from automatically creating
+	// a prefix route for the address. This is useful for VIPs that should not
+	// affect routing decisions.
+	// Default: true for local interface, false for dummy interface.
+	// +optional
+	NoPrefixRoute *bool `json:"noPrefixRoute,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

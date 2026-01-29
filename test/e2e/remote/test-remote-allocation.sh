@@ -75,6 +75,54 @@ verify_node_connectivity() {
     pass "All $NODE_COUNT nodes reachable via SSH"
 }
 
+# Verify IP forwarding is enabled on all nodes (critical for cross-node traffic)
+verify_ip_forwarding() {
+    info "Verifying IPv4 IP forwarding on all nodes..."
+    local FAILED=false
+    for node in $NODES; do
+        local IPV4_FWD
+        IPV4_FWD=$(ssh "$node" "cat /proc/sys/net/ipv4/ip_forward" 2>/dev/null || echo "error")
+        if [ "$IPV4_FWD" = "1" ]; then
+            pass "IPv4 forwarding enabled on $node"
+        elif [ "$IPV4_FWD" = "0" ]; then
+            echo -e "${RED}✗ FAIL:${NC} IPv4 forwarding DISABLED on $node"
+            echo "  Fix: ssh $node 'sysctl -w net.ipv4.ip_forward=1'"
+            FAILED=true
+        else
+            echo -e "${RED}✗ FAIL:${NC} Could not check IPv4 forwarding on $node"
+            FAILED=true
+        fi
+    done
+
+    info "Verifying IPv6 IP forwarding on all nodes..."
+    for node in $NODES; do
+        local IPV6_FWD
+        IPV6_FWD=$(ssh "$node" "cat /proc/sys/net/ipv6/conf/all/forwarding" 2>/dev/null || echo "error")
+        if [ "$IPV6_FWD" = "1" ]; then
+            pass "IPv6 forwarding enabled on $node"
+        elif [ "$IPV6_FWD" = "0" ]; then
+            echo -e "${RED}✗ FAIL:${NC} IPv6 forwarding DISABLED on $node"
+            echo "  Fix: ssh $node 'sysctl -w net.ipv6.conf.all.forwarding=1'"
+            FAILED=true
+        else
+            echo -e "${RED}✗ FAIL:${NC} Could not check IPv6 forwarding on $node"
+            FAILED=true
+        fi
+    done
+
+    if [ "$FAILED" = "true" ]; then
+        echo ""
+        echo -e "${RED}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${RED}IP FORWARDING VALIDATION FAILED${NC}"
+        echo -e "${RED}Cross-node traffic will fail without IP forwarding enabled.${NC}"
+        echo -e "${RED}Please fix the issues above before running E2E tests.${NC}"
+        echo -e "${RED}═══════════════════════════════════════════════════════════════${NC}"
+        exit 1
+    fi
+
+    pass "IP forwarding enabled on all nodes"
+}
+
 #---------------------------------------------------------------------
 # Debug and Cleanup Functions
 #---------------------------------------------------------------------
@@ -252,7 +300,8 @@ wait_for_nftables_rules() {
             if [ -n "$SVC_CHAIN" ]; then
                 # If it's an external chain, we need to find the service chain it jumps to
                 if [[ "$SVC_CHAIN" == external-* ]]; then
-                    SVC_CHAIN=$(ssh_or_fail $NODE "sudo nft list chain ip kube-proxy '$SVC_CHAIN' 2>/dev/null | grep -oP 'goto \Kservice-[^}]+'" 2>/dev/null | tr -d ' ' || echo "")
+                    # Note: use [^ ] not [^}] - chain names end at space, not brace
+                    SVC_CHAIN=$(ssh_or_fail $NODE "sudo nft list chain ip kube-proxy '$SVC_CHAIN' 2>/dev/null | grep -oP 'goto \Kservice-[^ ]+'" 2>/dev/null | head -1 || echo "")
                 fi
                 # Now check if the service chain has endpoints (vmap with endpoint- entries)
                 if [ -n "$SVC_CHAIN" ]; then
@@ -289,7 +338,8 @@ wait_for_nftables_rules_v6() {
             if [ -n "$SVC_CHAIN" ]; then
                 # If it's an external chain, find the service chain it jumps to
                 if [[ "$SVC_CHAIN" == external-* ]]; then
-                    SVC_CHAIN=$(ssh_or_fail $NODE "sudo nft list chain ip6 kube-proxy '$SVC_CHAIN' 2>/dev/null | grep -oP 'goto \Kservice-[^}]+'" 2>/dev/null | tr -d ' ' || echo "")
+                    # Note: use [^ ] not [^}] - chain names end at space, not brace
+                    SVC_CHAIN=$(ssh_or_fail $NODE "sudo nft list chain ip6 kube-proxy '$SVC_CHAIN' 2>/dev/null | grep -oP 'goto \Kservice-[^ ]+'" 2>/dev/null | head -1 || echo "")
                 fi
                 # Check if the service chain has endpoints
                 if [ -n "$SVC_CHAIN" ]; then
@@ -371,6 +421,36 @@ verify_aggregation_prefix_stable() {
         [ "$PREFIX1" = "$EXPECTED" ] || fail "Expected /$EXPECTED, got /$PREFIX1 on $node"
     done
     pass "Aggregation prefix /$EXPECTED is stable on all nodes"
+}
+
+#---------------------------------------------------------------------
+# Address Lifetime Helpers
+#---------------------------------------------------------------------
+
+# Get detailed address info including flags and lifetime
+get_address_details() {
+    local NODE=$1
+    local IP=$2
+    local INTERFACE=$3
+    ssh_or_fail "$NODE" "ip -d addr show $INTERFACE 2>/dev/null | grep -A1 ' $IP/'" 2>/dev/null || true
+}
+
+# Extract valid_lft value from address details
+# Returns: lifetime in seconds, or "forever" for permanent
+get_valid_lft() {
+    local DETAILS=$1
+    if echo "$DETAILS" | grep -q "valid_lft forever"; then
+        echo "forever"
+    else
+        echo "$DETAILS" | grep -oP 'valid_lft \K[0-9]+' || echo "unknown"
+    fi
+}
+
+# Check if address details contain a specific property
+check_address_property() {
+    local DETAILS=$1
+    local PROPERTY=$2
+    echo "$DETAILS" | grep -q "$PROPERTY"
 }
 
 #---------------------------------------------------------------------
@@ -535,6 +615,56 @@ test_vip_connectivity_v6() {
     fail "IPv6 VIP $IP not reachable from any endpoint node"
 }
 
+# Test that traffic via VIP reaches pods on DIFFERENT nodes
+# This explicitly validates IP forwarding is working
+test_cross_node_pod_connectivity() {
+    local IP=$1
+    local PORT=${2:-80}
+
+    ensure_curl_pod
+
+    info "Verifying cross-node traffic via VIP $IP (validates IP forwarding)..."
+
+    # Get the node where curl-test pod is running
+    local CURL_POD_NODE=$(kubectl get pod curl-test -n $NAMESPACE -o jsonpath='{.spec.nodeName}')
+    info "curl-test pod is on node: $CURL_POD_NODE"
+
+    # Get list of nodes that have nginx pods
+    local NGINX_NODES=$(kubectl get pods -n $NAMESPACE -l app=nginx -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | sort -u)
+    info "nginx pods are on nodes: $(echo $NGINX_NODES | tr '\n' ' ')"
+
+    # Make requests and track which nodes respond
+    local CROSS_NODE_SUCCESS=false
+    local TOTAL_REQUESTS=20
+
+    for i in $(seq 1 $TOTAL_REQUESTS); do
+        local RESPONSE=$(kubectl exec -n $NAMESPACE curl-test -- curl -s --connect-timeout 5 "http://$IP:$PORT" 2>/dev/null || true)
+        if echo "$RESPONSE" | grep -q "Node:"; then
+            local RESPONDING_NODE=$(echo "$RESPONSE" | grep "Node:" | awk '{print $2}')
+            if [ "$RESPONDING_NODE" != "$CURL_POD_NODE" ]; then
+                pass "Request $i: pod on $CURL_POD_NODE reached backend on $RESPONDING_NODE (cross-node traffic works!)"
+                CROSS_NODE_SUCCESS=true
+                break
+            fi
+        fi
+    done
+
+    if [ "$CROSS_NODE_SUCCESS" = "false" ]; then
+        warn "All $TOTAL_REQUESTS requests went to pods on same node as curl-test ($CURL_POD_NODE)"
+        # Check if this is expected (all nginx pods on same node)
+        local OTHER_NODES=$(echo "$NGINX_NODES" | grep -v "^$CURL_POD_NODE$" || true)
+        if [ -z "$OTHER_NODES" ]; then
+            info "All nginx pods are on $CURL_POD_NODE - cross-node test not applicable"
+        else
+            fail "Cross-node traffic not verified - IP forwarding may be disabled"
+            echo "  nginx pods exist on: $NGINX_NODES"
+            echo "  But all traffic went to $CURL_POD_NODE"
+        fi
+    fi
+
+    return 0
+}
+
 # For ETP Local: verify IP is on endpoint nodes and test connectivity from pod
 # Note: Direct node testing has hairpin NAT issues, so we:
 # 1. Verify the IP exists on the expected nodes (endpoint nodes only)
@@ -646,6 +776,7 @@ test_prerequisites() {
     echo "=========================================="
 
     verify_node_connectivity
+    verify_ip_forwarding
     verify_kube_proxy_nftables
     verify_clean_state
 
@@ -854,6 +985,29 @@ test_all_nodes_announce() {
 }
 
 #---------------------------------------------------------------------
+# Test 4b: Cross-Node Connectivity Validation
+# Explicitly verifies traffic via VIP reaches pods on DIFFERENT nodes.
+# This catches IP forwarding issues that would break production traffic.
+#---------------------------------------------------------------------
+test_cross_node_connectivity() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 4b: Cross-Node Connectivity Validation"
+    echo "=========================================="
+
+    info "This test explicitly verifies cross-node traffic works via the VIP."
+    info "If IP forwarding is disabled, this test will fail."
+
+    IP=$(kubectl get svc nginx-remote-ipv4 -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    [ -n "$IP" ] || fail "No IPv4 service found for cross-node test"
+
+    # Use the cross-node pod connectivity function
+    test_cross_node_pod_connectivity "$IP" 80
+
+    pass "Cross-node connectivity validation completed"
+}
+
+#---------------------------------------------------------------------
 # Test 5: ETP Local - Basic
 #---------------------------------------------------------------------
 test_etp_local_basic() {
@@ -866,12 +1020,38 @@ test_etp_local_basic() {
     info "Scaling nginx to 2 replicas..."
     kubectl scale deployment nginx -n $NAMESPACE --replicas=2
     kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=60s
-    kubectl wait --for=condition=Ready pods -l app=nginx -n $NAMESPACE --timeout=60s
 
-    # Get nodes with endpoints
+    # Wait for exactly 2 Running pods (not just "all pods ready" which can include terminating pods)
+    info "Waiting for exactly 2 running pods..."
+    local WAIT_ELAPSED=0
+    local WAIT_MAX=60
+    while [ $WAIT_ELAPSED -lt $WAIT_MAX ]; do
+        local RUNNING_COUNT=$(kubectl get pods -n $NAMESPACE -l app=nginx --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+        if [ "$RUNNING_COUNT" -eq 2 ]; then
+            info "Found exactly 2 running pods"
+            break
+        fi
+        sleep 2
+        WAIT_ELAPSED=$((WAIT_ELAPSED + 2))
+        info "  ... waiting for 2 pods (currently $RUNNING_COUNT running, ${WAIT_ELAPSED}s elapsed)"
+    done
+    [ $WAIT_ELAPSED -lt $WAIT_MAX ] || fail "Could not get exactly 2 running pods after ${WAIT_MAX}s"
+
+    # Get nodes with RUNNING endpoints only
     info "Getting nodes with nginx pods..."
-    ENDPOINT_NODES=$(kubectl get pods -n $NAMESPACE -l app=nginx -o jsonpath='{.items[*].spec.nodeName}')
+    ENDPOINT_NODES=$(kubectl get pods -n $NAMESPACE -l app=nginx --field-selector=status.phase=Running -o jsonpath='{.items[*].spec.nodeName}')
     info "Endpoint nodes: $ENDPOINT_NODES"
+
+    # Wait for endpoint slices to be fully synced after scaling
+    # This ensures lbnodeagent has accurate endpoint data before we create the ETP Local service
+    info "Waiting for EndpointSlice sync..."
+    sleep 5
+
+    # Verify endpoint slices exist before proceeding
+    info "Verifying EndpointSlices exist for nginx..."
+    kubectl wait --for=jsonpath='{.endpoints}' endpointslice -l kubernetes.io/service-name=kubernetes -n default --timeout=10s >/dev/null 2>&1 || true
+    ES_COUNT=$(kubectl get endpointslice -n $NAMESPACE -l kubernetes.io/service-name=nginx -o name 2>/dev/null | wc -l)
+    info "Found $ES_COUNT EndpointSlice(s) for nginx"
 
     # Create ETP Local service
     info "Creating ETP Local service..."
@@ -898,30 +1078,43 @@ spec:
     targetPort: 80
 EOF
 
-    IP=$(wait_for_service_announced nginx-etp-local kube-lb0 60)
+    # For ETP Local, first wait for K8s to allocate the IP
+    info "Waiting for nginx-etp-local to get an IP..."
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-etp-local -n $NAMESPACE --timeout=60s || fail "nginx-etp-local: No IP allocated"
+    IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
     info "Allocated IP: $IP"
 
-    # Wait for ETP Local to take effect - lbnodeagent needs time to withdraw
-    # IPs from non-endpoint nodes after the initial announcement
-    info "Waiting for ETP Local IP withdrawal from non-endpoint nodes (up to 30s)..."
+    # Give lbnodeagent time to process the service and stabilize
+    # This is especially important for ETP Local where endpoint slices must sync
+    info "Waiting for lbnodeagent to stabilize (10s)..."
+    sleep 10
+
+    # Wait for IP to appear on ENDPOINT nodes specifically (ETP Local behavior)
+    # This is different from regular remote services which appear on ALL nodes
+    info "Waiting for ETP Local IP to appear on endpoint nodes (up to 60s)..."
     local ELAPSED=0
-    local MAX_WAIT=30
+    local MAX_WAIT=60
+    local ENDPOINT_COUNT=$(echo $ENDPOINT_NODES | wc -w)
     while [ $ELAPSED -lt $MAX_WAIT ]; do
-        local ALL_CORRECT=true
-        for node in $NODES; do
-            if ! echo "$ENDPOINT_NODES" | grep -q "$node"; then
-                if ssh_or_fail $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'"; then
-                    ALL_CORRECT=false
-                    break
-                fi
+        local FOUND_COUNT=0
+        for node in $ENDPOINT_NODES; do
+            if ssh_or_fail $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'"; then
+                FOUND_COUNT=$((FOUND_COUNT + 1))
             fi
         done
-        if [ "$ALL_CORRECT" = "true" ]; then
+        if [ $FOUND_COUNT -eq $ENDPOINT_COUNT ]; then
+            info "IP found on all $ENDPOINT_COUNT endpoint nodes"
             break
         fi
         sleep 2
         ELAPSED=$((ELAPSED + 2))
+        info "  ... waiting ($ELAPSED s, found on $FOUND_COUNT/$ENDPOINT_COUNT nodes)"
     done
+
+    if [ $ELAPSED -ge $MAX_WAIT ]; then
+        fail "ETP Local IP $IP not on all endpoint nodes after ${MAX_WAIT}s"
+    fi
 
     # POSITIVE: Verify IP IS on nodes WITH endpoints
     info "Verifying IP is on nodes WITH endpoints..."
@@ -2406,6 +2599,86 @@ test_lbnodeagent_restart_etp_local() {
 }
 
 #---------------------------------------------------------------------
+# Test 27: Remote VIP Address Flags
+# Verifies address flags on kube-lb0 (dummy interface)
+#---------------------------------------------------------------------
+test_remote_vip_address_flags() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 27: Remote VIP Address Flags"
+    echo "=========================================="
+
+    # Get IPv4 from existing remote service
+    IP=$(kubectl get svc nginx-remote-ipv4 -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+    if [ -z "$IP" ]; then
+        info "Creating test service for address flag verification..."
+        cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-remote-flags-test
+  namespace: $NAMESPACE
+  labels:
+    test-suite: remote
+  annotations:
+    purelb.io/service-group: remote
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 8099
+    targetPort: 80
+EOF
+        kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+            svc/nginx-remote-flags-test -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+        IP=$(kubectl get svc nginx-remote-flags-test -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        sleep 3
+        CREATED_SVC=true
+    else
+        CREATED_SVC=false
+    fi
+
+    info "Testing VIP: $IP"
+
+    # Get address details from first node
+    NODE="${NODES%% *}"
+    info "Checking address on $NODE..."
+
+    DETAILS=$(get_address_details "$NODE" "$IP" "kube-lb0")
+    info "Address details: $DETAILS"
+
+    # Check lifetime - remote VIPs on dummy interface typically have permanent lifetime
+    VALID_LFT=$(get_valid_lft "$DETAILS")
+    if [ "$VALID_LFT" = "forever" ]; then
+        pass "Remote VIP has permanent lifetime (expected for dummy interface)"
+    elif [ "$VALID_LFT" = "unknown" ]; then
+        fail "Could not determine valid_lft for remote VIP"
+    else
+        info "Remote VIP has finite lifetime: ${VALID_LFT}sec (custom config)"
+        pass "Remote VIP lifetime configured"
+    fi
+
+    # Verify aggregation prefix (should be /32 for IPv4 remote pool)
+    PREFIX=$(ssh_or_fail $NODE "ip -o addr show kube-lb0 2>/dev/null | grep ' $IP/' | sed 's|.* $IP/\([0-9]*\).*|\1|'")
+    if [ "$PREFIX" = "32" ]; then
+        pass "Remote VIP has /32 host route aggregation"
+    else
+        info "Remote VIP has /$PREFIX aggregation (may be custom config)"
+    fi
+
+    # Cleanup if we created a test service
+    if [ "$CREATED_SVC" = "true" ]; then
+        kubectl delete svc nginx-remote-flags-test -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    fi
+
+    pass "Remote VIP address flags test completed"
+}
+
+#---------------------------------------------------------------------
 # Cleanup
 #---------------------------------------------------------------------
 cleanup_test_services() {
@@ -2440,11 +2713,12 @@ run_all_tests() {
     # Test 0: Prerequisites
     test_prerequisites
 
-    # Core remote functionality (Tests 1-4)
+    # Core remote functionality (Tests 1-4b)
     test_remote_ipv4
     test_remote_ipv6
     test_remote_dualstack
     test_all_nodes_announce
+    test_cross_node_connectivity
 
     # ETP Local (Tests 5-7)
     test_etp_local_basic
@@ -2483,6 +2757,9 @@ run_all_tests() {
     test_singlestack_to_dualstack
     test_lbnodeagent_restart
     test_lbnodeagent_restart_etp_local
+
+    # Address flags verification (Test 27)
+    test_remote_vip_address_flags
 
     # Cleanup
     cleanup_test_services

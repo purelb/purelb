@@ -8,6 +8,8 @@ End-to-end functional tests for PureLB.
 |-----------|-------------|
 | [local/](local/) | Tests for local IP allocation mode (addresses on physical NIC) |
 | [remote/](remote/) | Tests for remote IP allocation mode (addresses on kube-lb0) |
+| [timing/](timing/) | Tests for ETP Local timing behavior and latency characterization |
+| [address-lifetime/](address-lifetime/) | Tests for address lifetime/flags to prevent CNI conflicts (Flannel) |
 
 ## Running Tests
 
