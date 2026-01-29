@@ -207,13 +207,13 @@ jobs:
           output: 'lbnodeagent-trivy-results.sarif'
 
       - name: Upload allocator scan results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: 'allocator-trivy-results.sarif'
           category: 'allocator-container'
 
       - name: Upload lbnodeagent scan results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: 'lbnodeagent-trivy-results.sarif'
           category: 'lbnodeagent-container'
