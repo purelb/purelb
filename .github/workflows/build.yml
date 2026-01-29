@@ -49,7 +49,7 @@ jobs:
           HUGO_ENVIRONMENT: production
         run: make website
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: ./website/public
 
