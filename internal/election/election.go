@@ -22,7 +22,7 @@ import (
 
 	"purelb.io/internal/k8s"
 
-	gokitlog "github.com/go-kit/kit/log"
+	gokitlog "github.com/go-kit/log"
 	"github.com/hashicorp/memberlist"
 )
 

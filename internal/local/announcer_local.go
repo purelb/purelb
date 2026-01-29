@@ -18,15 +18,18 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sync"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vishvananda/netlink"
 )
@@ -50,6 +53,20 @@ type announcer struct {
 	// localNameRegex is the pattern that we use to determine if an
 	// interface is local or not.
 	localNameRegex *regexp.Regexp
+
+	// addressRenewals tracks addresses that need periodic renewal.
+	// Key format: "namespace/servicename:ip" to support shared IPs.
+	addressRenewals sync.Map // map[string]*addressRenewal
+}
+
+// addressRenewal holds the state needed to periodically refresh an address
+// before its lifetime expires.
+type addressRenewal struct {
+	ipNet    net.IPNet
+	link     netlink.Link
+	opts     AddressOptions
+	timer    *time.Timer
+	interval time.Duration
 }
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -132,7 +149,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	return nil
 }
 
-func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error {
+func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.EndpointSlice) error {
 	// retErr caches an error while we try other operations. Because we
 	// might have more than one interface to announce, if an error
 	// happens on the first one we still want to try the second. Instead
@@ -172,7 +189,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 				}
 			} else {
 				// lbIP isn't local to any interfaces so add it to dummyInt
-				if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+				if err := a.announceRemote(svc, epSlices, a.dummyInt, lbIP); err != nil {
 					retErr = err
 				}
 			}
@@ -193,7 +210,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, endpoints *v1.Endpoints) error 
 				}
 			} else {
 				// The default interface is remote, so add lbIP to dummyInt
-				if err := a.announceRemote(svc, endpoints, a.dummyInt, lbIP); err != nil {
+				if err := a.announceRemote(svc, epSlices, a.dummyInt, lbIP); err != nil {
 					retErr = err
 				}
 			}
@@ -245,7 +262,12 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
 	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
-	addNetwork(lbIPNet, announceInt)
+	opts := a.getLocalAddressOptions()
+	if err := addNetworkWithOptions(lbIPNet, announceInt, opts); err != nil {
+		return err
+	}
+	a.scheduleRenewal(nsName, lbIPNet, announceInt, opts)
+
 	if svc.Annotations == nil {
 		svc.Annotations = map[string]string{}
 	}
@@ -265,7 +287,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	return nil
 }
 
-func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, announceInt netlink.Link, lbIP net.IP) error {
+func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.EndpointSlice, announceInt netlink.Link, lbIP net.IP) error {
 	l := log.With(a.logger, "service", svc.Name)
 	nsName := svc.Namespace + "/" + svc.Name
 
@@ -275,43 +297,56 @@ func (a *announcer) announceRemote(svc *v1.Service, endpoints *v1.Endpoints, ann
 	// Should we announce?
 	// No, if externalTrafficPolicy is Local && there's no ready local endpoint
 	// Yes, in all other cases
-	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal && !nodeHasHealthyEndpoint(endpoints, a.myNode) {
-		l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
-		return a.deleteAddress(nsName, "noEndpoints", lbIP)
+	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal {
+		// Debug: log endpoint slice info
+		sliceCount := len(epSlices)
+		var endpointNodes []string
+		for _, slice := range epSlices {
+			if slice == nil {
+				continue
+			}
+			for _, ep := range slice.Endpoints {
+				if ep.NodeName != nil {
+					isReady := ep.Conditions.Ready != nil && *ep.Conditions.Ready
+					isServing := ep.Conditions.Serving != nil && *ep.Conditions.Serving
+					endpointNodes = append(endpointNodes, fmt.Sprintf("%s(ready=%v,serving=%v)", *ep.NodeName, isReady, isServing))
+				}
+			}
+		}
+		hasEndpoint := nodeHasHealthyEndpoint(epSlices, a.myNode)
+		l.Log("msg", "etpLocalCheck", "node", a.myNode, "sliceCount", sliceCount, "endpointNodes", endpointNodes, "hasHealthyEndpoint", hasEndpoint)
+
+		if !hasEndpoint {
+			l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
+			return a.deleteAddress(nsName, "noEndpoints", lbIP)
+		}
 	}
 
-	// add this address to the "dummy" interface so routing software
-	// (e.g., bird) will announce routes for it
-	for _, ingress := range svc.Status.LoadBalancer.Ingress {
-		// validate the allocated address
-		lbIP := net.ParseIP(ingress.IP)
-		if lbIP == nil {
-			l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
-			continue
-		}
-
-		// Find the group from which this address was allocated, which
-		// gives us the subnet and aggregation that we need.
-		groupName, group, err := poolFor(a.groups, lbIP)
-		if err != nil {
-			return err
-		}
-
-		l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "interface", a.dummyInt.Attrs().Name, "group", groupName)
-		a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, a.dummyInt.Attrs().Name)
-
-		// Add the address to the dummy interface.
-		l.Log("msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
-		if err := addVirtualInt(lbIP, a.dummyInt, group.Subnet, group.Aggregation); err != nil {
-			return err
-		}
-
-		announcing.With(prometheus.Labels{
-			"service": nsName,
-			"node":    a.myNode,
-			"ip":      lbIP.String(),
-		}).Set(1)
+	// Find the group from which this address was allocated, which
+	// gives us the subnet and aggregation that we need.
+	groupName, group, err := poolFor(a.groups, lbIP)
+	if err != nil {
+		return err
 	}
+
+	l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "interface", a.dummyInt.Attrs().Name, "group", groupName)
+	a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, a.dummyInt.Attrs().Name)
+
+	// Add this address to the dummy interface so routing software
+	// (e.g., bird) will announce routes for it.
+	l.Log("msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
+	opts := a.getDummyAddressOptions()
+	lbIPNet, err := addVirtualInt(lbIP, a.dummyInt, group.Subnet, group.Aggregation, opts)
+	if err != nil {
+		return err
+	}
+	a.scheduleRenewal(nsName, lbIPNet, a.dummyInt, opts)
+
+	announcing.With(prometheus.Labels{
+		"service": nsName,
+		"node":    a.myNode,
+		"ip":      lbIP.String(),
+	}).Set(1)
 
 	return nil
 }
@@ -350,6 +385,9 @@ func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 // svcAdvs map, so the service's address wasn't removed. For now, this
 // is a "belt and suspenders" double-check.
 func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
+	// Cancel any pending renewal timer for this service/IP
+	a.cancelRenewal(nsName, svcAddr.String())
+
 	// delete the service from Prometheus, i.e., it won't show up in the
 	// metrics anymore
 	announcing.Delete(prometheus.Labels{
@@ -378,6 +416,12 @@ func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 // Shutdown cleans up changes that we've made to the local networking
 // configuration.
 func (a *announcer) Shutdown() {
+	// Cancel all renewal timers to prevent goroutine leaks
+	a.addressRenewals.Range(func(key, val interface{}) bool {
+		val.(*addressRenewal).timer.Stop()
+		return true
+	})
+
 	// withdraw any announcements that we have made
 	for nsName := range a.svcIngresses {
 		if err := a.DeleteBalancer(nsName, "shutdown", nil); err != nil {
@@ -394,23 +438,39 @@ func (a *announcer) SetElection(election *election.Election) {
 }
 
 // nodeHasHealthyEndpoint returns true if node has at least one
-// healthy endpoint.
-func nodeHasHealthyEndpoint(eps *v1.Endpoints, node string) bool {
+// healthy endpoint. An endpoint is considered healthy if it is Ready
+// OR Serving (for graceful termination support) across ALL EndpointSlices.
+//
+// EndpointSlices may be split by port, so the same endpoint IP may appear
+// in multiple slices. We track readiness per-IP and require ALL appearances
+// to be healthy for the endpoint to be considered fully healthy.
+func nodeHasHealthyEndpoint(slices []*discoveryv1.EndpointSlice, node string) bool {
+	// Track per-IP readiness across all slices
+	// Same IP may appear in multiple slices with different ready states
 	ready := map[string]bool{}
-	for _, subset := range eps.Subsets {
-		for _, ep := range subset.Addresses {
-			if ep.NodeName == nil || *ep.NodeName != node {
+
+	for _, slice := range slices {
+		if slice == nil {
+			continue
+		}
+		for _, endpoint := range slice.Endpoints {
+			if endpoint.NodeName == nil || *endpoint.NodeName != node {
 				continue
 			}
-			if _, ok := ready[ep.IP]; !ok {
-				// Only set true if nothing else has expressed an
-				// opinion. This means that false will take precedence
-				// if there's any unready ports for a given endpoint.
-				ready[ep.IP] = true
+
+			// Check Ready OR Serving (for graceful termination)
+			isHealthy := (endpoint.Conditions.Ready != nil && *endpoint.Conditions.Ready) ||
+				(endpoint.Conditions.Serving != nil && *endpoint.Conditions.Serving)
+
+			for _, addr := range endpoint.Addresses {
+				if existing, ok := ready[addr]; ok {
+					// If ANY slice shows this endpoint as not healthy, mark it not healthy
+					// This preserves the original semantics where all ports must be ready
+					ready[addr] = existing && isHealthy
+				} else {
+					ready[addr] = isHealthy
+				}
 			}
-		}
-		for _, ep := range subset.NotReadyAddresses {
-			ready[ep.IP] = false
 		}
 	}
 
@@ -453,4 +513,150 @@ func poolFor(groups map[string]*purelbv1.ServiceGroupLocalSpec, lbIP net.IP) (st
 		}
 	}
 	return "", nil, fmt.Errorf("Can't find pool for address %+v", lbIP)
+}
+
+// renewalKey generates the map key for a service's address renewal.
+// Format: "namespace/servicename:ip" to support shared IPs across services.
+func renewalKey(svcName, ip string) string {
+	return svcName + ":" + ip
+}
+
+// scheduleRenewal sets up a timer to periodically refresh an address before
+// its lifetime expires. This is necessary because addresses with finite
+// lifetimes will be removed by the kernel when they expire.
+func (a *announcer) scheduleRenewal(svcName string, lbIPNet net.IPNet, link netlink.Link, opts AddressOptions) {
+	if opts.ValidLft == 0 {
+		return // Permanent address, no renewal needed
+	}
+
+	// Renew at 50% of lifetime, with a minimum of 30 seconds
+	interval := time.Duration(opts.ValidLft/2) * time.Second
+	if interval < 30*time.Second {
+		interval = 30 * time.Second
+	}
+
+	key := renewalKey(svcName, lbIPNet.IP.String())
+
+	renewal := &addressRenewal{
+		ipNet:    lbIPNet,
+		link:     link,
+		opts:     opts,
+		interval: interval,
+	}
+
+	// Cancel existing timer if any
+	if old, loaded := a.addressRenewals.LoadAndDelete(key); loaded {
+		old.(*addressRenewal).timer.Stop()
+	}
+
+	renewal.timer = time.AfterFunc(interval, func() {
+		a.renewAddress(key)
+	})
+
+	a.addressRenewals.Store(key, renewal)
+	a.logger.Log("op", "scheduleRenewal", "key", key, "interval", interval)
+}
+
+// renewAddress refreshes an address's lifetime. Called by the renewal timer.
+func (a *announcer) renewAddress(key string) {
+	val, ok := a.addressRenewals.Load(key)
+	if !ok {
+		return // Cancelled, nothing to do
+	}
+	renewal := val.(*addressRenewal)
+
+	if err := addNetworkWithOptions(renewal.ipNet, renewal.link, renewal.opts); err != nil {
+		a.logger.Log("op", "renewAddress", "key", key, "error", err)
+		// Still reschedule - transient errors shouldn't stop renewal
+	} else {
+		a.logger.Log("op", "renewAddress", "key", key, "msg", "renewed", "next", renewal.interval)
+	}
+
+	// Reschedule for next renewal
+	renewal.timer = time.AfterFunc(renewal.interval, func() {
+		a.renewAddress(key)
+	})
+}
+
+// cancelRenewal stops the renewal timer for a specific service/IP combination.
+func (a *announcer) cancelRenewal(svcName, ip string) {
+	key := renewalKey(svcName, ip)
+	if val, loaded := a.addressRenewals.LoadAndDelete(key); loaded {
+		val.(*addressRenewal).timer.Stop()
+		a.logger.Log("op", "cancelRenewal", "key", key)
+	}
+}
+
+// getLocalAddressOptions returns the AddressOptions for addresses added to
+// the local interface. Defaults to finite lifetime (300s) with NoPrefixRoute
+// to prevent CNI plugins like Flannel from selecting VIPs as node addresses.
+func (a *announcer) getLocalAddressOptions() AddressOptions {
+	opts := AddressOptions{
+		ValidLft:      300, // default 5 minutes
+		PreferedLft:   300,
+		NoPrefixRoute: true,
+	}
+
+	if a.config != nil && a.config.AddressConfig != nil && a.config.AddressConfig.LocalInterface != nil {
+		cfg := a.config.AddressConfig.LocalInterface
+		if cfg.ValidLifetime != nil {
+			v := *cfg.ValidLifetime
+			// Enforce minimum 60s if non-zero to prevent DoS via tiny lifetime
+			if v > 0 && v < 60 {
+				v = 60
+			}
+			opts.ValidLft = v
+			opts.PreferedLft = v // default preferred to same as valid
+		}
+		if cfg.PreferredLifetime != nil {
+			opts.PreferedLft = *cfg.PreferredLifetime
+		}
+		if cfg.NoPrefixRoute != nil {
+			opts.NoPrefixRoute = *cfg.NoPrefixRoute
+		}
+	}
+
+	// Ensure PreferredLft <= ValidLft
+	if opts.PreferedLft > opts.ValidLft {
+		opts.PreferedLft = opts.ValidLft
+	}
+
+	return opts
+}
+
+// getDummyAddressOptions returns the AddressOptions for addresses added to
+// the dummy interface. Defaults to permanent (0) since these don't conflict
+// with CNI plugins and permanent addresses provide routing stability.
+func (a *announcer) getDummyAddressOptions() AddressOptions {
+	opts := AddressOptions{
+		ValidLft:      0, // default permanent
+		PreferedLft:   0,
+		NoPrefixRoute: false,
+	}
+
+	if a.config != nil && a.config.AddressConfig != nil && a.config.AddressConfig.DummyInterface != nil {
+		cfg := a.config.AddressConfig.DummyInterface
+		if cfg.ValidLifetime != nil {
+			v := *cfg.ValidLifetime
+			// Enforce minimum 60s if non-zero
+			if v > 0 && v < 60 {
+				v = 60
+			}
+			opts.ValidLft = v
+			opts.PreferedLft = v
+		}
+		if cfg.PreferredLifetime != nil {
+			opts.PreferedLft = *cfg.PreferredLifetime
+		}
+		if cfg.NoPrefixRoute != nil {
+			opts.NoPrefixRoute = *cfg.NoPrefixRoute
+		}
+	}
+
+	// Ensure PreferredLft <= ValidLft
+	if opts.PreferedLft > opts.ValidLft {
+		opts.PreferedLft = opts.ValidLft
+	}
+
+	return opts
 }

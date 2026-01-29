@@ -180,11 +180,10 @@ lbnodeagent:
   localint: default
   extlbint: kube-lb0
   sendgarp: false
-  podSecurityPolicy:
-    enabled: false
   containerSecurityContext:
     runAsUser: 0
     runAsGroup: 0
+    allowPrivilegeEscalation: false
     capabilities:
       add:
       - NET_ADMIN
@@ -192,6 +191,8 @@ lbnodeagent:
       drop:
       - ALL
     readOnlyRootFilesystem: false
+    seccompProfile:
+      type: RuntimeDefault
   # Tolerations: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
   tolerations: []
   # For example, to allow lbnodeagents to run on master nodes, comment the above line and uncomment the following lines:
@@ -207,8 +208,6 @@ lbnodeagent:
 
 # Configurable values specific to allocator.
 allocator:
-  podSecurityPolicy:
-    enabled: false
   # Set the container security context
   containerSecurityContext:
     allowPrivilegeEscalation: false
@@ -216,6 +215,8 @@ allocator:
       drop:
       - all
     readOnlyRootFilesystem: true
+    seccompProfile:
+      type: RuntimeDefault
   # Tolerations: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
   tolerations: []
   # For example, to allow the allocator to run on master nodes, comment the above line and uncomment the following lines:
@@ -227,3 +228,5 @@ allocator:
   securityContext:
     runAsNonRoot: true
     runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault

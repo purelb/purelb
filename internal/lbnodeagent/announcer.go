@@ -18,6 +18,7 @@ import (
 	"net"
 
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
@@ -28,7 +29,7 @@ import (
 type Announcer interface {
 	SetConfig(*purelbv1.Config) error
 	SetClient(*k8s.Client)
-	SetBalancer(*v1.Service, *v1.Endpoints) error
+	SetBalancer(*v1.Service, []*discoveryv1.EndpointSlice) error
 	DeleteBalancer(string, string, net.IP) error
 	SetElection(*election.Election)
 	Shutdown()

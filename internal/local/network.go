@@ -82,30 +82,16 @@ func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error)
 		}
 
 	} else {
+		// IPv6 address flags that indicate an address should NOT be used:
+		// - IFA_F_DADFAILED (0x08): Duplicate address detection failed
+		// - IFA_F_DEPRECATED (0x20): Address is deprecated, don't use for new connections
+		// - IFA_F_TENTATIVE (0x40): DAD not complete, address not yet usable
+		const badFlags = 0x08 | 0x20 | 0x40
+
 		for _, addrs := range defaddrs {
-
-			/*  ifa_flags from linux source if_addr.h
-
-			#define IFA_F_SECONDARY		0x01
-			#define IFA_F_TEMPORARY		IFA_F_SECONDARY
-
-			#define	IFA_F_NODAD		0x02
-			#define IFA_F_OPTIMISTIC	0x04
-			#define IFA_F_DADFAILED		0x08
-			#define	IFA_F_HOMEADDRESS	0x10
-			#define IFA_F_DEPRECATED	0x20
-			#define IFA_F_TENTATIVE		0x40
-			#define IFA_F_PERMANENT		0x80
-			#define IFA_F_MANAGETEMPADDR	0x100
-			#define IFA_F_NOPREFIXROUTE	0x200
-			#define IFA_F_MCAUTOJOIN	0x400
-			#define IFA_F_STABLE_PRIVACY	0x800
-
-			*/
-
 			localnet := addrs.IPNet
 
-			if localnet.Contains(lbIPNet.IP) == true && addrs.Flags < 256 {
+			if localnet.Contains(lbIPNet.IP) && (addrs.Flags&badFlags) == 0 {
 				lbIPNet.Mask = localnet.Mask
 			}
 		}
@@ -160,6 +146,39 @@ func addNetwork(lbIPNet net.IPNet, link netlink.Link) error {
 	}
 	if err := netlink.AddrReplace(link, addr); err != nil {
 		return fmt.Errorf("could not add %v: to %v %w", addr, link, err)
+	}
+	return nil
+}
+
+// AddressOptions configures how an address is added to an interface.
+type AddressOptions struct {
+	// ValidLft is the valid lifetime in seconds. 0 means permanent.
+	ValidLft int
+	// PreferedLft is the preferred lifetime in seconds. 0 means permanent.
+	PreferedLft int
+	// NoPrefixRoute prevents automatic prefix route creation when true.
+	NoPrefixRoute bool
+}
+
+// addNetworkWithOptions adds lbIPNet to link with the specified options.
+// When ValidLft and PreferedLft are non-zero, the kernel will NOT set
+// IFA_F_PERMANENT on the address, which prevents CNI plugins like Flannel
+// from incorrectly selecting VIPs as node addresses.
+func addNetworkWithOptions(lbIPNet net.IPNet, link netlink.Link, opts AddressOptions) error {
+	addr, err := netlink.ParseAddr(lbIPNet.String())
+	if err != nil {
+		return err
+	}
+
+	addr.ValidLft = opts.ValidLft
+	addr.PreferedLft = opts.PreferedLft
+
+	if opts.NoPrefixRoute {
+		addr.Flags |= 0x200 // IFA_F_NOPREFIXROUTE
+	}
+
+	if err := netlink.AddrReplace(link, addr); err != nil {
+		return fmt.Errorf("could not add %v to %v: %w", addr, link, err)
 	}
 	return nil
 }
@@ -234,7 +253,7 @@ func deleteAddr(lbIP net.IP) error {
 	return nil
 }
 
-func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) error {
+func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string, opts AddressOptions) (net.IPNet, error) {
 
 	lbIPNet := net.IPNet{IP: lbIP}
 
@@ -244,25 +263,25 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 		case (nl.FAMILY_V4):
 			_, poolipnet, err := net.ParseCIDR(subnet)
 			if err != nil {
-				return err
+				return lbIPNet, err
 			}
 
 			lbIPNet.Mask = poolipnet.Mask
 
-			if err := addNetwork(lbIPNet, link); err != nil {
-				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
+			if err := addNetworkWithOptions(lbIPNet, link, opts); err != nil {
+				return lbIPNet, fmt.Errorf("could not add %v to %v: %w", lbIPNet, link, err)
 			}
 
 		case (nl.FAMILY_V6):
 			_, poolipnet, err := net.ParseCIDR(subnet)
 			if err != nil {
-				return err
+				return lbIPNet, err
 			}
 
 			lbIPNet.Mask = poolipnet.Mask
 
-			if err := addNetwork(lbIPNet, link); err != nil {
-				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
+			if err := addNetworkWithOptions(lbIPNet, link, opts); err != nil {
+				return lbIPNet, fmt.Errorf("could not add %v to %v: %w", lbIPNet, link, err)
 			}
 		}
 
@@ -272,30 +291,30 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string) e
 		case (nl.FAMILY_V4):
 			_, poolaggr, err := net.ParseCIDR("0.0.0.0" + aggregation)
 			if err != nil {
-				return err
+				return lbIPNet, err
 			}
 
 			lbIPNet.Mask = poolaggr.Mask
 
-			if err := addNetwork(lbIPNet, link); err != nil {
-				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
+			if err := addNetworkWithOptions(lbIPNet, link, opts); err != nil {
+				return lbIPNet, fmt.Errorf("could not add %v to %v: %w", lbIPNet, link, err)
 			}
 
 		case (nl.FAMILY_V6):
 			_, poolaggr, err := net.ParseCIDR("::" + aggregation)
 			if err != nil {
-				return err
+				return lbIPNet, err
 			}
 
 			lbIPNet.Mask = poolaggr.Mask
 
-			if err := addNetwork(lbIPNet, link); err != nil {
-				return fmt.Errorf("could not add %v: to %v %w", lbIPNet, link, err)
+			if err := addNetworkWithOptions(lbIPNet, link, opts); err != nil {
+				return lbIPNet, fmt.Errorf("could not add %v to %v: %w", lbIPNet, link, err)
 			}
 		}
 	}
 
-	return nil
+	return lbIPNet, nil
 }
 
 // sendGARP sends a gratuitous ARP message for ip on ifi. This is

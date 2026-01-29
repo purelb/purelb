@@ -17,11 +17,12 @@ package allocator
 
 import (
 	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 
 	"purelb.io/internal/k8s"
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 )
 
 // Controller provides an event-handling interface for the k8s client
@@ -29,7 +30,7 @@ import (
 type Controller interface {
 	SetClient(*k8s.Client)
 	SetConfig(*purelbv1.Config) k8s.SyncState
-	SetBalancer(*v1.Service, *v1.Endpoints) k8s.SyncState
+	SetBalancer(*v1.Service, []*discoveryv1.EndpointSlice) k8s.SyncState
 	DeleteBalancer(string) k8s.SyncState
 	MarkSynced()
 	Shutdown()

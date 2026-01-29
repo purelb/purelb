@@ -17,6 +17,8 @@ spec:
       annotations:
         prometheus.io/port: '7472'
         prometheus.io/scrape: 'true'
+        # Required to allow signal delivery for graceful termination
+        container.apparmor.security.beta.kubernetes.io/lbnodeagent: unconfined
       labels:
         {{- include "purelb.labels" . | nindent 8 }}
         app.kubernetes.io/component: lbnodeagent
@@ -31,12 +33,6 @@ spec:
       {{- end }}
       containers:
       - env:
-        - name: NETBOX_USER_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: netbox-client
-              key: user-token
-              optional: true
         - name: DEFAULT_ANNOUNCER
           value: "{{ .Values.defaultAnnouncer }}"
         - name: PURELB_NODE_NAME
@@ -76,7 +72,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       serviceAccountName: lbnodeagent
-      terminationGracePeriodSeconds: 2
+      terminationGracePeriodSeconds: 10
       {{- if .Values.priorityClassName }}
       priorityClassName: {{ .Values.priorityClassName }}
       {{- end }}

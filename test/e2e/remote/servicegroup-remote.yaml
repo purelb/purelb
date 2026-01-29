@@ -1,0 +1,16 @@
+---
+apiVersion: purelb.io/v1
+kind: ServiceGroup
+metadata:
+  name: remote
+  namespace: purelb
+spec:
+  local:
+    v4pools:
+    - aggregation: /32        # Host routes (common production use case)
+      pool: 10.255.0.100-10.255.0.150
+      subnet: 10.255.0.0/24
+    v6pools:
+    - aggregation: /128       # Host routes for IPv6
+      pool: fd00:10:255::100-fd00:10:255::150
+      subnet: fd00:10:255::/64

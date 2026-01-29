@@ -18,7 +18,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/vishvananda/netlink/nl"
 	v1 "k8s.io/api/core/v1"
@@ -345,7 +345,7 @@ func sameStrings(t *testing.T, want []string, got []string) {
 	assert.Equal(t, want, got)
 }
 
-func mustLocalPool(t *testing.T, name string, r string) LocalPool {
+func mustLocalPool(_ *testing.T, name string, r string) LocalPool {
 	p, err := NewLocalPool(name, allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{Pool: r, Subnet: r})
 	if err != nil {
 		panic(err)
@@ -353,7 +353,7 @@ func mustLocalPool(t *testing.T, name string, r string) LocalPool {
 	return p
 }
 
-func mustDualStackPool(t *testing.T, pools4 []string, pools6 []string) LocalPool {
+func mustDualStackPool(_ *testing.T, pools4 []string, pools6 []string) LocalPool {
 	spec := purelbv1.ServiceGroupLocalSpec{}
 	for _, pool6 := range pools6 {
 		spec.V6Pools = append(spec.V6Pools, &purelbv1.ServiceGroupAddressPool{Pool: pool6, Subnet: pool6})
@@ -366,4 +366,91 @@ func mustDualStackPool(t *testing.T, pools4 []string, pools6 []string) LocalPool
 		panic(err)
 	}
 	return p
+}
+
+// TestSharingKeyPortConflict verifies that services with the same sharing key
+// and same port cannot both get IPs - the second should fail even if there
+// are other IPs available in the pool.
+func TestSharingKeyPortConflict(t *testing.T) {
+	// Pool with 4 IPs to verify we don't escape to another IP
+	p := mustDualStackPool(t, []string{"192.168.1.0/30"}, []string{})
+
+	svc1 := service("svc1", ports("tcp/80"), "webservers")
+	svc2 := service("svc2", ports("tcp/443"), "webservers") // different port, same key
+	svc3 := service("svc3", ports("tcp/80"), "webservers")  // same port, same key - should FAIL
+
+	// svc1 gets first IP
+	assert.NoError(t, p.AssignNext(&svc1))
+	assert.Equal(t, "192.168.1.0", svc1.Status.LoadBalancer.Ingress[0].IP)
+
+	// svc2 shares the IP (different port)
+	assert.NoError(t, p.AssignNext(&svc2))
+	assert.Equal(t, "192.168.1.0", svc2.Status.LoadBalancer.Ingress[0].IP)
+
+	// svc3 should FAIL - same sharing key, same port
+	err := p.AssignNext(&svc3)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "port TCP/80")
+	assert.Contains(t, err.Error(), "already in use")
+
+	// Verify svc3 did NOT get an IP
+	assert.Empty(t, svc3.Status.LoadBalancer.Ingress)
+}
+
+// TestSharingKeyReleaseCleanup verifies that when all services using a
+// sharing key are released, the reverse index is properly cleaned up.
+func TestSharingKeyReleaseCleanup(t *testing.T) {
+	p := mustDualStackPool(t, []string{"192.168.1.0/32"}, []string{})
+	ip := net.ParseIP("192.168.1.0")
+
+	svc1 := service("svc1", ports("tcp/80"), "webservers")
+	assert.NoError(t, p.Assign(ip, &svc1))
+
+	// Verify sharing key is tracked
+	assert.NotNil(t, p.ipForSharingKey("webservers", nl.FAMILY_V4))
+	assert.Equal(t, "192.168.1.0", p.ipForSharingKey("webservers", nl.FAMILY_V4).String())
+
+	// Release the service
+	p.Release(namespacedName(&svc1))
+
+	// Verify sharing key mapping is cleaned up
+	assert.Nil(t, p.ipForSharingKey("webservers", nl.FAMILY_V4))
+}
+
+// TestSharingKeyBindingPreventsOtherIPs verifies that a service with a
+// sharing key bound to one IP cannot be assigned to a different IP.
+func TestSharingKeyBindingPreventsOtherIPs(t *testing.T) {
+	p := mustDualStackPool(t, []string{"192.168.1.0/31"}, []string{}) // 2 IPs
+
+	svc1 := service("svc1", ports("tcp/80"), "webservers")
+	svc2 := service("svc2", ports("tcp/80"), "webservers") // same port, same key
+
+	// svc1 gets first IP, binding "webservers" to 192.168.1.0
+	assert.NoError(t, p.AssignNext(&svc1))
+	assert.Equal(t, "192.168.1.0", svc1.Status.LoadBalancer.Ingress[0].IP)
+
+	// svc2 cannot get 192.168.1.1 because "webservers" is bound to .0
+	// and it cannot share .0 because of port conflict
+	err := p.AssignNext(&svc2)
+	assert.Error(t, err)
+
+	// The error should mention the port conflict (from the bound IP),
+	// not "no available addresses"
+	assert.Contains(t, err.Error(), "port TCP/80")
+}
+
+// TestDifferentSharingKeysGetDifferentIPs verifies that services with
+// different sharing keys can get different IPs.
+func TestDifferentSharingKeysGetDifferentIPs(t *testing.T) {
+	p := mustDualStackPool(t, []string{"192.168.1.0/31"}, []string{}) // 2 IPs
+
+	svc1 := service("svc1", ports("tcp/80"), "webservers")
+	svc2 := service("svc2", ports("tcp/80"), "databases") // same port, different key
+
+	assert.NoError(t, p.AssignNext(&svc1))
+	assert.Equal(t, "192.168.1.0", svc1.Status.LoadBalancer.Ingress[0].IP)
+
+	// svc2 should get a different IP because it has a different sharing key
+	assert.NoError(t, p.AssignNext(&svc2))
+	assert.Equal(t, "192.168.1.1", svc2.Status.LoadBalancer.Ingress[0].IP)
 }

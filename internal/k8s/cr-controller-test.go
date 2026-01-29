@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kit/kit/log"
+	"github.com/go-kit/log"
 	apps "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"

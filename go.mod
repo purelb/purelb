@@ -4,7 +4,7 @@ go 1.24.2
 
 require (
 	github.com/apparentlymart/go-cidr v1.1.0
-	github.com/go-kit/kit v0.9.0
+	github.com/go-kit/log v0.2.1
 	github.com/google/go-cmp v0.7.0
 	github.com/hashicorp/memberlist v0.5.0
 	github.com/mdlayher/arp v0.0.0-20220221190821-c37aaafac7f9
@@ -25,7 +25,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.1.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/emicklei/go-restful/v3 v3.11.0 // indirect
-	github.com/evanphx/json-patch v4.12.0+incompatible // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
 	github.com/go-logfmt/logfmt v0.5.1 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
@@ -33,10 +32,8 @@ require (
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/google/btree v1.1.3 // indirect
-	github.com/google/gnostic v0.5.7-v3refs // indirect
 	github.com/google/gnostic-models v0.6.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/errwrap v1.0.0 // indirect
@@ -45,7 +42,6 @@ require (
 	github.com/hashicorp/go-multierror v1.0.0 // indirect
 	github.com/hashicorp/go-sockaddr v1.0.0 // indirect
 	github.com/hashicorp/golang-lru v0.5.1 // indirect
-	github.com/imdario/mergo v0.3.6 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/josharian/native v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -76,7 +72,6 @@ require (
 	golang.org/x/text v0.23.0 // indirect
 	golang.org/x/time v0.9.0 // indirect
 	golang.org/x/tools v0.26.0 // indirect
-	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
