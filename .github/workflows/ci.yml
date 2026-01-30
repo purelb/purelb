@@ -169,7 +169,7 @@ jobs:
           sha256sum deployments/purelb-${{ steps.tag.outputs.tag }}.yaml >> SHA256SUMS
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: deployment-manifests-${{ github.sha }}
           path: |
