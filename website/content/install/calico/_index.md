@@ -41,7 +41,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: ipv4-routed
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     aggregation: /32
@@ -64,7 +64,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: ipv6-routed
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     aggregation: /128

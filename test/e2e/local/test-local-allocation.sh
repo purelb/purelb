@@ -211,7 +211,7 @@ validate_prerequisites() {
     # Check 6: PureLB components are running
     info "Checking PureLB components..."
     local ALLOCATOR_READY
-    ALLOCATOR_READY=$(kubectl get deployment -n purelb allocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+    ALLOCATOR_READY=$(kubectl get deployment -n purelb-systemallocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
     if [ "$ALLOCATOR_READY" -ge 1 ]; then
         pass "Allocator is running"
     else
@@ -220,7 +220,7 @@ validate_prerequisites() {
     fi
 
     local AGENT_PODS
-    AGENT_PODS=$(kubectl get pods -n purelb -l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+    AGENT_PODS=$(kubectl get pods -n purelb-system-l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
     if [ "$AGENT_PODS" -ge 1 ]; then
         pass "LBNodeAgent is running ($AGENT_PODS pods)"
     else
@@ -250,7 +250,7 @@ apiVersion: purelb.io/v1
 kind: LBNodeAgent
 metadata:
   name: default
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     localint: default
@@ -493,7 +493,7 @@ test_leader_election() {
 
     # Check lbnodeagent logs for election messages
     info "Checking election logs..."
-    kubectl logs -n purelb -l component=lbnodeagent --tail=100 | grep -i "winner" | tail -5 || true
+    kubectl logs -n purelb-system-l component=lbnodeagent --tail=100 | grep -i "winner" | tail -5 || true
 }
 
 #---------------------------------------------------------------------
@@ -848,9 +848,9 @@ test_node_failover() {
     kubectl taint node "$ORIGINAL_WINNER" purelb-test=failover:NoExecute --overwrite
 
     # The taint should cause the pod to be evicted, but let's also explicitly delete it
-    AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide | grep "$ORIGINAL_WINNER" | awk '{print $1}')
+    AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide | grep "$ORIGINAL_WINNER" | awk '{print $1}')
     if [ -n "$AGENT_POD" ]; then
-        kubectl delete pod -n purelb "$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
+        kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
     fi
 
     # Verify IP was REMOVED from tainted node (with polling)
@@ -919,7 +919,7 @@ test_node_failover() {
 
     # Wait for DaemonSet to fully recover with polling
     info "Waiting for lbnodeagent DaemonSet to recover..."
-    kubectl rollout status daemonset/lbnodeagent -n purelb --timeout=60s
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
 
     # Verify all agents are running (with polling to handle timing issues)
     EXPECTED_AGENTS=5
@@ -928,7 +928,7 @@ test_node_failover() {
     INTERVAL=2
     ELAPSED=0
     while [ $ELAPSED -lt $TIMEOUT ]; do
-        RUNNING_AGENTS=$(kubectl get pods -n purelb -l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+        RUNNING_AGENTS=$(kubectl get pods -n purelb-system-l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
         if [ "$RUNNING_AGENTS" -eq "$EXPECTED_AGENTS" ]; then
             pass "All $EXPECTED_AGENTS lbnodeagent pods recovered (took ${ELAPSED}s)"
             break

@@ -41,7 +41,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: remote
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     v4pools:

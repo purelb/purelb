@@ -457,10 +457,10 @@ func (a *announcer) ReconcileOrphanedIPs() {
 
 ```bash
 # 1. Rollback Helm release
-helm rollback purelb <previous-revision> -n purelb
+helm rollback purelb <previous-revision> -n purelb-system
 
 # 2. Force pod restart
-kubectl delete pods -n purelb -l app.kubernetes.io/name=purelb
+kubectl delete pods -n purelb-system -l app.kubernetes.io/name=purelb
 
 # 3. Verify announcements restored
 kubectl get svc -A -o json | jq '.items[] | select(.status.loadBalancer.ingress)'

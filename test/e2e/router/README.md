@@ -142,7 +142,7 @@ ssh $ROUTER_HOST "sudo vtysh -c 'show version'"
 vtysh -c "show bgp summary"
 
 # On cluster node (GoBGP)
-kubectl logs -n purelb -l component=lbnodeagent | grep -i bgp
+kubectl logs -n purelb-system-l component=lbnodeagent | grep -i bgp
 ```
 
 ### "ECMP not distributing traffic"

@@ -13,7 +13,7 @@ PureLB can allocate IP addresses from [Netbox's](https://netbox.readthedocs.io/e
 The Token is injected into PureLB's allocator pod as an environment variable that references a [Kubernetes Secret](https://kubernetes.io/docs/concepts/configuration/secret/). To install the token Secret, run:
 
 ```plaintext
-$ kubectl create secret generic -n purelb netbox-client --from-literal=user-token="your-token"
+$ kubectl create secret generic -n purelb-system netbox-client --from-literal=user-token="your-token"
 ```
 
 The PureLB allocator can now be configured to request addresses from Netbox. An example:
@@ -23,7 +23,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: netboxsg
-  namespace: purelb
+  namespace: purelb-system
 spec:
   netbox:
     url: http://your-netbox-host.your-domain.com/

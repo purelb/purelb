@@ -5,7 +5,7 @@ metadata:
     app.kubernetes.io/component: namespace
     app.kubernetes.io/name: purelb
     app.kubernetes.io/part-of: purelb
-  name: purelb
+  name: purelb-system
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -332,7 +332,7 @@ metadata:
   labels:
     app: purelb
   name: allocator
-  namespace: purelb
+  namespace: purelb-system
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -340,7 +340,7 @@ metadata:
   labels:
     app: purelb
   name: lbnodeagent
-  namespace: purelb
+  namespace: purelb-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -348,7 +348,7 @@ metadata:
   labels:
     app: purelb
   name: pod-lister
-  namespace: purelb
+  namespace: purelb-system
 rules:
 - apiGroups:
   - ""
@@ -452,7 +452,7 @@ metadata:
   labels:
     app: purelb
   name: pod-lister
-  namespace: purelb
+  namespace: purelb-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -460,7 +460,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: lbnodeagent
-  namespace: purelb
+  namespace: purelb-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -475,7 +475,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: allocator
-  namespace: purelb
+  namespace: purelb-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -490,7 +490,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: lbnodeagent
-  namespace: purelb
+  namespace: purelb-system
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -499,7 +499,7 @@ metadata:
     app: purelb
     component: allocator
   name: allocator
-  namespace: purelb
+  namespace: purelb-system
 spec:
   revisionHistoryLimit: 3
   selector:
@@ -559,7 +559,7 @@ metadata:
     app: purelb
     component: lbnodeagent
   name: lbnodeagent
-  namespace: purelb
+  namespace: purelb-system
 spec:
   selector:
     matchLabels:
@@ -623,7 +623,7 @@ apiVersion: purelb.io/v1
 kind: LBNodeAgent
 metadata:
   name: default
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     localint: default

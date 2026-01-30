@@ -28,7 +28,7 @@ apiVersion: coordination.k8s.io/v1
 kind: Lease
 metadata:
   name: purelb-node-worker-1
-  namespace: purelb
+  namespace: purelb-system
   annotations:
     purelb.io/subnets: "192.168.1.0/24,10.0.0.0/24"
 spec:
@@ -105,7 +105,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: local-pool
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     v4pools:
@@ -127,7 +127,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: bgp-pool
-  namespace: purelb
+  namespace: purelb-system
 spec:
   remote:
     v4pools:
@@ -201,7 +201,7 @@ apiVersion: purelb.io/v1
 kind: LBNodeAgent
 metadata:
   name: default
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     # localint controls default route auto-detection:

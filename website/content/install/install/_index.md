@@ -44,16 +44,29 @@ PureLB will operate without making this change, however if kubeproxy is set to I
 
 ## Install PureLB
 
-First, tell Helm how to find the PureLB chart:
+### Option 1: Helm Repository
+
 ```sh
-$ helm repo add purelb https://gitlab.com/api/v4/projects/20400619/packages/helm/stable
+$ helm repo add purelb https://purelb.github.io/purelb/charts
 $ helm repo update
+$ helm install --create-namespace --namespace=purelb-system purelb purelb/purelb
 ```
-Then, install PureLB:
+
+### Option 2: OCI Registry (Helm 3.8+)
+
 ```sh
-$ helm install --create-namespace --namespace=purelb purelb purelb/purelb
+$ helm install --create-namespace --namespace=purelb-system purelb \
+    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.14.0
 ```
-Several options can be overridden during installation. See [the chart's values.yaml file](https://gitlab.com/purelb/purelb/-/blob/main/build/helm/purelb/values.yaml?ref_type=heads) for the complete set.
+
+### Option 3: Direct URL
+
+```sh
+$ helm install --create-namespace --namespace=purelb-system purelb \
+    https://github.com/purelb/purelb/releases/download/v0.14.0/purelb-v0.14.0.tgz
+```
+
+Several options can be overridden during installation. See [the chart's values.yaml file](https://github.com/purelb/purelb/blob/main/build/helm/purelb/values.yaml) for the complete set.
 
 For example, if you would like to add a toleration to the allocator deployment (so the allocator can run on tainted nodes) you can create a file called `tolerations.yaml` with the following contents:
 
@@ -68,20 +81,20 @@ allocator:
 You can then tell helm to use this file to override PureLB's defaults:
 
 ```sh
-$ helm install --values=toleration-test.yaml --create-namespace --namespace=purelb purelb purelb/purelb
+$ helm install --values=toleration-test.yaml --create-namespace --namespace=purelb-system purelb purelb/purelb
 ```
 
 ### GARP
 PureLB supports gratuitous ARP (GARP) which is required for EVPN/VXLAN environments. GARP is disabled by default but can be enabled during installation by setting the `lbnodeagent.sendgarp` flag in the LBNodeAgent configuration. If you're using Helm, then add `--set=lbnodeagent.sendgarp=true` to the command line:
 
 ```sh
-$ helm install --create-namespace --namespace=purelb --set=lbnodeagent.sendgarp=true purelb purelb/purelb
+$ helm install --create-namespace --namespace=purelb-system --set=lbnodeagent.sendgarp=true purelb purelb/purelb
 
 ```
 It can also be enabled after installation by editing the LBNodeAgent resource:
 
 ``` yaml
-$ kubectl edit -n purelb lbnodeagent
+$ kubectl edit -n purelb-system lbnodeagent
 apiVersion: purelb.io/v1
 kind: LBNodeAgent
 metadata:
@@ -95,10 +108,10 @@ spec:
 ```
 
 ### Install from Source
-Installation from source isn't recommended for production systems but it's useful for development. The process is covered in the [PureLB readme](https://gitlab.com/purelb/purelb).
+Installation from source isn't recommended for production systems but it's useful for development. The process is covered in the [PureLB readme](https://github.com/purelb/purelb).
 
 ## Installed Components
-1. PureLB Namespace.  The `purelb` namespace is created for the PureLB components
+1. PureLB Namespace.  The `purelb-system` namespace is created for the PureLB components
 1. Custom Resource Definition.  PureLB uses two CRD's for configuration: `ServiceGroup` and `LBNodeAgent`
 1. Allocator Deployment.  A Deployment with a single instance of the Allocator is installed
 1. LBNodeAgent Daemonset.  LBNodeAgent runs on all nodes
@@ -108,7 +121,7 @@ Installation from source isn't recommended for production systems but it's usefu
 One instance of the Allocator pod should be running, and an instance of the LBNodeAgent pod should be running on each untainted node.
 
 ```sh
-$ kubectl get pods --namespace=purelb --output=wide
+$ kubectl get pods --namespace=purelb-system --output=wide
 NAME                        READY   STATUS    RESTARTS   AGE     IP               NODE        NOMINATED NODE   READINESS GATES
 allocator-5cb95b946-5wmsz   1/1     Running   1          5h28m   10.129.3.152     purelb2-4   <none>           <none>
 lbnodeagent-5689z           1/1     Running   2          5h28m   172.30.250.101   purelb2-3   <none>           <none>

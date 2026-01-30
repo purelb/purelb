@@ -1,0 +1,52 @@
+name: Update Helm Repository Index
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-index:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Generate Helm repository index
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p website/static/charts
+          mkdir -p /tmp/helm-charts
+
+          # Download charts from all releases for indexing
+          for tag in $(gh release list --json tagName -q '.[].tagName' --limit 50); do
+            url="https://github.com/purelb/purelb/releases/download/${tag}/purelb-${tag}.tgz"
+            if curl -sfI "$url" > /dev/null 2>&1; then
+              curl -sLo "/tmp/helm-charts/purelb-${tag}.tgz" "$url"
+            fi
+          done
+
+          # Generate index pointing to GitHub Releases URLs
+          helm repo index /tmp/helm-charts \
+            --url https://github.com/purelb/purelb/releases/download
+
+          mv /tmp/helm-charts/index.yaml website/static/charts/index.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add website/static/charts/index.yaml
+          if ! git diff --staged --quiet; then
+            git commit -m "Update Helm repository index for ${{ github.event.release.tag_name }}"
+            git push
+          fi

@@ -93,7 +93,7 @@ dump_debug_state() {
         ssh_node $node "ip -o addr show kube-lb0 2>/dev/null" || echo "  (failed)"
     done
     echo "--- lbnodeagent pods ---"
-    kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
+    kubectl get pods -n purelb-system-l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
     echo "========================="
 }
 
@@ -261,11 +261,11 @@ test_prerequisites() {
 
     # Verify PureLB is running
     info "Verifying PureLB components..."
-    local AGENT_PODS=$(kubectl get pods -n purelb -l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+    local AGENT_PODS=$(kubectl get pods -n purelb-system-l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
     [ "$AGENT_PODS" -ge 1 ] || fail "LBNodeAgent not running"
     pass "LBNodeAgent running ($AGENT_PODS pods)"
 
-    local ALLOCATOR_READY=$(kubectl get deployment -n purelb allocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+    local ALLOCATOR_READY=$(kubectl get deployment -n purelb-systemallocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
     [ "$ALLOCATOR_READY" -ge 1 ] || fail "Allocator not running"
     pass "Allocator running"
 
@@ -275,7 +275,7 @@ test_prerequisites() {
     pass "Test pods running ($NGINX_PODS pods)"
 
     # Verify ServiceGroup exists
-    if ! kubectl get servicegroup -n purelb "$SERVICE_GROUP" >/dev/null 2>&1; then
+    if ! kubectl get servicegroup -n purelb-system"$SERVICE_GROUP" >/dev/null 2>&1; then
         fail "ServiceGroup '$SERVICE_GROUP' not found in purelb namespace"
     fi
     pass "ServiceGroup '$SERVICE_GROUP' exists"
@@ -447,9 +447,9 @@ test_node_failure_recovery() {
 
     # Taint node and delete lbnodeagent pod
     kubectl taint node "$FAIL_NODE" purelb-router-test=failover:NoExecute --overwrite
-    local AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
+    local AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
     if [ -n "$AGENT_POD" ]; then
-        kubectl delete pod -n purelb "$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
+        kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
     fi
 
     # Wait for VIP to be removed from failed node
@@ -493,7 +493,7 @@ test_node_failure_recovery() {
     # Restore node
     info "Restoring $FAIL_NODE..."
     kubectl taint node "$FAIL_NODE" purelb-router-test-
-    kubectl rollout status daemonset/lbnodeagent -n purelb --timeout=60s
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
 
     # Wait for VIP to return to restored node
     info "Waiting for VIP to return to $FAIL_NODE..."
@@ -673,8 +673,8 @@ test_full_lifecycle() {
     info "Phase 3: Simulating node failure..."
     local FAIL_NODE=${NODES%% *}
     kubectl taint node "$FAIL_NODE" purelb-router-test=lifecycle:NoExecute --overwrite
-    local AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
-    [ -n "$AGENT_POD" ] && kubectl delete pod -n purelb "$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
+    local AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
+    [ -n "$AGENT_POD" ] && kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
     sleep 15
     RESPONSE=$(test_connectivity "$VIP" 80)
     echo "$RESPONSE" | grep -q "Pod:" || fail "Phase 3 connectivity failed"
@@ -683,7 +683,7 @@ test_full_lifecycle() {
     # Phase 4: Restore
     info "Phase 4: Restoring node..."
     kubectl taint node "$FAIL_NODE" purelb-router-test-
-    kubectl rollout status daemonset/lbnodeagent -n purelb --timeout=60s
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
     sleep 10
     RESPONSE=$(test_connectivity "$VIP" 80)
     echo "$RESPONSE" | grep -q "Pod:" || fail "Phase 4 connectivity failed"

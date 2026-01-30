@@ -2,11 +2,9 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Adds namespace to all resources.
-namespace: purelb
-
-bases:
-- ../crds
+namespace: purelb-system
 
 resources:
+- ../crds
 - namespace.yaml
 - purelb.yaml

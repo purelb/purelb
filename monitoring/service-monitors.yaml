@@ -6,7 +6,7 @@ metadata:
     app: purelb
     component: allocator
   name: allocator
-  namespace: purelb
+  namespace: purelb-system
 spec:
   ports:
   - name: monitoring
@@ -26,7 +26,7 @@ metadata:
     app: purelb
     component: lbnodeagent
   name: lbnodeagent
-  namespace: purelb
+  namespace: purelb-system
 spec:
   ports:
   - name: monitoring
@@ -45,7 +45,7 @@ metadata:
   labels:
     prometheus: default
   name: purelb-allocator
-  namespace: purelb
+  namespace: purelb-system
 spec:
   endpoints:
   - interval: 60s
@@ -55,7 +55,7 @@ spec:
   jobLabel: purelb
   namespaceSelector:
     matchNames:
-    - purelb
+    - purelb-system
   selector:
     matchLabels:
       app: purelb
@@ -68,7 +68,7 @@ metadata:
   labels:
     prometheus: default
   name: purelb-lbnodeagent
-  namespace: purelb
+  namespace: purelb-system
 spec:
   endpoints:
   - interval: 60s
@@ -78,7 +78,7 @@ spec:
   jobLabel: purelb
   namespaceSelector:
     matchNames:
-    - purelb
+    - purelb-system
   selector:
     matchLabels:
       app: purelb

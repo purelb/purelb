@@ -11,3 +11,9 @@ spec:
     localint: {{ .Values.lbnodeagent.localint }}
     extlbint: {{ .Values.lbnodeagent.extlbint }}
     sendgarp: {{ .Values.lbnodeagent.sendgarp }}
+    {{- with .Values.lbnodeagent.addressConfig }}
+    {{- if or .localInterface .dummyInterface }}
+    addressConfig:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- end }}
