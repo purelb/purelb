@@ -19,7 +19,8 @@ set -o nounset
 set -o pipefail
 
 SCRIPT_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
-CODEGEN_PKG=$(go env GOMODCACHE)/k8s.io/code-generator@v0.33.3
+CODEGEN_VERSION=$(grep 'k8s.io/code-generator' "${SCRIPT_ROOT}/go.mod" | awk '{print $2}')
+CODEGEN_PKG=$(go env GOMODCACHE)/k8s.io/code-generator@${CODEGEN_VERSION}
 source "${CODEGEN_PKG}/kube_codegen.sh"
 
 THIS_PKG="purelb.io"
