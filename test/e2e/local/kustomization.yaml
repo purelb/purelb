@@ -2,7 +2,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-- ../../home/adamd/purelb/deployments/samples
+- ../../../deployments/samples
 
 images:
 - name: purelb/allocator

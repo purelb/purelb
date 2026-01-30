@@ -18,9 +18,9 @@ servicegroups   sg           purelb.io   true         ServiceGroup
 The installation procedure creates `lbnodeagent.purelb.io/default` which will work in most cases.
 
 ```sh
-$ kubectl describe --namespace=purelb lbnodeagent.purelb.io/default
+$ kubectl describe --namespace=purelb-system lbnodeagent.purelb.io/default
 Name:         default
-Namespace:    purelb
+Namespace:    purelb-system
 Kind:         LBNodeAgent
 ...
 Spec:
@@ -38,7 +38,7 @@ sendgarp | true/false (false by default) | Gratuitous ARP (GARP), required for E
 ## ServiceGroup
 ServiceGroups contain the configuration required to allocate LoadBalancer addresses. In the case of locally allocated addresses, ServiceGroups contain address pools. In the case of NetBox, ServiceGroups contain the configuration necessary to contact Netbox so the Allocator can fetch addresses.
 
-ServiceGroups are namespaced, however, PureLB watches all namespaces.  For simplicity we recommend adding them to the `purelb` namespace. In cases where RBAC restricts who can update `purelb`, ServiceGroups can be added to the namespaces of their users.
+ServiceGroups are namespaced, however, PureLB watches all namespaces.  For simplicity we recommend adding them to the `purelb-system` namespace. In cases where RBAC restricts who can update `purelb-system`, ServiceGroups can be added to the namespaces of their users.
 
 ### Local Addresses
 {{% notice danger %}} Note: PureLB does not install a default ServiceGroup because everyone's network environment is unique. You will need to make at least one ServiceGroup that works in your environment.{{% /notice %}}
@@ -50,7 +50,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: default
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     v4pools:
@@ -89,7 +89,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: agg-sample
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     v4pools:
@@ -105,7 +105,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: team-1
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     v4pools:
@@ -117,7 +117,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: team-2
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     v4pools:
@@ -133,7 +133,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: highavail
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     v4pools:

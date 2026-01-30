@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: purelb
+  name: purelb-system
   labels:
     app.kubernetes.io/name: purelb
     app.kubernetes.io/component: namespace

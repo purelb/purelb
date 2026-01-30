@@ -115,13 +115,27 @@ Prometheus:
 serviceGroup:
   name: "default"
   create: false
-  # For example, to configure a "default" ServiceGroup, comment the above line and uncomment the following lines:
+  # Single-stack example:
   # create: true
   # spec:
   #   local:
-  #     subnet: '192.168.254.0/24'
-  #     pool: '192.168.254.200-192.168.254.201'
-  #     aggregation: default
+  #     v4pool:
+  #       subnet: '192.168.254.0/24'
+  #       pool: '192.168.254.200-192.168.254.210'
+  #       aggregation: default
+  #
+  # Dual-stack example:
+  # create: true
+  # spec:
+  #   local:
+  #     v4pool:
+  #       subnet: '192.168.254.0/24'
+  #       pool: '192.168.254.200-192.168.254.210'
+  #       aggregation: default
+  #     v6pool:
+  #       subnet: 'fd53:9ef0:8683::/120'
+  #       pool: 'fd53:9ef0:8683::1-fd53:9ef0:8683::10'
+  #       aggregation: default
 
 # This can be used to define a list of arbitrary extra Kubernetes objects to be created (configmaps, serviceGroups, etc.).
 # Example:
@@ -180,6 +194,17 @@ lbnodeagent:
   localint: default
   extlbint: kube-lb0
   sendgarp: false
+  # Address configuration to prevent CNI conflicts (e.g., Flannel).
+  # Configure how VIP addresses are added to interfaces.
+  # addressConfig:
+  #   localInterface:
+  #     validLifetime: 300      # seconds, 0 = permanent (default: 300)
+  #     preferredLifetime: 300  # must be <= validLifetime
+  #     noPrefixRoute: true     # prevent kernel prefix route (default: true)
+  #   dummyInterface:
+  #     validLifetime: 0        # permanent for dummy interface (default: 0)
+  #     noPrefixRoute: false    # (default: false)
+  addressConfig: {}
   containerSecurityContext:
     runAsUser: 0
     runAsGroup: 0

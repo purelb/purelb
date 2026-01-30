@@ -144,9 +144,9 @@ dump_debug_state() {
     local FIRST_NODE=${NODES%% *}
     ssh $FIRST_NODE "sudo nft list map ip kube-proxy service-ips 2>/dev/null | head -50" 2>/dev/null || echo "  (failed)"
     echo "--- lbnodeagent pods ---"
-    kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
+    kubectl get pods -n purelb-system-l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
     echo "--- allocator logs (last 20 lines) ---"
-    kubectl logs -n purelb deployment/allocator --tail=20 2>/dev/null || echo "(failed)"
+    kubectl logs -n purelb-systemdeployment/allocator --tail=20 2>/dev/null || echo "(failed)"
     echo "========================="
 }
 
@@ -782,14 +782,14 @@ test_prerequisites() {
 
     # Verify PureLB components are running
     info "Verifying PureLB allocator..."
-    kubectl get deployment allocator -n purelb >/dev/null 2>&1 || fail "Allocator deployment not found"
-    kubectl rollout status deployment/allocator -n purelb --timeout=30s || fail "Allocator not ready"
+    kubectl get deployment allocator -n purelb-system>/dev/null 2>&1 || fail "Allocator deployment not found"
+    kubectl rollout status deployment/allocator -n purelb-system--timeout=30s || fail "Allocator not ready"
     pass "Allocator is running"
 
     info "Verifying PureLB lbnodeagent..."
-    kubectl get daemonset lbnodeagent -n purelb >/dev/null 2>&1 || fail "LBNodeAgent daemonset not found"
-    local READY=$(kubectl get daemonset lbnodeagent -n purelb -o jsonpath='{.status.numberReady}')
-    local DESIRED=$(kubectl get daemonset lbnodeagent -n purelb -o jsonpath='{.status.desiredNumberScheduled}')
+    kubectl get daemonset lbnodeagent -n purelb-system>/dev/null 2>&1 || fail "LBNodeAgent daemonset not found"
+    local READY=$(kubectl get daemonset lbnodeagent -n purelb-system-o jsonpath='{.status.numberReady}')
+    local DESIRED=$(kubectl get daemonset lbnodeagent -n purelb-system-o jsonpath='{.status.desiredNumberScheduled}')
     [ "$READY" -eq "$DESIRED" ] || fail "LBNodeAgent not ready: $READY/$DESIRED"
     pass "LBNodeAgent running on all $READY nodes"
 
@@ -1787,9 +1787,9 @@ test_node_failure() {
     kubectl taint node "$FAIL_NODE" purelb-test=failover:NoExecute --overwrite
 
     # Delete the pod to speed things up
-    AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null | grep "$FAIL_NODE" | awk '{print $1}')
+    AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide 2>/dev/null | grep "$FAIL_NODE" | awk '{print $1}')
     if [ -n "$AGENT_POD" ]; then
-        kubectl delete pod -n purelb "$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
+        kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
     fi
 
     # Wait for IP to be removed from failed node
@@ -1828,7 +1828,7 @@ test_node_failure() {
 
     # Wait for DaemonSet to recover
     info "Waiting for lbnodeagent to recover..."
-    kubectl rollout status daemonset/lbnodeagent -n purelb --timeout=60s
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
 
     # Wait for IP to reappear on recovered node
     info "Waiting for IP to reappear on $FAIL_NODE..."
@@ -2465,14 +2465,14 @@ test_lbnodeagent_restart() {
         fail "IP should be on $RESTART_NODE before restart"
 
     # Kill the agent pod (not evict - just restart)
-    AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null | grep "$RESTART_NODE" | awk '{print $1}')
+    AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide 2>/dev/null | grep "$RESTART_NODE" | awk '{print $1}')
     info "Killing agent pod $AGENT_POD..."
-    kubectl delete pod -n purelb "$AGENT_POD" --grace-period=1
+    kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=1
 
     # Wait for pod to restart
     info "Waiting for agent to restart..."
     sleep 5
-    kubectl rollout status daemonset/lbnodeagent -n purelb --timeout=60s
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
 
     # Verify IP is restored on this node
     info "Verifying IP restored after restart..."
@@ -2549,12 +2549,12 @@ test_lbnodeagent_restart_etp_local() {
             fail "IP should be on $WITH_ENDPOINT before restart"
 
         # Kill agent
-        AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null | grep "$WITH_ENDPOINT" | awk '{print $1}')
-        kubectl delete pod -n purelb "$AGENT_POD" --grace-period=1
+        AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide 2>/dev/null | grep "$WITH_ENDPOINT" | awk '{print $1}')
+        kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=1
 
         # Wait for restart
         sleep 5
-        kubectl rollout status daemonset/lbnodeagent -n purelb --timeout=60s
+        kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
 
         # Verify IP returns
         TIMEOUT=30
@@ -2580,12 +2580,12 @@ test_lbnodeagent_restart_etp_local() {
         fi
 
         # Kill agent
-        AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null | grep "$WITHOUT_ENDPOINT" | awk '{print $1}')
-        kubectl delete pod -n purelb "$AGENT_POD" --grace-period=1
+        AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide 2>/dev/null | grep "$WITHOUT_ENDPOINT" | awk '{print $1}')
+        kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=1
 
         # Wait for restart
         sleep 5
-        kubectl rollout status daemonset/lbnodeagent -n purelb --timeout=60s
+        kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
 
         # Verify IP does NOT appear
         sleep 5

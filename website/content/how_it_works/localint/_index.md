@@ -23,7 +23,7 @@ apiVersion: purelb.io/v1
 kind: ServiceGroup
 metadata:
   name: localdual
-  namespace: purelb
+  namespace: purelb-system
 spec:
   local:
     v4pools:

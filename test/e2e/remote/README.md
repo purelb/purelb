@@ -113,7 +113,7 @@ The test script cleans up automatically. For manual cleanup:
 
 ```bash
 kubectl delete svc -n test -l test-suite=remote
-kubectl delete servicegroup -n purelb remote
+kubectl delete servicegroup -n purelb-systemremote
 ```
 
 ## Troubleshooting
@@ -125,7 +125,7 @@ Verify kube-proxy configuration. These tests require `--proxy-mode=nftables`.
 Ensure passwordless SSH to all nodes: `ssh <node> hostname`
 
 ### VIP not appearing on kube-lb0
-Check lbnodeagent logs: `kubectl logs -n purelb -l app.kubernetes.io/component=lbnodeagent`
+Check lbnodeagent logs: `kubectl logs -n purelb-system-l app.kubernetes.io/component=lbnodeagent`
 
 ### nftables rules missing
 Check kube-proxy logs and verify service has an external IP assigned.

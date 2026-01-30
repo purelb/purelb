@@ -40,7 +40,7 @@ For tests requiring Netbox integration, set `NETBOX_BASE_URL` and `NETBOX_USER_T
 
 First, check what image tags the cluster is currently using:
 ```bash
-kubectl --context proxmox get daemonset lbnodeagent -n purelb -o jsonpath='{.spec.template.spec.containers[0].image}'
+kubectl --context proxmox get daemonset lbnodeagent -n purelb-system-o jsonpath='{.spec.template.spec.containers[0].image}'
 # Example output: ghcr.io/purelb/purelb/lbnodeagent:general_k8_update
 ```
 

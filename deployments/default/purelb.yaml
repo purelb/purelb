@@ -5,7 +5,7 @@ metadata:
   labels:
     app: purelb
   name: allocator
-  namespace: purelb
+  namespace: purelb-system
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -13,7 +13,7 @@ metadata:
   labels:
     app: purelb
   name: lbnodeagent
-  namespace: purelb
+  namespace: purelb-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -111,7 +111,7 @@ metadata:
   labels:
     app: purelb
   name: pod-lister
-  namespace: purelb
+  namespace: purelb-system
 rules:
 - apiGroups:
   - ''
@@ -133,7 +133,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: allocator
-  namespace: purelb
+  namespace: purelb-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -148,7 +148,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: lbnodeagent
-  namespace: purelb
+  namespace: purelb-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -156,7 +156,7 @@ metadata:
   labels:
     app: purelb
   name: pod-lister
-  namespace: purelb
+  namespace: purelb-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -172,7 +172,7 @@ metadata:
     app: purelb
     component: lbnodeagent
   name: lbnodeagent
-  namespace: purelb
+  namespace: purelb-system
 spec:
   selector:
     matchLabels:
@@ -241,7 +241,7 @@ metadata:
     app: purelb
     component: allocator
   name: allocator
-  namespace: purelb
+  namespace: purelb-system
 spec:
   revisionHistoryLimit: 3
   selector:

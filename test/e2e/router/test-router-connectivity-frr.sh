@@ -101,7 +101,7 @@ dump_debug_state() {
     echo "--- FRR BGP routes ---"
     frr_show_routes 2>/dev/null || echo "(failed)"
     echo "--- lbnodeagent pods ---"
-    kubectl get pods -n purelb -l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
+    kubectl get pods -n purelb-system-l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
     echo "========================="
 }
 
@@ -341,11 +341,11 @@ test_prerequisites() {
 
     # Verify PureLB is running
     info "Verifying PureLB components..."
-    local AGENT_PODS=$(kubectl get pods -n purelb -l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+    local AGENT_PODS=$(kubectl get pods -n purelb-system-l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
     [ "$AGENT_PODS" -ge 1 ] || fail "LBNodeAgent not running"
     pass "LBNodeAgent running ($AGENT_PODS pods)"
 
-    local ALLOCATOR_READY=$(kubectl get deployment -n purelb allocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+    local ALLOCATOR_READY=$(kubectl get deployment -n purelb-systemallocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
     [ "$ALLOCATOR_READY" -ge 1 ] || fail "Allocator not running"
     pass "Allocator running"
 
@@ -355,7 +355,7 @@ test_prerequisites() {
     pass "Test pods running ($NGINX_PODS pods)"
 
     # Verify ServiceGroup exists
-    if ! kubectl get servicegroup -n purelb "$SERVICE_GROUP" >/dev/null 2>&1; then
+    if ! kubectl get servicegroup -n purelb-system"$SERVICE_GROUP" >/dev/null 2>&1; then
         fail "ServiceGroup '$SERVICE_GROUP' not found in purelb namespace"
     fi
     pass "ServiceGroup '$SERVICE_GROUP' exists"
@@ -516,8 +516,8 @@ test_node_failure_route_withdrawal() {
     info "Failing node: $FAIL_NODE"
 
     kubectl taint node "$FAIL_NODE" purelb-router-test=failover:NoExecute --overwrite
-    local AGENT_POD=$(kubectl get pods -n purelb -l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
-    [ -n "$AGENT_POD" ] && kubectl delete pod -n purelb "$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
+    local AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
+    [ -n "$AGENT_POD" ] && kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
 
     # Wait for VIP removal from node
     info "Waiting for VIP removal from $FAIL_NODE..."
@@ -564,7 +564,7 @@ test_node_failure_route_withdrawal() {
     # Restore node
     info "Restoring $FAIL_NODE..."
     kubectl taint node "$FAIL_NODE" purelb-router-test-
-    kubectl rollout status daemonset/lbnodeagent -n purelb --timeout=60s
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
 
     # Wait for next-hop to return
     info "Waiting for next-hop to return to FRR..."

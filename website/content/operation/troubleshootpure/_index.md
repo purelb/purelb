@@ -10,7 +10,7 @@ If PureLB isn't behaving the way you expect, it's easy to figure out what's goin
 Inspecting Linux interfaces and the Linux routing table will show the LoadBalancer addresses. It is not necessary to log into the host to do this inspection. Just like a CNI, LBNodeAgent pods are set to `hostNetwork: true`, so the container is isolated but uses the host network namespace.
 
 ```plaintext
-$ kubectl get pods --namespace=purelb --output=wide
+$ kubectl get pods --namespace=purelb-system --output=wide
 NAME                        READY   STATUS    RESTARTS   AGE    IP               NODE        NOMINATED NODE   READINESS GATES
 allocator-5cb95b946-vmxqz   1/1     Running   0          106m   10.129.3.152     purelb2-4   <none>           <none>
 lbnodeagent-5vx7m           1/1     Running   0          106m   172.30.250.102   purelb2-4   <none>           <none>
@@ -22,7 +22,7 @@ lbnodeagent-ssblg           1/1     Running   1          106m   172.30.250.104  
 
 Prior to troubleshooting you must install any tools that you plan to use. In this case we'll install the `iproute` package into `lbnodeagent-ssblg` and run our commands there.
 ```plaintext
-$ kubectl exec --namespace=purelb -it lbnodeagent-ssblg -- bash -l
+$ kubectl exec --namespace=purelb-system -it lbnodeagent-ssblg -- bash -l
 [root@purelb2-1 /]# chmod +w /usr/*
 [root@purelb2-1 /]# microdnf install -y iproute
 ```
@@ -96,6 +96,6 @@ We consider logging primarily a developer tool (everybody has an opinion), howev
 
 We don't believe that reading logs should be necessary on a day-to-day basis but if you're in a situation where logs can be helpful here's some info to help you use them:
 
-PureLB pods run in the `purelb` namespace. There are two PureLB executables: the Allocator and the LBNodeAgent. The Allocator typically runs a single pod per cluster and the LBNodeAgent runs a pod on each node so you might need to examine several LBNodeAgent logs before you find the one you're looking for. The `kubectl get pods --namespace=purelb --output=wide` command can be helpful as it shows you which LBNodeAgent pod is running on which node.
+PureLB pods run in the `purelb-system` namespace. There are two PureLB executables: the Allocator and the LBNodeAgent. The Allocator typically runs a single pod per cluster and the LBNodeAgent runs a pod on each node so you might need to examine several LBNodeAgent logs before you find the one you're looking for. The `kubectl get pods --namespace=purelb-system --output=wide` command can be helpful as it shows you which LBNodeAgent pod is running on which node.
 
 We don't log timestamps since Kubernetes adds them implicitly to all log messages. You can use `kubectl logs --timestamps` to see the Kubernetes timestamps.
