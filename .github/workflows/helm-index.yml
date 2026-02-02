@@ -16,30 +16,41 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: main
+          fetch-depth: 0
 
-      - name: Setup Helm
-        uses: azure/setup-helm@v4
+      - name: Install chart-releaser
+        uses: helm/chart-releaser-action@v1.7.0
+        with:
+          install_only: true
 
-      - name: Generate Helm repository index
+      - name: Download chart packages from releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p website/static/charts
-          mkdir -p /tmp/helm-charts
-
-          # Download charts from all releases for indexing
+          mkdir -p .cr-release-packages
+          # Download all chart packages from GitHub Releases
           for tag in $(gh release list --json tagName -q '.[].tagName' --limit 50); do
             url="https://github.com/purelb/purelb/releases/download/${tag}/purelb-${tag}.tgz"
             if curl -sfI "$url" > /dev/null 2>&1; then
-              curl -sLo "/tmp/helm-charts/purelb-${tag}.tgz" "$url"
+              echo "Downloading purelb-${tag}.tgz"
+              curl -sLo ".cr-release-packages/purelb-${tag}.tgz" "$url"
             fi
           done
+          ls -la .cr-release-packages/
 
-          # Generate index pointing to GitHub Releases URLs
-          helm repo index /tmp/helm-charts \
-            --url https://github.com/purelb/purelb/releases/download
+      - name: Generate Helm repository index
+        env:
+          CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p website/static/charts
 
-          mv /tmp/helm-charts/index.yaml website/static/charts/index.yaml
+          # cr index generates index.yaml with correct GitHub Release URLs
+          # --release-name-template: our releases are tagged v0.14.1, not purelb-v0.14.1
+          # --pages-branch main: we commit to main, not gh-pages
+          cr index --owner purelb --git-repo purelb \
+            --index-path website/static/charts/index.yaml \
+            --pages-branch main \
+            --release-name-template '{{ .Version }}'
 
       - name: Commit and push
         run: |
