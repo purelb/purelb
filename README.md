@@ -57,7 +57,9 @@ This project uses GitHub Actions for CI/CD:
 
 ### Local Development
 
-Build and push images locally using ko:
+#### Option 1: Build and push to registry
+
+If you have push access to a container registry:
 
 ```sh
 export KO_DOCKER_REPO=ghcr.io/purelb/purelb
@@ -65,6 +67,26 @@ export TAG=dev
 ko build --base-import-paths --tags=$TAG ./cmd/allocator
 ko build --base-import-paths --tags=$TAG ./cmd/lbnodeagent
 ```
+
+#### Option 2: Build locally without registry access
+
+Build images to tarballs and load directly into your cluster's container runtime:
+
+```sh
+# Build images to tarballs (requires TAG for ldflags in .ko.yaml)
+export KO_DOCKER_REPO=purelb TAG=test-local
+ko build --base-import-paths --tags=test-local --push=false --tarball=/tmp/allocator.tar --platform=linux/amd64 ./cmd/allocator
+ko build --base-import-paths --tags=test-local --push=false --tarball=/tmp/lbnodeagent.tar --platform=linux/amd64 ./cmd/lbnodeagent
+
+# Copy to your node(s) and import into containerd
+scp /tmp/allocator.tar /tmp/lbnodeagent.tar your-node:/tmp/
+ssh your-node "sudo ctr -n k8s.io images import /tmp/allocator.tar /tmp/lbnodeagent.tar"
+
+# Deploy using kustomize (uses imagePullPolicy: Never)
+kubectl apply -k deployments/default/
+```
+
+For multi-node clusters, repeat the image import on each node, or use a local registry.
 
 ## Code
 

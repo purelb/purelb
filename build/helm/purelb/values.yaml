@@ -6,7 +6,7 @@
 # Docker image configuration
 image:
   repository: DEFAULT_REPO
-  pullPolicy: Always
+  pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: DEFAULT_TAG
 

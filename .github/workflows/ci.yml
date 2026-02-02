@@ -163,6 +163,15 @@ jobs:
         if: github.ref_type == 'tag'
         run: helm push purelb-${{ steps.tag.outputs.tag }}.tgz oci://ghcr.io/purelb/purelb/charts
 
+      - name: Tag Helm chart as 'latest' in OCI registry
+        if: github.ref_type == 'tag'
+        run: |
+          # Install oras CLI
+          curl -sLO https://github.com/oras-project/oras/releases/download/v1.2.2/oras_1.2.2_linux_amd64.tar.gz
+          tar -xzf oras_1.2.2_linux_amd64.tar.gz
+          # Tag the versioned chart as 'latest' so users can install without --version
+          ./oras tag ghcr.io/purelb/purelb/charts/purelb:${{ steps.tag.outputs.tag }} latest
+
       - name: Generate checksums
         run: |
           sha256sum purelb-${{ steps.tag.outputs.tag }}.tgz > SHA256SUMS
