@@ -3,7 +3,7 @@ entries:
   purelb:
   - apiVersion: v2
     appVersion: v0.14.1
-    created: "2026-02-02T17:19:53.670460824Z"
+    created: "2026-02-02T18:28:45.835665522Z"
     description: PureLB is a Kubernetes load-balancer controller that uses standard
       Linux networking and routing protocols.
     digest: 548bc86cf9bbcfb9e914a0035238969c1158e33f775816589577f43e2a015a97
@@ -20,11 +20,11 @@ entries:
     - https://github.com/purelb/purelb
     type: application
     urls:
-    - https://github.com/purelb/purelb/releases/download/purelb-v0.14.1.tgz
+    - https://github.com/purelb/purelb/releases/download/v0.14.1/purelb-v0.14.1.tgz
     version: v0.14.1
   - apiVersion: v2
     appVersion: v0.14.0
-    created: "2026-02-02T17:19:53.669764067Z"
+    created: "2026-02-02T18:28:45.675171421Z"
     description: PureLB is a Kubernetes load-balancer controller that uses standard
       Linux networking and routing protocols.
     digest: 559149e7593a732df3770ba58674b9ff2ad91902cc56ad7894f1436b36defbed
@@ -41,6 +41,6 @@ entries:
     - https://github.com/purelb/purelb
     type: application
     urls:
-    - https://github.com/purelb/purelb/releases/download/purelb-v0.14.0.tgz
+    - https://github.com/purelb/purelb/releases/download/v0.14.0/purelb-v0.14.0.tgz
     version: v0.14.0
-generated: "2026-02-02T17:19:53.668696916Z"
+generated: "2026-02-02T18:28:45.835674519Z"
