@@ -17,11 +17,11 @@ helm repo add purelb https://purelb.github.io/purelb/charts
 helm install --create-namespace --namespace=purelb-system purelb purelb/purelb
 ```
 
-Or using OCI registry (Helm 3.8+):
+Or using OCI registry (Helm 3.8+, `--version` required):
 
 ```sh
 helm install --create-namespace --namespace=purelb-system purelb \
-    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.14.0
+    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.14.1
 ```
 
 For detailed installation and configuration, see https://purelb.github.io/purelb/install/
@@ -99,6 +99,4 @@ For multi-node clusters, repeat the image import on each node, or use a local re
 
 ## Credits
 
-PureLB wouldn't have been possible without MetalLB so we owe a huge
-debt of gratitude to [Dave Anderson](https://www.dave.tf/) for almost
-single-handedly making MetalLB happen. Thank you Dave!
+PureLB was forked from MetalLB in 2020.  We believed a better solution was to use Linux networking functionality instead of working around it but the maintainers at the time had no interest in making any changes.  We would like to acknowledge the original developer, [Dave Anderson](https://www.dave.tf/) we hope you would be pleased with our work!!
