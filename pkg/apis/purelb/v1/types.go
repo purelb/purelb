@@ -29,6 +29,7 @@ import (
 // ServiceGroups. It contains the usual CRD metadata, and the service
 // group spec and status.
 // +kubebuilder:resource:shortName=sg;sgs
+// +kubebuilder:storageversion
 type ServiceGroup struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -232,6 +233,7 @@ type ServiceGroupStatus struct {
 // agents. It contains the usual CRD metadata, and the agent spec and
 // status.
 // +kubebuilder:resource:shortName=lbna;lbnas
+// +kubebuilder:storageversion
 type LBNodeAgent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
