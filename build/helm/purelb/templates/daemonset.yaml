@@ -43,6 +43,11 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
+        - name: PURELB_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        # Legacy memberlist env vars - kept for backward compatibility during migration
         - name: PURELB_ML_NAMESPACE
           valueFrom:
             fieldRef:
@@ -72,7 +77,12 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       serviceAccountName: lbnodeagent
-      terminationGracePeriodSeconds: 10
+      # Allow enough time for graceful shutdown:
+      # - Mark unhealthy + ForceSync (~1s)
+      # - Traffic drain wait (2s)
+      # - Lease deletion + cleanup (~1s)
+      # Plus buffer for slow API server responses
+      terminationGracePeriodSeconds: 30
       {{- if .Values.priorityClassName }}
       priorityClassName: {{ .Values.priorityClassName }}
       {{- end }}

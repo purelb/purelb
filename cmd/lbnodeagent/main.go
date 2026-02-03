@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
@@ -39,11 +40,11 @@ func main() {
 	flag.Parse()
 
 	if *myNode == "" {
-		logger.Log("op", "startup", "error", "must specify --node-name or PURELB_NODE_NAME", "msg", "missing configuration")
+		logging.Info(logger, "op", "startup", "error", "must specify --node-name or PURELB_NODE_NAME", "msg", "missing configuration")
 		os.Exit(1)
 	}
 	if *namespace == "" {
-		logger.Log("op", "startup", "error", "must specify --namespace or PURELB_NAMESPACE", "msg", "missing configuration")
+		logging.Info(logger, "op", "startup", "error", "must specify --namespace or PURELB_NAMESPACE", "msg", "missing configuration")
 		os.Exit(1)
 	}
 
@@ -52,11 +53,10 @@ func main() {
 		c1 := make(chan os.Signal, 1)
 		signal.Notify(c1, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
 		<-c1
-		logger.Log("op", "shutdown", "msg", "starting shutdown")
+		logging.Info(logger, "op", "shutdown", "msg", "signal received, initiating shutdown")
 		signal.Stop(c1)
 		close(stopCh)
 	}()
-	defer logger.Log("op", "shutdown", "msg", "done")
 
 	// Set up controller
 	ctrl, err := NewController(
@@ -64,7 +64,7 @@ func main() {
 		*myNode,
 	)
 	if err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to create controller")
+		logging.Info(logger, "op", "startup", "error", err, "msg", "failed to create controller")
 		os.Exit(1)
 	}
 
@@ -78,10 +78,11 @@ func main() {
 		ServiceChanged: ctrl.ServiceChanged,
 		ServiceDeleted: ctrl.DeleteBalancer,
 		ConfigChanged:  ctrl.SetConfig,
-		Shutdown:       ctrl.Shutdown,
+		// Note: Shutdown is handled explicitly in main() after client.Run() returns
+		// to ensure proper ordering: mark unhealthy -> withdraw -> delete lease -> cleanup
 	})
 	if err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to create k8s client")
+		logging.Info(logger, "op", "startup", "error", err, "msg", "failed to create k8s client")
 		os.Exit(1)
 	}
 
@@ -102,7 +103,7 @@ func main() {
 		},
 	})
 	if err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to create election")
+		logging.Info(logger, "op", "startup", "error", err, "msg", "failed to create election")
 		os.Exit(1)
 	}
 
@@ -110,7 +111,7 @@ func main() {
 
 	// Start the election (creates lease, starts informer)
 	if err := elect.Start(); err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to start election")
+		logging.Info(logger, "op", "startup", "error", err, "msg", "failed to start election")
 		os.Exit(1)
 	}
 
@@ -118,6 +119,43 @@ func main() {
 
 	// the k8s client doesn't return until it's time to shut down
 	if err := client.Run(stopCh); err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to run k8s client")
+		logging.Info(logger, "op", "run", "error", err, "msg", "k8s client exited with error")
 	}
+
+	// Graceful shutdown sequence:
+	// 1. Mark election unhealthy - Winner() returns "" for all queries
+	// 2. Force sync to trigger address withdrawal on all services
+	// 3. Wait for traffic to drain and GARP to propagate
+	// 4. Stop lease renewals
+	// 5. Delete our lease so other nodes see us gone
+	// 6. Clean up local networking (dummy interface)
+	logging.Info(logger, "op", "shutdown", "msg", "starting graceful shutdown sequence")
+
+	// Step 1: Mark unhealthy - this causes Winner() to return ""
+	elect.MarkUnhealthy()
+
+	// Step 2: Force sync to trigger re-evaluation of all services
+	// This will cause the announcer to withdraw addresses since Winner() now returns ""
+	client.ForceSync()
+
+	// Step 3: Wait for traffic to drain
+	// This gives time for:
+	// - Announcer to process the ForceSync and withdraw addresses
+	// - GARP packets to propagate
+	// - Upstream routers/switches to update their tables
+	logging.Info(logger, "op", "shutdown", "msg", "waiting for traffic drain", "duration", "2s")
+	time.Sleep(2 * time.Second)
+
+	// Step 4: Stop lease renewals (no longer needed)
+	elect.StopRenewals()
+
+	// Step 5: Delete our lease so other nodes see us gone immediately
+	if err := elect.DeleteOurLease(); err != nil {
+		logging.Info(logger, "op", "shutdown", "error", err, "msg", "failed to delete lease")
+	}
+
+	// Step 6: Clean up local networking
+	ctrl.Shutdown()
+
+	logging.Info(logger, "op", "shutdown", "msg", "graceful shutdown complete")
 }

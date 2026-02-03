@@ -180,6 +180,11 @@ func New(cfg Config) (*Election, error) {
 // 1. Creates our lease
 // 2. Starts the lease informer
 // 3. Starts the renewal goroutine
+//
+// Note: The caller is responsible for calling Shutdown() during graceful shutdown.
+// Do NOT rely on stopCh alone - the shutdown sequence requires coordination
+// between election and announcer to properly withdraw addresses before
+// deleting the lease.
 func (e *Election) Start() error {
 	logging.Info(e.config.Logger, "op", "election", "action", "starting",
 		"node", e.config.NodeName, "namespace", e.config.Namespace,
@@ -232,27 +237,29 @@ func (e *Election) Start() error {
 	e.renewTicker = time.NewTicker(e.config.LeaseDuration / 2)
 	go e.renewLoop()
 
-	// Watch for shutdown
-	go func() {
-		<-e.config.StopCh
-		e.Shutdown()
-	}()
+	// Note: We intentionally do NOT auto-shutdown when stopCh closes.
+	// The shutdown sequence must be coordinated by main() to ensure
+	// addresses are withdrawn before the lease is deleted.
 
 	return nil
 }
 
-// Shutdown gracefully stops the election process
+// Shutdown gracefully stops the election process. This performs the full
+// shutdown sequence: marks unhealthy, stops renewals, and deletes the lease.
+//
+// For more granular control during graceful shutdown, use:
+//   1. MarkUnhealthy() - causes Winner() to return ""
+//   2. [caller triggers address withdrawal via ForceSync]
+//   3. StopRenewals() - stops the renewal goroutine
+//   4. DeleteOurLease() - removes our lease from the cluster
 func (e *Election) Shutdown() {
 	logging.Info(e.config.Logger, "op", "election", "action", "shutdown", "msg", "starting graceful shutdown")
 
-	e.cancel()
-
-	if e.renewTicker != nil {
-		e.renewTicker.Stop()
-	}
-
 	// Mark ourselves unhealthy so Winner() returns ""
 	e.MarkUnhealthy()
+
+	// Stop renewals
+	e.StopRenewals()
 
 	// Delete our lease so other nodes see us gone immediately
 	if err := e.DeleteOurLease(); err != nil {
@@ -261,6 +268,19 @@ func (e *Election) Shutdown() {
 	}
 
 	logging.Info(e.config.Logger, "op", "election", "action", "shutdown", "msg", "complete")
+}
+
+// StopRenewals stops the lease renewal goroutine and cancels the context.
+// Call this after marking unhealthy and triggering address withdrawal.
+func (e *Election) StopRenewals() {
+	e.cancel()
+
+	if e.renewTicker != nil {
+		e.renewTicker.Stop()
+	}
+
+	logging.Debug(e.config.Logger, "op", "election", "action", "stopRenewals",
+		"msg", "lease renewals stopped")
 }
 
 // MarkUnhealthy marks this node as unhealthy, causing Winner() to return ""
