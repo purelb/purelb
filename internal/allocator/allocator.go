@@ -23,7 +23,9 @@ import (
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/k8s"
+	"purelb.io/internal/logging"
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 const (
@@ -90,14 +92,14 @@ func (a *Allocator) NotifyExisting(svc *v1.Service) error {
 		// validate the allocated address
 		lbIP := net.ParseIP(ingress.IP)
 		if lbIP == nil {
-			a.logger.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
+			logging.Info(a.logger, "op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
 			continue
 		}
 
 		// Find the pool which contains the address
 		pool := poolFor(a.pools, lbIP)
-		if (pool == nil ) {
-			a.logger.Log("op", "setBalancer", "error", "unknown LoadBalancer IP: no pool found", "ip", ingress.IP)
+		if pool == nil {
+			logging.Info(a.logger, "op", "setBalancer", "error", "unknown LoadBalancer IP: no pool found", "ip", ingress.IP)
 			continue
 		}
 
@@ -155,6 +157,7 @@ func (a *Allocator) Allocate(svc *v1.Service) error {
 // non-"". If an error happened then the error return will be non-nil.
 func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 	pools := ""
+	var firstPool Pool // Track first pool for annotations
 
 	// See if the user configured a specific address and return if not.
 	ips, err := a.serviceAddresses(svc)
@@ -169,7 +172,7 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 	// annotation overrides it.
 	if _, exists := svc.Annotations[purelbv1.DesiredGroupAnnotation]; exists {
 		a.client.Infof(svc, "ConfigurationWarning", "Both the addresses annotation and the service-group annotation were provided. service-group will be ignored.")
-		a.logger.Log("configWarning", "WARNING: addresses annotation overrides service-group annotation, service-group will be ignored.")
+		logging.Info(a.logger, "op", "allocateSpecificIP", "warning", "addresses annotation overrides service-group annotation")
 	}
 
 	// If the service had addresses before, release them.
@@ -177,12 +180,17 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 		return false, err
 	}
 
-	for _, ip := range(ips) {
+	for _, ip := range ips {
 
 		// Check that the address belongs to a pool
 		pool := poolFor(a.pools, ip)
 		if pool == nil {
 			return false, fmt.Errorf("%q does not belong to any group", ip)
+		}
+
+		// Track the first pool for setting annotations
+		if firstPool == nil {
+			firstPool = pool
 		}
 
 		// Does the IP already have allocs? If so, needs to be the same
@@ -204,6 +212,19 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 	}
 
 	svc.Annotations[purelbv1.PoolAnnotation] = pools
+
+	// Set pool type annotation based on the first pool
+	// (in practice, specific IPs should come from pools of the same type)
+	if firstPool != nil {
+		svc.Annotations[purelbv2.PoolTypeAnnotation] = firstPool.PoolType()
+
+		// Set skip-ipv6-dad annotation if the pool has it enabled
+		if firstPool.SkipIPv6DAD() {
+			svc.Annotations[purelbv2.SkipIPv6DADAnnotation] = "true"
+		} else {
+			delete(svc.Annotations, purelbv2.SkipIPv6DADAnnotation)
+		}
+	}
 
 	return true, nil
 }
@@ -228,6 +249,18 @@ func (a *Allocator) allocateFromPool(svc *v1.Service, pool Pool) error {
 	// annotate the pool from which the address came
 	a.client.Infof(svc, "AddressAssigned", "Assigned %+v from pool %s", svc.Status.LoadBalancer, pool)
 	svc.Annotations[purelbv1.PoolAnnotation] = pool.String()
+
+	// Set pool type annotation so lbnodeagent knows which interface to use
+	svc.Annotations[purelbv2.PoolTypeAnnotation] = pool.PoolType()
+
+	// Set skip-ipv6-dad annotation if the pool has it enabled
+	if pool.SkipIPv6DAD() {
+		svc.Annotations[purelbv2.SkipIPv6DADAnnotation] = "true"
+	} else {
+		// Remove the annotation if it was previously set
+		delete(svc.Annotations, purelbv2.SkipIPv6DADAnnotation)
+	}
+
 	a.updateStats(pool)
 
 	return nil
@@ -256,19 +289,19 @@ func (a *Allocator) ReleaseIPs(svc string, ips []string) error {
 	for _, ipStr := range ips {
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
-			a.logger.Log("op", "releaseIPs", "error", "invalid IP", "ip", ipStr)
+			logging.Info(a.logger, "op", "releaseIPs", "error", "invalid IP", "ip", ipStr)
 			continue
 		}
 
 		// Find which pool contains this IP and release it
 		pool := poolFor(a.pools, ip)
 		if pool == nil {
-			a.logger.Log("op", "releaseIPs", "warning", "no pool found for IP", "ip", ipStr)
+			logging.Info(a.logger, "op", "releaseIPs", "warning", "no pool found for IP", "ip", ipStr)
 			continue
 		}
 
 		if err := pool.ReleaseIP(svc, ip); err != nil {
-			a.logger.Log("op", "releaseIPs", "error", err, "ip", ipStr)
+			logging.Info(a.logger, "op", "releaseIPs", "error", err, "ip", ipStr)
 			// Continue releasing other IPs even if one fails
 		}
 		a.updateStats(pool)
@@ -307,7 +340,7 @@ func (a *Allocator) serviceAddresses(svc *v1.Service) ([]net.IP, error) {
 
 		// Warn the user about the deprecated LoadBalancerIP field
 		a.client.Infof(svc, "DeprecationWarning", "Service.Spec.LoadBalancerIP is deprecated, please use the \"%s\" annotation instead", purelbv1.DesiredAddressAnnotation)
-		a.logger.Log("svc-name", svc.Name, "deprecation", "Service.Spec.LoadBalancerIP is deprecated, please use the \"" + purelbv1.DesiredAddressAnnotation + "\" annotation instead")
+		logging.Info(a.logger, "op", "serviceAddresses", "svc", svc.Name, "deprecation", "Service.Spec.LoadBalancerIP is deprecated, use "+purelbv1.DesiredAddressAnnotation+" annotation")
 	}
 
 	for _, rawAddr := range(strings.Split(rawAddrs, ",")) {
@@ -329,19 +362,25 @@ func (a *Allocator) serviceAddresses(svc *v1.Service) ([]net.IP, error) {
 func (a *Allocator) parseGroups(groups []*purelbv1.ServiceGroup) map[string]Pool {
 	pools := map[string]Pool{}
 
+	// Log deprecation warning once per config update if using v1 ServiceGroups
+	if len(groups) > 0 {
+		logging.Info(a.logger, "op", "parseGroups", "deprecation",
+			"ServiceGroup v1 API is deprecated, please migrate to v2")
+	}
+
 Group:
 	for _, group := range groups {
 		pool, err := parsePool(a.logger, group.Name, group.Spec)
 		if err != nil {
 			a.client.Errorf(group, "ParseFailed", "Failed to parse: %s", err)
-			a.logger.Log("failure", "parsing ServiceGroup address pool", "service-group", group.Name, "message", err)
+			logging.Info(a.logger, "op", "parseGroups", "error", "parsing ServiceGroup", "group", group.Name, "msg", err)
 			continue Group
 		}
 
 		// Check that the pool isn't already defined
 		if pools[group.Name] != nil {
 			a.client.Errorf(group, "ParseFailed", "Duplicate definition of pool %s", group.Name)
-			a.logger.Log("failure", "duplicate definition of ServiceGroup address pool", "service-group", group.Name)
+			logging.Info(a.logger, "op", "parseGroups", "error", "duplicate ServiceGroup", "group", group.Name)
 			continue Group
 		}
 
@@ -350,7 +389,7 @@ Group:
 		for name, r := range pools {
 			if pool.Overlaps(r) {
 				a.client.Errorf(group, "ParseFailed", "Pool overlaps with already defined pool \"%s\"", name)
-				a.logger.Log("failure", "ServiceGroup address pool overlaps with already defined pool", "service-group", group.Name, "overlaps-with", name)
+				logging.Info(a.logger, "op", "parseGroups", "error", "ServiceGroup overlaps", "group", group.Name, "overlaps", name)
 				continue Group
 			}
 		}

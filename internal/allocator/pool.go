@@ -58,6 +58,17 @@ type Pool interface {
 	Contains(net.IP) bool // FIXME: I'm not sure that we need this. It might be the case that we can always rely on the service's pool annotation to find to which pool an address belongs
 	Size() uint64
 	String() string
+
+	// PoolType returns the type of this pool: "local" for addresses that
+	// should be announced on the node's local interface (same subnet as nodes),
+	// or "remote" for addresses that should be announced on the dummy interface
+	// (different subnet, typically for BGP/routing scenarios or external IPAM).
+	PoolType() string
+
+	// SkipIPv6DAD returns whether IPv6 Duplicate Address Detection should
+	// be skipped for addresses from this pool. This can speed up address
+	// configuration but should only be used when address conflicts are impossible.
+	SkipIPv6DAD() bool
 }
 
 func sharingOK(existing, new *Key) error {

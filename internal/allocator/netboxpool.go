@@ -207,3 +207,15 @@ func (p NetboxPool) Contains(ip net.IP) bool {
 func (p NetboxPool) String() string {
 	return p.name
 }
+
+// PoolType returns "remote" because NetboxPool addresses come from an
+// external IPAM system and should be announced on the dummy interface.
+func (p NetboxPool) PoolType() string {
+	return "remote"
+}
+
+// SkipIPv6DAD returns false for NetboxPool. External IPAM systems
+// manage their own address allocation, so DAD should be performed.
+func (p NetboxPool) SkipIPv6DAD() bool {
+	return false
+}

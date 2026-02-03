@@ -19,6 +19,7 @@ import (
 
 	"purelb.io/internal/k8s"
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 
 	"github.com/go-kit/log"
 	"github.com/google/go-cmp/cmp"
@@ -138,6 +139,7 @@ func TestControllerConfig(t *testing.T) {
 			purelbv1.DesiredGroupAnnotation: defaultPoolName,
 			purelbv1.BrandAnnotation:        purelbv1.Brand,
 			purelbv1.PoolAnnotation:         defaultPoolName,
+			purelbv2.PoolTypeAnnotation:     purelbv2.PoolTypeLocal,
 		},
 	}
 

@@ -20,6 +20,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 
 	"purelb.io/internal/k8s"
+	"purelb.io/internal/logging"
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 
 	"github.com/go-kit/log"
@@ -63,24 +64,24 @@ func (c *controller) SetClient(client *k8s.Client) {
 
 func (c *controller) DeleteBalancer(name string) k8s.SyncState {
 	if err := c.ips.Unassign(name); err != nil {
-		c.logger.Log("event", "serviceDelete", "error", err)
+		logging.Info(c.logger, "op", "deleteBalancer", "error", err)
 		return k8s.SyncStateError
 	}
 
-	c.logger.Log("event", "serviceDelete", "msg", "service deleted successfully")
+	logging.Debug(c.logger, "op", "deleteBalancer", "msg", "service deleted successfully")
 	return k8s.SyncStateReprocessAll
 }
 
 func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
-	defer c.logger.Log("event", "configUpdated")
+	defer logging.Debug(c.logger, "op", "setConfig", "msg", "config updated")
 
 	if cfg == nil {
-		c.logger.Log("op", "setConfig", "error", "no PureLB configuration in cluster", "msg", "configuration is missing, PureLB will not function")
+		logging.Info(c.logger, "op", "setConfig", "error", "no PureLB configuration in cluster", "msg", "PureLB will not function")
 		return k8s.SyncStateError
 	}
 
 	if err := c.ips.SetPools(cfg.Groups); err != nil {
-		c.logger.Log("op", "setConfig", "error", err)
+		logging.Info(c.logger, "op", "setConfig", "error", err)
 		return k8s.SyncStateError
 	}
 
@@ -93,9 +94,9 @@ func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
 
 func (c *controller) MarkSynced() {
 	c.synced = true
-	c.logger.Log("event", "stateSynced", "msg", "controller synced, can allocate IPs now")
+	logging.Info(c.logger, "op", "markSynced", "msg", "controller synced, can allocate IPs now")
 }
 
 func (c *controller) Shutdown() {
-	c.logger.Log("event", "shutdown")
+	logging.Info(c.logger, "op", "shutdown")
 }

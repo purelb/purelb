@@ -615,3 +615,15 @@ func (p LocalPool) whichFamilies(service *v1.Service) ([]int, error) {
 func (p LocalPool) String() string {
 	return p.name
 }
+
+// PoolType returns "local" because LocalPool addresses are announced
+// on the node's local interface (same subnet as the nodes).
+func (p LocalPool) PoolType() string {
+	return "local"
+}
+
+// SkipIPv6DAD returns false for v1 LocalPool. The v2 API adds support
+// for configuring this per-pool.
+func (p LocalPool) SkipIPv6DAD() bool {
+	return false
+}

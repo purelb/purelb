@@ -24,6 +24,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 
 	"purelb.io/internal/k8s"
+	"purelb.io/internal/logging"
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 )
 
@@ -90,24 +91,24 @@ func analyzeIPFamilyTransition(svc *v1.Service) (missingFamilies []v1.IPFamily, 
 // Note: The allocator ignores EndpointSlices - they are only used by lbnodeagent.
 func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice) k8s.SyncState {
 	nsName := svc.Namespace + "/" + svc.Name
-	log := log.With(c.logger, "svc-name", nsName)
+	l := log.With(c.logger, "svc", nsName)
 
 	if !c.synced {
-		log.Log("op", "allocateIP", "error", "controller not synced")
+		logging.Info(l, "op", "allocateIP", "error", "controller not synced")
 		return k8s.SyncStateError
 	}
 
 	// If the user has specified an LB class and it's not ours then we
 	// ignore the LB.
 	if svc.Spec.LoadBalancerClass != nil && *svc.Spec.LoadBalancerClass != purelbv1.ServiceLBClass {
-		log.Log("event", "ignore", "reason", "user has specified another class", "class", *svc.Spec.LoadBalancerClass)
+		logging.Debug(l, "op", "setBalancer", "msg", "ignoring, user specified another class", "class", *svc.Spec.LoadBalancerClass)
 		return k8s.SyncStateSuccess
 	}
 
 	// If we are not configured to be the default announcer then we
 	// ignore services with no explicit LoadBalancerClass.
 	if !c.isDefault && svc.Spec.LoadBalancerClass == nil {
-		log.Log("event", "ignore", "reason", "service has no explicit LBClass and PureLB is not the default announcer")
+		logging.Debug(l, "op", "setBalancer", "msg", "ignoring, no LBClass and not default announcer")
 		return k8s.SyncStateSuccess
 	}
 
@@ -127,10 +128,10 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 
 			// If it has an address then release it
 			if len(svc.Status.LoadBalancer.Ingress) > 0 {
-				log.Log("event", "unassign", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", "type is not LoadBalancer")
+				logging.Info(l, "op", "unassign", "reason", "type is not LoadBalancer", "ingress", svc.Status.LoadBalancer.Ingress)
 				c.client.Infof(svc, "AddressReleased", fmt.Sprintf("Service is Type %s, not LoadBalancer", svc.Spec.Type))
 				if err := c.ips.Unassign(nsName); err != nil {
-					c.logger.Log("event", "unassign", "error", err)
+					logging.Info(l, "op", "unassign", "error", err)
 					return k8s.SyncStateError
 				}
 				svc.Status.LoadBalancer.Ingress = nil
@@ -150,7 +151,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 	// ipFamily to use.
 	clusterIP := net.ParseIP(svc.Spec.ClusterIP)
 	if clusterIP == nil {
-		log.Log("event", "clearAssignment", "reason", "noClusterIP")
+		logging.Debug(l, "op", "setBalancer", "msg", "no ClusterIP, skipping")
 		return k8s.SyncStateSuccess
 	}
 
@@ -160,24 +161,24 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 
 	// Check if the service already has addresses
 	if len(svc.Status.LoadBalancer.Ingress) > 0 {
-		log.Log("event", "hasIngress", "ingress", svc.Status.LoadBalancer.Ingress,
+		logging.Debug(l, "op", "setBalancer", "msg", "hasIngress", "ingress", svc.Status.LoadBalancer.Ingress,
 			"missingFamilies", missingFamilies, "excessIPs", excessIPs)
 
 		// If it's one of ours, notify the allocator about existing IPs
 		// (for database warmup at startup or after config changes)
 		if svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
 			if err := c.ips.NotifyExisting(svc); err != nil {
-				log.Log("event", "notifyFailure", "ingress-address", svc.Status.LoadBalancer.Ingress, "reason", err.Error())
+				logging.Info(l, "op", "notifyExisting", "error", err, "ingress", svc.Status.LoadBalancer.Ingress)
 			}
 		}
 
 		// Handle DualStack → SingleStack transition: release excess IPs
 		if len(excessIPs) > 0 {
-			log.Log("event", "ipFamilyTransition", "action", "releaseExcess", "excessIPs", excessIPs)
+			logging.Info(l, "op", "ipFamilyTransition", "action", "releaseExcess", "excessIPs", excessIPs)
 
 			// Release the excess IPs from the pool
 			if err := c.ips.ReleaseIPs(nsName, excessIPs); err != nil {
-				log.Log("event", "releaseExcess", "error", err)
+				logging.Info(l, "op", "releaseExcess", "error", err)
 				// Continue anyway - we'll update the ingress to remove them
 			}
 
@@ -197,14 +198,14 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 		}
 
 		// Handle SingleStack → DualStack transition: allocate missing families
-		log.Log("event", "ipFamilyTransition", "action", "allocateMissing", "missingFamilies", missingFamilies)
+		logging.Info(l, "op", "ipFamilyTransition", "action", "allocateMissing", "missingFamilies", missingFamilies)
 	}
 
 	// Annotate the service as "ours"
 	svc.Annotations[purelbv1.BrandAnnotation] = purelbv1.Brand
 
 	if err := c.ips.Allocate(svc); err != nil {
-		log.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
+		logging.Info(l, "op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", nsName, err)
 		return k8s.SyncStateSuccess
 	}
