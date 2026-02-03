@@ -274,14 +274,66 @@ type LBNodeAgentLocalSpec struct {
 	// send Gratuitous ARP messages when it adds an IP address to the
 	// local interface. This can be used to alert network equipment that
 	// the IP-to-MAC binding has changed.
+	// Deprecated: Use GARPConfig for more control over GARP behavior.
+	// If both SendGratuitousARP and GARPConfig are set, GARPConfig takes precedence.
 	// +kubebuilder:default=false
 	SendGratuitousARP bool `json:"sendgarp"`
+
+	// GARPConfig provides fine-grained control over Gratuitous ARP behavior.
+	// This supersedes SendGratuitousARP with additional options for timing,
+	// repetition, and verification. When set, this takes precedence over
+	// the SendGratuitousARP field.
+	// +optional
+	GARPConfig *GARPConfig `json:"garpConfig,omitempty"`
 
 	// AddressConfig configures how VIP addresses are added to interfaces.
 	// This allows control over address lifetimes and flags to prevent
 	// conflicts with CNI plugins like Flannel that inspect address flags.
 	// +optional
 	AddressConfig *AddressConfig `json:"addressConfig,omitempty"`
+}
+
+// GARPConfig configures Gratuitous ARP behavior for service address announcements.
+// GARP packets notify network equipment (switches, routers) that the IP-to-MAC
+// binding has changed, enabling faster failover.
+type GARPConfig struct {
+	// Enabled determines whether GARP packets should be sent.
+	// Default: true (when GARPConfig is specified)
+	// +kubebuilder:default=true
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// InitialDelay is the time to wait after adding an address before sending
+	// the first GARP. This allows time for the address to be fully configured.
+	// Format: Go duration string (e.g., "100ms", "1s").
+	// Default: "100ms"
+	// +kubebuilder:default="100ms"
+	// +optional
+	InitialDelay string `json:"initialDelay,omitempty"`
+
+	// Count is the number of GARP packets to send. Sending multiple GARPs
+	// increases reliability as network equipment may miss individual packets.
+	// Default: 3
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10
+	// +kubebuilder:default=3
+	// +optional
+	Count *int `json:"count,omitempty"`
+
+	// Interval is the time between GARP packets when Count > 1.
+	// Format: Go duration string (e.g., "500ms", "1s").
+	// Default: "500ms"
+	// +kubebuilder:default="500ms"
+	// +optional
+	Interval string `json:"interval,omitempty"`
+
+	// VerifyBeforeSend when true causes the announcer to verify it still
+	// owns the address (won the election) before sending each GARP packet.
+	// This prevents announcing addresses during rapid failover scenarios.
+	// Default: true
+	// +kubebuilder:default=true
+	// +optional
+	VerifyBeforeSend *bool `json:"verifyBeforeSend,omitempty"`
 }
 
 // LBNodeAgentStatus is currently unused.

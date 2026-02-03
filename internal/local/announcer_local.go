@@ -289,11 +289,8 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 		"ip":      lbIP.String(),
 	}).Set(1)
 
-	// If we're configured to do so, broadcast a GARP message to say
-	// that we own the address.
-	if a.config.SendGratuitousARP {
-		return sendGARP(announceInt.Attrs().Name, lbIP)
-	}
+	// Send GARP if configured
+	a.sendGARPSequence(lbIP, announceInt.Attrs().Name)
 
 	return nil
 }
@@ -656,6 +653,122 @@ func (a *announcer) getLocalAddressOptions() AddressOptions {
 	}
 
 	return opts
+}
+
+// sendGARPSequence sends GARP packets according to the configuration.
+// This handles both the legacy SendGratuitousARP boolean and the new GARPConfig.
+// The GARP sequence runs in a goroutine to avoid blocking the main announcement.
+func (a *announcer) sendGARPSequence(lbIP net.IP, ifName string) {
+	if a.config == nil {
+		return
+	}
+
+	// Determine GARP settings from config
+	// GARPConfig takes precedence over legacy SendGratuitousARP
+	var enabled bool
+	var initialDelay time.Duration
+	var count int
+	var interval time.Duration
+	var verifyBeforeSend bool
+
+	if a.config.GARPConfig != nil {
+		cfg := a.config.GARPConfig
+
+		// Check if enabled (defaults to true when GARPConfig is set)
+		if cfg.Enabled != nil && !*cfg.Enabled {
+			return // Explicitly disabled
+		}
+		enabled = true
+
+		// Parse initial delay (default 100ms)
+		initialDelay = 100 * time.Millisecond
+		if cfg.InitialDelay != "" {
+			if d, err := time.ParseDuration(cfg.InitialDelay); err == nil {
+				initialDelay = d
+			} else {
+				logging.Info(a.logger, "op", "sendGARP", "error", "invalid initialDelay",
+					"value", cfg.InitialDelay, "msg", "using default 100ms")
+			}
+		}
+
+		// Count (default 3)
+		count = 3
+		if cfg.Count != nil {
+			count = *cfg.Count
+			if count < 1 {
+				count = 1
+			} else if count > 10 {
+				count = 10
+			}
+		}
+
+		// Interval (default 500ms)
+		interval = 500 * time.Millisecond
+		if cfg.Interval != "" {
+			if d, err := time.ParseDuration(cfg.Interval); err == nil {
+				interval = d
+			} else {
+				logging.Info(a.logger, "op", "sendGARP", "error", "invalid interval",
+					"value", cfg.Interval, "msg", "using default 500ms")
+			}
+		}
+
+		// Verify before send (default true)
+		verifyBeforeSend = true
+		if cfg.VerifyBeforeSend != nil {
+			verifyBeforeSend = *cfg.VerifyBeforeSend
+		}
+	} else if a.config.SendGratuitousARP {
+		// Legacy mode: single immediate GARP
+		enabled = true
+		initialDelay = 0
+		count = 1
+		interval = 0
+		verifyBeforeSend = false
+	} else {
+		return // GARP not enabled
+	}
+
+	if !enabled {
+		return
+	}
+
+	// Run GARP sequence in a goroutine to avoid blocking
+	go func() {
+		ipStr := lbIP.String()
+
+		// Wait initial delay
+		if initialDelay > 0 {
+			time.Sleep(initialDelay)
+		}
+
+		for i := 0; i < count; i++ {
+			// Wait interval between packets (not before first)
+			if i > 0 && interval > 0 {
+				time.Sleep(interval)
+			}
+
+			// Verify we still own this address before sending
+			if verifyBeforeSend && a.election != nil {
+				winner := a.election.Winner(ipStr)
+				if winner != a.myNode {
+					logging.Debug(a.logger, "op", "sendGARP", "ip", ipStr, "packet", i+1, "of", count,
+						"msg", "skipping GARP, no longer winner", "winner", winner)
+					return // Stop the sequence, we lost ownership
+				}
+			}
+
+			// Send GARP
+			if err := sendGARP(ifName, lbIP); err != nil {
+				logging.Info(a.logger, "op", "sendGARP", "ip", ipStr, "interface", ifName,
+					"packet", i+1, "of", count, "error", err)
+				// Continue sending remaining packets even on error
+			} else {
+				logging.Debug(a.logger, "op", "sendGARP", "ip", ipStr, "interface", ifName,
+					"packet", i+1, "of", count, "msg", "sent")
+			}
+		}
+	}()
 }
 
 // getDummyAddressOptions returns the AddressOptions for addresses added to
