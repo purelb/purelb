@@ -27,6 +27,20 @@ import (
 	"purelb.io/internal/logging"
 )
 
+// parseDurationEnv parses a duration from an environment variable, returning
+// the default if the env var is not set or cannot be parsed.
+func parseDurationEnv(envVar string, defaultVal time.Duration) time.Duration {
+	val := os.Getenv(envVar)
+	if val == "" {
+		return defaultVal
+	}
+	d, err := time.ParseDuration(val)
+	if err != nil {
+		return defaultVal
+	}
+	return d
+}
+
 func main() {
 	logger := logging.Init()
 
@@ -36,6 +50,11 @@ func main() {
 		host       = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
 		myNode     = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
 		port       = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
+
+		// Lease configuration (optional, uses defaults if not set)
+		leaseDuration = flag.Duration("lease-duration", parseDurationEnv("PURELB_LEASE_DURATION", election.DefaultLeaseDuration), "lease duration for leader election")
+		renewDeadline = flag.Duration("renew-deadline", parseDurationEnv("PURELB_RENEW_DEADLINE", election.DefaultRenewDeadline), "renew deadline for lease renewal")
+		retryPeriod   = flag.Duration("retry-period", parseDurationEnv("PURELB_RETRY_PERIOD", election.DefaultRetryPeriod), "retry period between renewal attempts")
 	)
 	flag.Parse()
 
@@ -93,6 +112,9 @@ func main() {
 		Namespace:      *namespace,
 		NodeName:       *myNode,
 		Client:         client.Clientset(),
+		LeaseDuration:  *leaseDuration,
+		RenewDeadline:  *renewDeadline,
+		RetryPeriod:    *retryPeriod,
 		Logger:         logger,
 		StopCh:         stopCh,
 		OnMemberChange: client.ForceSync,

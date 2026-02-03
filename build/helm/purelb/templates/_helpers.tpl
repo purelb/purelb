@@ -44,11 +44,6 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
-     Memberlist label query. Selects lbnodeagent pods. Used to bootstrap the memberlist/election.
-*/}}
-{{- define "purelb.memberlistLabels" -}}app.kubernetes.io/name={{ include "purelb.name" . }},app.kubernetes.io/component=lbnodeagent{{- end }}
-
-{{/*
 Selector labels
 */}}
 {{- define "purelb.selectorLabels" -}}

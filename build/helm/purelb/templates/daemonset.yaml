@@ -47,15 +47,13 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        # Legacy memberlist env vars - kept for backward compatibility during migration
-        - name: PURELB_ML_NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
-        - name: PURELB_ML_LABELS
-          value: "{{- include "purelb.memberlistLabels" . }}"
-        - name: ML_GROUP
-          value: "{{ .Values.memberlistSecretKey }}"
+        # Lease-based election configuration
+        - name: PURELB_LEASE_DURATION
+          value: "{{ .Values.leaseConfig.leaseDuration }}"
+        - name: PURELB_RENEW_DEADLINE
+          value: "{{ .Values.leaseConfig.renewDeadline }}"
+        - name: PURELB_RETRY_PERIOD
+          value: "{{ .Values.leaseConfig.retryPeriod }}"
         image: "{{ .Values.image.repository }}/lbnodeagent:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         name: lbnodeagent

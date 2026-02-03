@@ -165,28 +165,26 @@ extraObjects: []
 # Spec.LoadBalancerClass explictly set to "purelb.io/purelb".
 defaultAnnouncer: "PureLB"
 
-# This value is passed into the memberlist package. Quoting from the
-# memberlist docs:
-#
-#   SecretKey is used to initialize the primary encryption key in a
-#   keyring.  The primary encryption key is the only key used to
-#   encrypt messages and the first key used while attempting to
-#   decrypt messages. Providing a value for this primary key will
-#   enable message-level encryption and verification, and
-#   automatically install the key onto the keyring.  The value should
-#   be either 16, 24, or 32 bytes to select AES-128, AES-192, or
-#   AES-256.
-#
-# See PureLB's internal/election package docs for more info on how
-# PureLB uses memberlist.
-#
-# This random default value is fine for most purposes but for extra
-# security you can replace it with your own value.
+# DEPRECATED: memberlistSecretKey is no longer used.
+# PureLB now uses Kubernetes Leases for leader election instead of memberlist.
+# This value is kept for backward compatibility but has no effect.
+# It will be removed in a future release.
 memberlistSecretKey: "8sb7ikA5qHwQQqxc"
 
 # Optional priorityClass to use for both allocator and lbnodeagent pods.
 # https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/
 priorityClassName: ""
+
+# Lease-based leader election configuration.
+# These control how lbnodeagent nodes coordinate to elect winners for
+# announcing service addresses. The defaults work well for most deployments.
+leaseConfig:
+  # How long a lease is valid before it expires
+  leaseDuration: "10s"
+  # How long to retry renewals before giving up
+  renewDeadline: "7s"
+  # Interval between renewal attempts
+  retryPeriod: "2s"
 
 # Configurable values specific to lbnodeagent.
 # See https://purelb.github.io/purelb/install/config/
