@@ -145,3 +145,53 @@ go test -race -short ./...
 
 Mock implementations exist in `internal/netbox/fake/` for Netbox testing.
 
+
+## Design Principle: Avoid Locks and Mutexes
+
+**Locks and mutexes should be avoided wherever possible.** They introduce complexity, potential deadlocks, contention, and are difficult to reason about. When concurrent access is needed, prefer these alternatives in order:
+
+### Preferred Approaches (Lock-Free)
+
+1. **Single-goroutine ownership**: Design so only one goroutine accesses mutable state
+   - Example: K8s work queue processes items sequentially
+   - Example: `svcIngresses` map is only accessed from work queue goroutine
+
+2. **Atomic operations**: Use `atomic.Bool`, `atomic.Int64`, `atomic.Pointer[T]`
+   - Example: `addressRenewal.cancelled` uses `atomic.Bool`
+   - Example: Election state uses `atomic.Pointer[electionState]` for copy-on-write
+
+3. **sync.Map**: For simple key-value stores with concurrent access
+   - Example: `addressRenewals sync.Map` for renewal timer tracking
+   - Note: Not ideal for iteration-heavy workloads
+
+4. **Channels**: For coordination between goroutines
+   - Example: `stopCh chan struct{}` for shutdown signaling
+
+5. **Immutable data + atomic swap**: Build new state, swap atomically
+   - Example: `rebuildMaps()` creates new `electionState`, calls `state.Store(newState)`
+   - Readers see old OR new state, never partial updates
+
+### When Locks Might Seem Necessary
+
+If you find yourself reaching for `sync.Mutex` or `sync.RWMutex`, first ask:
+
+1. Can the data be owned by a single goroutine?
+2. Can the operation be made atomic?
+3. Can the data structure be replaced with atomic pointer swap?
+4. Can the coordination be done via channels?
+
+### If a Lock is Truly Required
+
+Document it clearly with:
+- Why lock-free alternatives don't work
+- What goroutines contend for the lock
+- Lock ordering if multiple locks exist
+- Consider using `sync.RWMutex` if reads >> writes
+
+**No locks are used in this implementation.** All concurrent access is handled via:
+- `atomic.Pointer[electionState]` for election maps
+- `atomic.Bool` for renewal cancellation
+- `sync.Map` for address renewals
+
+## Logging
+Logging must be implemented, two level info and debug.  Info for normal operation, debug for codelevel troubleshooting.
