@@ -1498,7 +1498,7 @@ This breaks the full implementation into independent milestones that can be comp
 |-----------|--------|-------|
 | 1. Subnet Detection Foundation | ✅ Complete | subnets.go, leveled logging |
 | 2. Lease-Based Election Core | ✅ Complete | election.go rewritten, k8s leases |
-| 3. Subnet-Aware Winner Election | ⬜ Pending | |
+| 3. Subnet-Aware Winner Election | ✅ Complete | Winner() filters by subnet |
 | 4. Announcer Integration | ⬜ Pending | |
 | 5. Graceful Shutdown | ⬜ Pending | |
 | 6. GARP Enhancements | ⬜ Pending | |

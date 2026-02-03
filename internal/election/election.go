@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"net"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -286,9 +287,10 @@ func (e *Election) MemberCount() int {
 // - Our lease is unhealthy (prevents split-brain)
 // - No nodes are available
 // - The informer hasn't synced yet
+// - No nodes have a subnet containing the IP (subnet-aware filtering)
 //
-// For Milestone 2, this does NOT filter by subnet - all live nodes are candidates.
-// Milestone 3 will add subnet filtering.
+// The key parameter is the IP address string (e.g., "192.168.1.100").
+// Only nodes whose local subnets contain this IP are eligible candidates.
 func (e *Election) Winner(key string) string {
 	// Self-health check: if our lease is unhealthy, we cannot participate
 	// This prevents split-brain during API server partitions
@@ -312,10 +314,28 @@ func (e *Election) Winner(key string) string {
 		return ""
 	}
 
-	// For Milestone 2: use all live nodes as candidates
-	// Milestone 3 will add subnet filtering here
-	candidates := make([]string, len(state.liveNodes))
-	copy(candidates, state.liveNodes)
+	// Parse the IP address
+	ip := net.ParseIP(key)
+	if ip == nil {
+		// If key is not a valid IP, fall back to all nodes
+		// This maintains backward compatibility for non-IP keys
+		logging.Debug(e.config.Logger, "op", "election", "action", "winner",
+			"key", key, "msg", "key is not a valid IP, using all nodes")
+		candidates := make([]string, len(state.liveNodes))
+		copy(candidates, state.liveNodes)
+		return election(key, candidates)[0]
+	}
+
+	// Find candidates: nodes that have a subnet containing this IP
+	candidates := e.findCandidatesForIP(state, ip)
+
+	if len(candidates) == 0 {
+		// No node has a matching subnet - return empty string
+		// The announcer will handle this (no announcement)
+		logging.Debug(e.config.Logger, "op", "election", "action", "winner",
+			"key", key, "result", "", "reason", "no nodes with matching subnet")
+		return ""
+	}
 
 	winner := election(key, candidates)[0]
 
@@ -323,6 +343,67 @@ func (e *Election) Winner(key string) string {
 		"key", key, "candidates", len(candidates), "winner", winner)
 
 	return winner
+}
+
+// findCandidatesForIP returns all nodes that have a subnet containing the given IP.
+// The returned slice is deduplicated and sorted for deterministic results.
+func (e *Election) findCandidatesForIP(state *electionState, ip net.IP) []string {
+	candidateSet := make(map[string]struct{})
+
+	// Check each subnet to see if it contains the IP
+	for subnet, nodes := range state.subnetToNodes {
+		_, ipnet, err := net.ParseCIDR(subnet)
+		if err != nil {
+			continue
+		}
+		if ipnet.Contains(ip) {
+			// All nodes with this subnet are candidates
+			for _, node := range nodes {
+				candidateSet[node] = struct{}{}
+			}
+		}
+	}
+
+	// Convert to sorted slice for deterministic election
+	candidates := make([]string, 0, len(candidateSet))
+	for node := range candidateSet {
+		candidates = append(candidates, node)
+	}
+	sort.Strings(candidates)
+
+	return candidates
+}
+
+// HasLocalCandidate returns true if this node has a subnet containing the given IP.
+// This is useful for the announcer to know if it should even attempt to announce.
+func (e *Election) HasLocalCandidate(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+
+	state := e.state.Load()
+	if state == nil {
+		return false
+	}
+
+	// Check if our node has any subnet containing this IP
+	mySubnets, ok := state.nodeToSubnets[e.config.NodeName]
+	if !ok {
+		return false
+	}
+
+	for _, subnet := range mySubnets {
+		_, ipnet, err := net.ParseCIDR(subnet)
+		if err != nil {
+			continue
+		}
+		if ipnet.Contains(ip) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // DeleteOurLease removes this node's lease from the cluster

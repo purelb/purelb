@@ -16,6 +16,7 @@ package election
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -496,4 +497,334 @@ func TestAtomicStateAccess(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		<-done
 	}
+}
+
+// ============================================================================
+// Milestone 3: Subnet-Aware Election Tests
+// ============================================================================
+
+// TestWinnerWithSubnetFiltering tests that Winner() only considers nodes
+// whose subnets contain the IP address
+func TestWinnerWithSubnetFiltering(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	e, err := New(Config{
+		Namespace: "purelb",
+		NodeName:  "node-a",
+		Client:    client,
+		StopCh:    stopCh,
+	})
+	require.NoError(t, err)
+
+	// Set up state with nodes on different subnets
+	// node-a: 192.168.1.0/24
+	// node-b: 192.168.1.0/24, 10.0.0.0/8
+	// node-c: 10.0.0.0/8 only
+	e.state.Store(&electionState{
+		liveNodes: []string{"node-a", "node-b", "node-c"},
+		subnetToNodes: map[string][]string{
+			"192.168.1.0/24": {"node-a", "node-b"},
+			"10.0.0.0/8":     {"node-b", "node-c"},
+		},
+		nodeToSubnets: map[string][]string{
+			"node-a": {"192.168.1.0/24"},
+			"node-b": {"192.168.1.0/24", "10.0.0.0/8"},
+			"node-c": {"10.0.0.0/8"},
+		},
+	})
+
+	// IP in 192.168.1.0/24 - only node-a and node-b are candidates
+	winner := e.Winner("192.168.1.100")
+	assert.Contains(t, []string{"node-a", "node-b"}, winner,
+		"winner should be node-a or node-b for 192.168.1.100")
+
+	// IP in 10.0.0.0/8 - only node-b and node-c are candidates
+	winner = e.Winner("10.5.5.5")
+	assert.Contains(t, []string{"node-b", "node-c"}, winner,
+		"winner should be node-b or node-c for 10.5.5.5")
+
+	// Verify determinism - same IP should always produce same winner
+	firstWinner := e.Winner("192.168.1.50")
+	for i := 0; i < 10; i++ {
+		assert.Equal(t, firstWinner, e.Winner("192.168.1.50"),
+			"winner should be deterministic")
+	}
+}
+
+// TestWinnerWithNoMatchingSubnet tests that Winner() returns "" when
+// no nodes have a subnet containing the IP
+func TestWinnerWithNoMatchingSubnet(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	e, err := New(Config{
+		Namespace: "purelb",
+		NodeName:  "node-a",
+		Client:    client,
+		StopCh:    stopCh,
+	})
+	require.NoError(t, err)
+
+	// Set up state with nodes only on 192.168.1.0/24
+	e.state.Store(&electionState{
+		liveNodes: []string{"node-a", "node-b"},
+		subnetToNodes: map[string][]string{
+			"192.168.1.0/24": {"node-a", "node-b"},
+		},
+		nodeToSubnets: map[string][]string{
+			"node-a": {"192.168.1.0/24"},
+			"node-b": {"192.168.1.0/24"},
+		},
+	})
+
+	// IP not in any node's subnet
+	winner := e.Winner("172.16.0.100")
+	assert.Equal(t, "", winner,
+		"winner should be empty when no nodes have matching subnet")
+}
+
+// TestWinnerWithOverlappingSubnets tests election when IP matches
+// multiple overlapping subnets
+func TestWinnerWithOverlappingSubnets(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	e, err := New(Config{
+		Namespace: "purelb",
+		NodeName:  "node-a",
+		Client:    client,
+		StopCh:    stopCh,
+	})
+	require.NoError(t, err)
+
+	// Overlapping subnets: 10.0.0.0/8 contains 10.0.1.0/24
+	// node-a: 10.0.0.0/8 (broad)
+	// node-b: 10.0.1.0/24 (specific)
+	e.state.Store(&electionState{
+		liveNodes: []string{"node-a", "node-b"},
+		subnetToNodes: map[string][]string{
+			"10.0.0.0/8":   {"node-a"},
+			"10.0.1.0/24":  {"node-b"},
+		},
+		nodeToSubnets: map[string][]string{
+			"node-a": {"10.0.0.0/8"},
+			"node-b": {"10.0.1.0/24"},
+		},
+	})
+
+	// IP 10.0.1.50 is in BOTH subnets, so both nodes are candidates
+	winner := e.Winner("10.0.1.50")
+	assert.Contains(t, []string{"node-a", "node-b"}, winner,
+		"both nodes should be candidates for IP in overlapping subnets")
+}
+
+// TestFindCandidatesForIP tests the candidate finding logic directly
+func TestFindCandidatesForIP(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	e, err := New(Config{
+		Namespace: "purelb",
+		NodeName:  "node-a",
+		Client:    client,
+		StopCh:    stopCh,
+	})
+	require.NoError(t, err)
+
+	state := &electionState{
+		liveNodes: []string{"node-a", "node-b", "node-c"},
+		subnetToNodes: map[string][]string{
+			"192.168.1.0/24": {"node-a", "node-b"},
+			"10.0.0.0/8":     {"node-c"},
+		},
+		nodeToSubnets: map[string][]string{
+			"node-a": {"192.168.1.0/24"},
+			"node-b": {"192.168.1.0/24"},
+			"node-c": {"10.0.0.0/8"},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		ip       string
+		expected []string
+	}{
+		{
+			name:     "IP in first subnet",
+			ip:       "192.168.1.100",
+			expected: []string{"node-a", "node-b"},
+		},
+		{
+			name:     "IP in second subnet",
+			ip:       "10.5.5.5",
+			expected: []string{"node-c"},
+		},
+		{
+			name:     "IP not in any subnet",
+			ip:       "172.16.0.1",
+			expected: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			require.NotNil(t, ip)
+
+			candidates := e.findCandidatesForIP(state, ip)
+			assert.Equal(t, tt.expected, candidates)
+		})
+	}
+}
+
+// TestHasLocalCandidate tests the HasLocalCandidate() helper
+func TestHasLocalCandidate(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	e, err := New(Config{
+		Namespace: "purelb",
+		NodeName:  "node-a",
+		Client:    client,
+		StopCh:    stopCh,
+	})
+	require.NoError(t, err)
+
+	// Set up state where node-a has 192.168.1.0/24
+	e.state.Store(&electionState{
+		liveNodes: []string{"node-a", "node-b"},
+		subnetToNodes: map[string][]string{
+			"192.168.1.0/24": {"node-a"},
+			"10.0.0.0/8":     {"node-b"},
+		},
+		nodeToSubnets: map[string][]string{
+			"node-a": {"192.168.1.0/24"},
+			"node-b": {"10.0.0.0/8"},
+		},
+	})
+
+	tests := []struct {
+		name     string
+		ip       string
+		expected bool
+	}{
+		{
+			name:     "IP in local subnet",
+			ip:       "192.168.1.100",
+			expected: true,
+		},
+		{
+			name:     "IP not in local subnet",
+			ip:       "10.5.5.5",
+			expected: false,
+		},
+		{
+			name:     "IP in no subnet",
+			ip:       "172.16.0.1",
+			expected: false,
+		},
+		{
+			name:     "Invalid IP",
+			ip:       "not-an-ip",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := e.HasLocalCandidate(tt.ip)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestWinnerWithInvalidIP tests that Winner() handles invalid IPs gracefully
+func TestWinnerWithInvalidIP(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	e, err := New(Config{
+		Namespace: "purelb",
+		NodeName:  "node-a",
+		Client:    client,
+		StopCh:    stopCh,
+	})
+	require.NoError(t, err)
+
+	// Set up state with nodes
+	e.state.Store(&electionState{
+		liveNodes: []string{"node-a", "node-b"},
+		subnetToNodes: map[string][]string{
+			"192.168.1.0/24": {"node-a", "node-b"},
+		},
+		nodeToSubnets: map[string][]string{
+			"node-a": {"192.168.1.0/24"},
+			"node-b": {"192.168.1.0/24"},
+		},
+	})
+
+	// Invalid IP - should fall back to all nodes (backward compatibility)
+	winner := e.Winner("not-an-ip")
+	assert.Contains(t, []string{"node-a", "node-b"}, winner,
+		"invalid IP should fall back to all nodes")
+}
+
+// TestWinnerDeterminismWithSubnets verifies election is deterministic
+// even with subnet filtering
+func TestWinnerDeterminismWithSubnets(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	e, err := New(Config{
+		Namespace: "purelb",
+		NodeName:  "node-a",
+		Client:    client,
+		StopCh:    stopCh,
+	})
+	require.NoError(t, err)
+
+	e.state.Store(&electionState{
+		liveNodes: []string{"node-a", "node-b", "node-c"},
+		subnetToNodes: map[string][]string{
+			"192.168.1.0/24": {"node-a", "node-b", "node-c"},
+		},
+		nodeToSubnets: map[string][]string{
+			"node-a": {"192.168.1.0/24"},
+			"node-b": {"192.168.1.0/24"},
+			"node-c": {"192.168.1.0/24"},
+		},
+	})
+
+	// Different IPs in the same subnet should potentially get different winners
+	// (demonstrates load distribution), but each IP is deterministic
+	winners := make(map[string]string)
+	ips := []string{"192.168.1.1", "192.168.1.50", "192.168.1.100", "192.168.1.200"}
+
+	for _, ip := range ips {
+		winner := e.Winner(ip)
+		winners[ip] = winner
+
+		// Verify same IP always produces same winner
+		for i := 0; i < 5; i++ {
+			assert.Equal(t, winner, e.Winner(ip),
+				"winner for %s should be deterministic", ip)
+		}
+	}
+
+	// At least one different winner shows load distribution
+	// (with 3 nodes and 4 IPs, very likely to have different winners)
+	uniqueWinners := make(map[string]bool)
+	for _, w := range winners {
+		uniqueWinners[w] = true
+	}
+	// We can't guarantee different winners, but we verified determinism
+	t.Logf("Winners: %v, unique: %d", winners, len(uniqueWinners))
 }
