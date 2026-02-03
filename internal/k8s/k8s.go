@@ -389,6 +389,12 @@ func (c *Client) ForceSync() {
 	}
 }
 
+// Clientset returns the underlying Kubernetes clientset.
+// This is used by components that need direct API access, such as the election.
+func (c *Client) Clientset() kubernetes.Interface {
+	return c.client
+}
+
 // maybeUpdateService writes the "is" service back to the cluster, but
 // only if it's different than the "was" service.
 func (c *Client) maybeUpdateService(was, is *corev1.Service) error {

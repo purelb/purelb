@@ -30,17 +30,20 @@ func main() {
 	logger := logging.Init()
 
 	var (
-		memberlistNS     = flag.String("memberlist-ns", os.Getenv("PURELB_ML_NAMESPACE"), "memberlist namespace (only needed when running outside of k8s)")
-		memberlistLabels = flag.String("memberlist-labels", os.Getenv("PURELB_ML_LABELS"), "Labels to match the lbnodeagent pods (for MemberList / fast dead node detection)")
-		kubeconfig       = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file (only needed when running outside of k8s)")
-		host             = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
-		myNode           = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
-		port             = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
+		namespace  = flag.String("namespace", os.Getenv("PURELB_NAMESPACE"), "namespace for PureLB resources (from downward API)")
+		kubeconfig = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file (only needed when running outside of k8s)")
+		host       = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
+		myNode     = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
+		port       = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
 	)
 	flag.Parse()
 
 	if *myNode == "" {
 		logger.Log("op", "startup", "error", "must specify --node-name or PURELB_NODE_NAME", "msg", "missing configuration")
+		os.Exit(1)
+	}
+	if *namespace == "" {
+		logger.Log("op", "startup", "error", "must specify --namespace or PURELB_NAMESPACE", "msg", "missing configuration")
 		os.Exit(1)
 	}
 
@@ -84,32 +87,30 @@ func main() {
 
 	ctrl.SetClient(client)
 
-	election, err := election.New(&election.Config{
-		Namespace: *memberlistNS,
-		Labels:    *memberlistLabels,
-		NodeName:  *myNode,
-		BindAddr:  os.Getenv("PURELB_HOST"),
-		BindPort:  7934,
-		Secret:    []byte(os.Getenv("ML_GROUP")),
-		Logger:    &logger,
-		StopCh:    stopCh,
-		Client:    client,
+	// Create the lease-based election
+	elect, err := election.New(election.Config{
+		Namespace:      *namespace,
+		NodeName:       *myNode,
+		Client:         client.Clientset(),
+		Logger:         logger,
+		StopCh:         stopCh,
+		OnMemberChange: client.ForceSync,
+		GetLocalSubnets: func() ([]string, error) {
+			// TODO: This will be populated from LBNodeAgent config in Milestone 4
+			// For now, use default interface detection
+			return election.GetLocalSubnets([]string{}, true, logger)
+		},
 	})
 	if err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to create election client")
+		logger.Log("op", "startup", "error", err, "msg", "failed to create election")
 		os.Exit(1)
 	}
 
-	ctrl.SetElection(&election)
+	ctrl.SetElection(elect)
 
-	iplist, err := client.GetPodsIPs(*memberlistNS, *memberlistLabels)
-	if err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to get PodsIPs")
-		os.Exit(1)
-	}
-	err = election.Join(iplist)
-	if err != nil {
-		logger.Log("op", "startup", "error", err, "msg", "failed to join election")
+	// Start the election (creates lease, starts informer)
+	if err := elect.Start(); err != nil {
+		logger.Log("op", "startup", "error", err, "msg", "failed to start election")
 		os.Exit(1)
 	}
 

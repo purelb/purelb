@@ -115,14 +115,20 @@ func Init() log.Logger {
 }
 
 // Debug logs a message at debug level. The message will only appear if
-// PURELB_LOG_LEVEL=debug is set.
+// PURELB_LOG_LEVEL=debug is set. Safe to call with nil logger.
 func Debug(logger log.Logger, keyvals ...interface{}) {
+	if logger == nil {
+		return
+	}
 	args := append([]interface{}{"level", "debug"}, keyvals...)
 	logger.Log(args...)
 }
 
-// Info logs a message at info level (always shown).
+// Info logs a message at info level (always shown). Safe to call with nil logger.
 func Info(logger log.Logger, keyvals ...interface{}) {
+	if logger == nil {
+		return
+	}
 	args := append([]interface{}{"level", "info"}, keyvals...)
 	logger.Log(args...)
 }

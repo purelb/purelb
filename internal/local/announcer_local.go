@@ -252,14 +252,14 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	if winner := a.election.Winner(lbIP.String()); winner != a.myNode {
 		// We lost the election so we'll withdraw any announcement that
 		// we might have been making
-		l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
+		l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName, "memberCount", a.election.MemberCount())
 		return a.deleteAddress(nsName, "lostElection", lbIP)
 	}
 
 	// We won the election so we'll add the service address to our
 	// node's default interface so linux will respond to ARP
 	// requests for it.
-	l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName, "memberCount", a.election.Memberlist.NumMembers())
+	l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName, "memberCount", a.election.MemberCount())
 	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
 	opts := a.getLocalAddressOptions()
