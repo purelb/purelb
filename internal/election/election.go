@@ -287,6 +287,7 @@ func (e *Election) StopRenewals() {
 // for all queries. Use this during graceful shutdown.
 func (e *Election) MarkUnhealthy() {
 	e.leaseHealthy.Store(false)
+	RecordLeaseHealthy(false)
 	logging.Info(e.config.Logger, "op", "election", "action", "markUnhealthy",
 		"msg", "node marked unhealthy, withdrawing from elections")
 }
@@ -502,6 +503,12 @@ func (e *Election) createOrUpdateLease() error {
 			"lease", e.leaseName, "subnets", subnetsAnnotation, "msg", "lease created")
 		e.leaseHealthy.Store(true)
 		e.renewFailures.Store(0)
+		RecordLeaseHealthy(true)
+		if e.config.GetLocalSubnets != nil {
+			if subnets, err := e.config.GetLocalSubnets(); err == nil {
+				RecordLocalSubnetCount(len(subnets))
+			}
+		}
 		return nil
 	}
 
@@ -529,6 +536,12 @@ func (e *Election) createOrUpdateLease() error {
 		"lease", e.leaseName, "subnets", subnetsAnnotation, "msg", "lease updated")
 	e.leaseHealthy.Store(true)
 	e.renewFailures.Store(0)
+	RecordLeaseHealthy(true)
+	if e.config.GetLocalSubnets != nil {
+		if subnets, err := e.config.GetLocalSubnets(); err == nil {
+			RecordLocalSubnetCount(len(subnets))
+		}
+	}
 	return nil
 }
 
@@ -569,8 +582,10 @@ func (e *Election) renewLease() error {
 	)
 	if err != nil {
 		failures := e.renewFailures.Add(1)
+		RecordLeaseRenewalFailure()
 		if failures >= maxRenewFailures {
 			e.leaseHealthy.Store(false)
+			RecordLeaseHealthy(false)
 			logging.Info(e.config.Logger, "op", "election", "action", "renewFailed",
 				"lease", e.leaseName, "failures", failures,
 				"msg", "marking unhealthy after repeated failures")
@@ -579,6 +594,7 @@ func (e *Election) renewLease() error {
 	}
 
 	// Success - reset failures and mark healthy
+	RecordLeaseRenewal()
 	if e.renewFailures.Load() > 0 {
 		logging.Info(e.config.Logger, "op", "election", "action", "renewRecovered",
 			"lease", e.leaseName, "msg", "lease renewal recovered")
@@ -586,6 +602,7 @@ func (e *Election) renewLease() error {
 	e.renewFailures.Store(0)
 	if !e.leaseHealthy.Load() {
 		e.leaseHealthy.Store(true)
+		RecordLeaseHealthy(true)
 		logging.Info(e.config.Logger, "op", "election", "action", "healthRestored",
 			"lease", e.leaseName, "msg", "re-enabling elections after recovery")
 		if e.config.OnMemberChange != nil {
@@ -664,6 +681,10 @@ func (e *Election) rebuildMaps() {
 
 	// Atomic swap
 	e.state.Store(newState)
+
+	// Record metrics
+	RecordMemberCount(len(newState.liveNodes))
+	RecordSubnetCount(len(newState.subnetToNodes))
 
 	logging.Info(e.config.Logger, "op", "election", "action", "rebuildMaps",
 		"liveNodes", len(newState.liveNodes), "subnets", len(newState.subnetToNodes),

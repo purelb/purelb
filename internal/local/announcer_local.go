@@ -263,6 +263,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	if winner != a.myNode {
 		// We lost the election so we'll withdraw any announcement that
 		// we might have been making
+		RecordElectionLoss()
 		logging.Debug(l, "msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName, "memberCount", a.election.MemberCount())
 		return a.deleteAddress(nsName, "lostElection", lbIP)
 	}
@@ -270,6 +271,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	// We won the election so we'll add the service address to our
 	// node's default interface so linux will respond to ARP
 	// requests for it.
+	RecordElectionWin()
 	logging.Info(l, "msg", "electionWon", "node", a.myNode, "service", nsName, "memberCount", a.election.MemberCount())
 	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
@@ -277,6 +279,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	if err := addNetworkWithOptions(lbIPNet, announceInt, opts); err != nil {
 		return err
 	}
+	RecordAddressAddition()
 	a.scheduleRenewal(nsName, lbIPNet, announceInt, opts)
 
 	if svc.Annotations == nil {
@@ -348,6 +351,7 @@ func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.Endp
 	if err != nil {
 		return err
 	}
+	RecordAddressAddition()
 	a.scheduleRenewal(nsName, lbIPNet, a.dummyInt, opts)
 
 	announcing.With(prometheus.Labels{
@@ -417,6 +421,7 @@ func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 
 	logging.Info(a.logger, "event", "withdrawAddress", "ip", svcAddr, "service", nsName, "reason", reason)
 	deleteAddr(svcAddr)
+	RecordAddressWithdrawal()
 
 	return nil
 }
@@ -588,9 +593,11 @@ func (a *announcer) renewAddress(key string) {
 	}
 
 	if err := addNetworkWithOptions(renewal.ipNet, renewal.link, renewal.opts); err != nil {
+		RecordAddressRenewalError()
 		logging.Info(a.logger, "op", "renewAddress", "key", key, "error", err)
 		// Still reschedule - transient errors shouldn't stop renewal
 	} else {
+		RecordAddressRenewal()
 		logging.Debug(a.logger, "op", "renewAddress", "key", key, "msg", "renewed", "next", renewal.interval)
 	}
 
@@ -760,10 +767,12 @@ func (a *announcer) sendGARPSequence(lbIP net.IP, ifName string) {
 
 			// Send GARP
 			if err := sendGARP(ifName, lbIP); err != nil {
+				RecordGARPError()
 				logging.Info(a.logger, "op", "sendGARP", "ip", ipStr, "interface", ifName,
 					"packet", i+1, "of", count, "error", err)
 				// Continue sending remaining packets even on error
 			} else {
+				RecordGARPSent()
 				logging.Debug(a.logger, "op", "sendGARP", "ip", ipStr, "interface", ifName,
 					"packet", i+1, "of", count, "msg", "sent")
 			}
