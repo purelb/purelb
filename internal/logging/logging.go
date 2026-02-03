@@ -196,9 +196,8 @@ type filterLogger struct {
 	level      Level
 }
 
-// Log implements the gokit logging Log() function. This version:
-// 1. Filters memberlist DEBUG messages (always suppressed)
-// 2. Filters messages based on the configured log level
+// Log implements the gokit logging Log() function. This version
+// filters messages based on the configured log level.
 func (l *filterLogger) Log(keyvals ...interface{}) error {
 	var msgLevel Level = LevelInfo
 
@@ -213,18 +212,6 @@ func (l *filterLogger) Log(keyvals ...interface{}) error {
 			if levelStr, ok := keyvals[i+1].(string); ok {
 				if levelStr == "debug" {
 					msgLevel = LevelDebug
-				}
-			}
-		}
-
-		// Look for the "msg" key - the next item will contain the message
-		// from memberlist
-		if str == "msg" && i+1 < len(keyvals) {
-			if message, ok := keyvals[i+1].(string); ok {
-				// If the message is a memberlist DEBUG message then we don't
-				// want to see it
-				if strings.Contains(message, "[DEBUG] memberlist: ") {
-					return nil
 				}
 			}
 		}

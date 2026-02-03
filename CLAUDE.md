@@ -98,7 +98,7 @@ kubectl --context proxmox rollout status deployment/allocator -n purelb
 - `internal/allocator/` - IP pool management and service allocation logic. Supports LocalPool (in-memory) and NetboxPool (external IPAM)
 - `internal/local/` - Linux networking via netlink (interfaces, routes, ARP/NDP). Contains `LocalAnnouncer` implementation
 - `internal/k8s/` - Kubernetes client integration using informers and work queues. The `Client` struct watches Services/Endpoints and invokes callbacks on changes
-- `internal/election/` - Memberlist-based leader election for node agents. Uses SHA256 hash of (node name + service key) to deterministically elect a winner per service address
+- `internal/election/` - Lease-based subnet-aware leader election for node agents. Each node maintains a Kubernetes Lease with its subnets annotated; uses SHA256 hash of (node name + service key) to deterministically elect a winner from nodes that have the IP's subnet
 
 ## Custom Resources
 
@@ -192,6 +192,40 @@ Document it clearly with:
 - `atomic.Pointer[electionState]` for election maps
 - `atomic.Bool` for renewal cancellation
 - `sync.Map` for address renewals
+
+## Election System
+
+The election system (`internal/election/`) determines which node announces each LoadBalancer IP address. It uses Kubernetes Leases for distributed coordination.
+
+### How It Works
+
+1. Each lbnodeagent creates a Lease in its namespace with:
+   - Node name as holder identity
+   - Local subnets as annotation (`purelb.io/subnets`)
+   - Periodic renewal timestamp
+
+2. When determining which node should announce an IP:
+   - Find all nodes with valid (non-expired) leases
+   - Filter to nodes that have the IP's subnet in their annotations
+   - Use deterministic hash of (node name + service key) to pick winner
+
+3. Graceful shutdown:
+   - Node marks itself unhealthy (Winner() returns "")
+   - ForceSync withdraws all addresses
+   - Lease is deleted so other nodes see it gone immediately
+
+### Key Configuration
+
+- `PURELB_LEASE_DURATION` - How long a lease is valid (default: 10s)
+- `PURELB_RENEW_DEADLINE` - How long to retry renewals (default: 7s)
+- `PURELB_RETRY_PERIOD` - Interval between renewal attempts (default: 2s)
+
+### Monitoring
+
+Election metrics available at `/metrics`:
+- `purelb_election_lease_healthy` - Whether this node's lease is valid
+- `purelb_election_member_count` - Number of healthy nodes in election
+- `purelb_election_lease_renewals_total` - Successful lease renewals
 
 ## Logging
 Logging must be implemented, two level info and debug.  Info for normal operation, debug for codelevel troubleshooting.
