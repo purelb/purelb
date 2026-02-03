@@ -19,6 +19,7 @@ import (
 	"net"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -27,6 +28,7 @@ import (
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
+	"purelb.io/internal/logging"
 	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 
 	"github.com/go-kit/log"
@@ -62,11 +64,12 @@ type announcer struct {
 // addressRenewal holds the state needed to periodically refresh an address
 // before its lifetime expires.
 type addressRenewal struct {
-	ipNet    net.IPNet
-	link     netlink.Link
-	opts     AddressOptions
-	timer    *time.Timer
-	interval time.Duration
+	ipNet     net.IPNet
+	link      netlink.Link
+	opts      AddressOptions
+	timer     *time.Timer
+	interval  time.Duration
+	cancelled atomic.Bool // Set when renewal is cancelled to prevent race with timer
 }
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -102,7 +105,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	// if there's a "Local" agent config then we'll announce
 	for _, agent := range cfg.Agents {
 		if spec := agent.Spec.Local; spec != nil {
-			a.logger.Log("op", "setConfig", "spec", spec, "name", agent.Namespace+"/"+agent.Name)
+			logging.Info(a.logger, "op", "setConfig", "spec", spec, "name", agent.Namespace+"/"+agent.Name)
 
 			// stash the local ServiceGroup configs
 			a.groups = map[string]*purelbv1.ServiceGroupLocalSpec{}
@@ -143,7 +146,7 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 	}
 
 	if a.config == nil {
-		a.logger.Log("event", "noConfig")
+		logging.Info(a.logger, "event", "noConfig")
 	}
 
 	return nil
@@ -163,7 +166,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 
 	// if we haven't been configured then we won't announce
 	if a.config == nil {
-		l.Log("event", "noConfig")
+		logging.Info(l, "event", "noConfig")
 		return nil
 	}
 
@@ -174,7 +177,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 		// validate the allocated address
 		lbIP := net.ParseIP(ingress.IP)
 		if lbIP == nil {
-			l.Log("op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
+			logging.Info(l, "op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
 			continue
 		}
 
@@ -198,7 +201,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			// The user wants us to determine the "default" interface
 			announceInt, err := defaultInterface(purelbv1.AddrFamily(lbIP))
 			if err != nil {
-				l.Log("event", "announceError", "err", err)
+				logging.Info(l, "event", "announceError", "err", err)
 				retErr = err
 				continue
 			}
@@ -231,14 +234,14 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 
 			// The user has added the override annotation so we'll allow
 			// Local policy but warn them.
-			l.Log("op", "setBalancer", "error", "ExternalTrafficPolicy override annotation found, will allow Local policy. Incoming traffic will NOT be forwarded inter-node. This is not a recommended configuration; please see the PureLB docs for more info.")
+			logging.Info(l, "op", "setBalancer", "msg", "ExternalTrafficPolicy override annotation found, will allow Local policy. Incoming traffic will NOT be forwarded inter-node. This is not a recommended configuration; please see the PureLB docs for more info.")
 			a.client.Infof(svc, "LocalOverride", "ExternalTrafficPolicy override annotation found, will allow Local policy. Incoming traffic will NOT be forwarded inter-node. This is not a recommended configuration; please see the PureLB docs for more info.")
 
 		} else {
 
 			// There's no override annotation so we'll switch back to
 			// "Cluster"
-			l.Log("op", "setBalancer", "error", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster. Please see the PureLB docs for info on why we do this, and how to override this policy.")
+			logging.Info(l, "op", "setBalancer", "msg", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster. Please see the PureLB docs for info on why we do this, and how to override this policy.")
 			a.client.Infof(svc, "LocalOverride", "ExternalTrafficPolicy Local not supported on local Interfaces, setting to Cluster. Please see the PureLB docs for info on why we do this, and how to override this policy.")
 			// Set the service back to ExternalTrafficPolicyCluster if adding to local interface
 			svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
@@ -249,17 +252,25 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	}
 
 	// See if we won the announcement election
-	if winner := a.election.Winner(lbIP.String()); winner != a.myNode {
+	winner := a.election.Winner(lbIP.String())
+	if winner == "" {
+		// No nodes have a subnet containing this IP - withdraw any announcement
+		// This happens when subnet-aware election finds no eligible candidates
+		logging.Info(l, "msg", "noEligibleNodes", "node", a.myNode, "ip", lbIP, "service", nsName,
+			"reason", "no nodes have local subnet for this IP")
+		return a.deleteAddress(nsName, "noEligibleNodes", lbIP)
+	}
+	if winner != a.myNode {
 		// We lost the election so we'll withdraw any announcement that
 		// we might have been making
-		l.Log("msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName, "memberCount", a.election.MemberCount())
+		logging.Debug(l, "msg", "notWinner", "node", a.myNode, "winner", winner, "service", nsName, "memberCount", a.election.MemberCount())
 		return a.deleteAddress(nsName, "lostElection", lbIP)
 	}
 
 	// We won the election so we'll add the service address to our
 	// node's default interface so linux will respond to ARP
 	// requests for it.
-	l.Log("msg", "Winner, winner, Chicken dinner", "node", a.myNode, "service", nsName, "memberCount", a.election.MemberCount())
+	logging.Info(l, "msg", "electionWon", "node", a.myNode, "service", nsName, "memberCount", a.election.MemberCount())
 	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
 	opts := a.getLocalAddressOptions()
@@ -314,10 +325,10 @@ func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.Endp
 			}
 		}
 		hasEndpoint := nodeHasHealthyEndpoint(epSlices, a.myNode)
-		l.Log("msg", "etpLocalCheck", "node", a.myNode, "sliceCount", sliceCount, "endpointNodes", endpointNodes, "hasHealthyEndpoint", hasEndpoint)
+		logging.Debug(l, "msg", "etpLocalCheck", "node", a.myNode, "sliceCount", sliceCount, "endpointNodes", endpointNodes, "hasHealthyEndpoint", hasEndpoint)
 
 		if !hasEndpoint {
-			l.Log("msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
+			logging.Debug(l, "msg", "policyLocalNoEndpoints", "node", a.myNode, "service", nsName)
 			return a.deleteAddress(nsName, "noEndpoints", lbIP)
 		}
 	}
@@ -329,12 +340,12 @@ func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.Endp
 		return err
 	}
 
-	l.Log("msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "interface", a.dummyInt.Attrs().Name, "group", groupName)
+	logging.Info(l, "msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "interface", a.dummyInt.Attrs().Name, "group", groupName)
 	a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, a.dummyInt.Attrs().Name)
 
 	// Add this address to the dummy interface so routing software
 	// (e.g., bird) will announce routes for it.
-	l.Log("msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
+	logging.Debug(l, "msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
 	opts := a.getDummyAddressOptions()
 	lbIPNet, err := addVirtualInt(lbIP, a.dummyInt, group.Subnet, group.Aggregation, opts)
 	if err != nil {
@@ -361,7 +372,7 @@ func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.Endp
 func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 	ingress, knowAboutIt := a.svcIngresses[nsName]
 	if !knowAboutIt {
-		a.logger.Log("msg", "Unknown LB, can't delete", "name", nsName)
+		logging.Debug(a.logger, "msg", "Unknown LB, can't delete", "name", nsName)
 		return nil
 	}
 
@@ -401,13 +412,13 @@ func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 	for otherSvc, announcedAddrs := range a.svcIngresses {
 		for _, announcedAddr := range announcedAddrs {
 			if announcedAddr.IP == svcAddr.String() && otherSvc != nsName {
-				a.logger.Log("event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by other service", "other", otherSvc)
+				logging.Debug(a.logger, "event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by other service", "other", otherSvc)
 				return nil
 			}
 		}
 	}
 
-	a.logger.Log("event", "withdrawAddress", "ip", svcAddr, "service", nsName, "reason", reason)
+	logging.Info(a.logger, "event", "withdrawAddress", "ip", svcAddr, "service", nsName, "reason", reason)
 	deleteAddr(svcAddr)
 
 	return nil
@@ -416,21 +427,30 @@ func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 // Shutdown cleans up changes that we've made to the local networking
 // configuration.
 func (a *announcer) Shutdown() {
+	// Withdraw all announcements first
+	a.WithdrawAll()
+
+	// remove the "dummy" interface
+	removeInterface(a.dummyInt)
+}
+
+// WithdrawAll withdraws all announcements without removing the dummy interface.
+// This is useful during graceful shutdown before the lease is deleted.
+func (a *announcer) WithdrawAll() {
 	// Cancel all renewal timers to prevent goroutine leaks
 	a.addressRenewals.Range(func(key, val interface{}) bool {
-		val.(*addressRenewal).timer.Stop()
+		renewal := val.(*addressRenewal)
+		renewal.cancelled.Store(true)
+		renewal.timer.Stop()
 		return true
 	})
 
 	// withdraw any announcements that we have made
 	for nsName := range a.svcIngresses {
-		if err := a.DeleteBalancer(nsName, "shutdown", nil); err != nil {
-			a.logger.Log("op", "shutdown", "error", err)
+		if err := a.DeleteBalancer(nsName, "withdrawAll", nil); err != nil {
+			logging.Info(a.logger, "op", "withdrawAll", "error", err)
 		}
 	}
-
-	// remove the "dummy" interface
-	removeInterface(a.dummyInt)
 }
 
 func (a *announcer) SetElection(election *election.Election) {
@@ -554,7 +574,7 @@ func (a *announcer) scheduleRenewal(svcName string, lbIPNet net.IPNet, link netl
 	})
 
 	a.addressRenewals.Store(key, renewal)
-	a.logger.Log("op", "scheduleRenewal", "key", key, "interval", interval)
+	logging.Debug(a.logger, "op", "scheduleRenewal", "key", key, "interval", interval)
 }
 
 // renewAddress refreshes an address's lifetime. Called by the renewal timer.
@@ -565,11 +585,21 @@ func (a *announcer) renewAddress(key string) {
 	}
 	renewal := val.(*addressRenewal)
 
+	// Check if cancelled (race condition: timer fired after cancel but before Stop)
+	if renewal.cancelled.Load() {
+		return
+	}
+
 	if err := addNetworkWithOptions(renewal.ipNet, renewal.link, renewal.opts); err != nil {
-		a.logger.Log("op", "renewAddress", "key", key, "error", err)
+		logging.Info(a.logger, "op", "renewAddress", "key", key, "error", err)
 		// Still reschedule - transient errors shouldn't stop renewal
 	} else {
-		a.logger.Log("op", "renewAddress", "key", key, "msg", "renewed", "next", renewal.interval)
+		logging.Debug(a.logger, "op", "renewAddress", "key", key, "msg", "renewed", "next", renewal.interval)
+	}
+
+	// Check again before rescheduling (may have been cancelled during renewal)
+	if renewal.cancelled.Load() {
+		return
 	}
 
 	// Reschedule for next renewal
@@ -582,8 +612,12 @@ func (a *announcer) renewAddress(key string) {
 func (a *announcer) cancelRenewal(svcName, ip string) {
 	key := renewalKey(svcName, ip)
 	if val, loaded := a.addressRenewals.LoadAndDelete(key); loaded {
-		val.(*addressRenewal).timer.Stop()
-		a.logger.Log("op", "cancelRenewal", "key", key)
+		renewal := val.(*addressRenewal)
+		// Mark as cancelled first, then stop timer
+		// This prevents a race where timer fires between LoadAndDelete and Stop
+		renewal.cancelled.Store(true)
+		renewal.timer.Stop()
+		logging.Debug(a.logger, "op", "cancelRenewal", "key", key)
 	}
 }
 
