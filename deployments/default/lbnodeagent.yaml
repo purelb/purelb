@@ -4,6 +4,9 @@ kind: LBNodeAgent
 metadata:
   name: default
   namespace: purelb-system
+  labels:
+    app: purelb
 spec:
   local:
     localInterface: default
+    dummyInterface: kube-lb0

@@ -18,7 +18,6 @@ import (
 	"testing"
 
 	"purelb.io/internal/k8s"
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 
 	"github.com/go-kit/log"
@@ -86,7 +85,7 @@ func TestControllerConfig(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test",
 			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: defaultPoolName,
+				purelbv2.DesiredGroupAnnotation: defaultPoolName,
 			},
 		},
 		Spec: v1.ServiceSpec{
@@ -101,21 +100,23 @@ func TestControllerConfig(t *testing.T) {
 	// our unallocated service, and return an error to force a
 	// retry after sync is complete.
 	wantSvc := svc.DeepCopy()
-	assert.Equal(t, k8s.SyncStateReprocessAll, c.SetConfig(&purelbv1.Config{}), "SetConfig with empty config failed")
+	assert.Equal(t, k8s.SyncStateReprocessAll, c.SetConfig(&purelbv2.Config{}), "SetConfig with empty config failed")
 	assert.Equal(t, k8s.SyncStateError, c.SetBalancer(svc, nil), "SetBalancer did not fail")
 
 	assert.Empty(t, diffService(wantSvc, svc), "unsynced SetBalancer mutated service")
 	assert.False(t, k.loggedWarning, "unsynced SetBalancer logged an error")
 
 	// Set a config with some IPs. Still no allocation, not synced.
-	cfg := &purelbv1.Config{
+	cfg := &purelbv2.Config{
 		DefaultAnnouncer: true,
-		Groups: []*purelbv1.ServiceGroup{
+		Groups: []*purelbv2.ServiceGroup{
 			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
-				Spec: purelbv1.ServiceGroupSpec{
-					Local: &purelbv1.ServiceGroupLocalSpec{
-						Subnet: "1.2.3.0/24",
-						Pool:   "1.2.3.0/24",
+				Spec: purelbv2.ServiceGroupSpec{
+					Local: &purelbv2.ServiceGroupLocalSpec{
+						V4Pool: &purelbv2.AddressPool{
+							Pool:   "1.2.3.0/24",
+							Subnet: "1.2.3.0/24",
+						},
 					},
 				},
 			},
@@ -136,9 +137,9 @@ func TestControllerConfig(t *testing.T) {
 	wantSvc.ObjectMeta = metav1.ObjectMeta{
 		Name: "test",
 		Annotations: map[string]string{
-			purelbv1.DesiredGroupAnnotation: defaultPoolName,
-			purelbv1.BrandAnnotation:        purelbv1.Brand,
-			purelbv1.PoolAnnotation:         defaultPoolName,
+			purelbv2.DesiredGroupAnnotation: defaultPoolName,
+			purelbv2.BrandAnnotation:        purelbv2.Brand,
+			purelbv2.PoolAnnotation:         defaultPoolName,
 			purelbv2.PoolTypeAnnotation:     purelbv2.PoolTypeLocal,
 		},
 	}
@@ -162,14 +163,16 @@ func TestDeleteRecyclesIP(t *testing.T) {
 		client: k,
 	}
 
-	cfg := &purelbv1.Config{
+	cfg := &purelbv2.Config{
 		DefaultAnnouncer: true,
-		Groups: []*purelbv1.ServiceGroup{
+		Groups: []*purelbv2.ServiceGroup{
 			{ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
-				Spec: purelbv1.ServiceGroupSpec{
-					Local: &purelbv1.ServiceGroupLocalSpec{
-						Subnet: "1.2.3.0/24",
-						Pool:   "1.2.3.0/32",
+				Spec: purelbv2.ServiceGroupSpec{
+					Local: &purelbv2.ServiceGroupLocalSpec{
+						V4Pool: &purelbv2.AddressPool{
+							Pool:   "1.2.3.0/32",
+							Subnet: "1.2.3.0/24",
+						},
 					},
 				},
 			},
@@ -183,7 +186,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 			Namespace: "test",
 			Name:      "test",
 			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: defaultPoolName,
+				purelbv2.DesiredGroupAnnotation: defaultPoolName,
 			},
 		},
 		Spec: v1.ServiceSpec{
@@ -203,7 +206,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 			Namespace: "test",
 			Name:      "test2",
 			Annotations: map[string]string{
-				purelbv1.DesiredGroupAnnotation: defaultPoolName,
+				purelbv2.DesiredGroupAnnotation: defaultPoolName,
 			},
 		},
 		Spec: v1.ServiceSpec{

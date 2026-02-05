@@ -16,6 +16,9 @@
 package v2
 
 import (
+	"fmt"
+	"net"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -30,6 +33,7 @@ import (
 // ServiceGroups. It contains the usual CRD metadata, and the service
 // group spec and status.
 // +kubebuilder:resource:shortName=sg;sgs
+// +kubebuilder:storageversion
 type ServiceGroup struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -69,13 +73,23 @@ type ServiceGroupSpec struct {
 // ServiceGroupLocalSpec configures a local IP address pool.
 // Addresses from this pool are announced on the node's local interface.
 type ServiceGroupLocalSpec struct {
-	// V4Pool specifies a pool of IPv4 addresses.
+	// V4Pool specifies a single pool of IPv4 addresses.
+	// Use V4Pools for multiple pools.
 	// +optional
-	V4Pool *AddressPool `json:"v4Pool,omitempty"`
+	V4Pool *AddressPool `json:"v4pool,omitempty"`
 
-	// V6Pool specifies a pool of IPv6 addresses.
+	// V6Pool specifies a single pool of IPv6 addresses.
+	// Use V6Pools for multiple pools.
 	// +optional
-	V6Pool *AddressPool `json:"v6Pool,omitempty"`
+	V6Pool *AddressPool `json:"v6pool,omitempty"`
+
+	// V4Pools specifies multiple pools of IPv4 addresses.
+	// +optional
+	V4Pools []AddressPool `json:"v4pools,omitempty"`
+
+	// V6Pools specifies multiple pools of IPv6 addresses.
+	// +optional
+	V6Pools []AddressPool `json:"v6pools,omitempty"`
 
 	// SkipIPv6DAD when true disables Duplicate Address Detection for IPv6
 	// addresses. This can speed up address configuration but should only
@@ -85,17 +99,95 @@ type ServiceGroupLocalSpec struct {
 	SkipIPv6DAD bool `json:"skipIPv6DAD,omitempty"`
 }
 
+// PoolForAddress returns the AddressPool that contains the given IP address.
+// If no pool contains the address, an error is returned.
+func (s *ServiceGroupLocalSpec) PoolForAddress(address net.IP) (*AddressPool, error) {
+	// Check V6Pools first (array)
+	for i := range s.V6Pools {
+		pool, err := NewIPRange(s.V6Pools[i].Pool)
+		if err == nil && pool.Contains(address) {
+			return &s.V6Pools[i], nil
+		}
+	}
+	// Check V4Pools (array)
+	for i := range s.V4Pools {
+		pool, err := NewIPRange(s.V4Pools[i].Pool)
+		if err == nil && pool.Contains(address) {
+			return &s.V4Pools[i], nil
+		}
+	}
+	// Check singular V6Pool
+	if s.V6Pool != nil {
+		pool, err := NewIPRange(s.V6Pool.Pool)
+		if err == nil && pool.Contains(address) {
+			return s.V6Pool, nil
+		}
+	}
+	// Check singular V4Pool
+	if s.V4Pool != nil {
+		pool, err := NewIPRange(s.V4Pool.Pool)
+		if err == nil && pool.Contains(address) {
+			return s.V4Pool, nil
+		}
+	}
+	return nil, fmt.Errorf("unable to find pool for address %+v", address)
+}
+
 // ServiceGroupRemoteSpec configures a remote IP address pool.
 // Addresses from this pool are announced on the dummy interface for
 // routing protocols (e.g., BGP via BIRD).
 type ServiceGroupRemoteSpec struct {
-	// V4Pool specifies a pool of IPv4 addresses.
+	// V4Pool specifies a single pool of IPv4 addresses.
+	// Use V4Pools for multiple pools.
 	// +optional
-	V4Pool *AddressPool `json:"v4Pool,omitempty"`
+	V4Pool *AddressPool `json:"v4pool,omitempty"`
 
-	// V6Pool specifies a pool of IPv6 addresses.
+	// V6Pool specifies a single pool of IPv6 addresses.
+	// Use V6Pools for multiple pools.
 	// +optional
-	V6Pool *AddressPool `json:"v6Pool,omitempty"`
+	V6Pool *AddressPool `json:"v6pool,omitempty"`
+
+	// V4Pools specifies multiple pools of IPv4 addresses.
+	// +optional
+	V4Pools []AddressPool `json:"v4pools,omitempty"`
+
+	// V6Pools specifies multiple pools of IPv6 addresses.
+	// +optional
+	V6Pools []AddressPool `json:"v6pools,omitempty"`
+}
+
+// PoolForAddress returns the AddressPool that contains the given IP address.
+// If no pool contains the address, an error is returned.
+func (s *ServiceGroupRemoteSpec) PoolForAddress(address net.IP) (*AddressPool, error) {
+	// Check V6Pools first (array)
+	for i := range s.V6Pools {
+		pool, err := NewIPRange(s.V6Pools[i].Pool)
+		if err == nil && pool.Contains(address) {
+			return &s.V6Pools[i], nil
+		}
+	}
+	// Check V4Pools (array)
+	for i := range s.V4Pools {
+		pool, err := NewIPRange(s.V4Pools[i].Pool)
+		if err == nil && pool.Contains(address) {
+			return &s.V4Pools[i], nil
+		}
+	}
+	// Check singular V6Pool
+	if s.V6Pool != nil {
+		pool, err := NewIPRange(s.V6Pool.Pool)
+		if err == nil && pool.Contains(address) {
+			return s.V6Pool, nil
+		}
+	}
+	// Check singular V4Pool
+	if s.V4Pool != nil {
+		pool, err := NewIPRange(s.V4Pool.Pool)
+		if err == nil && pool.Contains(address) {
+			return s.V4Pool, nil
+		}
+	}
+	return nil, fmt.Errorf("unable to find pool for address %+v", address)
 }
 
 // ServiceGroupNetboxSpec configures PureLB to request addresses from
@@ -165,6 +257,7 @@ type ServiceGroupList struct {
 // agents. It contains the usual CRD metadata, and the agent spec and
 // status.
 // +kubebuilder:resource:shortName=lbna;lbnas
+// +kubebuilder:storageversion
 type LBNodeAgent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -212,12 +305,12 @@ type LBNodeAgentLocalSpec struct {
 	// +optional
 	AddressConfig *AddressConfig `json:"addressConfig,omitempty"`
 
-	// Subnets specifies additional interfaces to include in subnet detection
+	// Interfaces specifies additional interfaces to include in subnet detection
 	// for the subnet-aware election. By default, only the interface with
 	// the default route is used. Add interface names here to include
 	// additional subnets in the election.
 	// +optional
-	Subnets []string `json:"subnets,omitempty"`
+	Interfaces []string `json:"interfaces,omitempty"`
 }
 
 // GARPConfig configures Gratuitous ARP behavior for service address announcements.

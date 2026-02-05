@@ -15,7 +15,7 @@
 package allocator
 
 import (
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -26,21 +26,21 @@ var (
 	labelNames = []string{"pool"}
 
 	poolCapacity = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "size",
 		Help:      "Number of addresses in the pool",
 	}, labelNames)
 
 	poolActive = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "addresses_in_use",
 		Help:      "Number of addresses allocated from the pool",
 	}, labelNames)
 
 	allocationRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "allocation_rejected_total",
 		Help:      "Number of allocation requests rejected due to sharing constraints or exhaustion",

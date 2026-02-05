@@ -217,14 +217,14 @@ convert_lbnodeagent() {
         # Update API version
         .apiVersion = "purelb.io/v2" |
 
-        # Build new local spec with renamed fields
+        # Build new local spec (field names kept same for v1/v2 compatibility)
         .spec.local = (
             {}
-            # localint -> localInterface
-            | if $old.localint != null then .localInterface = $old.localint else . end
+            # localint field name preserved for backwards compatibility
+            | if $old.localint != null then .localint = $old.localint else . end
 
-            # extlbint -> dummyInterface
-            | if $old.extlbint != null then .dummyInterface = $old.extlbint else . end
+            # extlbint field name preserved for backwards compatibility
+            | if $old.extlbint != null then .extlbint = $old.extlbint else . end
 
             # Convert sendgarp boolean to garpConfig, or preserve existing garpConfig
             | if $old.garpConfig != null then

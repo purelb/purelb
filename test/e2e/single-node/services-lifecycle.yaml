@@ -1,0 +1,18 @@
+---
+# Service for address lifecycle testing (create/delete/recreate)
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-lifecycle
+  namespace: test
+  labels:
+    test-suite: single-node
+  annotations:
+    purelb.io/service-group: test-local-v2
+spec:
+  type: LoadBalancer
+  selector:
+    app: nginx
+  ports:
+  - port: 82
+    targetPort: 80

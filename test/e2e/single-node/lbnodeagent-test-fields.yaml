@@ -1,9 +1,11 @@
 ---
+# LBNodeAgent with v2 clean field names for testing
 apiVersion: purelb.io/v2
 kind: LBNodeAgent
 metadata:
-  name: default
+  name: test-v2-fields
   namespace: purelb-system
 spec:
   local:
     localInterface: default
+    dummyInterface: kube-lb0

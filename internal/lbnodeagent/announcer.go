@@ -22,12 +22,12 @@ import (
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 // Announcer announces service IP addresses.
 type Announcer interface {
-	SetConfig(*purelbv1.Config) error
+	SetConfig(*purelbv2.Config) error
 	SetClient(*k8s.Client)
 	SetBalancer(*v1.Service, []*discoveryv1.EndpointSlice) error
 	DeleteBalancer(string, string, net.IP) error

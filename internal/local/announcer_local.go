@@ -29,7 +29,7 @@ import (
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
 	"purelb.io/internal/logging"
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 
 	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
@@ -37,13 +37,14 @@ import (
 )
 
 type announcer struct {
-	client   k8s.ServiceEvent
-	logger   log.Logger
-	myNode   string
-	config   *purelbv1.LBNodeAgentLocalSpec
-	groups   map[string]*purelbv1.ServiceGroupLocalSpec // groupName -> ServiceGroupLocalSpec
-	election *election.Election
-	dummyInt netlink.Link // for non-local announcements
+	client       k8s.ServiceEvent
+	logger       log.Logger
+	myNode       string
+	config       *purelbv2.LBNodeAgentLocalSpec
+	groups       map[string]*purelbv2.ServiceGroupLocalSpec  // groupName -> ServiceGroupLocalSpec
+	remoteGroups map[string]*purelbv2.ServiceGroupRemoteSpec // groupName -> ServiceGroupRemoteSpec
+	election     *election.Election
+	dummyInt     netlink.Link // for non-local announcements
 
 	// svcIngresses is a map from svcName to that Service's
 	// Ingresses. Note that we may or may not advertise all of them
@@ -73,7 +74,7 @@ type addressRenewal struct {
 }
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-	Namespace: purelbv1.MetricsNamespace,
+	Namespace: purelbv2.MetricsNamespace,
 	Subsystem: "lbnodeagent",
 	Name:      "announced",
 	Help:      "Services announced from this node",
@@ -97,7 +98,7 @@ func (a *announcer) SetClient(client *k8s.Client) {
 	a.client = client
 }
 
-func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
+func (a *announcer) SetConfig(cfg *purelbv2.Config) error {
 
 	// the default is nil which means that we don't announce
 	a.config = nil
@@ -108,10 +109,14 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 			logging.Info(a.logger, "op", "setConfig", "spec", spec, "name", agent.Namespace+"/"+agent.Name)
 
 			// stash the local ServiceGroup configs
-			a.groups = map[string]*purelbv1.ServiceGroupLocalSpec{}
+			a.groups = map[string]*purelbv2.ServiceGroupLocalSpec{}
+			a.remoteGroups = map[string]*purelbv2.ServiceGroupRemoteSpec{}
 			for _, group := range cfg.Groups {
 				if group.Spec.Local != nil {
 					a.groups[group.ObjectMeta.Name] = group.Spec.Local
+				}
+				if group.Spec.Remote != nil {
+					a.remoteGroups[group.ObjectMeta.Name] = group.Spec.Remote
 				}
 			}
 
@@ -131,8 +136,8 @@ func (a *announcer) SetConfig(cfg *purelbv1.Config) error {
 
 			// now that we've got a config we can create the dummy interface
 			var err error
-			if a.dummyInt, err = addDummyInterface(spec.ExtLBInterface); err != nil {
-				return fmt.Errorf("error adding interface \"%s\": %s", spec.ExtLBInterface, err.Error())
+			if a.dummyInt, err = addDummyInterface(spec.DummyInterface); err != nil {
+				return fmt.Errorf("error adding interface \"%s\": %s", spec.DummyInterface, err.Error())
 			}
 
 			// The dummy interface is set up so we can set the config which
@@ -199,7 +204,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 
 		} else {
 			// The user wants us to determine the "default" interface
-			announceInt, err := defaultInterface(purelbv1.AddrFamily(lbIP))
+			announceInt, err := defaultInterface(purelbv2.AddrFamily(lbIP))
 			if err != nil {
 				logging.Info(l, "event", "announceError", "err", err)
 				retErr = err
@@ -230,7 +235,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 
 	// Local addresses do not support ExternalTrafficPolicyLocal unless the override annotation is present.
 	if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal {
-		if _, hasOverride := svc.Annotations[purelbv1.AllowLocalAnnotation]; hasOverride {
+		if _, hasOverride := svc.Annotations[purelbv2.AllowLocalAnnotation]; hasOverride {
 
 			// The user has added the override annotation so we'll allow
 			// Local policy but warn them.
@@ -285,7 +290,7 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	if svc.Annotations == nil {
 		svc.Annotations = map[string]string{}
 	}
-	svc.Annotations[purelbv1.AnnounceAnnotation+addrFamilyName(lbIP)] = a.myNode + "," + announceInt.Attrs().Name
+	svc.Annotations[purelbv2.AnnounceAnnotation+addrFamilyName(lbIP)] = a.myNode + "," + announceInt.Attrs().Name
 	announcing.With(prometheus.Labels{
 		"service": nsName,
 		"node":    a.myNode,
@@ -335,7 +340,7 @@ func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.Endp
 
 	// Find the group from which this address was allocated, which
 	// gives us the subnet and aggregation that we need.
-	groupName, group, err := poolFor(a.groups, lbIP)
+	groupName, group, err := a.poolFor(lbIP)
 	if err != nil {
 		return err
 	}
@@ -522,15 +527,21 @@ func addrFamilyName(lbIP net.IP) (lbIPFamily string) {
 	return
 }
 
-// poolFor returns the name of the ServiceGroupLocalSpec that contains
-// lbIP. If error is not nil then no pool was found
-func poolFor(groups map[string]*purelbv1.ServiceGroupLocalSpec, lbIP net.IP) (string, *purelbv1.ServiceGroupAddressPool, error) {
-	for groupName, group := range groups {
-		if _, err := groups[groupName].PoolForAddress(lbIP); err == nil {
-			pool, err := group.PoolForAddress(lbIP)
-			if err != nil {
-				return "", nil, err
-			}
+// poolFor returns the name and AddressPool that contains lbIP.
+// It checks both local and remote ServiceGroups.
+// If error is not nil then no pool was found.
+func (a *announcer) poolFor(lbIP net.IP) (string, *purelbv2.AddressPool, error) {
+	// Check local groups first
+	for groupName, group := range a.groups {
+		pool, err := group.PoolForAddress(lbIP)
+		if err == nil {
+			return groupName, pool, nil
+		}
+	}
+	// Check remote groups
+	for groupName, group := range a.remoteGroups {
+		pool, err := group.PoolForAddress(lbIP)
+		if err == nil {
 			return groupName, pool, nil
 		}
 	}
@@ -662,82 +673,57 @@ func (a *announcer) getLocalAddressOptions() AddressOptions {
 	return opts
 }
 
-// sendGARPSequence sends GARP packets according to the configuration.
-// This handles both the legacy SendGratuitousARP boolean and the new GARPConfig.
+// sendGARPSequence sends GARP packets according to the GARPConfig.
 // The GARP sequence runs in a goroutine to avoid blocking the main announcement.
 func (a *announcer) sendGARPSequence(lbIP net.IP, ifName string) {
-	if a.config == nil {
-		return
+	if a.config == nil || a.config.GARPConfig == nil {
+		return // GARP not configured
 	}
 
-	// Determine GARP settings from config
-	// GARPConfig takes precedence over legacy SendGratuitousARP
-	var enabled bool
-	var initialDelay time.Duration
-	var count int
-	var interval time.Duration
-	var verifyBeforeSend bool
+	cfg := a.config.GARPConfig
 
-	if a.config.GARPConfig != nil {
-		cfg := a.config.GARPConfig
-
-		// Check if enabled (defaults to true when GARPConfig is set)
-		if cfg.Enabled != nil && !*cfg.Enabled {
-			return // Explicitly disabled
-		}
-		enabled = true
-
-		// Parse initial delay (default 100ms)
-		initialDelay = 100 * time.Millisecond
-		if cfg.InitialDelay != "" {
-			if d, err := time.ParseDuration(cfg.InitialDelay); err == nil {
-				initialDelay = d
-			} else {
-				logging.Info(a.logger, "op", "sendGARP", "error", "invalid initialDelay",
-					"value", cfg.InitialDelay, "msg", "using default 100ms")
-			}
-		}
-
-		// Count (default 3)
-		count = 3
-		if cfg.Count != nil {
-			count = *cfg.Count
-			if count < 1 {
-				count = 1
-			} else if count > 10 {
-				count = 10
-			}
-		}
-
-		// Interval (default 500ms)
-		interval = 500 * time.Millisecond
-		if cfg.Interval != "" {
-			if d, err := time.ParseDuration(cfg.Interval); err == nil {
-				interval = d
-			} else {
-				logging.Info(a.logger, "op", "sendGARP", "error", "invalid interval",
-					"value", cfg.Interval, "msg", "using default 500ms")
-			}
-		}
-
-		// Verify before send (default true)
-		verifyBeforeSend = true
-		if cfg.VerifyBeforeSend != nil {
-			verifyBeforeSend = *cfg.VerifyBeforeSend
-		}
-	} else if a.config.SendGratuitousARP {
-		// Legacy mode: single immediate GARP
-		enabled = true
-		initialDelay = 0
-		count = 1
-		interval = 0
-		verifyBeforeSend = false
-	} else {
-		return // GARP not enabled
+	// Check if enabled (defaults to true when GARPConfig is set)
+	if cfg.Enabled != nil && !*cfg.Enabled {
+		return // Explicitly disabled
 	}
 
-	if !enabled {
-		return
+	// Parse initial delay (default 100ms)
+	initialDelay := 100 * time.Millisecond
+	if cfg.InitialDelay != "" {
+		if d, err := time.ParseDuration(cfg.InitialDelay); err == nil {
+			initialDelay = d
+		} else {
+			logging.Info(a.logger, "op", "sendGARP", "error", "invalid initialDelay",
+				"value", cfg.InitialDelay, "msg", "using default 100ms")
+		}
+	}
+
+	// Count (default 3)
+	count := 3
+	if cfg.Count != nil {
+		count = *cfg.Count
+		if count < 1 {
+			count = 1
+		} else if count > 10 {
+			count = 10
+		}
+	}
+
+	// Interval (default 500ms)
+	interval := 500 * time.Millisecond
+	if cfg.Interval != "" {
+		if d, err := time.ParseDuration(cfg.Interval); err == nil {
+			interval = d
+		} else {
+			logging.Info(a.logger, "op", "sendGARP", "error", "invalid interval",
+				"value", cfg.Interval, "msg", "using default 500ms")
+		}
+	}
+
+	// Verify before send (default true)
+	verifyBeforeSend := true
+	if cfg.VerifyBeforeSend != nil {
+		verifyBeforeSend = *cfg.VerifyBeforeSend
 	}
 
 	// Run GARP sequence in a goroutine to avoid blocking

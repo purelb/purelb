@@ -21,7 +21,7 @@ import (
 
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 
 	"github.com/go-kit/log"
 )
@@ -30,7 +30,7 @@ import (
 // to use.
 type Controller interface {
 	SetClient(*k8s.Client)
-	SetConfig(*purelbv1.Config) k8s.SyncState
+	SetConfig(*purelbv2.Config) k8s.SyncState
 	SetBalancer(*v1.Service, []*discoveryv1.EndpointSlice) k8s.SyncState
 	DeleteBalancer(string) k8s.SyncState
 	MarkSynced()
@@ -72,7 +72,7 @@ func (c *controller) DeleteBalancer(name string) k8s.SyncState {
 	return k8s.SyncStateReprocessAll
 }
 
-func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
+func (c *controller) SetConfig(cfg *purelbv2.Config) k8s.SyncState {
 	defer logging.Debug(c.logger, "op", "setConfig", "msg", "config updated")
 
 	if cfg == nil {

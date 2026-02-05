@@ -1,0 +1,42 @@
+---
+# IPv6 Local pool test service
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-ipv6-local
+  namespace: test
+  labels:
+    test-suite: single-node
+  annotations:
+    purelb.io/service-group: test-local-v2
+spec:
+  type: LoadBalancer
+  ipFamilies:
+  - IPv6
+  ipFamilyPolicy: SingleStack
+  selector:
+    app: nginx
+  ports:
+  - port: 84
+    targetPort: 80
+---
+# IPv6 Remote pool test service
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-ipv6-remote
+  namespace: test
+  labels:
+    test-suite: single-node
+  annotations:
+    purelb.io/service-group: test-remote-v2
+spec:
+  type: LoadBalancer
+  ipFamilies:
+  - IPv6
+  ipFamilyPolicy: SingleStack
+  selector:
+    app: nginx
+  ports:
+  - port: 85
+    targetPort: 80

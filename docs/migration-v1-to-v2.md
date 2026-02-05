@@ -24,8 +24,8 @@ The v2 API introduces clearer separation between **local** and **remote** pool t
 
 | v1 Field | v2 Field | Notes |
 |----------|----------|-------|
-| `spec.local.localint` | `spec.local.localInterface` | Renamed |
-| `spec.local.extlbint` | `spec.local.dummyInterface` | Renamed |
+| `spec.local.localint` | `spec.local.localint` | Same field name for compatibility |
+| `spec.local.extlbint` | `spec.local.extlbint` | Same field name for compatibility |
 | `spec.local.sendgarp` | Removed | Use `garpConfig.enabled` instead |
 | `spec.local.garpConfig` | `spec.local.garpConfig` | Unchanged |
 | `spec.local.addressConfig` | `spec.local.addressConfig` | Unchanged |
@@ -248,8 +248,8 @@ metadata:
   name: default
 spec:
   local:
-    localInterface: default
-    dummyInterface: kube-lb0
+    localint: default
+    extlbint: kube-lb0
     garpConfig:
       enabled: true
       initialDelay: "100ms"
@@ -285,8 +285,8 @@ metadata:
   name: default
 spec:
   local:
-    localInterface: default
-    dummyInterface: kube-lb0
+    localint: default
+    extlbint: kube-lb0
     garpConfig:
       enabled: true
       initialDelay: "200ms"

@@ -24,24 +24,32 @@ import (
 	"github.com/vishvananda/netlink/nl"
 	v1 "k8s.io/api/core/v1"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
-// Pool is the configuration of an IP address pool.
+// LocalPool is the configuration of an IP address pool.
 type LocalPool struct {
 	name string
 
 	logger log.Logger
 
+	// poolType indicates whether this is a "local" or "remote" pool.
+	// Local pools announce on the node's real interface (same subnet).
+	// Remote pools announce on the dummy interface (different subnet, for BGP).
+	poolType string
+
+	// skipIPv6DAD indicates whether to skip IPv6 Duplicate Address Detection.
+	skipIPv6DAD bool
+
 	// v4Ranges contains the IPV4 addresses that are part of this
 	// pool. config.Parse guarantees that these are non-overlapping,
 	// both within and between pools.
-	v4Ranges []*purelbv1.IPRange
+	v4Ranges []*purelbv2.IPRange
 
 	// v6Ranges contains the IPV6 addresses that are part of this
 	// pool. config.Parse guarantees that these are non-overlapping,
 	// both within and between pools.
-	v6Ranges []*purelbv1.IPRange
+	v6Ranges []*purelbv2.IPRange
 
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
@@ -58,27 +66,32 @@ type LocalPool struct {
 	sharingKeyToIP map[string]string // "sharingKey:family" -> ip.String()
 }
 
-func NewLocalPool(name string, log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (LocalPool, error) {
+// NewLocalPool creates a new LocalPool from the given address pools.
+// poolType should be "local" for addresses announced on the node's interface,
+// or "remote" for addresses announced on the dummy interface (for BGP/routing).
+func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6Pool *purelbv2.AddressPool, v4Pools []purelbv2.AddressPool, v6Pools []purelbv2.AddressPool, poolType string, skipIPv6DAD bool) (LocalPool, error) {
 	pool := LocalPool{
 		name:           name,
 		logger:         log,
+		poolType:       poolType,
+		skipIPv6DAD:    skipIPv6DAD,
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
 		sharingKeyToIP: map[string]string{},
 	}
 
-	// If there ranges in the "legacy" slots, add them to the slices.
-	if spec.V6Pool != nil {
-		spec.V6Pools = append(spec.V6Pools, spec.V6Pool)
+	// If there are ranges in the singular slots, add them to the slices.
+	if v6Pool != nil {
+		v6Pools = append(v6Pools, *v6Pool)
 	}
-	if spec.V4Pool != nil {
-		spec.V4Pools = append(spec.V4Pools, spec.V4Pool)
+	if v4Pool != nil {
+		v4Pools = append(v4Pools, *v4Pool)
 	}
 
 	// See if there's an IPV6 range in the spec
-	for _, v6pool := range spec.V6Pools {
-		iprange, err := purelbv1.NewIPRange(v6pool.Pool)
+	for _, v6pool := range v6Pools {
+		iprange, err := purelbv2.NewIPRange(v6pool.Pool)
 		if err != nil {
 			return pool, err
 		}
@@ -96,8 +109,8 @@ func NewLocalPool(name string, log log.Logger, spec purelbv1.ServiceGroupLocalSp
 	}
 
 	// See if there's an IPV4 range in the spec
-	for _, v4pool := range spec.V4Pools {
-		iprange, err := purelbv1.NewIPRange(v4pool.Pool)
+	for _, v4pool := range v4Pools {
+		iprange, err := purelbv2.NewIPRange(v4pool.Pool)
 		if err != nil {
 			return pool, err
 		}
@@ -114,40 +127,7 @@ func NewLocalPool(name string, log log.Logger, spec purelbv1.ServiceGroupLocalSp
 		pool.v4Ranges = append(pool.v4Ranges, &iprange)
 	}
 
-	// See if there's a top-level range in the spec
-	if spec.Pool != "" {
-		// Validate that Subnet is at least well-formed
-		iprange, err := purelbv1.NewIPRange(spec.Pool)
-		if err == nil {
-			// Validate that the range is contained by the subnet.
-			_, subnet, err := net.ParseCIDR(spec.Subnet)
-			if err != nil {
-				return pool, err
-			}
-			if !iprange.ContainedBy(*subnet) {
-				return pool, fmt.Errorf("Legacy range %s not contained by network %s", iprange, subnet)
-			}
-
-			// We have a legacy (i.e., top-level) range, let's see where it
-			// goes
-			if iprange.Family() == nl.FAMILY_V6 {
-				if pool.v6Ranges == nil {
-					pool.v6Ranges = append(pool.v6Ranges, &iprange)
-				} else {
-					return pool, fmt.Errorf("Invalid Spec: both legacy Pool and V6Pool are IPV6")
-				}
-			} else if iprange.Family() == nl.FAMILY_V4 {
-				if pool.v4Ranges == nil {
-					pool.v4Ranges = append(pool.v4Ranges, &iprange)
-				} else {
-					return pool, fmt.Errorf("Invalid Spec: both legacy Pool and V4Pool are IPV4")
-				}
-			}
-		}
-	}
-
-	// Last check: if we don't have *any* valid range then it's a bad
-	// Spec
+	// Last check: if we don't have *any* valid range then it's a bad spec
 	if pool.v6Ranges == nil && pool.v4Ranges == nil {
 		return pool, fmt.Errorf("no valid address range found")
 	}
@@ -183,7 +163,7 @@ func (p LocalPool) Notify(service *v1.Service) error {
 
 		// Update reverse index: sharing key -> IP (per address family)
 		if sharingKey.Sharing != "" {
-			family := purelbv1.AddrFamily(ip)
+			family := purelbv2.AddrFamily(ip)
 			indexKey := fmt.Sprintf("%s:%d", sharingKey.Sharing, family)
 			p.sharingKeyToIP[indexKey] = ipstr
 		}
@@ -205,7 +185,7 @@ func (p LocalPool) available(ip net.IP, service *v1.Service) error {
 	// bound to a different IP in this address family. If so, this service
 	// MUST use that IP - it cannot be assigned to any other IP.
 	if key.Sharing != "" {
-		family := purelbv1.AddrFamily(ip)
+		family := purelbv2.AddrFamily(ip)
 		boundIP := p.ipForSharingKey(key.Sharing, family)
 		if boundIP != nil && !boundIP.Equal(ip) {
 			return fmt.Errorf("sharing key %q is bound to %s, cannot use %s",
@@ -365,7 +345,7 @@ func (p LocalPool) Release(service string) error {
 			// Clean up sharing key reverse index before deleting the forward mapping
 			if key := p.sharingKeys[ipstr]; key != nil && key.Sharing != "" {
 				ip := net.ParseIP(ipstr)
-				family := purelbv1.AddrFamily(ip)
+				family := purelbv2.AddrFamily(ip)
 				indexKey := fmt.Sprintf("%s:%d", key.Sharing, family)
 				delete(p.sharingKeyToIP, indexKey)
 			}
@@ -403,7 +383,7 @@ func (p LocalPool) ReleaseIP(service string, ip net.IP) error {
 
 		// Clean up sharing key reverse index before deleting the forward mapping
 		if key := p.sharingKeys[ipstr]; key != nil && key.Sharing != "" {
-			family := purelbv1.AddrFamily(ip)
+			family := purelbv2.AddrFamily(ip)
 			indexKey := fmt.Sprintf("%s:%d", key.Sharing, family)
 			delete(p.sharingKeyToIP, indexKey)
 		}
@@ -484,7 +464,7 @@ func (p LocalPool) first(family int) net.IP {
 // next returns the next net.IP within this Pool, or nil if the
 // provided net.IP is the last address in the range.
 func (p LocalPool) next(ip net.IP) net.IP {
-	if purelbv1.AddrFamily(ip) == nl.FAMILY_V6 {
+	if purelbv2.AddrFamily(ip) == nl.FAMILY_V6 {
 		for i, v6 := range p.v6Ranges {
 			// If this range contains the current address, and has another
 			// address available then return that.
@@ -507,7 +487,7 @@ func (p LocalPool) next(ip net.IP) net.IP {
 		}
 	}
 
-	if purelbv1.AddrFamily(ip) == nl.FAMILY_V4 {
+	if purelbv2.AddrFamily(ip) == nl.FAMILY_V4 {
 		for i, v4 := range p.v4Ranges {
 			// If this range contains the current address, and has another
 			// address available then return that.
@@ -616,14 +596,15 @@ func (p LocalPool) String() string {
 	return p.name
 }
 
-// PoolType returns "local" because LocalPool addresses are announced
-// on the node's local interface (same subnet as the nodes).
+// PoolType returns the type of this pool: "local" for addresses announced
+// on the node's local interface (same subnet), or "remote" for addresses
+// announced on the dummy interface (different subnet, for BGP/routing).
 func (p LocalPool) PoolType() string {
-	return "local"
+	return p.poolType
 }
 
-// SkipIPv6DAD returns false for v1 LocalPool. The v2 API adds support
-// for configuring this per-pool.
+// SkipIPv6DAD returns whether IPv6 Duplicate Address Detection should
+// be skipped for addresses from this pool.
 func (p LocalPool) SkipIPv6DAD() bool {
-	return false
+	return p.skipIPv6DAD
 }

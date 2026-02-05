@@ -17,7 +17,7 @@ package local
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 const subsystem = "lbnodeagent"
@@ -25,7 +25,7 @@ const subsystem = "lbnodeagent"
 var (
 	// garpSent counts the total number of GARP packets sent.
 	garpSent = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "garp_sent_total",
 		Help:      "Total number of GARP (Gratuitous ARP) packets sent",
@@ -33,7 +33,7 @@ var (
 
 	// garpErrors counts GARP send failures.
 	garpErrors = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "garp_errors_total",
 		Help:      "Total number of GARP send failures",
@@ -41,7 +41,7 @@ var (
 
 	// addressRenewalCount counts successful address renewals.
 	addressRenewalCount = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "address_renewals_total",
 		Help:      "Total number of address lifetime renewals",
@@ -49,7 +49,7 @@ var (
 
 	// addressRenewalErrors counts address renewal failures.
 	addressRenewalErrors = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "address_renewal_errors_total",
 		Help:      "Total number of address renewal failures",
@@ -57,7 +57,7 @@ var (
 
 	// addressAdditions counts addresses added to interfaces.
 	addressAdditions = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "address_additions_total",
 		Help:      "Total number of addresses added to interfaces",
@@ -65,7 +65,7 @@ var (
 
 	// addressWithdrawals counts addresses withdrawn from interfaces.
 	addressWithdrawals = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "address_withdrawals_total",
 		Help:      "Total number of addresses withdrawn from interfaces",
@@ -73,7 +73,7 @@ var (
 
 	// electionWins counts how many times this node won an election.
 	electionWins = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "election_wins_total",
 		Help:      "Total number of election wins on this node",
@@ -81,7 +81,7 @@ var (
 
 	// electionLosses counts how many times this node lost an election.
 	electionLosses = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "election_losses_total",
 		Help:      "Total number of election losses on this node",

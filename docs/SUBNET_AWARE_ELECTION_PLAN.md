@@ -133,7 +133,7 @@ ServiceGroup now has mutually exclusive `local` and `remote` pool types:
 
 **Local Pool** (Subnet-Aware Election):
 ```yaml
-apiVersion: purelb.io/v1
+apiVersion: purelb.io/v2
 kind: ServiceGroup
 metadata:
   name: local-pool
@@ -155,7 +155,7 @@ spec:
 
 **Remote Pool** (All Nodes Announce to kubelb0):
 ```yaml
-apiVersion: purelb.io/v1
+apiVersion: purelb.io/v2
 kind: ServiceGroup
 metadata:
   name: bgp-pool
@@ -230,17 +230,17 @@ New `interfaces` field allows explicit interface list for election participation
 Note: The existing `addressConfig` field controls address lifetime and flags.
 
 ```yaml
-apiVersion: purelb.io/v1
+apiVersion: purelb.io/v2
 kind: LBNodeAgent
 metadata:
   name: default
   namespace: purelb-system
 spec:
   local:
-    # localint controls default route auto-detection:
+    # localInterface controls default route auto-detection:
     # - "default": auto-detect interface with default route (current behavior)
     # - "none": disable auto-detection
-    localint: default
+    localInterface: default
 
     # NEW: interfaces[] adds extra interfaces for election participation
     # Subnets from these interfaces are included in lease annotation
@@ -249,8 +249,13 @@ spec:
     - eth1
     - bond0.100
 
-    extlbint: kube-lb0
-    sendgarp: false
+    dummyInterface: kube-lb0
+
+    # garpConfig replaces the old sendgarp boolean
+    garpConfig:
+      enabled: true
+      count: 3
+      interval: "500ms"
 
     # EXISTING: addressConfig controls address lifetime and flags
     # This prevents CNI plugins (e.g., Flannel) from selecting VIPs as node addresses
@@ -265,9 +270,9 @@ spec:
 ```
 
 **Behavior:**
-- `localint: default` + no `interfaces`: Current behavior, auto-detect only
-- `localint: default` + `interfaces: [eth1]`: Auto-detect + eth1 subnets
-- `localint: none` + `interfaces: [eth0, eth1]`: Only listed interfaces, no auto-detect
+- `localInterface: default` + no `interfaces`: Current behavior, auto-detect only
+- `localInterface: default` + `interfaces: [eth1]`: Auto-detect + eth1 subnets
+- `localInterface: none` + `interfaces: [eth0, eth1]`: Only listed interfaces, no auto-detect
 
 **Lease annotation includes all configured interface subnets:**
 ```yaml
@@ -396,7 +401,7 @@ When adding an IPv6 address, Linux runs DAD for ~1 second before the address bec
 **This is configured per ServiceGroup**, allowing different pools to have different DAD policies:
 
 ```yaml
-apiVersion: purelb.io/v1
+apiVersion: purelb.io/v2
 kind: ServiceGroup
 metadata:
   name: fast-failover-pool
@@ -719,6 +724,25 @@ This release introduces breaking changes that warrant a new API version. The `pu
 
 **Decision**: Clean break to v2. Users must explicitly migrate, ensuring they understand the new behavior.
 
+### ⚠️ v2 Implementation Gaps (Must Fix Before Release)
+
+The following gaps exist between the plan and actual implementation:
+
+| Gap | Status | Notes |
+|-----|--------|-------|
+| `V4Pools`/`V6Pools` arrays in v2 | ❌ Missing | Current v2 only has singular `V4Pool`/`V6Pool` |
+| `iprange.go` in v2 package | ❌ Missing | `IPRange` type, `NewIPRange()` function needed |
+| `config.go` in v2 package | ❌ Missing | `Config` struct for `SetConfig()` |
+| Remote pool in allocator | ❌ Missing | `parsePool()` only handles Local and Netbox |
+| v2 JSON tags | ⚠️ Needs Fix | Should use `localInterface`/`dummyInterface` |
+
+**Before dropping v1 support**, these must be implemented in `pkg/apis/purelb/v2/`:
+1. Add `V4Pools`/`V6Pools` arrays to `ServiceGroupLocalSpec` and `ServiceGroupRemoteSpec`
+2. Copy `iprange.go` and `iprange_test.go` from v1, update package
+3. Create `config.go` with `Config` struct
+4. Update JSON tags to use clean names (`localInterface`, `dummyInterface`)
+5. Implement Remote pool support in `internal/allocator/pool.go`
+
 ### v2 API Types
 
 **`pkg/apis/purelb/v2/types.go`** (new package):
@@ -813,9 +837,9 @@ type LBNodeAgentLocalSpec struct {
     // +optional
     Interfaces []string `json:"interfaces,omitempty"`
 
-    // ExternalInterface is the dummy interface for remote pool announcements.
+    // DummyInterface is the dummy interface for remote pool announcements.
     // +kubebuilder:default="kube-lb0"
-    ExternalInterface string `json:"externalInterface,omitempty"`
+    DummyInterface string `json:"dummyInterface,omitempty"`
 
     // GARPConfig configures gratuitous ARP behavior.
     // +optional
@@ -871,7 +895,7 @@ type GARPConfig struct {
 | v1 Field | v2 Field | Notes |
 |----------|----------|-------|
 | `spec.local.localint` | `spec.local.localInterface` | Renamed (camelCase) |
-| `spec.local.extlbint` | `spec.local.externalInterface` | Renamed (clearer) |
+| `spec.local.extlbint` | `spec.local.dummyInterface` | Renamed (clearer) |
 | `spec.local.sendgarp` | `spec.local.garpConfig.enabled` | Restructured |
 | (none) | `spec.local.garpConfig.count` | New in v2 |
 | (none) | `spec.local.garpConfig.intervalMs` | New in v2 |
@@ -967,7 +991,7 @@ metadata:
 spec:
   local:
     localInterface: default      # Renamed from localint
-    externalInterface: kube-lb0  # Renamed from extlbint
+    dummyInterface: kube-lb0  # Renamed from extlbint
     interfaces: []               # NEW: Additional interfaces for election
     garpConfig:                  # Restructured from sendgarp
       enabled: true
@@ -1029,7 +1053,7 @@ kubectl get lbnodeagents.purelb.io -n "$NAMESPACE" -o json | jq '
     spec: {
       local: {
         localInterface: (.spec.local.localint // "default"),
-        externalInterface: (.spec.local.extlbint // "kube-lb0"),
+        dummyInterface: (.spec.local.extlbint // "kube-lb0"),
         interfaces: [],
         garpConfig: {
           enabled: (.spec.local.sendgarp // false),
@@ -1115,22 +1139,29 @@ kubectl delete servicegroups.purelb.io -n purelb --field-selector apiVersion=pur
 kubectl delete lbnodeagents.purelb.io -n purelb --field-selector apiVersion=purelb.io/v2
 ```
 
-### Dual-Version Support Period
+### Side-by-Side Migration (Recommended)
 
-For one release cycle, PureLB will support both v1 and v2:
-- v1 CRs are auto-converted to v2 behavior internally
-- v1 CRs trigger deprecation warnings in logs
-- v2 is the storage version (what's stored in etcd)
+**v1 API is no longer supported.** Instead of dual-version compatibility, use Kubernetes' LoadBalancerClass feature to run old and new PureLB side-by-side:
 
-```go
-// In the controller, detect and warn about v1 usage
-if sg.APIVersion == "purelb.io/v1" {
-    logger.Log("level", "warn", "msg", "ServiceGroup uses deprecated v1 API",
-        "name", sg.Name, "action", "migrate to purelb.io/v2")
-}
+1. **Deploy new PureLB v2** with a different LoadBalancerClass (`purelb.io/purelb-v2`)
+2. **Migrate services** one at a time by updating their `spec.loadBalancerClass`
+3. **Remove old PureLB** once all services are migrated
+
+```bash
+# Install new PureLB with different LoadBalancerClass
+helm install purelb-v2 purelb/purelb \
+  --namespace purelb-v2 \
+  --create-namespace \
+  --set loadBalancerClass=purelb.io/purelb-v2
+
+# Migrate a service
+kubectl patch svc my-service -p '{"spec":{"loadBalancerClass":"purelb.io/purelb-v2"}}'
+
+# After all services migrated, remove old PureLB
+helm uninstall purelb --namespace purelb
 ```
 
-After the support period, v1 will be removed entirely.
+This approach provides zero-downtime migration without CRD version conversion complexity.
 
 ## Files to Modify
 
@@ -1499,15 +1530,15 @@ This breaks the full implementation into independent milestones that can be comp
 | 1. Subnet Detection Foundation | ✅ Complete | subnets.go, leveled logging |
 | 2. Lease-Based Election Core | ✅ Complete | election.go rewritten, k8s leases |
 | 3. Subnet-Aware Winner Election | ✅ Complete | Winner() filters by subnet |
-| 4. Announcer Integration | ⬜ Pending | |
-| 5. Graceful Shutdown | ⬜ Pending | |
-| 6. GARP Enhancements | ⬜ Pending | |
-| 7. API v2 Types | ⬜ Pending | Can parallel with 1-6 |
-| 8. Allocator v2 Support | ⬜ Pending | |
-| 9. Prometheus Metrics | ⬜ Pending | |
-| 10. Helm & RBAC Updates | ⬜ Pending | |
-| 11. Migration Tooling | ⬜ Pending | Can parallel with 1-6 |
-| 12. Cleanup & Final Testing | ⬜ Pending | |
+| 4. Announcer Integration | ✅ Complete | SetBalancer uses election, pool-type annotation |
+| 5. Graceful Shutdown | ✅ Complete | MarkUnhealthy, WithdrawAll, DeleteOurLease |
+| 6. GARP Enhancements | ✅ Complete | GARPConfig with count, interval, delay, verifyBeforeSend |
+| 7. API v2 Types | 🔄 Partial | Types exist, need V4Pools/V6Pools arrays, iprange.go |
+| 8. Allocator v2 Support | 🔄 Partial | pool-type annotation done, Remote pool not implemented |
+| 9. Prometheus Metrics | ✅ Complete | metrics.go in election and local packages |
+| 10. Helm & RBAC Updates | ✅ Complete | Leases RBAC added, memberlist removed |
+| 11. Migration Tooling | ✅ Complete | scripts/migrate-v1-to-v2.sh, docs/migration-v1-to-v2.md |
+| 12. Cleanup & Final Testing | 🔄 In Progress | Memberlist removed, v2 gaps remain |
 
 ### Execution Order
 
@@ -1908,9 +1939,9 @@ helm template purelb ./build/helm/purelb
    - With annotation: One IP from each pool with matching subnet
    - Requires Allocator changes (not just lbnodeagent)
 
-5. **Interface configuration**: `localint` controls auto-detect mode, `interfaces[]` adds extra interfaces
-   - `localint: default` + `interfaces: []` = current behavior
-   - `localint: none` + `interfaces: [eth0]` = explicit only
+5. **Interface configuration**: `localInterface` controls auto-detect mode, `interfaces[]` adds extra interfaces
+   - `localInterface: default` + `interfaces: []` = current behavior
+   - `localInterface: none` + `interfaces: [eth0]` = explicit only
 
 ## Design Principle: Avoid Locks and Mutexes
 

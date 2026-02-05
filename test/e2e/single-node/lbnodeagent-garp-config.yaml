@@ -1,0 +1,16 @@
+---
+# LBNodeAgent with structured garpConfig for testing
+apiVersion: purelb.io/v2
+kind: LBNodeAgent
+metadata:
+  name: test-garp-config
+  namespace: purelb-system
+spec:
+  local:
+    localInterface: default
+    dummyInterface: kube-lb0
+    garpConfig:
+      enabled: true
+      count: 5
+      interval: 250ms
+      initialDelay: 50ms

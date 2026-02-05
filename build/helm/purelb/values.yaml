@@ -148,14 +148,16 @@ serviceGroup:
 #       data:
 #         hello: world
 #     - |
-#       apiVersion: purelb.io/v1
+#       apiVersion: purelb.io/v2
 #       kind: ServiceGroup
 #       metadata:
 #         name: private
 #       spec:
 #         local:
-#           pool: 192.168.0.0-192.168.0.5
-#           subnet: 192.168.0.0/27
+#           v4pool:
+#             pool: 192.168.0.0-192.168.0.5
+#             subnet: 192.168.0.0/27
+#             aggregation: default
 extraObjects: []
 
 # PureLB will act as the default service announcer if this value is
@@ -189,20 +191,14 @@ leaseConfig:
 # Configurable values specific to lbnodeagent.
 # See https://purelb.github.io/purelb/install/config/
 lbnodeagent:
-  localint: default
-  extlbint: kube-lb0
-  sendgarp: false
-  # Address configuration to prevent CNI conflicts (e.g., Flannel).
-  # Configure how VIP addresses are added to interfaces.
-  # addressConfig:
-  #   localInterface:
-  #     validLifetime: 300      # seconds, 0 = permanent (default: 300)
-  #     preferredLifetime: 300  # must be <= validLifetime
-  #     noPrefixRoute: true     # prevent kernel prefix route (default: true)
-  #   dummyInterface:
-  #     validLifetime: 0        # permanent for dummy interface (default: 0)
-  #     noPrefixRoute: false    # (default: false)
-  addressConfig: {}
+  localInterface: default
+  dummyInterface: kube-lb0
+  # Optional GARP (Gratuitous ARP) configuration
+  # garpConfig:
+  #   enabled: true
+  #   count: 3
+  #   interval: 500ms
+  #   initialDelay: 100ms
   containerSecurityContext:
     runAsUser: 0
     runAsGroup: 0

@@ -246,14 +246,14 @@ validate_prerequisites() {
 setup_lbnodeagent() {
     info "Ensuring LBNodeAgent configuration exists..."
     cat <<EOF | kubectl apply -f -
-apiVersion: purelb.io/v1
+apiVersion: purelb.io/v2
 kind: LBNodeAgent
 metadata:
   name: default
   namespace: purelb-system
 spec:
   local:
-    localint: default
+    localInterface: default
 EOF
     pass "LBNodeAgent configuration applied"
 }

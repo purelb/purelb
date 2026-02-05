@@ -1,9 +1,10 @@
-apiVersion: purelb.io/v1
+apiVersion: purelb.io/v2
 kind: ServiceGroup
 metadata:
   name: default
 spec:
   local:
-    subnet: 'fd53:9ef0:8683::/120'
-    pool: 'fd53:9ef0:8683::-fd53:9ef0:8683::3'
-    aggregation: default
+    v6pool:
+      subnet: 'fd53:9ef0:8683::/120'
+      pool: 'fd53:9ef0:8683::-fd53:9ef0:8683::3'
+      aggregation: default

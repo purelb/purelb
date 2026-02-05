@@ -24,7 +24,6 @@ import (
 
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -53,7 +52,7 @@ func (a *Allocator) SetClient(client k8s.ServiceEvent) {
 }
 
 // SetPools updates the set of address pools that the allocator owns.
-func (a *Allocator) SetPools(groups []*purelbv1.ServiceGroup) error {
+func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 	pools := a.parseGroups(groups)
 
 	// If we have groups but they're all bogus then let the user know.
@@ -115,7 +114,7 @@ func (a *Allocator) NotifyExisting(svc *v1.Service) error {
 // Allocate allocates an IP address for svc based on svc's
 // annotations and current configuration. If the user asks for a
 // specific IP then we'll attempt to use that, and if not we'll use
-// the pool specified in the purelbv1.DesiredGroupAnnotation
+// the pool specified in the purelbv2.DesiredGroupAnnotation
 // annotation. If neither is specified then we will attempt to
 // allocate from a pool named "default", if it exists.
 func (a *Allocator) Allocate(svc *v1.Service) error {
@@ -132,7 +131,7 @@ func (a *Allocator) Allocate(svc *v1.Service) error {
 		poolName := defaultPoolName
 
 		// If the user specified a desiredGroup, then use that.
-		if userPool, has := svc.Annotations[purelbv1.DesiredGroupAnnotation]; has {
+		if userPool, has := svc.Annotations[purelbv2.DesiredGroupAnnotation]; has {
 			poolName = userPool
 		}
 
@@ -170,7 +169,7 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 
 	// Warn if the user provided the group annotation - the IP
 	// annotation overrides it.
-	if _, exists := svc.Annotations[purelbv1.DesiredGroupAnnotation]; exists {
+	if _, exists := svc.Annotations[purelbv2.DesiredGroupAnnotation]; exists {
 		a.client.Infof(svc, "ConfigurationWarning", "Both the addresses annotation and the service-group annotation were provided. service-group will be ignored.")
 		logging.Info(a.logger, "op", "allocateSpecificIP", "warning", "addresses annotation overrides service-group annotation")
 	}
@@ -211,7 +210,7 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 		}
 	}
 
-	svc.Annotations[purelbv1.PoolAnnotation] = pools
+	svc.Annotations[purelbv2.PoolAnnotation] = pools
 
 	// Set pool type annotation based on the first pool
 	// (in practice, specific IPs should come from pools of the same type)
@@ -248,7 +247,7 @@ func (a *Allocator) allocateFromPool(svc *v1.Service, pool Pool) error {
 
 	// annotate the pool from which the address came
 	a.client.Infof(svc, "AddressAssigned", "Assigned %+v from pool %s", svc.Status.LoadBalancer, pool)
-	svc.Annotations[purelbv1.PoolAnnotation] = pool.String()
+	svc.Annotations[purelbv2.PoolAnnotation] = pool.String()
 
 	// Set pool type annotation so lbnodeagent knows which interface to use
 	svc.Annotations[purelbv2.PoolTypeAnnotation] = pool.PoolType()
@@ -323,13 +322,13 @@ func poolFor(pools map[string]Pool, ip net.IP) Pool {
 // serviceAddresses returns any IP addresses configured in the provided
 // service. There can be 0-2 addresses: the deprecated
 // svc.Spec.LoadBalancer field can contain one, and the
-// purelbv1.DesiredAddressAnnotation can contain one or two, separated
+// purelbv2.DesiredAddressAnnotation can contain one or two, separated
 // by commas.
 func (a *Allocator) serviceAddresses(svc *v1.Service) ([]net.IP, error) {
 	ips := []net.IP{}
 
 	// Try our annotation first.
-	rawAddrs, exists := svc.Annotations[purelbv1.DesiredAddressAnnotation]
+	rawAddrs, exists := svc.Annotations[purelbv2.DesiredAddressAnnotation]
 	if !exists {
 		// There's no DesiredAddressAnnotation so try the (deprecated)
 		// LoadBalancerIP field.
@@ -339,8 +338,8 @@ func (a *Allocator) serviceAddresses(svc *v1.Service) ([]net.IP, error) {
 		}
 
 		// Warn the user about the deprecated LoadBalancerIP field
-		a.client.Infof(svc, "DeprecationWarning", "Service.Spec.LoadBalancerIP is deprecated, please use the \"%s\" annotation instead", purelbv1.DesiredAddressAnnotation)
-		logging.Info(a.logger, "op", "serviceAddresses", "svc", svc.Name, "deprecation", "Service.Spec.LoadBalancerIP is deprecated, use "+purelbv1.DesiredAddressAnnotation+" annotation")
+		a.client.Infof(svc, "DeprecationWarning", "Service.Spec.LoadBalancerIP is deprecated, please use the \"%s\" annotation instead", purelbv2.DesiredAddressAnnotation)
+		logging.Info(a.logger, "op", "serviceAddresses", "svc", svc.Name, "deprecation", "Service.Spec.LoadBalancerIP is deprecated, use "+purelbv2.DesiredAddressAnnotation+" annotation")
 	}
 
 	for _, rawAddr := range(strings.Split(rawAddrs, ",")) {
@@ -359,14 +358,8 @@ func (a *Allocator) serviceAddresses(svc *v1.Service) ([]net.IP, error) {
 // pools so if a pool fails our validation it won't be in the output,
 // but other valid pools will be. Therefore there might be fewer pools
 // in the output than there are groups in the input.
-func (a *Allocator) parseGroups(groups []*purelbv1.ServiceGroup) map[string]Pool {
+func (a *Allocator) parseGroups(groups []*purelbv2.ServiceGroup) map[string]Pool {
 	pools := map[string]Pool{}
-
-	// Log deprecation warning once per config update if using v1 ServiceGroups
-	if len(groups) > 0 {
-		logging.Info(a.logger, "op", "parseGroups", "deprecation",
-			"ServiceGroup v1 API is deprecated, please migrate to v2")
-	}
 
 Group:
 	for _, group := range groups {

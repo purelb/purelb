@@ -23,7 +23,7 @@ import (
 	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 func intPtr(i int) *int {
@@ -161,9 +161,9 @@ func TestGetLocalAddressOptions_WithConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &announcer{
 				logger: log.NewNopLogger(),
-				config: &purelbv1.LBNodeAgentLocalSpec{
-					AddressConfig: &purelbv1.AddressConfig{
-						LocalInterface: &purelbv1.InterfaceAddressConfig{
+				config: &purelbv2.LBNodeAgentLocalSpec{
+					AddressConfig: &purelbv2.AddressConfig{
+						LocalInterface: &purelbv2.InterfaceAddressConfig{
 							ValidLifetime:     tt.validLifetime,
 							PreferredLifetime: tt.preferredLifetime,
 							NoPrefixRoute:     tt.noPrefixRoute,
@@ -237,9 +237,9 @@ func TestGetDummyAddressOptions_WithConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &announcer{
 				logger: log.NewNopLogger(),
-				config: &purelbv1.LBNodeAgentLocalSpec{
-					AddressConfig: &purelbv1.AddressConfig{
-						DummyInterface: &purelbv1.InterfaceAddressConfig{
+				config: &purelbv2.LBNodeAgentLocalSpec{
+					AddressConfig: &purelbv2.AddressConfig{
+						DummyInterface: &purelbv2.InterfaceAddressConfig{
 							ValidLifetime:     tt.validLifetime,
 							PreferredLifetime: tt.preferredLifetime,
 							NoPrefixRoute:     tt.noPrefixRoute,
@@ -262,7 +262,7 @@ func TestGetAddressOptions_NilConfigLevels(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		config *purelbv1.LBNodeAgentLocalSpec
+		config *purelbv2.LBNodeAgentLocalSpec
 	}{
 		{
 			name:   "nil config",
@@ -270,18 +270,18 @@ func TestGetAddressOptions_NilConfigLevels(t *testing.T) {
 		},
 		{
 			name:   "nil AddressConfig",
-			config: &purelbv1.LBNodeAgentLocalSpec{},
+			config: &purelbv2.LBNodeAgentLocalSpec{},
 		},
 		{
 			name: "nil LocalInterface",
-			config: &purelbv1.LBNodeAgentLocalSpec{
-				AddressConfig: &purelbv1.AddressConfig{},
+			config: &purelbv2.LBNodeAgentLocalSpec{
+				AddressConfig: &purelbv2.AddressConfig{},
 			},
 		},
 		{
 			name: "nil DummyInterface",
-			config: &purelbv1.LBNodeAgentLocalSpec{
-				AddressConfig: &purelbv1.AddressConfig{},
+			config: &purelbv2.LBNodeAgentLocalSpec{
+				AddressConfig: &purelbv2.AddressConfig{},
 			},
 		},
 	}

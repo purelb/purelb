@@ -10,13 +10,6 @@ We recommend that you use [Helm](https://helm.sh/) to install PureLB on producti
 ## Prepare the Cluster
 Before installing PureLB, your k8s cluster should be up and running with an operating [Container Network Interface](https://www.redhat.com/sysadmin/cni-kubernetes).
 
-### Firewall Rules
-PureLB uses a library called [Memberlist](https://github.com/hashicorp/memberlist) to provide faster local network address failover than k8s does.  If you plan to use local network addresses and have firewalls on your nodes, you must add a rule to allow the memberlist election to occur. PureLB uses both TCP and UDP on port **7934**, so open both.
-
-{{% notice danger %}}f
-If UDP/TCP 7934 is not open and a local network address is allocated, PureLB will exhibit "split brain" behavior.  Each node will attempt to allocate the address where the local network addresses match and update v1/service.  This will cause the v1/service to continously update, the LBNodeAgent logs will show repeated attempts to register addresses, and it will appear that PureLB is unstable.
-{{% /notice %}}
-
 ### ARP Behavior
 We recommend that you change the Linux kernel's ARP behavior from its default.  This is necessary if you're using kubeproxy in IPVS mode and is also good security practice. By default Linux will answer ARP requests for addresses on any interface irrespective of the source. It does this to increase the the chance of successful communication, but we recommend changing this setting so Linux only answers ARP requests for addresses on the interface on which it receives the request. This can be done in sysconfig or in the kubeproxy configuration.
 
@@ -44,7 +37,17 @@ PureLB will operate without making this change, however if kubeproxy is set to I
 
 ## Install PureLB
 
-### Option 1: Helm Repository
+### Option 1: Simple Manifest
+
+The quickest way to install PureLB is with a single kubectl command:
+
+```sh
+$ kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.15.0/install-v0.15.0.yaml
+```
+
+This installs PureLB with default settings. For more configuration options, use Helm.
+
+### Option 2: Helm Repository (Recommended for Production)
 
 ```sh
 $ helm repo add purelb https://purelb.github.io/purelb/charts
@@ -52,18 +55,18 @@ $ helm repo update
 $ helm install --create-namespace --namespace=purelb-system purelb purelb/purelb
 ```
 
-### Option 2: OCI Registry (Helm 3.8+)
+### Option 3: OCI Registry (Helm 3.8+)
 
 ```sh
 $ helm install --create-namespace --namespace=purelb-system purelb \
-    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.14.0
+    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.15.0
 ```
 
-### Option 3: Direct URL
+### Option 4: Direct URL
 
 ```sh
 $ helm install --create-namespace --namespace=purelb-system purelb \
-    https://github.com/purelb/purelb/releases/download/v0.14.0/purelb-v0.14.0.tgz
+    https://github.com/purelb/purelb/releases/download/v0.15.0/purelb-v0.15.0.tgz
 ```
 
 Several options can be overridden during installation. See [the chart's values.yaml file](https://github.com/purelb/purelb/blob/main/build/helm/purelb/values.yaml) for the complete set.
@@ -95,15 +98,16 @@ It can also be enabled after installation by editing the LBNodeAgent resource:
 
 ``` yaml
 $ kubectl edit -n purelb-system lbnodeagent
-apiVersion: purelb.io/v1
+apiVersion: purelb.io/v2
 kind: LBNodeAgent
 metadata:
   ...
 spec:
   local:
-    extlbint: kube-lb0
-    localint: default
-    sendgarp: true            # enable GARP
+    dummyInterface: kube-lb0
+    localInterface: default
+    garpConfig:
+      enabled: true           # enable GARP
 
 ```
 

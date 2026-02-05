@@ -49,7 +49,7 @@ run-%:  ## Run PureLB command locally (e.g., 'make run-allocator')
 .PHONY: clean-gen
 clean-gen:  ## Delete generated files
 	rm -fr pkg/generated/
-	rm -f pkg/apis/purelb/v1/zz_generated.deepcopy.go
+	rm -f pkg/apis/purelb/v2/zz_generated.deepcopy.go
 	rm -fr deployments/${PROJECT}-*.yaml
 
 .PHONY: generate
@@ -58,18 +58,30 @@ generate:  ## Generate client-side stubs for our custom resources
 	hack/update-codegen.sh
 
 crd: $(CRDS) ## Generate CRDs from golang api structs
-$(CRDS) &: pkg/apis/purelb/v1/*.go
+$(CRDS) &: pkg/apis/purelb/v2/*.go
 	$(CONTROLLER_GEN) crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
 
 .ONESHELL:
 .PHONY: manifest
 manifest: CACHE != mktemp
-manifest:  ## Generate deployment manifest
+manifest:  ## Generate deployment manifest (with samples)
 	cd deployments/samples
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
 	$(KUSTOMIZE) edit set image purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
 	$(KUSTOMIZE) build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
+# restore kustomization.yaml
+	cp ${CACHE} kustomization.yaml
+
+.ONESHELL:
+.PHONY: install-manifest
+install-manifest: CACHE != mktemp
+install-manifest: crd  ## Generate standalone install.yaml manifest
+	cd deployments/default
+# cache kustomization.yaml because "kustomize edit" modifies it
+	cp kustomization.yaml ${CACHE}
+	$(KUSTOMIZE) edit set image ghcr.io/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} ghcr.io/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
+	$(KUSTOMIZE) build . > ../install-${MANIFEST_SUFFIX}.yaml
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml
 

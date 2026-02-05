@@ -25,7 +25,7 @@ import (
 
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 // ipFamilyFromIP returns the IP family (IPv4 or IPv6) for a given IP address.
@@ -100,7 +100,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 
 	// If the user has specified an LB class and it's not ours then we
 	// ignore the LB.
-	if svc.Spec.LoadBalancerClass != nil && *svc.Spec.LoadBalancerClass != purelbv1.ServiceLBClass {
+	if svc.Spec.LoadBalancerClass != nil && *svc.Spec.LoadBalancerClass != purelbv2.ServiceLBClass {
 		logging.Debug(l, "op", "setBalancer", "msg", "ignoring, user specified another class", "class", *svc.Spec.LoadBalancerClass)
 		return k8s.SyncStateSuccess
 	}
@@ -124,7 +124,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 	if svc.Spec.Type != "LoadBalancer" {
 
 		// If it's ours then we need to clean up
-		if _, hasAnnotation := svc.Annotations[purelbv1.PoolAnnotation]; hasAnnotation {
+		if _, hasAnnotation := svc.Annotations[purelbv2.PoolAnnotation]; hasAnnotation {
 
 			// If it has an address then release it
 			if len(svc.Status.LoadBalancer.Ingress) > 0 {
@@ -141,7 +141,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 		// "Un-own" the service. Remove PureLB's Pool annotation so
 		// we'll re-allocate if the user flips this service back to a
 		// LoadBalancer
-		delete(svc.Annotations, purelbv1.PoolAnnotation)
+		delete(svc.Annotations, purelbv2.PoolAnnotation)
 
 		// It's not a LoadBalancer so there's nothing more for us to do
 		return k8s.SyncStateSuccess
@@ -166,7 +166,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 
 		// If it's one of ours, notify the allocator about existing IPs
 		// (for database warmup at startup or after config changes)
-		if svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
+		if svc.Annotations[purelbv2.BrandAnnotation] == purelbv2.Brand {
 			if err := c.ips.NotifyExisting(svc); err != nil {
 				logging.Info(l, "op", "notifyExisting", "error", err, "ingress", svc.Status.LoadBalancer.Ingress)
 			}
@@ -202,7 +202,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 	}
 
 	// Annotate the service as "ours"
-	svc.Annotations[purelbv1.BrandAnnotation] = purelbv1.Brand
+	svc.Annotations[purelbv2.BrandAnnotation] = purelbv2.Brand
 
 	if err := c.ips.Allocate(svc); err != nil {
 		logging.Info(l, "op", "allocateIP", "error", err, "msg", "IP allocation failed")

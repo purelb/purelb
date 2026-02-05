@@ -1,6 +1,6 @@
 {{- if .Values.serviceGroup.create }}
 ---
-apiVersion: purelb.io/v1
+apiVersion: purelb.io/v2
 kind: ServiceGroup
 metadata:
   name: {{ .Values.serviceGroup.name }}

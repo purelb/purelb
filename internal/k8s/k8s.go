@@ -23,7 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	"purelb.io/pkg/generated/clientset/versioned"
 	"purelb.io/pkg/generated/informers/externalversions"
 
@@ -72,7 +72,7 @@ type Client struct {
 
 	serviceChanged func(*corev1.Service, []*discoveryv1.EndpointSlice) SyncState
 	serviceDeleted func(string) SyncState
-	configChanged  func(*purelbv1.Config) SyncState
+	configChanged  func(*purelbv2.Config) SyncState
 	synced         func()
 	shutdown       func()
 }
@@ -109,7 +109,7 @@ type Config struct {
 
 	ServiceChanged func(*corev1.Service, []*discoveryv1.EndpointSlice) SyncState
 	ServiceDeleted func(string) SyncState
-	ConfigChanged  func(*purelbv1.Config) SyncState
+	ConfigChanged  func(*purelbv2.Config) SyncState
 	Synced         func()
 	Shutdown       func()
 }

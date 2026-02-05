@@ -1,0 +1,39 @@
+---
+# IPv4 service for pool arrays test
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-pool-array-svc
+  namespace: test
+  labels:
+    test-suite: single-node
+  annotations:
+    purelb.io/service-group: test-pool-arrays
+spec:
+  type: LoadBalancer
+  selector:
+    app: nginx
+  ports:
+  - port: 83
+    targetPort: 80
+---
+# IPv6 service for pool arrays test
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-pool-array-svc-v6
+  namespace: test
+  labels:
+    test-suite: single-node
+  annotations:
+    purelb.io/service-group: test-pool-arrays
+spec:
+  type: LoadBalancer
+  ipFamilies:
+  - IPv6
+  ipFamilyPolicy: SingleStack
+  selector:
+    app: nginx
+  ports:
+  - port: 86
+    targetPort: 80

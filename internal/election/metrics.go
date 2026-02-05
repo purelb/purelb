@@ -17,7 +17,7 @@ package election
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 const subsystem = "election"
@@ -26,7 +26,7 @@ var (
 	// leaseHealthy is 1 if this node's lease is healthy and being renewed,
 	// 0 if renewals are failing or the node is shutting down.
 	leaseHealthy = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "lease_healthy",
 		Help:      "1 if this node's lease is healthy, 0 otherwise",
@@ -34,7 +34,7 @@ var (
 
 	// leaseRenewals counts successful lease renewals.
 	leaseRenewals = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "lease_renewals_total",
 		Help:      "Total number of successful lease renewals",
@@ -42,7 +42,7 @@ var (
 
 	// leaseRenewalFailures counts failed lease renewal attempts.
 	leaseRenewalFailures = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "lease_renewal_failures_total",
 		Help:      "Total number of failed lease renewal attempts",
@@ -51,7 +51,7 @@ var (
 	// winnerChanges counts the number of times a winner changed for any service.
 	// Labels: service (namespace/name)
 	winnerChanges = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "winner_changes_total",
 		Help:      "Total number of winner changes per service",
@@ -59,7 +59,7 @@ var (
 
 	// memberCount tracks the current number of active members in the election.
 	memberCount = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "member_count",
 		Help:      "Current number of active members in the election",
@@ -67,7 +67,7 @@ var (
 
 	// subnetCount tracks the number of unique subnets tracked across all members.
 	subnetCount = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "subnet_count",
 		Help:      "Number of unique subnets tracked across all members",
@@ -75,7 +75,7 @@ var (
 
 	// localSubnetCount tracks the number of subnets on this node.
 	localSubnetCount = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "local_subnet_count",
 		Help:      "Number of subnets on this node",
