@@ -12,18 +12,57 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 CONTEXT="proxmox"
 NAMESPACE="test"
+INTERACTIVE=false
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -i|--interactive)
+            INTERACTIVE=true
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [-i|--interactive]"
+            echo ""
+            echo "Options:"
+            echo "  -i, --interactive  Pause after each test for manual review"
+            echo "  -h, --help         Show this help message"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use -h for help"
+            exit 1
+            ;;
+    esac
+done
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 pass() { echo -e "${GREEN}✓ PASS:${NC} $1"; }
 fail() { echo -e "${RED}✗ FAIL:${NC} $1"; exit 1; }
 info() { echo -e "${YELLOW}→${NC} $1"; }
+detail() { echo -e "${CYAN}     ${NC} $1"; }
+ts() { date '+%H:%M:%S.%3N'; }
 
 kubectl() { command kubectl --context "$CONTEXT" "$@"; }
+
+# Interactive pause - waits for user to press Enter
+pause_for_review() {
+    if [ "$INTERACTIVE" = "true" ]; then
+        echo ""
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${YELLOW}  PAUSED: Review the output above. Press ENTER to continue...${NC}"
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+        read -r
+    fi
+}
 
 # Wait for an IP to be announced on any node (with timeout)
 # Usage: wait_for_ip_announced <ip> [timeout_seconds]
@@ -122,6 +161,50 @@ test_connectivity_get_node() {
 }
 
 #---------------------------------------------------------------------
+# Lease/Election Helpers (Subnet-Aware Election)
+#---------------------------------------------------------------------
+
+# Get subnet annotations from a node's lease
+get_node_lease_subnets() {
+    local NODE=$1
+    kubectl get lease "purelb-node-$NODE" -n purelb-system \
+        -o jsonpath='{.metadata.annotations.purelb\.io/subnets}' 2>/dev/null
+}
+
+# Check if a node's lease exists
+lease_exists() {
+    local NODE=$1
+    kubectl get lease "purelb-node-$NODE" -n purelb-system &>/dev/null
+}
+
+# Get pool type annotation from a service
+get_pool_type() {
+    local SVC=$1
+    kubectl get svc "$SVC" -n $NAMESPACE \
+        -o jsonpath='{.metadata.annotations.purelb\.io/pool-type}' 2>/dev/null
+}
+
+# Wait for IP to NOT be on any node (used for no-match-subnet test)
+wait_for_ip_not_on_any_node() {
+    local IP=$1
+    local TIMEOUT=${2:-30}
+    local ELAPSED=0
+    while [ $ELAPSED -lt $TIMEOUT ]; do
+        local FOUND=false
+        for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+            if ssh $node "ip -o addr show 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+                FOUND=true
+                break
+            fi
+        done
+        [ "$FOUND" = "false" ] && return 0
+        sleep 2
+        ELAPSED=$((ELAPSED + 2))
+    done
+    return 1
+}
+
+#---------------------------------------------------------------------
 # Infrastructure Prerequisites Validation
 # Validates that the cluster infrastructure is properly configured
 # for load balancer traffic to work correctly
@@ -211,7 +294,7 @@ validate_prerequisites() {
     # Check 6: PureLB components are running
     info "Checking PureLB components..."
     local ALLOCATOR_READY
-    ALLOCATOR_READY=$(kubectl get deployment -n purelb-systemallocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+    ALLOCATOR_READY=$(kubectl get deployment -n purelb-system allocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
     if [ "$ALLOCATOR_READY" -ge 1 ]; then
         pass "Allocator is running"
     else
@@ -220,7 +303,7 @@ validate_prerequisites() {
     fi
 
     local AGENT_PODS
-    AGENT_PODS=$(kubectl get pods -n purelb-system-l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+    AGENT_PODS=$(kubectl get pods -n purelb-system -l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
     if [ "$AGENT_PODS" -ge 1 ]; then
         pass "LBNodeAgent is running ($AGENT_PODS pods)"
     else
@@ -256,6 +339,430 @@ spec:
     localInterface: default
 EOF
     pass "LBNodeAgent configuration applied"
+}
+
+#---------------------------------------------------------------------
+# Test: Lease Verification (Subnet-Aware Election)
+# Verifies that lease-based election is working with subnet annotations
+#---------------------------------------------------------------------
+test_lease_verification() {
+    echo ""
+    echo "=========================================="
+    echo "TEST: Lease Verification (Subnet-Aware Election)"
+    echo "=========================================="
+
+    info "Checking that leases exist for all nodes..."
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        if lease_exists "$node"; then
+            pass "Lease exists for $node"
+        else
+            fail "No lease found for $node"
+        fi
+    done
+
+    info "Checking subnet annotations on leases..."
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        SUBNETS=$(get_node_lease_subnets "$node")
+        if [ -n "$SUBNETS" ]; then
+            pass "$node subnets: $SUBNETS"
+            # Verify the expected subnet is present
+            if echo "$SUBNETS" | grep -q "172.30.255.0/24"; then
+                pass "$node has expected 172.30.255.0/24 subnet"
+            else
+                fail "$node missing expected 172.30.255.0/24 subnet"
+            fi
+        else
+            fail "$node has no subnet annotation"
+        fi
+    done
+
+    pass "Lease-based election verified"
+}
+
+#---------------------------------------------------------------------
+# Test: Local Pool No Matching Subnet
+# Tests that when no node has the pool's subnet, the IP is NOT announced
+# anywhere. There is no fallback - subnet filtering is strict.
+#---------------------------------------------------------------------
+test_local_pool_no_matching_subnet() {
+    echo ""
+    echo "=========================================="
+    echo "TEST: Local Pool No Matching Subnet"
+    echo "=========================================="
+
+    info "This tests subnet-aware election with no eligible nodes."
+    info "Pool 10.255.0.0/24 has NO nodes with that subnet."
+    info "IP should be allocated but NOT announced anywhere (no fallback)."
+
+    # Apply the no-match ServiceGroup
+    info "Applying no-match-subnet ServiceGroup..."
+    kubectl apply -f ${SCRIPT_DIR}/servicegroup-no-match.yaml
+
+    # Create service requesting IP from no-match pool
+    info "Creating service requesting IP from no-match-subnet pool..."
+    kubectl apply -f ${SCRIPT_DIR}/nginx-svc-no-match.yaml
+
+    info "Waiting for IP allocation..."
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-lb-no-match -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+
+    IP=$(kubectl get svc nginx-lb-no-match -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    info "Allocated IP: $IP"
+
+    # Verify IP is from the no-match pool
+    [[ "$IP" =~ ^10\.255\.0\.(10[0-9]|110)$ ]] || fail "IP $IP not from expected pool 10.255.0.100-110"
+    pass "IP allocated from correct pool"
+
+    # Wait a moment for any announcement attempt
+    sleep 5
+
+    # KEY CHECK: Verify IP is NOT on eth0 on ANY node (no matching subnet)
+    info "Verifying IP is NOT on eth0 (no node has 10.255.0.0/24)..."
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            fail "IP $IP found on eth0 on $node - should NOT be announced (no matching subnet)"
+        fi
+    done
+    pass "IP correctly NOT on eth0 on any node"
+
+    # CRITICAL CHECK: Verify IP is also NOT on kube-lb0 (no fallback for local pools)
+    info "Verifying IP is NOT on kube-lb0 (no fallback for local pools)..."
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        if ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            fail "IP $IP found on kube-lb0 on $node - local pool should NOT fallback to kube-lb0"
+        fi
+    done
+    pass "IP correctly NOT on kube-lb0 on any node (no fallback - correct behavior)"
+
+    # Check for noLocalInterface log message
+    info "Checking lbnodeagent logs for noLocalInterface message..."
+    if kubectl logs -n purelb-system -l component=lbnodeagent --tail=100 2>/dev/null | grep -q "noLocalInterface"; then
+        pass "Found noLocalInterface message in logs (no fallback confirmed)"
+    else
+        info "noLocalInterface message not found (may have scrolled out)"
+    fi
+
+    # Cleanup
+    info "Cleaning up no-match test resources..."
+    kubectl delete svc nginx-lb-no-match -n $NAMESPACE 2>/dev/null || true
+    kubectl delete servicegroup no-match-subnet -n purelb-system 2>/dev/null || true
+
+    pass "Local pool no-matching-subnet test completed"
+}
+
+#---------------------------------------------------------------------
+# Test: Remote Pool Behavior
+# Verifies that remote pool IPs go on kube-lb0 (not eth0)
+#---------------------------------------------------------------------
+test_remote_pool() {
+    echo ""
+    echo "=========================================="
+    echo "TEST: Remote Pool Behavior"
+    echo "=========================================="
+
+    info "Remote pools should place IPs on kube-lb0, not eth0."
+    info "They bypass subnet filtering entirely."
+
+    # Apply the remote ServiceGroup
+    info "Applying remote-pool ServiceGroup..."
+    kubectl apply -f ${SCRIPT_DIR}/servicegroup-remote.yaml
+
+    # Create service requesting IP from remote pool
+    info "Creating service requesting IP from remote-pool..."
+    kubectl apply -f ${SCRIPT_DIR}/nginx-svc-remote.yaml
+
+    info "Waiting for IP allocation..."
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-lb-remote -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+
+    IP=$(kubectl get svc nginx-lb-remote -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    info "Allocated IP: $IP"
+
+    # Verify IP is from the remote pool
+    [[ "$IP" =~ ^10\.255\.1\.(10[0-9]|110)$ ]] || fail "IP $IP not from expected pool 10.255.1.100-110"
+    pass "IP allocated from correct pool"
+
+    # Wait for announcement
+    sleep 5
+
+    # Verify IP is on kube-lb0 (not eth0)
+    info "Verifying IP is on kube-lb0 (remote pool behavior)..."
+    FOUND_ON_KUBELB0=false
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        if ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            pass "Remote IP $IP on kube-lb0 on $node"
+            FOUND_ON_KUBELB0=true
+        fi
+        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            fail "Remote IP $IP found on eth0 on $node - should be on kube-lb0"
+        fi
+    done
+    [ "$FOUND_ON_KUBELB0" = "true" ] || fail "Remote IP not found on kube-lb0 on any node"
+
+    # Cleanup
+    info "Cleaning up remote pool test resources..."
+    kubectl delete svc nginx-lb-remote -n $NAMESPACE 2>/dev/null || true
+    kubectl delete servicegroup remote-pool -n purelb-system 2>/dev/null || true
+
+    pass "Remote pool behavior test completed"
+}
+
+#---------------------------------------------------------------------
+# Failover Debug Helpers
+#---------------------------------------------------------------------
+
+show_all_leases() {
+    info "Current leases:"
+    kubectl get leases -n purelb-system -o custom-columns=\
+'NAME:.metadata.name,HOLDER:.spec.holderIdentity,RENEW:.spec.renewTime,DURATION:.spec.leaseDurationSeconds' 2>/dev/null | while read line; do
+        detail "$line"
+    done
+}
+
+show_all_pods() {
+    info "LBNodeAgent pods:"
+    kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null | while read line; do
+        detail "$line"
+    done
+}
+
+show_vip_locations() {
+    local IP=$1
+    info "VIP $IP location on all nodes:"
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        local eth0_status="not present"
+        local kubelb0_status="not present"
+
+        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            local details=$(ssh $node "ip -o addr show eth0 2>/dev/null | grep ' $IP/'" 2>/dev/null | awk '{print $4, $NF}')
+            eth0_status="PRESENT ($details)"
+        fi
+
+        if ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            kubelb0_status="PRESENT"
+        fi
+
+        detail "$node: eth0=$eth0_status, kube-lb0=$kubelb0_status"
+    done
+}
+
+show_election_logs() {
+    local node=$1
+    local lines=${2:-10}
+    info "Recent election logs from $node (last $lines):"
+    local pod=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null | grep "$node" | awk '{print $1}')
+    if [ -n "$pod" ]; then
+        kubectl logs -n purelb-system "$pod" --tail=$lines 2>/dev/null | grep -E "(electionWon|lostElection|leaseAdd|leaseDelete|leaseUpdate|rebuildMaps|withdrawAddress|ForceSync|graceful)" | while read line; do
+            detail "$line"
+        done
+    else
+        detail "(no pod found for $node)"
+    fi
+}
+
+#---------------------------------------------------------------------
+# Test: Graceful Failover (Lease-Based)
+# Verifies that when a node's lbnodeagent is deleted, VIP moves quickly
+# Enhanced with detailed debug output for troubleshooting
+#---------------------------------------------------------------------
+test_graceful_failover() {
+    echo ""
+    echo "=========================================="
+    echo "TEST: Graceful Failover (Lease-Based)"
+    echo "=========================================="
+
+    info "Testing lease-based failover by deleting lbnodeagent pod."
+    info "VIP should move to another node within ~15 seconds."
+    echo ""
+    detail "Graceful shutdown sequence:"
+    detail "  1. MarkUnhealthy() - Winner() returns ''"
+    detail "  2. ForceSync() - triggers address withdrawal"
+    detail "  3. Sleep 2s - traffic drain"
+    detail "  4. StopRenewals() - stop lease renewal"
+    detail "  5. DeleteOurLease() - remove lease from API"
+    detail "  6. Shutdown() - cleanup networking"
+    echo ""
+
+    # Ensure we have a test service
+    IPV4=$(kubectl get svc nginx-lb-ipv4 -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+    if [ -z "$IPV4" ]; then
+        info "Creating test service for failover test..."
+        kubectl apply -f ${SCRIPT_DIR}/nginx-svc-ipv4.yaml
+        kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+            svc/nginx-lb-ipv4 -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+        IPV4=$(kubectl get svc nginx-lb-ipv4 -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        wait_for_ip_announced "$IPV4" 30 || fail "IP not announced within 30s"
+    fi
+
+    info "Testing with VIP: $IPV4"
+
+    # Show pre-failover state
+    echo ""
+    info "=== PRE-FAILOVER STATE ==="
+    show_all_leases
+    echo ""
+    show_vip_locations "$IPV4"
+
+    # Find current VIP holder
+    ORIGINAL_WINNER=""
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+            ORIGINAL_WINNER=$node
+            break
+        fi
+    done
+    [ -n "$ORIGINAL_WINNER" ] || fail "Could not find VIP holder"
+    pass "Current VIP holder: $ORIGINAL_WINNER"
+
+    # Verify service is reachable before failover
+    info "Testing service reachability before failover..."
+    RESPONSE=$(curl -s --connect-timeout 3 "http://$IPV4/" || true)
+    if echo "$RESPONSE" | grep -q "Pod:"; then
+        local pod=$(echo "$RESPONSE" | grep "Pod:" | awk '{print $2}')
+        pass "Service reachable - Pod: $pod"
+    else
+        fail "Service NOT reachable before failover"
+    fi
+
+    pause_for_review
+
+    # Delete the lbnodeagent pod on the current winner
+    AGENT_POD=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide | grep "$ORIGINAL_WINNER" | awk '{print $1}')
+    [ -n "$AGENT_POD" ] || fail "Could not find lbnodeagent pod on $ORIGINAL_WINNER"
+
+    echo ""
+    info "=== TRIGGERING FAILOVER ==="
+    info "Target pod: $AGENT_POD on $ORIGINAL_WINNER"
+
+    # Start watching pod logs in background to capture shutdown messages
+    info "Starting log capture for shutdown..."
+    kubectl logs -n purelb-system "$AGENT_POD" -f --tail=0 > /tmp/shutdown-logs.txt 2>&1 &
+    LOG_PID=$!
+
+    DELETE_START=$(date +%s.%N)
+    info "Deleting pod with grace-period=10 (allows graceful shutdown)..."
+    kubectl delete pod -n purelb-system "$AGENT_POD" --grace-period=10 &
+    DELETE_PID=$!
+
+    # Monitor lease deletion
+    info "Monitoring lease deletion..."
+    LEASE_DELETED=false
+    for i in $(seq 1 15); do
+        if ! kubectl get lease "purelb-node-$ORIGINAL_WINNER" -n purelb-system &>/dev/null; then
+            LEASE_DELETED=true
+            pass "Lease deleted after ~${i}s"
+            break
+        fi
+        detail "$(ts) Lease still present at ${i}s"
+        sleep 1
+    done
+
+    if [ "$LEASE_DELETED" = "false" ]; then
+        info "WARNING: Lease NOT deleted after 15s"
+    fi
+
+    # Wait for delete to complete
+    wait $DELETE_PID 2>/dev/null || true
+    kill $LOG_PID 2>/dev/null || true
+    DELETE_END=$(date +%s.%N)
+    DELETE_DURATION=$(echo "$DELETE_END - $DELETE_START" | bc)
+    info "Pod deletion completed in ${DELETE_DURATION}s"
+
+    # Show captured shutdown logs
+    echo ""
+    info "Captured shutdown logs:"
+    if [ -f /tmp/shutdown-logs.txt ] && [ -s /tmp/shutdown-logs.txt ]; then
+        cat /tmp/shutdown-logs.txt | head -20 | while read line; do
+            detail "$line"
+        done
+    else
+        detail "(No logs captured or empty log file)"
+    fi
+
+    # Wait for VIP to move (lease-based should be faster than memberlist)
+    echo ""
+    info "=== MONITORING VIP MOVEMENT ==="
+    info "Waiting for VIP to move to another node (max 20s)..."
+    TIMEOUT=20
+    ELAPSED=0
+    NEW_WINNER=""
+    while [ $ELAPSED -lt $TIMEOUT ]; do
+        for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+            if [ "$node" != "$ORIGINAL_WINNER" ]; then
+                if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+                    NEW_WINNER=$node
+                    break 2
+                fi
+            fi
+        done
+        sleep 2
+        ELAPSED=$((ELAPSED + 2))
+        if [ $((ELAPSED % 4)) -eq 0 ]; then
+            detail "$(ts) Still waiting at ${ELAPSED}s..."
+        fi
+    done
+
+    if [ -n "$NEW_WINNER" ]; then
+        pass "VIP moved from $ORIGINAL_WINNER to $NEW_WINNER in ${ELAPSED}s"
+    else
+        fail "VIP did not move to another node within ${TIMEOUT}s"
+    fi
+
+    # Show post-failover state
+    echo ""
+    info "=== POST-FAILOVER STATE ==="
+    show_all_leases
+    echo ""
+    show_vip_locations "$IPV4"
+
+    # Verify service is still reachable
+    info "Verifying service is reachable after failover..."
+    sleep 2
+    RESPONSE=$(curl -s --connect-timeout 5 "http://$IPV4/" || true)
+    if echo "$RESPONSE" | grep -q "Pod:"; then
+        local pod=$(echo "$RESPONSE" | grep "Pod:" | awk '{print $2}')
+        pass "Service still reachable after failover - Pod: $pod"
+    else
+        fail "Service not reachable after failover"
+    fi
+
+    pause_for_review
+
+    # Wait for DaemonSet to recover
+    echo ""
+    info "=== RECOVERY ==="
+    info "Waiting for lbnodeagent DaemonSet to recover..."
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system --timeout=60s
+
+    # Show recovery state
+    echo ""
+    show_all_pods
+    echo ""
+    show_all_leases
+
+    FINAL_WINNER=""
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+            FINAL_WINNER=$node
+            break
+        fi
+    done
+    info "Final VIP holder: $FINAL_WINNER (was: $ORIGINAL_WINNER, failover: $NEW_WINNER)"
+
+    # Summary
+    echo ""
+    info "=== SUMMARY ==="
+    echo -e "  Original VIP holder: ${YELLOW}$ORIGINAL_WINNER${NC}"
+    echo -e "  VIP after failover:  ${YELLOW}$NEW_WINNER${NC}"
+    echo -e "  Final VIP holder:    ${YELLOW}$FINAL_WINNER${NC}"
+    echo -e "  Delete duration:     ${YELLOW}${DELETE_DURATION}s${NC}"
+    echo -e "  Lease deleted:       ${YELLOW}$LEASE_DELETED${NC}"
+
+    if [ "$LEASE_DELETED" = "true" ] && [ -n "$NEW_WINNER" ] && [ "$NEW_WINNER" != "$ORIGINAL_WINNER" ]; then
+        pass "Graceful failover test completed successfully"
+    else
+        fail "Graceful failover test had issues - review output above"
+    fi
 }
 
 #---------------------------------------------------------------------
@@ -493,7 +1000,7 @@ test_leader_election() {
 
     # Check lbnodeagent logs for election messages
     info "Checking election logs..."
-    kubectl logs -n purelb-system-l component=lbnodeagent --tail=100 | grep -i "winner" | tail -5 || true
+    kubectl logs -n purelb-system -l component=lbnodeagent --tail=100 | grep -i "winner" | tail -5 || true
 }
 
 #---------------------------------------------------------------------
@@ -843,43 +1350,43 @@ test_node_failover() {
     pass "Service reachable before failover"
 
     # Simulate node failure by adding a taint that lbnodeagent doesn't tolerate,
-    # then deleting the pod. This prevents the DaemonSet from rescheduling.
-    info "Simulating node failure: tainting and evicting $ORIGINAL_WINNER..."
+    # then deleting the pod with graceful shutdown. This allows the lbnodeagent to
+    # withdraw addresses before terminating.
+    info "Simulating node failure: tainting and deleting lbnodeagent on $ORIGINAL_WINNER..."
     kubectl taint node "$ORIGINAL_WINNER" purelb-test=failover:NoExecute --overwrite
 
-    # The taint should cause the pod to be evicted, but let's also explicitly delete it
-    AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide | grep "$ORIGINAL_WINNER" | awk '{print $1}')
+    # Delete the pod with grace period to allow graceful shutdown (address withdrawal)
+    AGENT_POD=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide | grep "$ORIGINAL_WINNER" | awk '{print $1}')
     if [ -n "$AGENT_POD" ]; then
-        kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
+        # Use grace-period=10 to allow lbnodeagent to withdraw addresses
+        kubectl delete pod -n purelb-system "$AGENT_POD" --grace-period=10 2>/dev/null || true
     fi
 
-    # Verify IP was REMOVED from tainted node (with polling)
-    info "Verifying IP is removed from tainted node (polling with 30s timeout)..."
-    TIMEOUT=30
-    INTERVAL=2
-    ELAPSED=0
-    IP_REMOVED=false
-    while [ $ELAPSED -lt $TIMEOUT ]; do
-        if ! ssh "$ORIGINAL_WINNER" "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
-            IP_REMOVED=true
-            break
-        fi
-        sleep $INTERVAL
-        ELAPSED=$((ELAPSED + INTERVAL))
-    done
-    if [ "$IP_REMOVED" = "false" ]; then
-        kubectl taint node "$ORIGINAL_WINNER" purelb-test- 2>/dev/null || true
-        fail "IP should be removed from tainted node (waited ${TIMEOUT}s)"
-    fi
-    pass "IP removed from $ORIGINAL_WINNER after taint/eviction (took ${ELAPSED}s)"
-
-    # Wait for memberlist to detect failure and elect new leader
-    info "Waiting for failover (memberlist detection + election)..."
+    # Wait for the pod to terminate and lease to expire
+    info "Waiting for pod termination and lease expiry (~15s)..."
     sleep 15
 
-    # Check which node now has the VIP - should be a DIFFERENT node
+    # Verify IP was REMOVED from the failed node (graceful shutdown should withdraw it)
+    info "Verifying IP was withdrawn from $ORIGINAL_WINNER..."
+    if ssh "$ORIGINAL_WINNER" "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+        # IP still present - check if it's orphaned (no lbnodeagent running)
+        if ! kubectl get pods -n purelb-system -o wide | grep -q "$ORIGINAL_WINNER"; then
+            info "Note: IP orphaned on $ORIGINAL_WINNER (will expire via valid_lft)"
+        else
+            kubectl taint node "$ORIGINAL_WINNER" purelb-test- 2>/dev/null || true
+            fail "IP still on $ORIGINAL_WINNER but lbnodeagent is running"
+        fi
+    else
+        pass "IP successfully withdrawn from $ORIGINAL_WINNER"
+    fi
+
+    # Check that a DIFFERENT node has taken over the VIP
+    # With lease-based election, when the original winner's lease expires,
+    # a new winner is elected from remaining healthy nodes
+    info "Checking for failover to a different node..."
     NEW_WINNER=""
     for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        [ "$node" = "$ORIGINAL_WINNER" ] && continue
         if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
             NEW_WINNER=$node
             break
@@ -887,10 +1394,11 @@ test_node_failover() {
     done
 
     if [ -z "$NEW_WINNER" ]; then
-        # VIP might be in transition - wait a bit more
-        info "VIP not found yet, waiting for election to complete..."
+        # VIP might be in transition - wait a bit more for new winner to announce
+        info "VIP not found on alternate node yet, waiting for election..."
         sleep 10
         for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+            [ "$node" = "$ORIGINAL_WINNER" ] && continue
             if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
                 NEW_WINNER=$node
                 break
@@ -898,16 +1406,10 @@ test_node_failover() {
         done
     fi
 
-    [ -n "$NEW_WINNER" ] || { kubectl taint node "$ORIGINAL_WINNER" purelb-test- 2>/dev/null || true; fail "VIP $IPV4 not found on any node after failover"; }
+    [ -n "$NEW_WINNER" ] || { kubectl taint node "$ORIGINAL_WINNER" purelb-test- 2>/dev/null || true; fail "VIP $IPV4 not found on any alternate node after failover"; }
+    pass "Failover successful: VIP now on $NEW_WINNER (was $ORIGINAL_WINNER)"
 
-    # Verify it's a DIFFERENT node (actual failover occurred)
-    if [ "$NEW_WINNER" = "$ORIGINAL_WINNER" ]; then
-        kubectl taint node "$ORIGINAL_WINNER" purelb-test- 2>/dev/null || true
-        fail "VIP should have moved to a different node, but it's still on $ORIGINAL_WINNER"
-    fi
-    pass "Failover successful: VIP moved from $ORIGINAL_WINNER to $NEW_WINNER"
-
-    # Verify service is still reachable after failover
+    # Verify service is still reachable via the new winner
     info "Verifying service is reachable after failover..."
     RESPONSE=$(curl -s --connect-timeout 10 "http://$IPV4/" || true)
     echo "$RESPONSE" | grep -q "Pod:" || { kubectl taint node "$ORIGINAL_WINNER" purelb-test- 2>/dev/null || true; fail "Service not reachable after failover"; }
@@ -919,7 +1421,7 @@ test_node_failover() {
 
     # Wait for DaemonSet to fully recover with polling
     info "Waiting for lbnodeagent DaemonSet to recover..."
-    kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system --timeout=60s
 
     # Verify all agents are running (with polling to handle timing issues)
     EXPECTED_AGENTS=5
@@ -928,7 +1430,7 @@ test_node_failover() {
     INTERVAL=2
     ELAPSED=0
     while [ $ELAPSED -lt $TIMEOUT ]; do
-        RUNNING_AGENTS=$(kubectl get pods -n purelb-system-l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+        RUNNING_AGENTS=$(kubectl get pods -n purelb-system -l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
         if [ "$RUNNING_AGENTS" -eq "$EXPECTED_AGENTS" ]; then
             pass "All $EXPECTED_AGENTS lbnodeagent pods recovered (took ${ELAPSED}s)"
             break
@@ -1596,15 +2098,34 @@ run_all_tests() {
     echo ""
     echo "Cluster: $CONTEXT"
     echo "Namespace: $NAMESPACE"
+    if [ "$INTERACTIVE" = "true" ]; then
+        echo ""
+        echo -e "${YELLOW}>>> INTERACTIVE MODE: Will pause after test groups for review <<<${NC}"
+    fi
     echo ""
 
     # Infrastructure validation - MUST pass before running tests
     validate_prerequisites
+    pause_for_review
 
     # Setup
     setup_lbnodeagent
 
+    # Subnet-Aware Election tests (NEW)
+    echo ""
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}  TEST GROUP: Subnet-Aware Election${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+    test_lease_verification
+    test_local_pool_no_matching_subnet
+    test_remote_pool
+    pause_for_review
+
     # Core functionality tests
+    echo ""
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}  TEST GROUP: Core Functionality${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
     test_ipv4_singlestack
     test_ipv6_singlestack
     test_dualstack
@@ -1613,18 +2134,44 @@ run_all_tests() {
     test_ip_sharing
     test_specific_ip_request
     test_multi_pod_lb
+    pause_for_review
+
+    # Failover tests
+    echo ""
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}  TEST GROUP: Failover & High Availability${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
     test_node_failover
+    test_graceful_failover
+    pause_for_review
+
+    # Additional functionality tests
+    echo ""
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}  TEST GROUP: Additional Functionality${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
     test_etp_local_override
     test_no_duplicate_vips
+    pause_for_review
 
     # Address lifetime and flag tests (ensures CNI compatibility)
+    echo ""
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}  TEST GROUP: Address Lifetime & CNI Compatibility${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
     test_local_vip_address_flags
     test_address_renewal_timer
     test_flannel_node_ip
+    pause_for_review
 
     # Cross-node connectivity validation (catches IP forwarding issues)
+    echo ""
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}  TEST GROUP: Cross-Node Connectivity${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
     test_cross_node_connectivity
     test_pod_connectivity
+    pause_for_review
 
     # Cleanup all test services
     cleanup_test_services

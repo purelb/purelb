@@ -31,6 +31,12 @@ import (
 // the node's local subnets.
 const SubnetsAnnotation = "purelb.io/subnets"
 
+// InstanceAnnotation is the annotation key used on leases to store
+// the unique instance ID (Pod UID) of the lbnodeagent that created
+// the lease. This prevents race conditions during DaemonSet pod
+// recreation where an old pod might delete a new pod's lease.
+const InstanceAnnotation = "purelb.io/instance"
+
 // IPv6 address flags that indicate an address should NOT be used:
 // - IFA_F_DADFAILED (0x08): Duplicate address detection failed
 // - IFA_F_DEPRECATED (0x20): Address is deprecated, don't use for new connections

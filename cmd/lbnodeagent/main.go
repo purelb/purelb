@@ -49,6 +49,7 @@ func main() {
 		kubeconfig = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file (only needed when running outside of k8s)")
 		host       = flag.String("host", os.Getenv("PURELB_HOST"), "HTTP host address for Prometheus metrics")
 		myNode     = flag.String("node-name", os.Getenv("PURELB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
+		podUID     = flag.String("pod-uid", os.Getenv("PURELB_POD_UID"), "unique Pod UID for lease ownership (from downward API)")
 		port       = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
 
 		// Lease configuration (optional, uses defaults if not set)
@@ -111,6 +112,7 @@ func main() {
 	elect, err := election.New(election.Config{
 		Namespace:      *namespace,
 		NodeName:       *myNode,
+		InstanceID:     *podUID,
 		Client:         client.Clientset(),
 		LeaseDuration:  *leaseDuration,
 		RenewDeadline:  *renewDeadline,

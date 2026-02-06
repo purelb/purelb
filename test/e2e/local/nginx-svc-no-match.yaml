@@ -1,0 +1,19 @@
+---
+# Service requesting IP from no-match-subnet pool
+# Expected: IP allocated but NOT announced (no node has 10.255.0.0/24)
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-lb-no-match
+  namespace: test
+  annotations:
+    purelb.io/service-group: no-match-subnet
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies: [IPv4]
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80

@@ -188,18 +188,23 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 
 		if a.localNameRegex != nil {
 			// The user specified an announcement interface regex so use it to
-			// try to find a local interface, otherwise announce remote
+			// try to find a local interface
 			lbIPNet, localif, err := findLocal(a.localNameRegex, lbIP)
 			if err == nil {
 				// We found a local interface, announce the address on it
 				if err := a.announceLocal(svc, localif, lbIP, lbIPNet); err != nil {
 					retErr = err
 				}
-			} else {
-				// lbIP isn't local to any interfaces so add it to dummyInt
+			} else if a.isRemotePool(lbIP) {
+				// lbIP is from a remote pool, so add it to dummyInt
 				if err := a.announceRemote(svc, epSlices, a.dummyInt, lbIP); err != nil {
 					retErr = err
 				}
+			} else {
+				// lbIP is from a local pool but no local interface matches.
+				// Do NOT announce - subnet-aware election will handle this.
+				logging.Info(l, "event", "noLocalInterface", "ip", lbIP,
+					"msg", "local pool IP has no matching local interface, not announcing")
 			}
 
 		} else {
@@ -216,11 +221,16 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 				if err := a.announceLocal(svc, defaultif, lbIP, lbIPNet); err != nil {
 					retErr = err
 				}
-			} else {
-				// The default interface is remote, so add lbIP to dummyInt
+			} else if a.isRemotePool(lbIP) {
+				// lbIP is from a remote pool, so add it to dummyInt
 				if err := a.announceRemote(svc, epSlices, a.dummyInt, lbIP); err != nil {
 					retErr = err
 				}
+			} else {
+				// lbIP is from a local pool but doesn't match the default interface.
+				// Do NOT announce - subnet-aware election will handle this.
+				logging.Info(l, "event", "noLocalInterface", "ip", lbIP,
+					"msg", "local pool IP has no matching local interface, not announcing")
 			}
 		}
 	}
@@ -546,6 +556,19 @@ func (a *announcer) poolFor(lbIP net.IP) (string, *purelbv2.AddressPool, error) 
 		}
 	}
 	return "", nil, fmt.Errorf("Can't find pool for address %+v", lbIP)
+}
+
+// isRemotePool returns true if the IP address belongs to a remote pool.
+// Remote pools should be announced on kube-lb0, while local pools should
+// only be announced on matching local interfaces (or not at all if no match).
+func (a *announcer) isRemotePool(lbIP net.IP) bool {
+	for _, group := range a.remoteGroups {
+		_, err := group.PoolForAddress(lbIP)
+		if err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // renewalKey generates the map key for a service's address renewal.

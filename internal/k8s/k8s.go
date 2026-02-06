@@ -357,7 +357,9 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 	for {
 		key, quit := c.queue.Get()
 		if quit {
-			c.shutdown()
+			if c.shutdown != nil {
+				c.shutdown()
+			}
 			return nil
 		}
 		updates.Inc()

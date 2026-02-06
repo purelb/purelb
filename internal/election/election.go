@@ -57,6 +57,11 @@ type Config struct {
 	// NodeName is this node's name (used for lease identity)
 	NodeName string
 
+	// InstanceID is a unique identifier for this lbnodeagent instance (Pod UID).
+	// Used to prevent race conditions during DaemonSet pod recreation where
+	// an old pod might delete a new pod's lease.
+	InstanceID string
+
 	// Client is the Kubernetes client
 	Client kubernetes.Interface
 
@@ -427,16 +432,63 @@ func (e *Election) HasLocalCandidate(ipStr string) bool {
 	return false
 }
 
-// DeleteOurLease removes this node's lease from the cluster
+// DeleteOurLease removes this node's lease from the cluster, but only if
+// we still own it. Uses a fresh context since this may be called after
+// StopRenewals() which cancels the election context.
+//
+// Ownership is verified by checking the InstanceAnnotation matches our
+// InstanceID. This prevents race conditions during DaemonSet pod recreation
+// where an old pod might try to delete a new pod's lease.
 func (e *Election) DeleteOurLease() error {
-	err := e.config.Client.CoordinationV1().Leases(e.config.Namespace).Delete(
-		e.ctx,
-		e.leaseName,
-		metav1.DeleteOptions{},
+	// Use a fresh context with timeout since e.ctx may be cancelled
+	// during graceful shutdown (StopRenewals cancels e.ctx)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Get the current lease to check ownership
+	lease, err := e.config.Client.CoordinationV1().Leases(e.config.Namespace).Get(
+		ctx, e.leaseName, metav1.GetOptions{},
 	)
 	if err != nil {
-		return fmt.Errorf("failed to delete lease %s: %w", e.leaseName, err)
+		// Lease doesn't exist or other error - nothing to delete
+		logging.Debug(e.config.Logger, "op", "election", "action", "deleteLease",
+			"lease", e.leaseName, "error", err, "msg", "failed to get lease for deletion")
+		return nil
 	}
+
+	// Verify we own this lease by checking the instance annotation
+	leaseInstance := ""
+	if lease.Annotations != nil {
+		leaseInstance = lease.Annotations[InstanceAnnotation]
+	}
+
+	if leaseInstance != e.config.InstanceID {
+		// Lease belongs to a different instance (likely new pod) - don't delete
+		logging.Debug(e.config.Logger, "op", "election", "action", "deleteLease",
+			"lease", e.leaseName, "ourInstance", e.config.InstanceID,
+			"leaseInstance", leaseInstance, "msg", "lease owned by different instance, skipping delete")
+		return nil
+	}
+
+	// Delete with ResourceVersion precondition for atomic operation
+	// This ensures we delete the exact lease we just checked
+	err = e.config.Client.CoordinationV1().Leases(e.config.Namespace).Delete(
+		ctx,
+		e.leaseName,
+		metav1.DeleteOptions{
+			Preconditions: &metav1.Preconditions{
+				ResourceVersion: &lease.ResourceVersion,
+			},
+		},
+	)
+	if err != nil {
+		// If delete fails due to ResourceVersion conflict, another instance
+		// has already updated the lease - that's fine, we don't own it anymore
+		logging.Debug(e.config.Logger, "op", "election", "action", "deleteLease",
+			"lease", e.leaseName, "error", err, "msg", "delete failed (likely ownership changed)")
+		return nil
+	}
+
 	logging.Info(e.config.Logger, "op", "election", "action", "deleteLease",
 		"lease", e.leaseName, "msg", "lease deleted")
 	return nil
@@ -470,7 +522,8 @@ func (e *Election) createOrUpdateLease() error {
 			Name:      e.leaseName,
 			Namespace: e.config.Namespace,
 			Annotations: map[string]string{
-				SubnetsAnnotation: subnetsAnnotation,
+				SubnetsAnnotation:  subnetsAnnotation,
+				InstanceAnnotation: e.config.InstanceID,
 			},
 			Labels: map[string]string{
 				"app.kubernetes.io/component": "lbnodeagent",
@@ -561,14 +614,19 @@ func (e *Election) renewLease() error {
 	now := metav1.NewMicroTime(time.Now())
 	lease.Spec.RenewTime = &now
 
+	// Ensure annotations map exists
+	if lease.Annotations == nil {
+		lease.Annotations = make(map[string]string)
+	}
+
+	// Always set our instance ID (ensures ownership even if lease was orphaned)
+	lease.Annotations[InstanceAnnotation] = e.config.InstanceID
+
 	// Optionally update subnets if they changed
 	if e.config.GetLocalSubnets != nil {
 		subnets, err := e.config.GetLocalSubnets()
 		if err == nil {
 			newAnnotation := FormatSubnetsAnnotation(subnets)
-			if lease.Annotations == nil {
-				lease.Annotations = make(map[string]string)
-			}
 			if lease.Annotations[SubnetsAnnotation] != newAnnotation {
 				lease.Annotations[SubnetsAnnotation] = newAnnotation
 				logging.Info(e.config.Logger, "op", "election", "action", "subnetsChanged",

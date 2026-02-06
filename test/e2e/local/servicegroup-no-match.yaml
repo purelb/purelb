@@ -1,0 +1,13 @@
+---
+# ServiceGroup with a subnet that NO node has
+# Used to test subnet-aware election filtering
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: no-match-subnet
+  namespace: purelb-system
+spec:
+  local:
+    v4pools:
+    - pool: 10.255.0.100-10.255.0.110
+      subnet: 10.255.0.0/24

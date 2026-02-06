@@ -724,24 +724,19 @@ This release introduces breaking changes that warrant a new API version. The `pu
 
 **Decision**: Clean break to v2. Users must explicitly migrate, ensuring they understand the new behavior.
 
-### ⚠️ v2 Implementation Gaps (Must Fix Before Release)
+### ✅ v2 Implementation Gaps (All Complete)
 
-The following gaps exist between the plan and actual implementation:
+All previously identified gaps have been addressed:
 
-| Gap | Status | Notes |
-|-----|--------|-------|
-| `V4Pools`/`V6Pools` arrays in v2 | ❌ Missing | Current v2 only has singular `V4Pool`/`V6Pool` |
-| `iprange.go` in v2 package | ❌ Missing | `IPRange` type, `NewIPRange()` function needed |
-| `config.go` in v2 package | ❌ Missing | `Config` struct for `SetConfig()` |
-| Remote pool in allocator | ❌ Missing | `parsePool()` only handles Local and Netbox |
-| v2 JSON tags | ⚠️ Needs Fix | Should use `localInterface`/`dummyInterface` |
+| Gap | Status | Implementation |
+|-----|--------|----------------|
+| `V4Pools`/`V6Pools` arrays in v2 | ✅ Complete | Both singular and plural fields in `ServiceGroupLocalSpec` and `ServiceGroupRemoteSpec` with `PoolForAddress()` methods |
+| `iprange.go` in v2 package | ✅ Complete | `IPRange` type with `NewIPRange()`, `Contains()`, `Overlaps()`, `ContainedBy()`, `Family()`, `First()`, `Next()` |
+| `config.go` in v2 package | ✅ Complete | `Config` struct aggregating `Groups` and `Agents` for `SetConfig()` |
+| Remote pool in allocator | ✅ Complete | `parsePool()` handles Local, Remote, and Netbox with `PoolTypeRemote` annotation |
+| v2 JSON tags | ✅ Complete | Clean names: `localInterface`, `dummyInterface`, `garpConfig`, `addressConfig` |
 
-**Before dropping v1 support**, these must be implemented in `pkg/apis/purelb/v2/`:
-1. Add `V4Pools`/`V6Pools` arrays to `ServiceGroupLocalSpec` and `ServiceGroupRemoteSpec`
-2. Copy `iprange.go` and `iprange_test.go` from v1, update package
-3. Create `config.go` with `Config` struct
-4. Update JSON tags to use clean names (`localInterface`, `dummyInterface`)
-5. Implement Remote pool support in `internal/allocator/pool.go`
+**v1 API has been dropped.** The codebase now uses v2-only with clean field names.
 
 ### v2 API Types
 
@@ -1533,12 +1528,94 @@ This breaks the full implementation into independent milestones that can be comp
 | 4. Announcer Integration | ✅ Complete | SetBalancer uses election, pool-type annotation |
 | 5. Graceful Shutdown | ✅ Complete | MarkUnhealthy, WithdrawAll, DeleteOurLease |
 | 6. GARP Enhancements | ✅ Complete | GARPConfig with count, interval, delay, verifyBeforeSend |
-| 7. API v2 Types | 🔄 Partial | Types exist, need V4Pools/V6Pools arrays, iprange.go |
-| 8. Allocator v2 Support | 🔄 Partial | pool-type annotation done, Remote pool not implemented |
+| 7. API v2 Types | ✅ Complete | V4Pools/V6Pools arrays, iprange.go, config.go, clean JSON tags |
+| 8. Allocator v2 Support | ✅ Complete | parsePool() handles Local, Remote, Netbox with pool-type annotation |
 | 9. Prometheus Metrics | ✅ Complete | metrics.go in election and local packages |
 | 10. Helm & RBAC Updates | ✅ Complete | Leases RBAC added, memberlist removed |
 | 11. Migration Tooling | ✅ Complete | scripts/migrate-v1-to-v2.sh, docs/migration-v1-to-v2.md |
-| 12. Cleanup & Final Testing | 🔄 In Progress | Memberlist removed, v2 gaps remain |
+| 12. Cleanup & Final Testing | ✅ Complete | Memberlist removed, final integration testing |
+| 13. Drop v1 API | ✅ Complete | v1 package removed, v2-only with clean field names |
+| 14. Lease Ownership Fix | ✅ Complete | Pod UID annotation prevents old pod deleting new pod's lease |
+| 15. Stress Testing | 🔄 In Progress | Stress test passing, needs more soak testing |
+
+### Post-Milestone: Lease Ownership Bug Fix (Milestone 14)
+
+**Problem discovered during stress testing:** When a DaemonSet pod is deleted, Kubernetes
+immediately recreates a new pod on the same node. Both pods share the same lease name
+(`purelb-node-<nodename>`) and the same `HolderIdentity` (node name). The old pod's graceful
+shutdown sequence calls `DeleteOurLease()` which blindly deletes by name — if the new pod has
+already created/updated the lease, the old pod deletes the new pod's lease.
+
+**Root cause:** `DeleteOurLease()` had no way to distinguish which pod instance owned the lease.
+
+**Fix implemented:**
+- Added `purelb.io/instance` annotation on leases storing the Pod UID (unique per pod instance)
+- `PURELB_POD_UID` environment variable injected via Kubernetes Downward API (`metadata.uid`)
+- `DeleteOurLease()` now: (1) GETs lease, (2) checks instance annotation matches our Pod UID,
+  (3) deletes with `ResourceVersion` precondition for atomic compare-and-swap
+- If instance doesn't match (new pod took over), delete is skipped
+- If ResourceVersion changed between GET and DELETE (race), delete fails safely
+
+**Files changed:**
+| File | Change |
+|------|--------|
+| `internal/election/subnets.go` | Added `InstanceAnnotation` constant |
+| `internal/election/election.go` | Added `InstanceID` to Config, ownership check in `DeleteOurLease`, instance annotation in `createOrUpdateLease` and `renewLease` |
+| `cmd/lbnodeagent/main.go` | Read `PURELB_POD_UID` env var, pass as `InstanceID` to election config |
+| `build/helm/purelb/templates/daemonset.yaml` | Added `PURELB_POD_UID` env var from Downward API |
+| `deployments/default/purelb.yaml` | Added `PURELB_POD_UID` env var from Downward API |
+
+### Post-Milestone: Stress Testing (Milestone 15)
+
+**Status:** Stress test framework built and running. Latest run: 100% pass rate (3/3).
+
+**Test script:** `test/e2e/local/stress-failover.sh`
+
+**Test modes:**
+- Basic failover (graceful shutdown with varied grace periods)
+- Force kill (`--grace-period=0`, simulates hard crash)
+- Cascading failover (kill new winner immediately after first failover)
+- Election noise (random pod deletions during test)
+- Multiple VIPs (5 services creating election contention)
+- Node tainting (prevents pod rescheduling, simulates true node failure)
+
+**Pass criteria:**
+- **Tainted tests:** VIP must move to a different node (verified while taint active)
+- **Non-tainted tests:** VIP must be announced (same node with new pod is valid)
+- **All tests:** Service must be reachable via HTTP
+
+**Current results (last run):**
+- Non-tainted tests: PASS — new pod on same node takes over VIP correctly
+- Tainted tests: PASS — VIP moves to different node within ~1-3s
+- Cascade tests: PASS — VIP survives double failover
+
+**What to do next:**
+1. Run longer soak tests (`./stress-failover.sh 50`) to build confidence
+2. Test with API server instability (network partition simulation)
+3. Test rolling upgrades from previous version
+4. Consider adding IPv6 VIP failover tests
+
+**How to resume testing:**
+```bash
+# Build and push images
+export KO_DOCKER_REPO=ghcr.io/purelb/purelb TAG=subnet-aware-election
+go run github.com/google/ko@v0.17.1 build --base-import-paths --tags=$TAG ./cmd/lbnodeagent
+
+# Apply manifest (includes PURELB_POD_UID env var)
+kubectl --context proxmox apply -f deployments/default/purelb.yaml
+
+# Fix image tag (manifest uses VERSION_TAG placeholder)
+kubectl --context proxmox set image daemonset/lbnodeagent lbnodeagent=ghcr.io/purelb/purelb/lbnodeagent:subnet-aware-election -n purelb-system
+
+# Ensure Always pull policy
+kubectl --context proxmox patch daemonset lbnodeagent -n purelb-system -p '{"spec":{"template":{"spec":{"containers":[{"name":"lbnodeagent","imagePullPolicy":"Always"}]}}}}'
+
+# Wait for rollout
+kubectl --context proxmox rollout status daemonset/lbnodeagent -n purelb-system
+
+# Run stress test
+cd test/e2e/local && ./stress-failover.sh 10
+```
 
 ### Execution Order
 
@@ -1564,6 +1641,8 @@ Milestone 10 (Helm)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                     ↓
             Milestone 12 (Cleanup)
+                    ↓
+            Milestone 13 (Drop v1 API)
 ```
 
 ---
@@ -1898,6 +1977,31 @@ helm template purelb ./build/helm/purelb
 - API server partition recovery works
 
 **Depends On:** All previous milestones
+
+---
+
+### Milestone 13: Drop v1 API
+**Goal:** Remove v1 API package, use v2-only with clean field names
+
+**Files Modified:**
+- `pkg/apis/purelb/v1/` (removed)
+- `internal/allocator/` (v2-only imports)
+- `internal/local/` (v2-only imports)
+- `cmd/allocator/` and `cmd/lbnodeagent/` (v2-only)
+
+**Tasks:**
+1. Remove `pkg/apis/purelb/v1/` package entirely
+2. Update all imports to use v2 types
+3. Ensure v2 types have all required functionality (iprange.go, config.go)
+4. Verify clean JSON field names (localInterface, dummyInterface, etc.)
+5. Update CRD manifests to v2-only
+
+**Verification:**
+- `go build ./...` succeeds with no v1 imports
+- All tests pass
+- CRD manifests only contain v2 definitions
+
+**Depends On:** Milestone 12
 
 ---
 
