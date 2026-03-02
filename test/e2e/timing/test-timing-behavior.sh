@@ -36,6 +36,13 @@ fail() { echo -e "${RED}✗${NC} $1"; }
 
 kubectl() { command kubectl --context "$CONTEXT" "$@"; }
 
+# Apply a YAML template, replacing NAME with the given service name
+apply_template() {
+    local TEMPLATE=$1
+    local SVC_NAME=$2
+    sed "s/name: NAME/name: $SVC_NAME/" "${SCRIPT_DIR}/${TEMPLATE}" | kubectl apply -f - >/dev/null
+}
+
 # Get node list dynamically
 NODES=$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}')
 NODE_COUNT=$(echo $NODES | wc -w)
@@ -252,27 +259,7 @@ test_b1_cache_sync_latency() {
 
         # Create a fresh ETP Local service for this test
         local SVC_NAME="timing-b1-$i"
-        cat <<EOF | kubectl apply -f - >/dev/null
-apiVersion: v1
-kind: Service
-metadata:
-  name: $SVC_NAME
-  namespace: $NAMESPACE
-  labels:
-    test-suite: timing
-  annotations:
-    purelb.io/service-group: remote
-spec:
-  type: LoadBalancer
-  externalTrafficPolicy: Local
-  ipFamilyPolicy: SingleStack
-  ipFamilies:
-  - IPv4
-  selector:
-    app: nginx
-  ports:
-  - port: 80
-EOF
+        apply_template svc-timing-etp-local.yaml "$SVC_NAME"
 
         # Wait for IP allocation
         local IP=$(wait_for_ip_allocation $SVC_NAME 30)
@@ -353,27 +340,7 @@ test_b3_endpoint_termination() {
     local IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
     if [ -z "$IP" ]; then
         warn "Creating ETP Local service..."
-        cat <<EOF | kubectl apply -f - >/dev/null
-apiVersion: v1
-kind: Service
-metadata:
-  name: nginx-etp-local
-  namespace: $NAMESPACE
-  labels:
-    test-suite: timing
-  annotations:
-    purelb.io/service-group: remote
-spec:
-  type: LoadBalancer
-  externalTrafficPolicy: Local
-  ipFamilyPolicy: SingleStack
-  ipFamilies:
-  - IPv4
-  selector:
-    app: nginx
-  ports:
-  - port: 80
-EOF
+        kubectl apply -f ${SCRIPT_DIR}/svc-etp-local.yaml >/dev/null
         sleep 5
         IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
     fi
@@ -454,28 +421,8 @@ test_d1_nftables_latency() {
 
         # Create a new service
         local SVC_NAME="timing-d1-$i"
-        cat <<EOF | kubectl apply -f - >/dev/null
-apiVersion: v1
-kind: Service
-metadata:
-  name: $SVC_NAME
-  namespace: $NAMESPACE
-  labels:
-    test-suite: timing
-  annotations:
-    purelb.io/service-group: remote
-spec:
-  type: LoadBalancer
-  ipFamilyPolicy: SingleStack
-  ipFamilies:
-  - IPv4
-  selector:
-    app: nginx
-  ports:
-  - port: 80
-EOF
-
         local T_CREATE=$(now_ms)
+        apply_template svc-timing-standard.yaml "$SVC_NAME"
 
         # Wait for IP
         local IP=$(wait_for_ip_allocation $SVC_NAME 30)
@@ -550,27 +497,7 @@ test_d3_end_to_end() {
 
         local SVC_NAME="timing-d3-$i"
         local T_CREATE=$(now_ms)
-
-        cat <<EOF | kubectl apply -f - >/dev/null
-apiVersion: v1
-kind: Service
-metadata:
-  name: $SVC_NAME
-  namespace: $NAMESPACE
-  labels:
-    test-suite: timing
-  annotations:
-    purelb.io/service-group: remote
-spec:
-  type: LoadBalancer
-  ipFamilyPolicy: SingleStack
-  ipFamilies:
-  - IPv4
-  selector:
-    app: nginx
-  ports:
-  - port: 80
-EOF
+        apply_template svc-timing-standard.yaml "$SVC_NAME"
 
         # Wait for IP
         local IP=$(wait_for_ip_allocation $SVC_NAME 30)
@@ -627,27 +554,7 @@ test_e1_rapid_scaling() {
     # Get or create ETP Local service
     local IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
     if [ -z "$IP" ]; then
-        cat <<EOF | kubectl apply -f - >/dev/null
-apiVersion: v1
-kind: Service
-metadata:
-  name: nginx-etp-local
-  namespace: $NAMESPACE
-  labels:
-    test-suite: timing
-  annotations:
-    purelb.io/service-group: remote
-spec:
-  type: LoadBalancer
-  externalTrafficPolicy: Local
-  ipFamilyPolicy: SingleStack
-  ipFamilies:
-  - IPv4
-  selector:
-    app: nginx
-  ports:
-  - port: 80
-EOF
+        kubectl apply -f ${SCRIPT_DIR}/svc-etp-local.yaml >/dev/null
         sleep 5
         IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
     fi
@@ -743,24 +650,7 @@ test_e3_endpoint_migration() {
     local IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
     if [ -z "$IP" ]; then
         warn "Creating ETP Local service..."
-        cat <<EOF | kubectl apply -f - >/dev/null
-apiVersion: v1
-kind: Service
-metadata:
-  name: nginx-etp-local
-  namespace: $NAMESPACE
-  labels:
-    test-suite: timing
-  annotations:
-    purelb.io/service-group: remote
-spec:
-  type: LoadBalancer
-  externalTrafficPolicy: Local
-  selector:
-    app: nginx
-  ports:
-  - port: 80
-EOF
+        kubectl apply -f ${SCRIPT_DIR}/svc-etp-local.yaml >/dev/null
         sleep 5
         IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
     fi
@@ -877,6 +767,14 @@ main() {
         echo "ERROR: nginx deployment not found in $NAMESPACE"
         exit 1
     }
+
+    # Ensure required ServiceGroups exist
+    for sg in default remote; do
+        if ! kubectl get servicegroup $sg -n purelb-system >/dev/null 2>&1; then
+            info "Creating '$sg' ServiceGroup..."
+            kubectl apply -f ${SCRIPT_DIR}/servicegroup-${sg}.yaml
+        fi
+    done
 
     # Run tests
     local ITERATIONS=${1:-3}

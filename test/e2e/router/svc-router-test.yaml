@@ -1,0 +1,26 @@
+---
+# Service template for router connectivity tests.
+# Placeholders are substituted by the test script at runtime:
+#   NAME, NAMESPACE, TEST_RUN_ID, SERVICE_GROUP, ETP, PORT
+apiVersion: v1
+kind: Service
+metadata:
+  name: NAME
+  namespace: NAMESPACE
+  labels:
+    test-suite: router
+    test-run: "TEST_RUN_ID"
+  annotations:
+    purelb.io/service-group: SERVICE_GROUP
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: ETP
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPFAMILY
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: PORT
+    targetPort: 80

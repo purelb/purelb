@@ -1,0 +1,23 @@
+---
+# Per-iteration ETP Local service template for timing tests.
+# Used by test B1. The service name is replaced at runtime.
+# NAME is substituted by the script.
+apiVersion: v1
+kind: Service
+metadata:
+  name: NAME
+  namespace: test
+  labels:
+    test-suite: timing
+  annotations:
+    purelb.io/service-group: remote
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80

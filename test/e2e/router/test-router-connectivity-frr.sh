@@ -101,7 +101,7 @@ dump_debug_state() {
     echo "--- FRR BGP routes ---"
     frr_show_routes 2>/dev/null || echo "(failed)"
     echo "--- lbnodeagent pods ---"
-    kubectl get pods -n purelb-system-l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
+    kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
     echo "========================="
 }
 
@@ -227,31 +227,16 @@ create_test_service() {
     local NAME=$1
     local PORT=${2:-80}
     local ETP=${3:-Cluster}
+    local IPFAMILY=${4:-IPv4}
 
-    cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Service
-metadata:
-  name: $NAME
-  namespace: $NAMESPACE
-  labels:
-    test-suite: router
-    test-run: "$TEST_RUN_ID"
-  annotations:
-    purelb.io/service-group: $SERVICE_GROUP
-spec:
-  type: LoadBalancer
-  externalTrafficPolicy: $ETP
-  ipFamilyPolicy: SingleStack
-  ipFamilies:
-  - IPv4
-  selector:
-    app: nginx
-  ports:
-  - name: http
-    port: $PORT
-    targetPort: 80
-EOF
+    sed -e "s/name: NAME/name: $NAME/" \
+        -e "s/namespace: NAMESPACE/namespace: $NAMESPACE/" \
+        -e "s/test-run: \"TEST_RUN_ID\"/test-run: \"$TEST_RUN_ID\"/" \
+        -e "s/service-group: SERVICE_GROUP/service-group: $SERVICE_GROUP/" \
+        -e "s/externalTrafficPolicy: ETP/externalTrafficPolicy: $ETP/" \
+        -e "s/port: PORT/port: $PORT/" \
+        -e "s/- IPFAMILY/- $IPFAMILY/" \
+        "${SCRIPT_DIR}/svc-router-test.yaml" | kubectl apply -f -
 }
 
 wait_for_service_ip() {
@@ -341,11 +326,11 @@ test_prerequisites() {
 
     # Verify PureLB is running
     info "Verifying PureLB components..."
-    local AGENT_PODS=$(kubectl get pods -n purelb-system-l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+    local AGENT_PODS=$(kubectl get pods -n purelb-system -l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
     [ "$AGENT_PODS" -ge 1 ] || fail "LBNodeAgent not running"
     pass "LBNodeAgent running ($AGENT_PODS pods)"
 
-    local ALLOCATOR_READY=$(kubectl get deployment -n purelb-systemallocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+    local ALLOCATOR_READY=$(kubectl get deployment -n purelb-system allocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
     [ "$ALLOCATOR_READY" -ge 1 ] || fail "Allocator not running"
     pass "Allocator running"
 
@@ -355,7 +340,7 @@ test_prerequisites() {
     pass "Test pods running ($NGINX_PODS pods)"
 
     # Verify ServiceGroup exists
-    if ! kubectl get servicegroup -n purelb-system"$SERVICE_GROUP" >/dev/null 2>&1; then
+    if ! kubectl get servicegroup -n purelb-system "$SERVICE_GROUP" >/dev/null 2>&1; then
         fail "ServiceGroup '$SERVICE_GROUP' not found in purelb namespace"
     fi
     pass "ServiceGroup '$SERVICE_GROUP' exists"
@@ -516,8 +501,8 @@ test_node_failure_route_withdrawal() {
     info "Failing node: $FAIL_NODE"
 
     kubectl taint node "$FAIL_NODE" purelb-router-test=failover:NoExecute --overwrite
-    local AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
-    [ -n "$AGENT_POD" ] && kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
+    local AGENT_POD=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
+    [ -n "$AGENT_POD" ] && kubectl delete pod -n purelb-system "$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
 
     # Wait for VIP removal from node
     info "Waiting for VIP removal from $FAIL_NODE..."
@@ -564,7 +549,7 @@ test_node_failure_route_withdrawal() {
     # Restore node
     info "Restoring $FAIL_NODE..."
     kubectl taint node "$FAIL_NODE" purelb-router-test-
-    kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system --timeout=60s
 
     # Wait for next-hop to return
     info "Waiting for next-hop to return to FRR..."

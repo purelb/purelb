@@ -37,13 +37,13 @@ Cluster Nodes (GoBGP)
 The tests use the existing `remote` ServiceGroup from `../remote/servicegroup-remote.yaml`:
 
 ```yaml
-apiVersion: purelb.io/v1
+apiVersion: purelb.io/v2
 kind: ServiceGroup
 metadata:
   name: remote
   namespace: purelb-system
 spec:
-  local:
+  remote:
     v4pools:
     - aggregation: /32
       pool: 10.255.0.100-10.255.0.150

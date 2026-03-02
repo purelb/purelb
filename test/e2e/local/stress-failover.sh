@@ -66,6 +66,24 @@ get_vip_holder() {
     echo "NONE"
 }
 
+# Check if any node OTHER than the excluded one has the VIP.
+# Used for tainted tests: after a force-kill the orphaned VIP remains on
+# the dead node's eth0 (kernel state, not process state). In a real node
+# failure the interface would be down, so the orphan is harmless. This
+# function finds the new winner while ignoring the orphan.
+vip_on_other_node() {
+    local IP=$1
+    local EXCLUDE=$2
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        [ "$node" = "$EXCLUDE" ] && continue
+        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            echo $node
+            return 0
+        fi
+    done
+    echo "NONE"
+}
+
 get_pod_on_node() {
     local NODE=$1
     kubectl get pods -n $PURELB_NS -o wide 2>/dev/null | grep lbnodeagent | grep "$NODE" | awk '{print $1}'
@@ -87,10 +105,17 @@ capture_state() {
     kubectl get pods -n $PURELB_NS -o wide 2>/dev/null >> "$LOGFILE" || true
     echo "" >> "$LOGFILE"
 
-    echo "--- VIP Locations ---" >> "$LOGFILE"
+    echo "--- VIP Locations (IPv4) ---" >> "$LOGFILE"
     for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
         echo -n "$node: " >> "$LOGFILE"
         ssh $node "ip -o addr show eth0 2>/dev/null | grep '172.30.255' | awk '{print \$4}'" 2>/dev/null >> "$LOGFILE" || echo "unreachable" >> "$LOGFILE"
+    done
+    echo "" >> "$LOGFILE"
+
+    echo "--- VIP Locations (IPv6) ---" >> "$LOGFILE"
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        echo -n "$node: " >> "$LOGFILE"
+        ssh $node "ip -6 -o addr show eth0 2>/dev/null | grep 'deprecated' | awk '{print \$4}'" 2>/dev/null >> "$LOGFILE" || echo "unreachable" >> "$LOGFILE"
     done
     echo "" >> "$LOGFILE"
 }
@@ -206,11 +231,12 @@ run_single_test() {
     echo ""
     echo -e "${BLUE}--- Iteration $ITERATION: $DESC ---${NC}"
 
-    # Get current VIP and holder
+    # Get current VIPs
     local IPV4=$(kubectl get svc nginx-lb-ipv4 -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+    local IPV6=$(kubectl get svc nginx-lb-ipv6 -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
     if [ -z "$IPV4" ]; then
-        echo -e "${RED}  ERROR: No VIP found${NC}"
-        echo "ERROR: No VIP found" >> "$LOGFILE"
+        echo -e "${RED}  ERROR: No IPv4 VIP found${NC}"
+        echo "ERROR: No IPv4 VIP found" >> "$LOGFILE"
         return 1
     fi
 
@@ -267,24 +293,44 @@ run_single_test() {
     kubectl delete pod -n $PURELB_NS "$POD" --grace-period=$GRACE_PERIOD >> "$LOGFILE" 2>&1 &
     local DELETE_PID=$!
 
-    # Wait for VIP to move
+    # Wait for VIP to move (or for same-node recovery with a new pod)
     local TIMEOUT=30
-    local ELAPSED=0
     local NEW_HOLDER=""
     local CHECK_INTERVAL=1
+    local LOOP_START=$(date +%s)
+    local ELAPSED=0
 
     while [ $ELAPSED -lt $TIMEOUT ]; do
-        NEW_HOLDER=$(get_vip_holder "$IPV4")
+        # For tainted tests, skip the tainted node when checking: a force-killed
+        # pod leaves orphaned VIPs on eth0 that persist until a new pod cleans up.
+        # We care that a NEW winner announced the VIP, not that the old node lost it.
+        if [ "$WITH_TAINT" = "1" ]; then
+            NEW_HOLDER=$(vip_on_other_node "$IPV4" "$ORIGINAL")
+        else
+            NEW_HOLDER=$(get_vip_holder "$IPV4")
+        fi
 
-        # Log current state
+        # Log current state (wall-clock elapsed)
+        ELAPSED=$(( $(date +%s) - LOOP_START ))
         echo "  $(ts) [$ELAPSED s] VIP holder: $NEW_HOLDER" >> "$LOGFILE"
 
+        # VIP moved to a different node — clear success
         if [ "$NEW_HOLDER" != "NONE" ] && [ "$NEW_HOLDER" != "$ORIGINAL" ]; then
             break
         fi
 
+        # For non-tainted tests: detect same-node recovery. After a force-kill
+        # the orphaned VIP stays on eth0, so get_vip_holder always returns
+        # ORIGINAL. Check if the pod was replaced (new DaemonSet pod took over).
+        if [ "$WITH_TAINT" = "0" ] && [ "$NEW_HOLDER" = "$ORIGINAL" ]; then
+            local CURRENT_POD=$(get_pod_on_node "$ORIGINAL")
+            if [ -n "$CURRENT_POD" ] && [ "$CURRENT_POD" != "$POD" ]; then
+                echo "  $(ts) [$ELAPSED s] New pod $CURRENT_POD replaced $POD on $ORIGINAL" >> "$LOGFILE"
+                break
+            fi
+        fi
+
         sleep $CHECK_INTERVAL
-        ELAPSED=$((ELAPSED + CHECK_INTERVAL))
     done
 
     # Wait for delete to finish
@@ -305,27 +351,60 @@ run_single_test() {
             kubectl delete pod -n $PURELB_NS "$CASCADE_POD" --grace-period=3 >> "$LOGFILE" 2>&1 &
             local CASCADE_PID=$!
 
-            # Wait for VIP to move again
+            # Wait for VIP to move again. The cascade node (NEW_HOLDER) may
+            # recover with a new DaemonSet pod, so we track whether the VIP
+            # left that node first (confirming the kill took effect) before
+            # accepting any non-ORIGINAL holder — including the cascade node.
             local CASCADE_TIMEOUT=20
             local CASCADE_ELAPSED=0
+            local CASCADE_LOOP_START=$(date +%s)
             local SECOND_HOLDER=""
+            local SAW_LEAVE=false
 
             while [ $CASCADE_ELAPSED -lt $CASCADE_TIMEOUT ]; do
                 SECOND_HOLDER=$(get_vip_holder "$IPV4")
+                CASCADE_ELAPSED=$(( $(date +%s) - CASCADE_LOOP_START ))
                 echo "  $(ts) [CASCADE $CASCADE_ELAPSED s] VIP holder: $SECOND_HOLDER" >> "$LOGFILE"
 
-                if [ "$SECOND_HOLDER" != "NONE" ] && [ "$SECOND_HOLDER" != "$NEW_HOLDER" ] && [ "$SECOND_HOLDER" != "$ORIGINAL" ]; then
-                    break
+                # Track when VIP leaves the cascade node (kill took effect)
+                if [ "$SECOND_HOLDER" != "$NEW_HOLDER" ]; then
+                    SAW_LEAVE=true
+                fi
+
+                # After transition, accept any non-NONE holder.
+                # For tainted tests, also reject ORIGINAL (can't run pods).
+                if [ "$SAW_LEAVE" = true ] && [ "$SECOND_HOLDER" != "NONE" ]; then
+                    if [ "$WITH_TAINT" = "1" ] && [ "$SECOND_HOLDER" = "$ORIGINAL" ]; then
+                        : # tainted node can't run pods, keep waiting
+                    else
+                        break
+                    fi
                 fi
 
                 sleep 1
-                CASCADE_ELAPSED=$((CASCADE_ELAPSED + 1))
             done
 
             wait $CASCADE_PID 2>/dev/null || true
 
-            if [ "$SECOND_HOLDER" != "NONE" ] && [ "$SECOND_HOLDER" != "$NEW_HOLDER" ]; then
-                echo -e "  ${GREEN}CASCADE OK${NC}: VIP moved to $SECOND_HOLDER"
+            # Evaluate cascade result. Any non-NONE holder is valid,
+            # except ORIGINAL when tainted (no pod can run there).
+            local CASCADE_OK=false
+            if [ "$SECOND_HOLDER" != "NONE" ]; then
+                if [ "$WITH_TAINT" = "1" ] && [ "$SECOND_HOLDER" = "$ORIGINAL" ]; then
+                    : # tainted node can't be valid
+                else
+                    CASCADE_OK=true
+                fi
+            fi
+
+            if [ "$CASCADE_OK" = true ]; then
+                if [ "$SECOND_HOLDER" = "$NEW_HOLDER" ]; then
+                    echo -e "  ${GREEN}CASCADE OK${NC}: New pod on $SECOND_HOLDER took over"
+                elif [ "$SECOND_HOLDER" = "$ORIGINAL" ]; then
+                    echo -e "  ${GREEN}CASCADE OK${NC}: Original node $SECOND_HOLDER recovered"
+                else
+                    echo -e "  ${GREEN}CASCADE OK${NC}: VIP moved to $SECOND_HOLDER"
+                fi
                 NEW_HOLDER=$SECOND_HOLDER
             else
                 echo -e "  ${RED}CASCADE FAIL${NC}: VIP stuck on $SECOND_HOLDER"
@@ -399,7 +478,25 @@ run_single_test() {
                 echo -e "  ${GREEN}PASS${NC}: VIP moved to $FINAL_HOLDER in ${FIRST_MOVE_TIME}s (total: ${DURATION}s)"
                 echo "RESULT: PASS - VIP moved from $ORIGINAL to $FINAL_HOLDER" >> "$LOGFILE"
             fi
-            echo -e "  ${GREEN}Service reachable${NC}"
+            echo -e "  ${GREEN}IPv4 service reachable${NC}"
+
+            # Check IPv6 reachability (catches flannel address selection bug)
+            if [ -n "$IPV6" ]; then
+                local IPV6_OK=false
+                for attempt in 1 2 3; do
+                    if curl -6 -s --connect-timeout 3 "http://[$IPV6]/" | grep -q "nginx\|Pod:\|Welcome"; then
+                        IPV6_OK=true; break
+                    fi
+                    sleep 1
+                done
+                if [ "$IPV6_OK" = true ]; then
+                    echo -e "  ${GREEN}IPv6 service reachable${NC}"
+                else
+                    RESULT="FAIL_IPV6"
+                    echo -e "  ${RED}FAIL${NC}: IPv4 OK but IPv6 VIP [$IPV6] not reachable"
+                    echo "RESULT: FAIL - IPv6 service not reachable at $IPV6" >> "$LOGFILE"
+                fi
+            fi
         else
             RESULT="FAIL_UNREACHABLE"
             echo -e "  ${RED}FAIL${NC}: VIP on $FINAL_HOLDER but service not reachable"
@@ -455,16 +552,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Ensure test service exists
-echo "Ensuring primary test service exists..."
+# Ensure test services exist (IPv4 + IPv6)
+echo "Ensuring test services exist..."
 IPV4=$(kubectl get svc nginx-lb-ipv4 -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
 if [ -z "$IPV4" ]; then
-    echo "Creating test service..."
+    echo "Creating IPv4 test service..."
     kubectl apply -f ${SCRIPT_DIR}/nginx-svc-ipv4.yaml
     kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
         svc/nginx-lb-ipv4 -n $NAMESPACE --timeout=30s
-    sleep 5  # Wait for announcement
 fi
+
+IPV6=$(kubectl get svc nginx-lb-ipv6 -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+if [ -z "$IPV6" ]; then
+    echo "Creating IPv6 test service..."
+    kubectl apply -f ${SCRIPT_DIR}/nginx-svc-ipv6.yaml
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-lb-ipv6 -n $NAMESPACE --timeout=30s
+fi
+
+sleep 5  # Wait for announcements
+echo "  IPv4 VIP: $IPV4"
+echo "  IPv6 VIP: $IPV6"
 
 # Setup multiple VIPs for election contention
 setup_multiple_vips

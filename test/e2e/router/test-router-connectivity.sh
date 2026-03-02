@@ -93,7 +93,7 @@ dump_debug_state() {
         ssh_node $node "ip -o addr show kube-lb0 2>/dev/null" || echo "  (failed)"
     done
     echo "--- lbnodeagent pods ---"
-    kubectl get pods -n purelb-system-l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
+    kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
     echo "========================="
 }
 
@@ -160,40 +160,43 @@ wait_for_connectivity() {
     return 1
 }
 
+# Wait for IPv6 connectivity to work (with retries)
+wait_for_connectivity_v6() {
+    local VIP=$1
+    local PORT=${2:-80}
+    local TIMEOUT=${3:-60}
+    local ELAPSED=0
+
+    while [ $ELAPSED -lt $TIMEOUT ]; do
+        local RESPONSE=$(test_connectivity_v6 "$VIP" "$PORT")
+        if echo "$RESPONSE" | grep -q "Pod:"; then
+            return 0
+        fi
+        sleep 2
+        ELAPSED=$((ELAPSED + 2))
+    done
+    return 1
+}
+
 #---------------------------------------------------------------------
 # Service Management Functions
 #---------------------------------------------------------------------
 
-# Create a test service with labels
+# Create a test service from template
 create_test_service() {
     local NAME=$1
     local PORT=${2:-80}
-    local ETP=${3:-Cluster}  # externalTrafficPolicy
+    local ETP=${3:-Cluster}      # externalTrafficPolicy
+    local IPFAMILY=${4:-IPv4}    # IPv4 or IPv6
 
-    cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Service
-metadata:
-  name: $NAME
-  namespace: $NAMESPACE
-  labels:
-    test-suite: router
-    test-run: "$TEST_RUN_ID"
-  annotations:
-    purelb.io/service-group: $SERVICE_GROUP
-spec:
-  type: LoadBalancer
-  externalTrafficPolicy: $ETP
-  ipFamilyPolicy: SingleStack
-  ipFamilies:
-  - IPv4
-  selector:
-    app: nginx
-  ports:
-  - name: http
-    port: $PORT
-    targetPort: 80
-EOF
+    sed -e "s/name: NAME/name: $NAME/" \
+        -e "s/namespace: NAMESPACE/namespace: $NAMESPACE/" \
+        -e "s/test-run: \"TEST_RUN_ID\"/test-run: \"$TEST_RUN_ID\"/" \
+        -e "s/service-group: SERVICE_GROUP/service-group: $SERVICE_GROUP/" \
+        -e "s/externalTrafficPolicy: ETP/externalTrafficPolicy: $ETP/" \
+        -e "s/port: PORT/port: $PORT/" \
+        -e "s/- IPFAMILY/- $IPFAMILY/" \
+        "${SCRIPT_DIR}/svc-router-test.yaml" | kubectl apply -f -
 }
 
 # Wait for service to get an IP
@@ -261,11 +264,11 @@ test_prerequisites() {
 
     # Verify PureLB is running
     info "Verifying PureLB components..."
-    local AGENT_PODS=$(kubectl get pods -n purelb-system-l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+    local AGENT_PODS=$(kubectl get pods -n purelb-system -l component=lbnodeagent --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
     [ "$AGENT_PODS" -ge 1 ] || fail "LBNodeAgent not running"
     pass "LBNodeAgent running ($AGENT_PODS pods)"
 
-    local ALLOCATOR_READY=$(kubectl get deployment -n purelb-systemallocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+    local ALLOCATOR_READY=$(kubectl get deployment -n purelb-system allocator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
     [ "$ALLOCATOR_READY" -ge 1 ] || fail "Allocator not running"
     pass "Allocator running"
 
@@ -275,7 +278,7 @@ test_prerequisites() {
     pass "Test pods running ($NGINX_PODS pods)"
 
     # Verify ServiceGroup exists
-    if ! kubectl get servicegroup -n purelb-system"$SERVICE_GROUP" >/dev/null 2>&1; then
+    if ! kubectl get servicegroup -n purelb-system "$SERVICE_GROUP" >/dev/null 2>&1; then
         fail "ServiceGroup '$SERVICE_GROUP' not found in purelb namespace"
     fi
     pass "ServiceGroup '$SERVICE_GROUP' exists"
@@ -447,9 +450,9 @@ test_node_failure_recovery() {
 
     # Taint node and delete lbnodeagent pod
     kubectl taint node "$FAIL_NODE" purelb-router-test=failover:NoExecute --overwrite
-    local AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
+    local AGENT_POD=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
     if [ -n "$AGENT_POD" ]; then
-        kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
+        kubectl delete pod -n purelb-system "$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
     fi
 
     # Wait for VIP to be removed from failed node
@@ -493,7 +496,7 @@ test_node_failure_recovery() {
     # Restore node
     info "Restoring $FAIL_NODE..."
     kubectl taint node "$FAIL_NODE" purelb-router-test-
-    kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system --timeout=60s
 
     # Wait for VIP to return to restored node
     info "Waiting for VIP to return to $FAIL_NODE..."
@@ -673,8 +676,8 @@ test_full_lifecycle() {
     info "Phase 3: Simulating node failure..."
     local FAIL_NODE=${NODES%% *}
     kubectl taint node "$FAIL_NODE" purelb-router-test=lifecycle:NoExecute --overwrite
-    local AGENT_POD=$(kubectl get pods -n purelb-system-l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
-    [ -n "$AGENT_POD" ] && kubectl delete pod -n purelb-system"$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
+    local AGENT_POD=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide | grep "$FAIL_NODE" | awk '{print $1}')
+    [ -n "$AGENT_POD" ] && kubectl delete pod -n purelb-system "$AGENT_POD" --grace-period=0 --force 2>/dev/null || true
     sleep 15
     RESPONSE=$(test_connectivity "$VIP" 80)
     echo "$RESPONSE" | grep -q "Pod:" || fail "Phase 3 connectivity failed"
@@ -683,7 +686,7 @@ test_full_lifecycle() {
     # Phase 4: Restore
     info "Phase 4: Restoring node..."
     kubectl taint node "$FAIL_NODE" purelb-router-test-
-    kubectl rollout status daemonset/lbnodeagent -n purelb-system--timeout=60s
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system --timeout=60s
     sleep 10
     RESPONSE=$(test_connectivity "$VIP" 80)
     echo "$RESPONSE" | grep -q "Pod:" || fail "Phase 4 connectivity failed"
@@ -708,6 +711,152 @@ test_full_lifecycle() {
     kubectl scale deployment nginx -n $NAMESPACE --replicas=$ORIGINAL_REPLICAS
 
     pass "Full lifecycle test completed"
+}
+
+#---------------------------------------------------------------------
+# Test 7: Basic External Connectivity (IPv6)
+#---------------------------------------------------------------------
+
+test_basic_ipv6() {
+    section "TEST 7: Basic Connectivity (IPv6)"
+
+    info "This test verifies IPv6 traffic reaches service via BGP routing"
+    info "Path: This Host -> Router -> BGP Route -> Node -> kube-proxy -> Pod"
+
+    local SVC_NAME="router-test-basic-ipv6"
+
+    info "Creating IPv6 test service..."
+    create_test_service "$SVC_NAME" 80 "Cluster" "IPv6"
+
+    info "Waiting for IPv6 allocation..."
+    local VIP=$(wait_for_service_ip "$SVC_NAME" 60) || fail "No IPv6 allocated"
+    info "Allocated VIP: $VIP"
+
+    info "Waiting for VIP to be announced on all nodes..."
+    wait_for_vip_announced "$VIP" "$NODE_COUNT" 60 || fail "VIP not announced on all nodes"
+    pass "VIP $VIP announced on $NODE_COUNT nodes"
+
+    info "Waiting for BGP routes to propagate (${BGP_CONVERGE_TIMEOUT}s timeout)..."
+    sleep 5
+
+    info "Testing IPv6 connectivity to VIP..."
+    if wait_for_connectivity_v6 "$VIP" 80 "$BGP_CONVERGE_TIMEOUT"; then
+        local RESPONSE=$(test_connectivity_v6 "$VIP" 80)
+        pass "IPv6 connectivity successful"
+        echo "$RESPONSE" | head -5
+    else
+        fail "No response to IPv6 VIP $VIP"
+    fi
+
+    kubectl delete svc -n $NAMESPACE "$SVC_NAME"
+    pass "Basic IPv6 connectivity test completed"
+}
+
+#---------------------------------------------------------------------
+# Test 8: ETP Local Connectivity (IPv6)
+#---------------------------------------------------------------------
+
+test_etp_local_v6() {
+    section "TEST 8: ETP Local Connectivity (IPv6)"
+
+    info "Testing IPv6 connectivity with externalTrafficPolicy: Local"
+    info "VIP should only be on nodes with endpoints"
+
+    local SVC_NAME="router-test-etp-local-v6"
+
+    create_test_service "$SVC_NAME" 80 "Local" "IPv6"
+    local VIP=$(wait_for_service_ip "$SVC_NAME" 60) || fail "No IPv6 allocated"
+    info "Allocated VIP: $VIP"
+
+    local ENDPOINT_NODES=$(kubectl get pods -n $NAMESPACE -l app=nginx -o jsonpath='{.items[*].spec.nodeName}' | tr ' ' '\n' | sort -u)
+    local ENDPOINT_COUNT=$(echo "$ENDPOINT_NODES" | grep -c . || echo 0)
+    info "Endpoints on $ENDPOINT_COUNT nodes:"
+    echo "$ENDPOINT_NODES" | while read n; do [ -n "$n" ] && echo "  - $n"; done
+
+    info "Waiting for VIP on endpoint nodes..."
+    sleep 10
+
+    local VIP_COUNT=$(count_nodes_with_vip "$VIP")
+    info "VIP on $VIP_COUNT nodes (expected: $ENDPOINT_COUNT)"
+
+    local MISPLACED=false
+    for node in $NODES; do
+        local HAS_VIP=$(ssh_node "$node" "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $VIP/' && echo yes || echo no")
+        local HAS_ENDPOINT=$(echo "$ENDPOINT_NODES" | grep -q "^$node$" && echo yes || echo no)
+
+        if [ "$HAS_VIP" = "yes" ] && [ "$HAS_ENDPOINT" = "no" ]; then
+            warn "$node has VIP but no endpoint (ETP Local violation)"
+            MISPLACED=true
+        elif [ "$HAS_VIP" = "yes" ]; then
+            pass "$node has VIP and endpoint (correct)"
+        fi
+    done
+
+    [ "$MISPLACED" = "false" ] || warn "Some VIPs misplaced"
+
+    info "Waiting for BGP convergence..."
+    if wait_for_connectivity_v6 "$VIP" 80 "$BGP_CONVERGE_TIMEOUT"; then
+        local RESPONSE=$(test_connectivity_v6 "$VIP" 80)
+        pass "IPv6 connectivity working with ETP Local"
+        echo "$RESPONSE" | head -3
+    else
+        fail "IPv6 connectivity failed with ETP Local"
+    fi
+
+    kubectl delete svc -n $NAMESPACE "$SVC_NAME"
+    pass "ETP Local IPv6 connectivity test completed"
+}
+
+#---------------------------------------------------------------------
+# Test 9: Service Deletion Cleanup (IPv6)
+#---------------------------------------------------------------------
+
+test_service_deletion_v6() {
+    section "TEST 9: Service Deletion Cleanup (IPv6)"
+
+    info "Testing that IPv6 VIPs are properly removed when service is deleted"
+
+    local SVC_NAME="router-test-deletion-v6"
+
+    create_test_service "$SVC_NAME" 80 "Cluster" "IPv6"
+    local VIP=$(wait_for_service_ip "$SVC_NAME" 60) || fail "No IPv6 allocated"
+    info "Allocated VIP: $VIP"
+
+    wait_for_vip_announced "$VIP" "$NODE_COUNT" 60 || fail "VIP not announced"
+    wait_for_connectivity_v6 "$VIP" 80 "$BGP_CONVERGE_TIMEOUT" || fail "IPv6 connectivity failed"
+    pass "Service created and accessible at $VIP"
+
+    info "Deleting service..."
+    kubectl delete svc -n $NAMESPACE "$SVC_NAME"
+
+    info "Waiting for VIP to be removed from all nodes..."
+    local TIMEOUT=30
+    local ELAPSED=0
+    while [ $ELAPSED -lt $TIMEOUT ]; do
+        local COUNT=$(count_nodes_with_vip "$VIP")
+        if [ "$COUNT" -eq 0 ]; then
+            break
+        fi
+        sleep 2
+        ELAPSED=$((ELAPSED + 2))
+    done
+
+    if [ $ELAPSED -ge $TIMEOUT ]; then
+        fail "IPv6 VIP not removed from all nodes within ${TIMEOUT}s"
+    fi
+    pass "IPv6 VIP removed from all nodes after ${ELAPSED}s"
+
+    info "Waiting for BGP route withdrawal..."
+    sleep 10
+
+    local RESPONSE=$(test_connectivity_v6 "$VIP" 80)
+    if echo "$RESPONSE" | grep -q "Pod:"; then
+        warn "IPv6 VIP still reachable after deletion (stale BGP route?)"
+    else
+        pass "IPv6 VIP no longer reachable (route withdrawn)"
+    fi
+
+    pass "Service deletion IPv6 cleanup test completed"
 }
 
 #---------------------------------------------------------------------
@@ -736,6 +885,9 @@ run_all_tests() {
     test_etp_local
     test_service_deletion
     test_full_lifecycle
+    test_basic_ipv6
+    test_etp_local_v6
+    test_service_deletion_v6
 
     echo ""
     echo "========================================================"
@@ -775,6 +927,9 @@ while [[ $# -gt 0 ]]; do
             echo "  4 - ETP Local Connectivity"
             echo "  5 - Service Deletion Cleanup"
             echo "  6 - Full Lifecycle Test"
+            echo "  7 - Basic Connectivity (IPv6)"
+            echo "  8 - ETP Local Connectivity (IPv6)"
+            echo "  9 - Service Deletion Cleanup (IPv6)"
             exit 0
             ;;
         *)
@@ -793,6 +948,9 @@ if [ -n "$SELECTED_TEST" ]; then
         4) test_prerequisites && test_etp_local ;;
         5) test_prerequisites && test_service_deletion ;;
         6) test_prerequisites && test_full_lifecycle ;;
+        7) test_prerequisites && test_basic_ipv6 ;;
+        8) test_prerequisites && test_etp_local_v6 ;;
+        9) test_prerequisites && test_service_deletion_v6 ;;
         *) echo "Unknown test: $SELECTED_TEST"; exit 1 ;;
     esac
 else

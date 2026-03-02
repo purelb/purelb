@@ -13,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONTEXT="proxmox"
 NAMESPACE="test"
 INTERACTIVE=false
+ITERATIONS=1
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
@@ -21,12 +22,17 @@ while [[ $# -gt 0 ]]; do
             INTERACTIVE=true
             shift
             ;;
+        -n|--iterations)
+            ITERATIONS="$2"
+            shift 2
+            ;;
         -h|--help)
-            echo "Usage: $0 [-i|--interactive]"
+            echo "Usage: $0 [-i|--interactive] [-n <iterations>]"
             echo ""
             echo "Options:"
-            echo "  -i, --interactive  Pause after each test for manual review"
-            echo "  -h, --help         Show this help message"
+            echo "  -i, --interactive     Pause after each test group for manual review"
+            echo "  -n, --iterations N    Run the full test suite N times (default: 1)"
+            echo "  -h, --help            Show this help message"
             exit 0
             ;;
         *)
@@ -36,6 +42,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Log all output to a file while still showing on console
+LOG_DIR="/tmp/test-local-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/output.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "Log file: $LOG_FILE"
 
 # Colors for output
 RED='\033[0;31m'
@@ -614,15 +627,20 @@ test_graceful_failover() {
     [ -n "$ORIGINAL_WINNER" ] || fail "Could not find VIP holder"
     pass "Current VIP holder: $ORIGINAL_WINNER"
 
-    # Verify service is reachable before failover
+    # Verify service is reachable before failover (retry for endpoint propagation)
     info "Testing service reachability before failover..."
-    RESPONSE=$(curl -s --connect-timeout 3 "http://$IPV4/" || true)
-    if echo "$RESPONSE" | grep -q "Pod:"; then
-        local pod=$(echo "$RESPONSE" | grep "Pod:" | awk '{print $2}')
-        pass "Service reachable - Pod: $pod"
-    else
-        fail "Service NOT reachable before failover"
-    fi
+    local REACHABLE=false
+    for attempt in 1 2 3 4 5; do
+        RESPONSE=$(curl -s --connect-timeout 3 "http://$IPV4/" || true)
+        if echo "$RESPONSE" | grep -q "Pod:"; then
+            local pod=$(echo "$RESPONSE" | grep "Pod:" | awk '{print $2}')
+            pass "Service reachable - Pod: $pod"
+            REACHABLE=true
+            break
+        fi
+        sleep 2
+    done
+    [ "$REACHABLE" = "true" ] || fail "Service NOT reachable before failover"
 
     pause_for_review
 
@@ -679,14 +697,18 @@ test_graceful_failover() {
         detail "(No logs captured or empty log file)"
     fi
 
-    # Wait for VIP to move (lease-based should be faster than memberlist)
+    # Wait for VIP to move or for same-node recovery.
+    # The DaemonSet recreates the pod quickly (~3-5s). If the new pod's lease
+    # appears before other nodes process the deletion, the hash may pick the
+    # same node again — valid election behavior.
     echo ""
     info "=== MONITORING VIP MOVEMENT ==="
-    info "Waiting for VIP to move to another node (max 20s)..."
+    info "Waiting for VIP failover (max 20s)..."
     TIMEOUT=20
     ELAPSED=0
     NEW_WINNER=""
     while [ $ELAPSED -lt $TIMEOUT ]; do
+        # Check if a different node picked up the VIP
         for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
             if [ "$node" != "$ORIGINAL_WINNER" ]; then
                 if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
@@ -695,6 +717,18 @@ test_graceful_failover() {
                 fi
             fi
         done
+
+        # Check if a new pod on the original node re-won the election
+        local CURRENT_POD=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null \
+            | grep "$ORIGINAL_WINNER" | grep "Running" | awk '{print $1}')
+        if [ -n "$CURRENT_POD" ] && [ "$CURRENT_POD" != "$AGENT_POD" ]; then
+            if ssh "$ORIGINAL_WINNER" "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+                NEW_WINNER=$ORIGINAL_WINNER
+                detail "$(ts) New pod $CURRENT_POD re-won election on $ORIGINAL_WINNER"
+                break
+            fi
+        fi
+
         sleep 2
         ELAPSED=$((ELAPSED + 2))
         if [ $((ELAPSED % 4)) -eq 0 ]; then
@@ -702,10 +736,12 @@ test_graceful_failover() {
         fi
     done
 
-    if [ -n "$NEW_WINNER" ]; then
+    if [ -n "$NEW_WINNER" ] && [ "$NEW_WINNER" != "$ORIGINAL_WINNER" ]; then
         pass "VIP moved from $ORIGINAL_WINNER to $NEW_WINNER in ${ELAPSED}s"
+    elif [ -n "$NEW_WINNER" ]; then
+        pass "New pod on $ORIGINAL_WINNER re-won election in ${ELAPSED}s (valid same-node recovery)"
     else
-        fail "VIP did not move to another node within ${TIMEOUT}s"
+        fail "VIP did not recover within ${TIMEOUT}s"
     fi
 
     # Show post-failover state
@@ -758,7 +794,7 @@ test_graceful_failover() {
     echo -e "  Delete duration:     ${YELLOW}${DELETE_DURATION}s${NC}"
     echo -e "  Lease deleted:       ${YELLOW}$LEASE_DELETED${NC}"
 
-    if [ "$LEASE_DELETED" = "true" ] && [ -n "$NEW_WINNER" ] && [ "$NEW_WINNER" != "$ORIGINAL_WINNER" ]; then
+    if [ "$LEASE_DELETED" = "true" ] && [ -n "$NEW_WINNER" ]; then
         pass "Graceful failover test completed successfully"
     else
         fail "Graceful failover test had issues - review output above"
@@ -1130,15 +1166,26 @@ EOF
     wait_for_ip_announced "$SHARED_IP" 30 || fail "IP $SHARED_IP not announced within 30s"
     pass "IP announced on a node"
 
-    # Verify both services are accessible on their respective ports
+    # Verify both services are accessible on their respective ports.
+    # Retry: kube-proxy needs time to program rules for newly-shared services.
     info "Testing connectivity to port 80..."
-    RESPONSE1=$(curl -s --connect-timeout 5 "http://$SHARED_IP:80/" || true)
-    echo "$RESPONSE1" | grep -q "Pod:" || fail "No response on port 80"
+    local PORT80_OK=false
+    for attempt in 1 2 3 4 5; do
+        RESPONSE1=$(curl -s --connect-timeout 5 "http://$SHARED_IP:80/" || true)
+        if echo "$RESPONSE1" | grep -q "Pod:"; then PORT80_OK=true; break; fi
+        sleep 2
+    done
+    [ "$PORT80_OK" = "true" ] || fail "No response on port 80"
     pass "Port 80 is reachable"
 
     info "Testing connectivity to port 443..."
-    RESPONSE2=$(curl -s --connect-timeout 5 "http://$SHARED_IP:443/" || true)
-    echo "$RESPONSE2" | grep -q "Pod:" || fail "No response on port 443"
+    local PORT443_OK=false
+    for attempt in 1 2 3 4 5; do
+        RESPONSE2=$(curl -s --connect-timeout 5 "http://$SHARED_IP:443/" || true)
+        if echo "$RESPONSE2" | grep -q "Pod:"; then PORT443_OK=true; break; fi
+        sleep 2
+    done
+    [ "$PORT443_OK" = "true" ] || fail "No response on port 443"
     pass "Port 443 is reachable"
 
     # Test that a service with DIFFERENT sharing key gets a DIFFERENT IP
@@ -1257,6 +1304,9 @@ test_multi_pod_lb() {
     IPV4=$(kubectl get svc nginx-lb-ipv4 -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
     info "Testing load balancing to $IPV4..."
 
+    # Brief pause for kube-proxy to update endpoint rules after scale-up
+    sleep 3
+
     # Make multiple requests and collect unique pod names
     declare -A PODS_SEEN
     TOTAL_REQUESTS=20
@@ -1343,10 +1393,20 @@ test_node_failover() {
     [ -n "$ORIGINAL_WINNER" ] || fail "Could not find node with VIP $IPV4"
     info "Current VIP holder: $ORIGINAL_WINNER"
 
-    # Verify service is working before failover
+    # Verify service is working before failover.
+    # Retry a few times: the preceding multi-pod test scales the deployment
+    # down, and kube-proxy needs time to update iptables after endpoint changes.
     info "Verifying service is reachable before failover..."
-    RESPONSE=$(curl -s --connect-timeout 5 "http://$IPV4/" || true)
-    echo "$RESPONSE" | grep -q "Pod:" || fail "Service not reachable before failover"
+    local REACHABLE=false
+    for attempt in 1 2 3 4 5; do
+        RESPONSE=$(curl -s --connect-timeout 5 "http://$IPV4/" || true)
+        if echo "$RESPONSE" | grep -q "Pod:"; then
+            REACHABLE=true
+            break
+        fi
+        sleep 2
+    done
+    [ "$REACHABLE" = "true" ] || fail "Service not reachable before failover"
     pass "Service reachable before failover"
 
     # Simulate node failure by adding a taint that lbnodeagent doesn't tolerate,
@@ -1908,14 +1968,95 @@ test_flannel_node_ip() {
 }
 
 #---------------------------------------------------------------------
-# Test 15: Cross-Node Connectivity Validation
+# Test 15: Flannel IPv6 Address Selection
+# Verifies that flannel does NOT pick an IPv6 VIP as the node's public
+# address. PureLB marks IPv6 VIPs deprecated (PreferedLft=0) so flannel
+# filters them out. Restarts flannel on the VIP node to prove it.
+#---------------------------------------------------------------------
+test_flannel_node_ipv6() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 15: Flannel IPv6 Address Selection"
+    echo "=========================================="
+
+    CNI=$(detect_cni)
+    if [ "$CNI" != "flannel" ]; then
+        info "CNI is $CNI, not flannel — skipping"
+        pass "Test skipped (not flannel)"
+        return
+    fi
+
+    IPV6=$(kubectl get svc nginx-lb-ipv6 -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+    [ -n "$IPV6" ] || fail "No IPv6 service found"
+
+    # Find VIP holder
+    local WINNER=""
+    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        if ssh $node "ip -6 -o addr show eth0 2>/dev/null | grep -q ' $IPV6/'" 2>/dev/null; then
+            WINNER=$node; break
+        fi
+    done
+    [ -n "$WINNER" ] || fail "IPv6 VIP $IPV6 not on any node"
+    info "IPv6 VIP $IPV6 is on $WINNER"
+
+    # Verify VIP has deprecated flag
+    if ssh $WINNER "ip -6 addr show eth0 2>/dev/null | grep ' $IPV6/' | grep -q deprecated" 2>/dev/null; then
+        pass "VIP has deprecated flag (IFA_F_DEPRECATED)"
+    else
+        fail "VIP missing deprecated flag"
+    fi
+
+    # Restart flannel on the VIP node to force address re-selection
+    local OLD_POD=$(kubectl get pods -n kube-flannel -o wide 2>/dev/null \
+        | grep "$WINNER" | awk '{print $1}')
+    [ -n "$OLD_POD" ] || fail "No flannel pod on $WINNER"
+    info "Restarting flannel pod $OLD_POD on $WINNER..."
+    kubectl delete pod -n kube-flannel "$OLD_POD" --grace-period=0 2>/dev/null
+
+    # Wait for replacement pod
+    local ELAPSED=0
+    while [ $ELAPSED -lt 30 ]; do
+        local NEW_POD=$(kubectl get pods -n kube-flannel -o wide 2>/dev/null \
+            | grep "$WINNER" | grep "Running" | awk '{print $1}')
+        if [ -n "$NEW_POD" ] && [ "$NEW_POD" != "$OLD_POD" ]; then break; fi
+        sleep 2; ELAPSED=$((ELAPSED + 2))
+    done
+    [ $ELAPSED -lt 30 ] || fail "Flannel pod did not restart within 30s"
+    sleep 3  # let flannel update annotation
+
+    # Verify flannel did not pick the VIP
+    local FLANNEL_IPV6=$(kubectl get node "$WINNER" \
+        -o jsonpath='{.metadata.annotations.flannel\.alpha\.coreos\.com/public-ipv6}' 2>/dev/null || true)
+    info "Flannel public-ipv6: $FLANNEL_IPV6"
+
+    if [ "$FLANNEL_IPV6" = "$IPV6" ]; then
+        fail "Flannel selected VIP $IPV6 as node address!"
+    else
+        pass "Flannel correctly selected non-VIP address ($FLANNEL_IPV6)"
+    fi
+
+    # Verify IPv6 connectivity still works
+    info "Testing IPv6 connectivity after flannel restart..."
+    local OK=false
+    for attempt in 1 2 3 4 5; do
+        RESPONSE=$(curl -6 -s --connect-timeout 5 "http://[$IPV6]:80/" || true)
+        if echo "$RESPONSE" | grep -q "Pod:"; then OK=true; break; fi
+        sleep 2
+    done
+    [ "$OK" = "true" ] || fail "IPv6 VIP not reachable after flannel restart"
+    pass "IPv6 connectivity verified after flannel restart"
+}
+
+#---------------------------------------------------------------------
+# Test 16: Cross-Node Connectivity Validation
 # Explicitly verifies that traffic can reach pods on DIFFERENT nodes
 # than the VIP holder. This catches IP forwarding issues.
 #---------------------------------------------------------------------
 test_cross_node_connectivity() {
     echo ""
     echo "=========================================="
-    echo "TEST 15: Cross-Node Connectivity Validation"
+    echo "TEST 16: Cross-Node Connectivity Validation"
     echo "=========================================="
 
     info "This test verifies traffic can reach pods on nodes OTHER than the VIP holder."
@@ -2015,14 +2156,14 @@ test_cross_node_connectivity() {
 }
 
 #---------------------------------------------------------------------
-# Test 16: Pod-Based Connectivity Test
+# Test 17: Pod-Based Connectivity Test
 # Tests connectivity from INSIDE a pod to validate the full
 # kube-proxy path works correctly
 #---------------------------------------------------------------------
 test_pod_connectivity() {
     echo ""
     echo "=========================================="
-    echo "TEST 16: Pod-Based Connectivity Test"
+    echo "TEST 17: Pod-Based Connectivity Test"
     echo "=========================================="
 
     info "Testing connectivity from inside a pod (validates full kube-proxy path)"
@@ -2162,6 +2303,7 @@ run_all_tests() {
     test_local_vip_address_flags
     test_address_renewal_timer
     test_flannel_node_ip
+    test_flannel_node_ipv6
     pause_for_review
 
     # Cross-node connectivity validation (catches IP forwarding issues)
@@ -2196,5 +2338,44 @@ cleanup_test_services() {
     pass "Test services cleaned up"
 }
 
-# Run tests
-run_all_tests
+# Run tests.
+# Each iteration runs in a subshell so that fail() → exit 1 only ends
+# that iteration, not the whole script. This allows multi-iteration runs
+# to continue after a failure.
+PASS=0
+FAIL=0
+for iter in $(seq 1 $ITERATIONS); do
+    if [ "$ITERATIONS" -gt 1 ]; then
+        echo ""
+        echo "######################################################################"
+        echo "#  ITERATION $iter / $ITERATIONS"
+        echo "######################################################################"
+    fi
+
+    if (run_all_tests); then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        echo ""
+        echo -e "${RED}--- ITERATION $iter FAILED ---${NC}"
+        # Ensure cleanup between iterations even after failure
+        echo "Cleaning up after failed iteration..."
+        kubectl delete svc -n $NAMESPACE --all 2>/dev/null || true
+    fi
+done
+
+if [ "$ITERATIONS" -gt 1 ]; then
+    echo ""
+    echo "=========================================="
+    echo "ITERATION SUMMARY ($ITERATIONS runs)"
+    echo "=========================================="
+    echo -e "Passed: ${GREEN}$PASS${NC}"
+    echo -e "Failed: ${RED}$FAIL${NC}"
+    echo ""
+fi
+
+echo "Log file: $LOG_FILE"
+
+if [ "$FAIL" -gt 0 ]; then
+    exit 1
+fi

@@ -40,7 +40,7 @@ const (
 	LeasePrefix = "purelb-node-"
 
 	// Default timing values (can be overridden via Config)
-	DefaultLeaseDuration = 10 * time.Second
+	DefaultLeaseDuration = 5 * time.Second
 	DefaultRenewDeadline = 7 * time.Second
 	DefaultRetryPeriod   = 2 * time.Second
 
@@ -203,7 +203,7 @@ func (e *Election) Start() error {
 	// Set up informer factory with label selector for PureLB leases
 	e.informerFactory = informers.NewSharedInformerFactoryWithOptions(
 		e.config.Client,
-		0, // No resync period - we rely on watch events
+		e.config.LeaseDuration, // Resync period to detect expired leases
 		informers.WithNamespace(e.config.Namespace),
 		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
 			// Only watch leases that start with our prefix
@@ -744,9 +744,39 @@ func (e *Election) rebuildMaps() {
 	RecordMemberCount(len(newState.liveNodes))
 	RecordSubnetCount(len(newState.subnetToNodes))
 
-	logging.Info(e.config.Logger, "op", "election", "action", "rebuildMaps",
+	logging.Debug(e.config.Logger, "op", "election", "action", "rebuildMaps",
 		"liveNodes", len(newState.liveNodes), "subnets", len(newState.subnetToNodes),
 		"msg", "election state rebuilt")
+}
+
+// sameMembership returns true if two election states have the same
+// set of live nodes with the same subnet assignments.
+func (e *Election) sameMembership(a, b *electionState) bool {
+	if len(a.liveNodes) != len(b.liveNodes) {
+		return false
+	}
+	// liveNodes is sorted, so direct comparison works
+	for i := range a.liveNodes {
+		if a.liveNodes[i] != b.liveNodes[i] {
+			return false
+		}
+	}
+	// Check if subnet assignments changed
+	if len(a.subnetToNodes) != len(b.subnetToNodes) {
+		return false
+	}
+	for subnet, aNodes := range a.subnetToNodes {
+		bNodes, ok := b.subnetToNodes[subnet]
+		if !ok || len(aNodes) != len(bNodes) {
+			return false
+		}
+		for i := range aNodes {
+			if aNodes[i] != bNodes[i] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // isLeaseValid checks if a lease is still valid (not expired)
@@ -786,9 +816,8 @@ func (e *Election) onLeaseAdd(obj interface{}) {
 }
 
 func (e *Election) onLeaseUpdate(oldObj, newObj interface{}) {
-	oldLease, ok1 := oldObj.(*coordinationv1.Lease)
-	newLease, ok2 := newObj.(*coordinationv1.Lease)
-	if !ok1 || !ok2 {
+	newLease, ok := newObj.(*coordinationv1.Lease)
+	if !ok {
 		return
 	}
 
@@ -797,22 +826,18 @@ func (e *Election) onLeaseUpdate(oldObj, newObj interface{}) {
 		return
 	}
 
-	// Check if subnets changed
-	oldSubnets := ""
-	newSubnets := ""
-	if oldLease.Annotations != nil {
-		oldSubnets = oldLease.Annotations[SubnetsAnnotation]
-	}
-	if newLease.Annotations != nil {
-		newSubnets = newLease.Annotations[SubnetsAnnotation]
-	}
+	// Snapshot current membership before rebuild
+	oldState := e.state.Load()
 
-	if oldSubnets != newSubnets {
-		nodeName := newLease.Name[len(LeasePrefix):]
-		logging.Info(e.config.Logger, "op", "election", "event", "subnetsChanged",
-			"node", nodeName, "oldSubnets", oldSubnets, "newSubnets", newSubnets)
+	// Rebuild maps from local cache - filters out expired leases
+	e.rebuildMaps()
 
-		e.rebuildMaps()
+	// Check if membership changed (node joined/left, subnet changed, or lease expired)
+	newState := e.state.Load()
+	if !e.sameMembership(oldState, newState) {
+		logging.Info(e.config.Logger, "op", "election", "event", "membershipChanged",
+			"oldNodes", len(oldState.liveNodes), "newNodes", len(newState.liveNodes),
+			"msg", "membership change detected")
 		if e.config.OnMemberChange != nil {
 			e.config.OnMemberChange()
 		}

@@ -101,6 +101,9 @@ export ROUTER_HOST="frr-router"
 | 4 | ETP Local Connectivity |
 | 5 | Service Deletion Cleanup |
 | 6 | Full Lifecycle Test |
+| 7 | Basic Connectivity (IPv6) |
+| 8 | ETP Local Connectivity (IPv6) |
+| 9 | Service Deletion Cleanup (IPv6) |
 
 ### FRR Version Tests
 
@@ -142,13 +145,22 @@ ssh $ROUTER_HOST "sudo vtysh -c 'show version'"
 vtysh -c "show bgp summary"
 
 # On cluster node (GoBGP)
-kubectl logs -n purelb-system-l component=lbnodeagent | grep -i bgp
+kubectl logs -n purelb-system -l component=lbnodeagent | grep -i bgp
 ```
 
 ### "ECMP not distributing traffic"
 - ECMP is flow-based (src IP + src port + dst IP + dst port)
 - Verify FRR has `maximum-paths` configured
 - Different source ports should create different flows
+
+## Files
+
+| File | Description |
+|------|-------------|
+| `test-router-connectivity.sh` | Basic connectivity tests (no router CLI) |
+| `test-router-connectivity-frr.sh` | Extended tests with FRR route verification |
+| `svc-router-test.yaml` | Service template (substituted at runtime) |
+| `SETUP.md` | Setup guide and architecture |
 
 ## Related Files
 

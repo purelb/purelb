@@ -25,7 +25,9 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
 )
 
@@ -827,4 +829,375 @@ func TestWinnerDeterminismWithSubnets(t *testing.T) {
 	}
 	// We can't guarantee different winners, but we verified determinism
 	t.Logf("Winners: %v, unique: %d", winners, len(uniqueWinners))
+}
+
+// ============================================================================
+// Stale Lease Detection Tests
+// ============================================================================
+
+// TestSameMembership tests the sameMembership comparison helper
+func TestSameMembership(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	e, err := New(Config{
+		Namespace: "purelb",
+		NodeName:  "test-node",
+		Client:    client,
+		StopCh:    stopCh,
+	})
+	require.NoError(t, err)
+
+	t.Run("identical states", func(t *testing.T) {
+		a := &electionState{
+			liveNodes: []string{"node-a", "node-b", "node-c"},
+			subnetToNodes: map[string][]string{
+				"192.168.1.0/24": {"node-a", "node-b"},
+				"10.0.0.0/8":     {"node-c"},
+			},
+		}
+		b := &electionState{
+			liveNodes: []string{"node-a", "node-b", "node-c"},
+			subnetToNodes: map[string][]string{
+				"192.168.1.0/24": {"node-a", "node-b"},
+				"10.0.0.0/8":     {"node-c"},
+			},
+		}
+		assert.True(t, e.sameMembership(a, b))
+	})
+
+	t.Run("different node count", func(t *testing.T) {
+		a := &electionState{
+			liveNodes:     []string{"node-a", "node-b", "node-c"},
+			subnetToNodes: map[string][]string{},
+		}
+		b := &electionState{
+			liveNodes:     []string{"node-a", "node-b"},
+			subnetToNodes: map[string][]string{},
+		}
+		assert.False(t, e.sameMembership(a, b))
+	})
+
+	t.Run("same count different nodes", func(t *testing.T) {
+		a := &electionState{
+			liveNodes:     []string{"node-a", "node-b"},
+			subnetToNodes: map[string][]string{},
+		}
+		b := &electionState{
+			liveNodes:     []string{"node-a", "node-c"},
+			subnetToNodes: map[string][]string{},
+		}
+		assert.False(t, e.sameMembership(a, b))
+	})
+
+	t.Run("same nodes different subnets", func(t *testing.T) {
+		a := &electionState{
+			liveNodes: []string{"node-a"},
+			subnetToNodes: map[string][]string{
+				"192.168.1.0/24": {"node-a"},
+			},
+		}
+		b := &electionState{
+			liveNodes: []string{"node-a"},
+			subnetToNodes: map[string][]string{
+				"10.0.0.0/8": {"node-a"},
+			},
+		}
+		assert.False(t, e.sameMembership(a, b))
+	})
+
+	t.Run("same subnets different node assignments", func(t *testing.T) {
+		a := &electionState{
+			liveNodes: []string{"node-a", "node-b"},
+			subnetToNodes: map[string][]string{
+				"192.168.1.0/24": {"node-a"},
+			},
+		}
+		b := &electionState{
+			liveNodes: []string{"node-a", "node-b"},
+			subnetToNodes: map[string][]string{
+				"192.168.1.0/24": {"node-a", "node-b"},
+			},
+		}
+		assert.False(t, e.sameMembership(a, b))
+	})
+
+	t.Run("both empty", func(t *testing.T) {
+		a := &electionState{
+			liveNodes:     []string{},
+			subnetToNodes: map[string][]string{},
+		}
+		b := &electionState{
+			liveNodes:     []string{},
+			subnetToNodes: map[string][]string{},
+		}
+		assert.True(t, e.sameMembership(a, b))
+	})
+}
+
+// TestRebuildMapsFiltersExpiredLeases tests that rebuildMaps correctly
+// excludes expired leases from the election state. This validates the
+// core mechanism: when a lease expires (e.g., after a force kill),
+// rebuildMaps detects it and removes the node from liveNodes.
+func TestRebuildMapsFiltersExpiredLeases(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-node",
+			UID:  "test-uid",
+		},
+	}
+
+	now := time.Now()
+	freshRenewTime := metav1.NewMicroTime(now.Add(-1 * time.Second))
+	expiredRenewTime := metav1.NewMicroTime(now.Add(-30 * time.Second))
+
+	// Create leases: node-a is fresh, node-b is expired
+	freshLease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "purelb-node-node-a",
+			Namespace: "purelb",
+			Annotations: map[string]string{
+				SubnetsAnnotation: "192.168.1.0/24",
+			},
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       ptr.To("node-a"),
+			LeaseDurationSeconds: ptr.To(int32(10)),
+			RenewTime:            &freshRenewTime,
+		},
+	}
+	expiredLease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "purelb-node-node-b",
+			Namespace: "purelb",
+			Annotations: map[string]string{
+				SubnetsAnnotation: "192.168.1.0/24",
+			},
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       ptr.To("node-b"),
+			LeaseDurationSeconds: ptr.To(int32(10)),
+			RenewTime:            &expiredRenewTime,
+		},
+	}
+
+	client := fake.NewSimpleClientset(node, freshLease, expiredLease)
+
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	e, err := New(Config{
+		Namespace:     "purelb",
+		NodeName:      "test-node",
+		Client:        client,
+		LeaseDuration: 5 * time.Second,
+		StopCh:        stopCh,
+		GetLocalSubnets: func() ([]string, error) {
+			return []string{"192.168.1.0/24"}, nil
+		},
+	})
+	require.NoError(t, err)
+
+	// Create our lease so Start() succeeds
+	err = e.createOrUpdateLease()
+	require.NoError(t, err)
+
+	// Set up informer and wait for cache sync
+	e.informerFactory = informers.NewSharedInformerFactoryWithOptions(
+		e.config.Client,
+		0,
+		informers.WithNamespace(e.config.Namespace),
+	)
+	e.leaseInformer = e.informerFactory.Coordination().V1().Leases().Informer()
+	e.informerFactory.Start(stopCh)
+	require.True(t, cache.WaitForCacheSync(stopCh, e.leaseInformer.HasSynced))
+
+	// Rebuild maps - should filter out expired lease
+	e.rebuildMaps()
+
+	state := e.state.Load()
+	// node-a (fresh) and test-node (our lease) should be live
+	// node-b (expired) should be filtered out
+	assert.Contains(t, state.liveNodes, "node-a", "fresh lease should be in liveNodes")
+	assert.Contains(t, state.liveNodes, "test-node", "our own lease should be in liveNodes")
+	assert.NotContains(t, state.liveNodes, "node-b", "expired lease should be filtered out")
+}
+
+// TestOnLeaseUpdateDetectsMembershipChange tests that onLeaseUpdate
+// triggers OnMemberChange when a lease has expired. This simulates
+// the scenario where a force-killed pod's lease becomes stale.
+func TestOnLeaseUpdateDetectsMembershipChange(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-node",
+			UID:  "test-uid",
+		},
+	}
+
+	now := time.Now()
+	freshRenewTime := metav1.NewMicroTime(now.Add(-1 * time.Second))
+	expiredRenewTime := metav1.NewMicroTime(now.Add(-30 * time.Second))
+
+	freshLease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "purelb-node-node-a",
+			Namespace: "purelb",
+			Annotations: map[string]string{
+				SubnetsAnnotation: "192.168.1.0/24",
+			},
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       ptr.To("node-a"),
+			LeaseDurationSeconds: ptr.To(int32(10)),
+			RenewTime:            &freshRenewTime,
+		},
+	}
+	expiredLease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "purelb-node-node-b",
+			Namespace: "purelb",
+			Annotations: map[string]string{
+				SubnetsAnnotation: "192.168.1.0/24",
+			},
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       ptr.To("node-b"),
+			LeaseDurationSeconds: ptr.To(int32(10)),
+			RenewTime:            &expiredRenewTime,
+		},
+	}
+
+	client := fake.NewSimpleClientset(node, freshLease, expiredLease)
+
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	memberChangeCount := 0
+	e, err := New(Config{
+		Namespace:     "purelb",
+		NodeName:      "test-node",
+		Client:        client,
+		LeaseDuration: 5 * time.Second,
+		StopCh:        stopCh,
+		OnMemberChange: func() {
+			memberChangeCount++
+		},
+		GetLocalSubnets: func() ([]string, error) {
+			return []string{"192.168.1.0/24"}, nil
+		},
+	})
+	require.NoError(t, err)
+
+	// Create our lease
+	err = e.createOrUpdateLease()
+	require.NoError(t, err)
+
+	// Set up informer and wait for cache sync
+	e.informerFactory = informers.NewSharedInformerFactoryWithOptions(
+		e.config.Client,
+		0,
+		informers.WithNamespace(e.config.Namespace),
+	)
+	e.leaseInformer = e.informerFactory.Coordination().V1().Leases().Informer()
+	e.informerFactory.Start(stopCh)
+	require.True(t, cache.WaitForCacheSync(stopCh, e.leaseInformer.HasSynced))
+
+	// Set initial state with both nodes alive (simulating state before expiry)
+	e.state.Store(&electionState{
+		liveNodes: []string{"node-a", "node-b", "test-node"},
+		subnetToNodes: map[string][]string{
+			"192.168.1.0/24": {"node-a", "node-b", "test-node"},
+		},
+		nodeToSubnets: map[string][]string{
+			"node-a":    {"192.168.1.0/24"},
+			"node-b":    {"192.168.1.0/24"},
+			"test-node": {"192.168.1.0/24"},
+		},
+	})
+
+	// Simulate onLeaseUpdate triggered by another node's renewal or resync.
+	// This should detect that node-b's lease is expired.
+	e.onLeaseUpdate(freshLease, freshLease)
+
+	// OnMemberChange should have been called because node-b was removed
+	assert.Equal(t, 1, memberChangeCount, "OnMemberChange should fire when expired lease is detected")
+
+	// Verify node-b is no longer in liveNodes
+	state := e.state.Load()
+	assert.NotContains(t, state.liveNodes, "node-b", "expired node should be removed")
+	assert.Contains(t, state.liveNodes, "node-a", "fresh node should remain")
+}
+
+// TestOnLeaseUpdateNoChangeNoCallback tests that onLeaseUpdate does NOT
+// trigger OnMemberChange when membership hasn't changed (steady state).
+func TestOnLeaseUpdateNoChangeNoCallback(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-node",
+			UID:  "test-uid",
+		},
+	}
+
+	now := time.Now()
+	freshRenewTime := metav1.NewMicroTime(now.Add(-1 * time.Second))
+
+	leaseA := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "purelb-node-node-a",
+			Namespace: "purelb",
+			Annotations: map[string]string{
+				SubnetsAnnotation: "192.168.1.0/24",
+			},
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       ptr.To("node-a"),
+			LeaseDurationSeconds: ptr.To(int32(10)),
+			RenewTime:            &freshRenewTime,
+		},
+	}
+
+	client := fake.NewSimpleClientset(node, leaseA)
+
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+
+	memberChangeCount := 0
+	e, err := New(Config{
+		Namespace:     "purelb",
+		NodeName:      "test-node",
+		Client:        client,
+		LeaseDuration: 5 * time.Second,
+		StopCh:        stopCh,
+		OnMemberChange: func() {
+			memberChangeCount++
+		},
+		GetLocalSubnets: func() ([]string, error) {
+			return []string{"192.168.1.0/24"}, nil
+		},
+	})
+	require.NoError(t, err)
+
+	// Create our lease
+	err = e.createOrUpdateLease()
+	require.NoError(t, err)
+
+	// Set up informer
+	e.informerFactory = informers.NewSharedInformerFactoryWithOptions(
+		e.config.Client,
+		0,
+		informers.WithNamespace(e.config.Namespace),
+	)
+	e.leaseInformer = e.informerFactory.Coordination().V1().Leases().Informer()
+	e.informerFactory.Start(stopCh)
+	require.True(t, cache.WaitForCacheSync(stopCh, e.leaseInformer.HasSynced))
+
+	// Build initial state from cache (both nodes fresh)
+	e.rebuildMaps()
+
+	// Simulate onLeaseUpdate (e.g., node-a renewed) - no membership change
+	e.onLeaseUpdate(leaseA, leaseA)
+
+	// OnMemberChange should NOT have been called
+	assert.Equal(t, 0, memberChangeCount, "OnMemberChange should not fire when membership is unchanged")
 }

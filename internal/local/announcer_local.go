@@ -291,6 +291,14 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
 	opts := a.getLocalAddressOptions()
+	// IPv6 has no IFA_F_SECONDARY equivalent, so flannel can pick VIPs as the
+	// node's public IPv6 address, breaking overlay routing. Setting PreferedLft=0
+	// marks the address as deprecated (IFA_F_DEPRECATED), which flannel's
+	// GetInterfaceIP6Addrs explicitly filters out. The address still receives
+	// inbound traffic normally.
+	if lbIP.To4() == nil {
+		opts.PreferedLft = 0
+	}
 	if err := addNetworkWithOptions(lbIPNet, announceInt, opts); err != nil {
 		return err
 	}
