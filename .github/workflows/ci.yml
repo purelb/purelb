@@ -136,7 +136,7 @@ jobs:
           sha256sum deployments/purelb-${{ github.ref_name }}.yaml >> SHA256SUMS
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: deployment-manifests-${{ github.sha }}
           path: |
