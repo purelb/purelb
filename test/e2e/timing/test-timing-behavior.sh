@@ -3,196 +3,155 @@ set -e
 
 # PureLB Timing Behavior Test Suite
 #
-# This test suite characterizes timing behavior in PureLB's lbnodeagent,
-# specifically for ETP Local (externalTrafficPolicy: Local) scenarios.
+# Characterizes timing behavior for local-pool clusters where VIPs land on
+# the subnet interface (eth1/NODE_IFACE) of the election-winning node, NOT on
+# kube-lb0 (which is only used for remote/BGP pools).
 #
-# Purpose:
-# - Document and verify timing guarantees PureLB provides
-# - Characterize delays at each stage of the service lifecycle
-# - Establish baselines for expected timing behavior
-# - Provide evidence for test timeout adjustments
+# Tests:
+#   B1  VIP Placement Latency:     service create → VIP on eth1 of election winner
+#   B3  VIP Withdrawal Latency:    service delete → VIP removed from eth1
+#   D1  nftables Latency:          VIP on eth1 → kube-proxy nftables rules ready
+#   D3  End-to-End Traffic:        service create → first successful curl (in-cluster)
+#   E1  VIP Stability Under Scale: VIP stays on correct subnet node across replica changes
+#   E3  Election Re-convergence:   lbnodeagent killed on winner → VIP on new node
 #
-# Unlike pass/fail E2E tests, this suite outputs timing measurements
-# for analysis. Run multiple iterations to establish baselines.
+# Run with optional iteration count:
+#   bash test-timing-behavior.sh [ITERATIONS]   # default 3
 
-CONTEXT="proxmox"
-NAMESPACE="test"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAMESPACE="test"
+TIMING_SG="timing-test"
+PURELB_NS="${PURELB_NS:-purelb-system}"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+# Source common cluster topology helpers (provides CONTEXT, NODES, NODE_COUNT,
+# NODE_IPS, NODE_IFACE, SUBNET_NODES, node_ssh, get_vip_holder, generate_default_servicegroup, etc.)
+source "$SCRIPT_DIR/../common.sh"
+
+# warn is not in common.sh; add it here so callers can flag non-fatal issues
+warn() { echo -e "${YELLOW}!${NC} $1" >&2; }
 
 # Output file for timing data
 TIMING_LOG="${SCRIPT_DIR}/timing-results-$(date +%Y%m%d-%H%M%S).csv"
 
-pass() { echo -e "${GREEN}✓${NC} $1"; }
-warn() { echo -e "${YELLOW}!${NC} $1" >&2; }
-info() { echo -e "${CYAN}→${NC} $1" >&2; }
-fail() { echo -e "${RED}✗${NC} $1"; }
-
-kubectl() { command kubectl --context "$CONTEXT" "$@"; }
-
-# Apply a YAML template, replacing NAME with the given service name
-apply_template() {
-    local TEMPLATE=$1
-    local SVC_NAME=$2
-    sed "s/name: NAME/name: $SVC_NAME/" "${SCRIPT_DIR}/${TEMPLATE}" | kubectl apply -f - >/dev/null
-}
-
-# Get node list dynamically
-NODES=$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}')
-NODE_COUNT=$(echo $NODES | wc -w)
-
 #---------------------------------------------------------------------
-# Timing Helper Functions
+# Timing Primitives
 #---------------------------------------------------------------------
 
-# Timestamp with milliseconds
-now_ms() {
-    date +%s%3N
-}
+now_ms() { date +%s%3N; }
 
-# Record timing event to log
 record_event() {
-    local TEST=$1
-    local EVENT=$2
-    local VALUE=$3
+    local TEST=$1 EVENT=$2 VALUE=$3
     echo "$TEST,$EVENT,$VALUE" >> "$TIMING_LOG"
 }
 
-# SSH helper with error handling
-ssh_cmd() {
-    local NODE=$1
-    shift
-    ssh "$NODE" "$@" 2>/dev/null
-}
+# All poll_* functions output their result to stdout and always return 0.
+# The caller checks for "-1" in the output to detect a timeout.
+# This is important because the script runs with set -e — returning non-zero
+# from a command substitution $(...) would immediately exit the script.
 
-# Poll for VIP on node with timing measurement
-# Returns: milliseconds elapsed, or -1 on timeout
+# Poll for VIP on a specific node+interface. Outputs ms elapsed or "-1".
 poll_for_vip() {
-    local NODE=$1
-    local IP=$2
-    local IFACE=$3
-    local TIMEOUT=${4:-60000}  # milliseconds
+    local NODE=$1 IP=$2 IFACE=$3 TIMEOUT=${4:-60000}
     local START=$(now_ms)
-
     while true; do
-        local NOW=$(now_ms)
-        local ELAPSED=$((NOW - START))
-
-        if ssh_cmd $NODE "ip -o addr show $IFACE 2>/dev/null | grep -q ' $IP/'"; then
-            echo "$ELAPSED"
-            return 0
+        local NOW=$(now_ms); local ELAPSED=$((NOW - START))
+        if node_ssh "$NODE" "ip -o addr show $IFACE 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            echo "$ELAPSED"; return 0
         fi
-
-        if [ $ELAPSED -gt $TIMEOUT ]; then
-            echo "-1"
-            return 1
-        fi
-
+        [ $ELAPSED -gt $TIMEOUT ] && { echo "-1"; return 0; }
         sleep 0.1
     done
 }
 
-# Poll for VIP removal from node
-# Returns: milliseconds elapsed, or -1 on timeout
+# Poll for VIP removal from a specific node+interface. Outputs ms elapsed or "-1".
 poll_for_vip_removal() {
-    local NODE=$1
-    local IP=$2
-    local IFACE=$3
-    local TIMEOUT=${4:-60000}
+    local NODE=$1 IP=$2 IFACE=$3 TIMEOUT=${4:-60000}
     local START=$(now_ms)
-
     while true; do
-        local NOW=$(now_ms)
-        local ELAPSED=$((NOW - START))
-
-        if ! ssh_cmd $NODE "ip -o addr show $IFACE 2>/dev/null | grep -q ' $IP/'"; then
-            echo "$ELAPSED"
-            return 0
+        local NOW=$(now_ms); local ELAPSED=$((NOW - START))
+        if ! node_ssh "$NODE" "ip -o addr show $IFACE 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            echo "$ELAPSED"; return 0
         fi
-
-        if [ $ELAPSED -gt $TIMEOUT ]; then
-            echo "-1"
-            return 1
-        fi
-
+        [ $ELAPSED -gt $TIMEOUT ] && { echo "-1"; return 0; }
         sleep 0.1
     done
 }
 
-# Poll nftables rules with timing
+# Poll across ALL nodes on their NODE_IFACE until one holds the VIP.
+# Outputs "ELAPSED NODE" or "-1 NONE".
+poll_for_vip_any_node() {
+    local IP=$1 TIMEOUT=${2:-60000}
+    local START=$(now_ms)
+    while true; do
+        local NOW=$(now_ms); local ELAPSED=$((NOW - START))
+        for node in $NODES; do
+            local iface="${NODE_IFACE[$node]}"
+            if node_ssh "$node" "ip -o addr show $iface 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+                echo "$ELAPSED $node"; return 0
+            fi
+        done
+        [ $ELAPSED -gt $TIMEOUT ] && { echo "-1 NONE"; return 0; }
+        sleep 0.1
+    done
+}
+
+# Poll until NO node holds the VIP on its NODE_IFACE. Outputs ms elapsed or "-1".
+poll_for_vip_removal_any_node() {
+    local IP=$1 TIMEOUT=${2:-60000}
+    local START=$(now_ms)
+    while true; do
+        local NOW=$(now_ms); local ELAPSED=$((NOW - START))
+        local found=false
+        for node in $NODES; do
+            local iface="${NODE_IFACE[$node]}"
+            if node_ssh "$node" "ip -o addr show $iface 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+                found=true; break
+            fi
+        done
+        [ "$found" = "false" ] && { echo "$ELAPSED"; return 0; }
+        [ $ELAPSED -gt $TIMEOUT ] && { echo "-1"; return 0; }
+        sleep 0.1
+    done
+}
+
+# Poll nftables service-ips map on any node (kube-proxy runs cluster-wide).
+# Outputs ms elapsed or "-1".
 poll_for_nftables() {
-    local NODE=$1
-    local IP=$2
-    local PORT=$3
-    local TIMEOUT=${4:-30000}
+    local NODE=$1 IP=$2 PORT=$3 TIMEOUT=${4:-30000}
     local START=$(now_ms)
-
     while true; do
-        local NOW=$(now_ms)
-        local ELAPSED=$((NOW - START))
-
-        if ssh_cmd $NODE "sudo nft list map ip kube-proxy service-ips 2>/dev/null | grep -q '$IP.*$PORT'"; then
-            echo "$ELAPSED"
-            return 0
+        local NOW=$(now_ms); local ELAPSED=$((NOW - START))
+        if node_ssh "$NODE" "sudo nft list map ip kube-proxy service-ips 2>/dev/null | grep -q '$IP.*$PORT'"; then
+            echo "$ELAPSED"; return 0
         fi
-
-        if [ $ELAPSED -gt $TIMEOUT ]; then
-            echo "-1"
-            return 1
-        fi
-
+        [ $ELAPSED -gt $TIMEOUT ] && { echo "-1"; return 0; }
         sleep 0.1
     done
 }
 
-# Poll for traffic connectivity
+# Poll for traffic from in-cluster curl-test pod. Outputs ms elapsed or "-1".
 poll_for_traffic() {
-    local IP=$1
-    local PORT=${2:-80}
-    local TIMEOUT=${3:-30000}
+    local IP=$1 PORT=${2:-80} TIMEOUT=${3:-30000}
     local START=$(now_ms)
-
     while true; do
-        local NOW=$(now_ms)
-        local ELAPSED=$((NOW - START))
-
+        local NOW=$(now_ms); local ELAPSED=$((NOW - START))
         if kubectl exec -n $NAMESPACE curl-test -- curl -s --connect-timeout 2 "http://$IP:$PORT" >/dev/null 2>&1; then
-            echo "$ELAPSED"
-            return 0
+            echo "$ELAPSED"; return 0
         fi
-
-        if [ $ELAPSED -gt $TIMEOUT ]; then
-            echo "-1"
-            return 1
-        fi
-
+        [ $ELAPSED -gt $TIMEOUT ] && { echo "-1"; return 0; }
         sleep 0.2
     done
 }
 
-# Wait for service IP allocation
 wait_for_ip_allocation() {
-    local SVC=$1
-    local TIMEOUT=${2:-60}
-
+    local SVC=$1 TIMEOUT=${2:-60}
     kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
         svc/$SVC -n $NAMESPACE --timeout=${TIMEOUT}s >/dev/null 2>&1 || return 1
-
     kubectl get svc $SVC -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
 }
 
-# Ensure curl test pod exists
 ensure_curl_pod() {
-    if kubectl get pod curl-test -n $NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running; then
-        return 0
-    fi
-
+    kubectl get pod curl-test -n $NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running && return 0
     info "Creating curl test pod..."
     kubectl delete pod curl-test -n $NAMESPACE --ignore-not-found 2>/dev/null || true
     kubectl run curl-test -n $NAMESPACE --image=curlimages/curl:latest \
@@ -201,50 +160,108 @@ ensure_curl_pod() {
 }
 
 #---------------------------------------------------------------------
-# Statistics Functions
+# ServiceGroup Setup
+# Creates a dedicated "timing-test" ServiceGroup using non-overlapping
+# IP ranges (.241-.250 for IPv4, c:: for IPv6) so timing tests can run
+# concurrently with other tests without pool conflicts.
 #---------------------------------------------------------------------
+setup_timing_servicegroup() {
+    info "Creating dedicated '$TIMING_SG' ServiceGroup for timing tests..."
 
-# Calculate statistics from array of values
-calc_stats() {
-    local -a VALUES=("$@")
-    local COUNT=${#VALUES[@]}
+    local v4pools=""
+    local v6pools=""
 
-    if [ $COUNT -eq 0 ]; then
-        echo "count=0,min=N/A,max=N/A,avg=N/A,p95=N/A"
-        return
+    for s in $SUBNETS; do
+        local pool
+        pool=$(subnet_timing_pool_range "$s")
+        v4pools="${v4pools}
+    - aggregation: default
+      pool: ${pool}
+      subnet: ${s}"
+
+        local v6sub="${SUBNET_V6[$s]}"
+        local v6prefix="${SUBNET_V6_PREFIX[$s]}"
+        if [ -n "$v6sub" ]; then
+            local v6pool
+            v6pool=$(v6_timing_pool_range "$v6prefix")
+            v6pools="${v6pools}
+    - aggregation: default
+      pool: ${v6pool}
+      subnet: ${v6sub}"
+        fi
+    done
+
+    local yaml="apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: ${TIMING_SG}
+  namespace: purelb-system
+spec:
+  local:
+    v4pools:${v4pools}"
+
+    if [ -n "$v6pools" ]; then
+        yaml="${yaml}
+    v6pools:${v6pools}"
     fi
 
-    # Sort values
-    local SORTED=($(printf '%s\n' "${VALUES[@]}" | sort -n))
+    echo "$yaml" | kubectl apply -f - 2>&1
+    pass "ServiceGroup '$TIMING_SG' applied"
+}
 
-    local MIN=${SORTED[0]}
-    local MAX=${SORTED[$((COUNT-1))]}
-
-    # Calculate average
-    local SUM=0
-    for v in "${VALUES[@]}"; do
-        SUM=$((SUM + v))
-    done
-    local AVG=$((SUM / COUNT))
-
-    # Calculate P95 index
-    local P95_IDX=$(( (COUNT * 95) / 100 ))
-    [ $P95_IDX -ge $COUNT ] && P95_IDX=$((COUNT - 1))
-    local P95=${SORTED[$P95_IDX]}
-
-    echo "count=$COUNT,min=$MIN,max=$MAX,avg=$AVG,p95=$P95"
+# Create a Cluster ETP LoadBalancer service using the dedicated timing pool.
+create_timing_svc() {
+    local NAME=$1
+    kubectl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: $NAME
+  namespace: $NAMESPACE
+  labels:
+    test-suite: timing
+  annotations:
+    purelb.io/service-group: $TIMING_SG
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Cluster
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+EOF
 }
 
 #---------------------------------------------------------------------
-# Test B1: EndpointSlice Cache Sync Latency
+# Statistics
 #---------------------------------------------------------------------
-test_b1_cache_sync_latency() {
+calc_stats() {
+    local -a VALUES=("$@")
+    local COUNT=${#VALUES[@]}
+    [ $COUNT -eq 0 ] && { echo "count=0,min=N/A,max=N/A,avg=N/A,p95=N/A"; return; }
+    local SORTED=($(printf '%s\n' "${VALUES[@]}" | sort -n))
+    local MIN=${SORTED[0]} MAX=${SORTED[$((COUNT-1))]}
+    local SUM=0; for v in "${VALUES[@]}"; do SUM=$((SUM + v)); done
+    local AVG=$((SUM / COUNT))
+    local P95_IDX=$(( (COUNT * 95) / 100 ))
+    [ $P95_IDX -ge $COUNT ] && P95_IDX=$((COUNT - 1))
+    echo "count=$COUNT,min=$MIN,max=$MAX,avg=$AVG,p95=${SORTED[$P95_IDX]}"
+}
+
+#---------------------------------------------------------------------
+# TEST B1: VIP Placement Latency
+# Measures time from service creation to VIP on eth1 of the election winner.
+#---------------------------------------------------------------------
+test_b1_vip_placement() {
     local ITERATIONS=${1:-5}
     echo ""
     echo "=========================================="
-    echo "TEST B1: EndpointSlice Cache Sync Latency"
+    echo "TEST B1: VIP Placement Latency"
     echo "=========================================="
-    echo "Measures time from pod Ready to VIP placement on endpoint node"
+    echo "Service create → VIP on eth1 of election-winning node"
     echo ""
 
     local -a RESULTS=()
@@ -252,136 +269,104 @@ test_b1_cache_sync_latency() {
     for i in $(seq 1 $ITERATIONS); do
         info "Iteration $i/$ITERATIONS"
 
-        # Scale to 0
-        kubectl scale deployment nginx -n $NAMESPACE --replicas=0 >/dev/null
-        kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-        sleep 3
-
-        # Create a fresh ETP Local service for this test
         local SVC_NAME="timing-b1-$i"
-        apply_template svc-timing-etp-local.yaml "$SVC_NAME"
+        local T_CREATE=$(now_ms)
+        create_timing_svc "$SVC_NAME"
 
-        # Wait for IP allocation
+        # Time to IP allocation (by allocator)
         local IP=$(wait_for_ip_allocation $SVC_NAME 30)
         if [ -z "$IP" ]; then
             warn "  Failed to get IP for $SVC_NAME"
             kubectl delete svc $SVC_NAME -n $NAMESPACE --ignore-not-found >/dev/null
             continue
         fi
-        info "  Allocated IP: $IP"
+        local T_ALLOCATED=$(now_ms)
+        info "  IP: $IP (allocated in $((T_ALLOCATED - T_CREATE))ms)"
 
-        # Scale to 1 and measure time to VIP placement
-        local T_SCALE=$(now_ms)
-        kubectl scale deployment nginx -n $NAMESPACE --replicas=1 >/dev/null
-
-        # Wait for pod ready
-        kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-        kubectl wait --for=condition=Ready pods -l app=nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-        local T_POD_READY=$(now_ms)
-
-        # Get endpoint node
-        local ENDPOINT_NODE=$(kubectl get pods -n $NAMESPACE -l app=nginx -o jsonpath='{.items[0].spec.nodeName}')
-        info "  Endpoint node: $ENDPOINT_NODE"
-
-        # Poll for VIP
-        local VIP_DELAY=$(poll_for_vip $ENDPOINT_NODE $IP kube-lb0 30000)
+        # Time until VIP appears on election winner's eth1
+        local RESULT_STR; RESULT_STR=$(poll_for_vip_any_node "$IP" 30000)
+        local VIP_DELAY="${RESULT_STR%% *}"
+        local VIP_NODE="${RESULT_STR##* }"
         local T_VIP=$(now_ms)
-
-        local POD_TO_VIP=$((T_VIP - T_POD_READY))
-        local SCALE_TO_VIP=$((T_VIP - T_SCALE))
+        local CREATE_TO_VIP=$((T_VIP - T_CREATE))
 
         if [ "$VIP_DELAY" = "-1" ]; then
-            warn "  TIMEOUT: VIP not placed within 30s"
+            warn "  TIMEOUT: VIP not placed on any node's eth1 within 30s"
             record_event "B1" "iteration_$i" "TIMEOUT"
         else
-            echo "  Pod ready to VIP: ${POD_TO_VIP}ms (poll detected: ${VIP_DELAY}ms)"
-            echo "  Scale to VIP: ${SCALE_TO_VIP}ms"
-            RESULTS+=($POD_TO_VIP)
-            record_event "B1" "iteration_$i" "$POD_TO_VIP"
+            echo "  Service create → VIP on ${NODE_IFACE[$VIP_NODE]} of $(node_label $VIP_NODE) [${NODE_SUBNET[$VIP_NODE]}]: ${CREATE_TO_VIP}ms"
+            echo "    (allocator: $((T_ALLOCATED - T_CREATE))ms, lbnodeagent: $((T_VIP - T_ALLOCATED))ms)"
+            RESULTS+=($CREATE_TO_VIP)
+            record_event "B1" "iteration_$i" "$CREATE_TO_VIP"
         fi
 
-        # Cleanup
         kubectl delete svc $SVC_NAME -n $NAMESPACE --ignore-not-found >/dev/null
         sleep 2
     done
 
     echo ""
     echo "--- B1 Summary ---"
-    if [ ${#RESULTS[@]} -gt 0 ]; then
+    [ ${#RESULTS[@]} -gt 0 ] && {
         local STATS=$(calc_stats "${RESULTS[@]}")
-        echo "Pod Ready → VIP Placed: $STATS ms"
+        echo "Service Create → VIP on eth1: $STATS ms"
         record_event "B1" "summary" "$STATS"
-    else
-        echo "No successful measurements"
-    fi
+    } || echo "No successful measurements"
 }
 
 #---------------------------------------------------------------------
-# Test B3: Endpoint Termination (VIP Withdrawal) Timing
+# TEST B3: VIP Withdrawal Latency
+# Measures time from service deletion to VIP removed from eth1.
+# For local pools, VIP stays as long as the service exists (not endpoint-dependent).
 #---------------------------------------------------------------------
-test_b3_endpoint_termination() {
+test_b3_vip_withdrawal() {
     local ITERATIONS=${1:-5}
     echo ""
     echo "=========================================="
-    echo "TEST B3: Endpoint Termination Timing"
+    echo "TEST B3: VIP Withdrawal Latency"
     echo "=========================================="
-    echo "Measures time from pod deletion to VIP withdrawal"
+    echo "Service delete → VIP removed from eth1 of election winner"
     echo ""
 
     local -a RESULTS=()
 
-    # Ensure we have 1 replica running
-    kubectl scale deployment nginx -n $NAMESPACE --replicas=1 >/dev/null
-    kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-    kubectl wait --for=condition=Ready pods -l app=nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-    sleep 3
-
-    # Get or create ETP Local service
-    local IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-    if [ -z "$IP" ]; then
-        warn "Creating ETP Local service..."
-        kubectl apply -f ${SCRIPT_DIR}/svc-etp-local.yaml >/dev/null
-        sleep 5
-        IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-    fi
-    info "Using ETP Local service IP: $IP"
-
     for i in $(seq 1 $ITERATIONS); do
         info "Iteration $i/$ITERATIONS"
 
-        # Ensure 1 replica
-        kubectl scale deployment nginx -n $NAMESPACE --replicas=1 >/dev/null
-        kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-        kubectl wait --for=condition=Ready pods -l app=nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-        sleep 3
-
-        # Get current endpoint node
-        local ENDPOINT_NODE=$(kubectl get pods -n $NAMESPACE -l app=nginx -o jsonpath='{.items[0].spec.nodeName}')
-        info "  Endpoint node: $ENDPOINT_NODE"
-
-        # Verify VIP is on that node
-        if ! ssh_cmd $ENDPOINT_NODE "ip -o addr show kube-lb0 | grep -q ' $IP/'"; then
-            warn "  VIP not on endpoint node, waiting..."
-            poll_for_vip $ENDPOINT_NODE $IP kube-lb0 30000 >/dev/null
+        # Create service and wait for VIP to be placed
+        local SVC_NAME="timing-b3-$i"
+        create_timing_svc "$SVC_NAME"
+        local IP=$(wait_for_ip_allocation $SVC_NAME 30)
+        if [ -z "$IP" ]; then
+            warn "  Failed to get IP"
+            kubectl delete svc $SVC_NAME -n $NAMESPACE --ignore-not-found >/dev/null
+            continue
         fi
 
-        # Delete pod and measure withdrawal time
+        local RESULT_STR; RESULT_STR=$(poll_for_vip_any_node "$IP" 30000)
+        local VIP_DELAY="${RESULT_STR%% *}"
+        local VIP_NODE="${RESULT_STR##* }"
+        if [ "$VIP_DELAY" = "-1" ]; then
+            warn "  TIMEOUT: VIP not placed; skipping withdrawal measurement"
+            kubectl delete svc $SVC_NAME -n $NAMESPACE --ignore-not-found >/dev/null
+            continue
+        fi
+        info "  VIP $IP on $(node_label $VIP_NODE) [${NODE_SUBNET[$VIP_NODE]}]"
+
+        # Delete service and measure withdrawal time
         local T_DELETE=$(now_ms)
-        kubectl delete pod -n $NAMESPACE -l app=nginx --grace-period=1 >/dev/null
+        kubectl delete svc $SVC_NAME -n $NAMESPACE >/dev/null
 
-        # Poll for VIP removal
-        local REMOVAL_DELAY=$(poll_for_vip_removal $ENDPOINT_NODE $IP kube-lb0 60000)
+        local REMOVAL_DELAY=$(poll_for_vip_removal "$VIP_NODE" "$IP" "${NODE_IFACE[$VIP_NODE]}" 60000)
         local T_REMOVED=$(now_ms)
-
-        local TOTAL_TIME=$((T_REMOVED - T_DELETE))
+        local TOTAL=$((T_REMOVED - T_DELETE))
 
         if [ "$REMOVAL_DELAY" = "-1" ]; then
             warn "  TIMEOUT: VIP not removed within 60s"
             record_event "B3" "iteration_$i" "TIMEOUT"
         else
-            echo "  Pod delete to VIP removal: ${TOTAL_TIME}ms (poll detected: ${REMOVAL_DELAY}ms)"
-            RESULTS+=($TOTAL_TIME)
-            record_event "B3" "iteration_$i" "$TOTAL_TIME"
+            echo "  Service delete → VIP removed from ${NODE_IFACE[$VIP_NODE]}: ${TOTAL}ms"
+            RESULTS+=($TOTAL)
+            record_event "B3" "iteration_$i" "$TOTAL"
         fi
 
         sleep 2
@@ -389,20 +374,16 @@ test_b3_endpoint_termination() {
 
     echo ""
     echo "--- B3 Summary ---"
-    if [ ${#RESULTS[@]} -gt 0 ]; then
+    [ ${#RESULTS[@]} -gt 0 ] && {
         local STATS=$(calc_stats "${RESULTS[@]}")
-        echo "Pod Delete → VIP Removed: $STATS ms"
+        echo "Service Delete → VIP Removed: $STATS ms"
         record_event "B3" "summary" "$STATS"
-    else
-        echo "No successful measurements"
-    fi
-
-    # Restore 1 replica
-    kubectl scale deployment nginx -n $NAMESPACE --replicas=1 >/dev/null
+    } || echo "No successful measurements"
 }
 
 #---------------------------------------------------------------------
-# Test D1: nftables Rule Programming Latency
+# TEST D1: nftables Rule Programming Latency
+# Measures time from VIP on eth1 (election winner) to kube-proxy nftables rules ready.
 #---------------------------------------------------------------------
 test_d1_nftables_latency() {
     local ITERATIONS=${1:-5}
@@ -410,21 +391,20 @@ test_d1_nftables_latency() {
     echo "=========================================="
     echo "TEST D1: nftables Rule Programming Latency"
     echo "=========================================="
-    echo "Measures time from VIP placement to nftables rules ready"
+    echo "VIP on eth1 of election winner → kube-proxy nftables rules ready on any node"
     echo ""
 
     local -a RESULTS=()
-    local FIRST_NODE=${NODES%% *}
+    # kube-proxy runs everywhere, probe the first node for nftables checks
+    local NFT_PROBE_NODE="${NODES%% *}"
 
     for i in $(seq 1 $ITERATIONS); do
         info "Iteration $i/$ITERATIONS"
 
-        # Create a new service
         local SVC_NAME="timing-d1-$i"
         local T_CREATE=$(now_ms)
-        apply_template svc-timing-standard.yaml "$SVC_NAME"
+        create_timing_svc "$SVC_NAME"
 
-        # Wait for IP
         local IP=$(wait_for_ip_allocation $SVC_NAME 30)
         if [ -z "$IP" ]; then
             warn "  Failed to get IP"
@@ -432,47 +412,52 @@ test_d1_nftables_latency() {
             continue
         fi
         local T_ALLOCATED=$(now_ms)
-        info "  IP: $IP"
+        info "  IP: $IP (allocated in $((T_ALLOCATED - T_CREATE))ms)"
 
-        # Wait for VIP on any node
-        local VIP_DELAY=$(poll_for_vip $FIRST_NODE $IP kube-lb0 30000)
+        # Wait for VIP on election winner's eth1
+        local RESULT_STR; RESULT_STR=$(poll_for_vip_any_node "$IP" 30000)
+        local VIP_DELAY="${RESULT_STR%% *}"
+        local VIP_NODE="${RESULT_STR##* }"
         local T_VIP=$(now_ms)
 
-        # Wait for nftables rules
-        local NFT_DELAY=$(poll_for_nftables $FIRST_NODE $IP 80 30000)
-        local T_NFT=$(now_ms)
+        if [ "$VIP_DELAY" = "-1" ]; then
+            warn "  TIMEOUT: VIP not placed within 30s"
+            record_event "D1" "iteration_$i" "TIMEOUT"
+            kubectl delete svc $SVC_NAME -n $NAMESPACE --ignore-not-found >/dev/null
+            continue
+        fi
+        info "  VIP on $(node_label $VIP_NODE) [${NODE_SUBNET[$VIP_NODE]}] in ${VIP_DELAY}ms"
 
+        # Wait for nftables rules (kube-proxy programs all nodes)
+        local NFT_DELAY=$(poll_for_nftables "$NFT_PROBE_NODE" "$IP" 80 30000)
+        local T_NFT=$(now_ms)
         local VIP_TO_NFT=$((T_NFT - T_VIP))
-        local CREATE_TO_NFT=$((T_NFT - T_CREATE))
 
         if [ "$NFT_DELAY" = "-1" ]; then
             warn "  TIMEOUT: nftables rules not ready within 30s"
             record_event "D1" "iteration_$i" "TIMEOUT"
         else
-            echo "  VIP placed to nftables ready: ${VIP_TO_NFT}ms"
-            echo "  Service create to nftables ready: ${CREATE_TO_NFT}ms"
+            echo "  VIP on eth1 → nftables ready: ${VIP_TO_NFT}ms  (service create → nftables: $((T_NFT - T_CREATE))ms)"
             RESULTS+=($VIP_TO_NFT)
             record_event "D1" "iteration_$i" "$VIP_TO_NFT"
         fi
 
-        # Cleanup
         kubectl delete svc $SVC_NAME -n $NAMESPACE --ignore-not-found >/dev/null
         sleep 2
     done
 
     echo ""
     echo "--- D1 Summary ---"
-    if [ ${#RESULTS[@]} -gt 0 ]; then
+    [ ${#RESULTS[@]} -gt 0 ] && {
         local STATS=$(calc_stats "${RESULTS[@]}")
-        echo "VIP → nftables ready: $STATS ms"
+        echo "VIP on eth1 → nftables ready: $STATS ms"
         record_event "D1" "summary" "$STATS"
-    else
-        echo "No successful measurements"
-    fi
+    } || echo "No successful measurements"
 }
 
 #---------------------------------------------------------------------
-# Test D3: End-to-End Traffic Latency
+# TEST D3: End-to-End Traffic Latency
+# Total time from service creation to first successful curl (in-cluster pod).
 #---------------------------------------------------------------------
 test_d3_end_to_end() {
     local ITERATIONS=${1:-5}
@@ -480,12 +465,10 @@ test_d3_end_to_end() {
     echo "=========================================="
     echo "TEST D3: End-to-End Traffic Latency"
     echo "=========================================="
-    echo "Measures time from service creation to first successful curl"
+    echo "Service create → first successful curl from in-cluster pod"
     echo ""
 
     ensure_curl_pod
-
-    # Ensure nginx is running
     kubectl scale deployment nginx -n $NAMESPACE --replicas=1 >/dev/null
     kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
     kubectl wait --for=condition=Ready pods -l app=nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
@@ -497,9 +480,8 @@ test_d3_end_to_end() {
 
         local SVC_NAME="timing-d3-$i"
         local T_CREATE=$(now_ms)
-        apply_template svc-timing-standard.yaml "$SVC_NAME"
+        create_timing_svc "$SVC_NAME"
 
-        # Wait for IP
         local IP=$(wait_for_ip_allocation $SVC_NAME 30)
         if [ -z "$IP" ]; then
             warn "  Failed to get IP"
@@ -509,112 +491,105 @@ test_d3_end_to_end() {
         local T_ALLOCATED=$(now_ms)
         info "  IP: $IP (allocated in $((T_ALLOCATED - T_CREATE))ms)"
 
-        # Wait for traffic
         local TRAFFIC_DELAY=$(poll_for_traffic $IP 80 60000)
         local T_TRAFFIC=$(now_ms)
-
         local TOTAL=$((T_TRAFFIC - T_CREATE))
 
         if [ "$TRAFFIC_DELAY" = "-1" ]; then
             warn "  TIMEOUT: Traffic not working within 60s"
             record_event "D3" "iteration_$i" "TIMEOUT"
         else
-            echo "  Service create to traffic OK: ${TOTAL}ms"
+            echo "  Service create → traffic OK: ${TOTAL}ms"
             RESULTS+=($TOTAL)
             record_event "D3" "iteration_$i" "$TOTAL"
         fi
 
-        # Cleanup
         kubectl delete svc $SVC_NAME -n $NAMESPACE --ignore-not-found >/dev/null
         sleep 2
     done
 
     echo ""
     echo "--- D3 Summary ---"
-    if [ ${#RESULTS[@]} -gt 0 ]; then
+    [ ${#RESULTS[@]} -gt 0 ] && {
         local STATS=$(calc_stats "${RESULTS[@]}")
         echo "Service Create → Traffic OK: $STATS ms"
         record_event "D3" "summary" "$STATS"
-    else
-        echo "No successful measurements"
-    fi
+    } || echo "No successful measurements"
 }
 
 #---------------------------------------------------------------------
-# Test E1: ETP Local Rapid Scaling
+# TEST E1: VIP Stability Under Scaling
+# For local-pool Cluster ETP, the VIP stays on exactly 1 subnet-matching node
+# regardless of replica count (election-based, not endpoint-based).
 #---------------------------------------------------------------------
-test_e1_rapid_scaling() {
+test_e1_vip_stability() {
     echo ""
     echo "=========================================="
-    echo "TEST E1: ETP Local Rapid Scaling"
+    echo "TEST E1: VIP Stability Under Scaling"
     echo "=========================================="
-    echo "Verifies VIP placement correctness under rapid scaling: 0→2→0→1→3→1→0"
+    echo "Verifies VIP stays on exactly 1 subnet-matching node across replica changes"
+    echo "Scale sequence: 0→2→0→1→3→1→0"
     echo ""
 
-    # Get or create ETP Local service
-    local IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-    if [ -z "$IP" ]; then
-        kubectl apply -f ${SCRIPT_DIR}/svc-etp-local.yaml >/dev/null
-        sleep 5
-        IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-    fi
-    info "Using ETP Local service IP: $IP"
+    local SVC="timing-e1-stability"
+    create_timing_svc "$SVC"
+    local IP=$(wait_for_ip_allocation $SVC 30)
+    [ -z "$IP" ] && { warn "Failed to get IP for E1 service"; kubectl delete svc $SVC -n $NAMESPACE --ignore-not-found >/dev/null; return; }
+    info "VIP: $IP"
+
+    # Determine which subnet the IP belongs to
+    local IP_SUBNET=""
+    for s in $SUBNETS; do
+        if echo "$IP" | grep -q "^${s%.*}\."; then
+            IP_SUBNET="$s"
+            break
+        fi
+    done
+    info "VIP subnet: $IP_SUBNET (eligible nodes: ${SUBNET_NODES[$IP_SUBNET]})"
 
     local SCALE_SEQUENCE=(0 2 0 1 3 1 0)
     local ERRORS=0
 
     for REPLICAS in "${SCALE_SEQUENCE[@]}"; do
-        info "Scaling to $REPLICAS replicas..."
+        info "Scaling nginx to $REPLICAS replicas..."
         local T_START=$(now_ms)
 
         kubectl scale deployment nginx -n $NAMESPACE --replicas=$REPLICAS >/dev/null
         kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-
         if [ $REPLICAS -gt 0 ]; then
             kubectl wait --for=condition=Ready pods -l app=nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
         fi
-
-        # Wait for VIP placement to stabilize
         sleep 5
 
-        # Get endpoint nodes
-        local ENDPOINT_NODES=""
-        if [ $REPLICAS -gt 0 ]; then
-            ENDPOINT_NODES=$(kubectl get pods -n $NAMESPACE -l app=nginx -o jsonpath='{.items[*].spec.nodeName}')
-        fi
-
-        # Count nodes with VIP
+        # Count nodes with the VIP on their eth1 interface
         local VIP_COUNT=0
-        local VIP_NODES=""
+        local VIP_NODES="" WRONG_SUBNET_NODES=""
         for node in $NODES; do
-            if ssh_cmd $node "ip -o addr show kube-lb0 | grep -q ' $IP/'"; then
+            local iface="${NODE_IFACE[$node]}"
+            if node_ssh "$node" "ip -o addr show $iface 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
                 VIP_COUNT=$((VIP_COUNT + 1))
-                VIP_NODES="$VIP_NODES $node"
+                VIP_NODES="$VIP_NODES $(node_label $node)"
+                if [ -n "$IP_SUBNET" ] && [ "${NODE_SUBNET[$node]}" != "$IP_SUBNET" ]; then
+                    WRONG_SUBNET_NODES="$WRONG_SUBNET_NODES $(node_label $node)"
+                fi
             fi
         done
 
         local T_END=$(now_ms)
         local DURATION=$((T_END - T_START))
 
-        # Verify correctness
-        if [ $REPLICAS -eq 0 ]; then
-            if [ $VIP_COUNT -eq 0 ]; then
-                pass "Replicas=0: No nodes have VIP (correct) - ${DURATION}ms"
-            else
-                fail "Replicas=0: $VIP_COUNT nodes have VIP (should be 0)"
-                ERRORS=$((ERRORS + 1))
-            fi
+        # For local pool, VIP should always be on exactly 1 subnet-matching node
+        if [ $VIP_COUNT -eq 1 ] && [ -z "$WRONG_SUBNET_NODES" ]; then
+            pass "Replicas=$REPLICAS: VIP on 1 subnet-matching node [$VIP_NODES] - ${DURATION}ms"
+        elif [ $VIP_COUNT -eq 0 ]; then
+            fail "Replicas=$REPLICAS: No node has VIP (should stay regardless of replica count)"
+            ERRORS=$((ERRORS + 1))
+        elif [ $VIP_COUNT -gt 1 ]; then
+            fail "Replicas=$REPLICAS: SPLIT BRAIN — VIP on $VIP_COUNT nodes:$VIP_NODES"
+            ERRORS=$((ERRORS + 1))
         else
-            # For ETP Local, VIP should be on endpoint nodes only
-            local ENDPOINT_COUNT=$(echo $ENDPOINT_NODES | wc -w)
-            if [ $VIP_COUNT -eq $ENDPOINT_COUNT ]; then
-                pass "Replicas=$REPLICAS: $VIP_COUNT nodes have VIP (matches $ENDPOINT_COUNT endpoints) - ${DURATION}ms"
-            else
-                fail "Replicas=$REPLICAS: $VIP_COUNT nodes have VIP but $ENDPOINT_COUNT endpoints"
-                echo "    VIP nodes: $VIP_NODES"
-                echo "    Endpoint nodes: $ENDPOINT_NODES"
-                ERRORS=$((ERRORS + 1))
-            fi
+            fail "Replicas=$REPLICAS: VIP on wrong subnet node(s):$WRONG_SUBNET_NODES"
+            ERRORS=$((ERRORS + 1))
         fi
 
         record_event "E1" "scale_to_$REPLICAS" "$DURATION"
@@ -622,119 +597,112 @@ test_e1_rapid_scaling() {
 
     echo ""
     echo "--- E1 Summary ---"
-    if [ $ERRORS -eq 0 ]; then
-        pass "All scaling transitions correct"
-    else
-        fail "$ERRORS errors during scaling transitions"
-    fi
+    [ $ERRORS -eq 0 ] && pass "VIP remained stable on correct subnet node throughout all scaling transitions" \
+        || fail "$ERRORS errors: VIP placement incorrect during scaling"
 
-    # Restore 1 replica
+    kubectl delete svc $SVC -n $NAMESPACE --ignore-not-found >/dev/null
     kubectl scale deployment nginx -n $NAMESPACE --replicas=1 >/dev/null
 }
 
 #---------------------------------------------------------------------
-# Test E3: Endpoint Migration
+# TEST E3: Election Re-convergence Time
+# Kills lbnodeagent pod on the current VIP winner and measures time for
+# the VIP to appear on a new node's eth1 (new election winner).
 #---------------------------------------------------------------------
-test_e3_endpoint_migration() {
+test_e3_election_reconvergence() {
     local ITERATIONS=${1:-3}
     echo ""
     echo "=========================================="
-    echo "TEST E3: Endpoint Migration"
+    echo "TEST E3: Election Re-convergence Time"
     echo "=========================================="
-    echo "Measures VIP migration timing when pod moves to different node"
+    echo "lbnodeagent killed on winner → VIP on new node's eth1"
     echo ""
 
     local -a RESULTS=()
 
-    # Get or create ETP Local service
-    local IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-    if [ -z "$IP" ]; then
-        warn "Creating ETP Local service..."
-        kubectl apply -f ${SCRIPT_DIR}/svc-etp-local.yaml >/dev/null
-        sleep 5
-        IP=$(kubectl get svc nginx-etp-local -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-    fi
-    info "Using ETP Local service IP: $IP"
+    local SVC="timing-e3-reconverge"
+    create_timing_svc "$SVC"
+    local IP=$(wait_for_ip_allocation $SVC 30)
+    [ -z "$IP" ] && { warn "Failed to get IP for E3 service"; kubectl delete svc $SVC -n $NAMESPACE --ignore-not-found >/dev/null; return; }
+    info "VIP: $IP"
 
     for i in $(seq 1 $ITERATIONS); do
         info "Iteration $i/$ITERATIONS"
 
-        # Ensure 1 replica
-        kubectl scale deployment nginx -n $NAMESPACE --replicas=1 >/dev/null
-        kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-        kubectl wait --for=condition=Ready pods -l app=nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-        sleep 3
+        # Find current winner (poll with short timeout in case VIP is still settling)
+        local RESULT_STR; RESULT_STR=$(poll_for_vip_any_node "$IP" 30000)
+        local VIP_DELAY="${RESULT_STR%% *}"
+        local WINNER="${RESULT_STR##* }"
+        if [ "$VIP_DELAY" = "-1" ]; then
+            warn "  VIP not on any node; skipping iteration"
+            continue
+        fi
+        info "  Current winner: $(node_label $WINNER) [${NODE_SUBNET[$WINNER]}]"
 
-        # Get current node
-        local NODE_A=$(kubectl get pods -n $NAMESPACE -l app=nginx -o jsonpath='{.items[0].spec.nodeName}')
-        info "  Initial node: $NODE_A"
-
-        # Verify VIP on NODE_A
-        poll_for_vip $NODE_A $IP kube-lb0 30000 >/dev/null
-
-        # Cordon and delete to force migration
-        local T_START=$(now_ms)
-        kubectl cordon $NODE_A >/dev/null
-        kubectl delete pod -n $NAMESPACE -l app=nginx --grace-period=1 >/dev/null
-
-        # Wait for new pod
-        kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-        kubectl wait --for=condition=Ready pods -l app=nginx -n $NAMESPACE --timeout=60s >/dev/null 2>&1
-
-        local NODE_B=$(kubectl get pods -n $NAMESPACE -l app=nginx -o jsonpath='{.items[0].spec.nodeName}')
-        info "  New node: $NODE_B"
-
-        # Poll for VIP on new node
-        local VIP_NEW_DELAY=$(poll_for_vip $NODE_B $IP kube-lb0 30000)
-
-        # Poll for VIP removal from old node
-        local VIP_OLD_DELAY=$(poll_for_vip_removal $NODE_A $IP kube-lb0 30000)
-
-        local T_END=$(now_ms)
-        local TOTAL=$((T_END - T_START))
-
-        # Uncordon
-        kubectl uncordon $NODE_A >/dev/null
-
-        # Check for duplicate VIPs during migration
-        local DUPLICATE=false
-        if [ "$VIP_OLD_DELAY" != "-1" ] && [ "$VIP_NEW_DELAY" != "-1" ]; then
-            if [ $VIP_NEW_DELAY -lt $VIP_OLD_DELAY ]; then
-                warn "  VIP appeared on new node before removed from old (potential brief duplicate)"
-                DUPLICATE=true
-            fi
+        # Determine which other nodes in the same subnet could take over
+        local SUBNET="${NODE_SUBNET[$WINNER]}"
+        local CANDIDATES=""
+        for n in ${SUBNET_NODES[$SUBNET]}; do
+            [ "$n" != "$WINNER" ] && CANDIDATES="$CANDIDATES $n"
+        done
+        if [ -z "$CANDIDATES" ]; then
+            warn "  Only 1 node in subnet $SUBNET — cannot re-elect; skipping"
+            continue
         fi
 
-        if [ "$NODE_A" = "$NODE_B" ]; then
-            warn "  Pod did not migrate (same node)"
-        elif [ "$VIP_NEW_DELAY" = "-1" ]; then
-            fail "  TIMEOUT: VIP did not appear on new node"
-        elif [ "$VIP_OLD_DELAY" = "-1" ]; then
-            fail "  TIMEOUT: VIP not removed from old node"
-        else
-            echo "  Migration time: ${TOTAL}ms (VIP on new: ${VIP_NEW_DELAY}ms, removed from old: ${VIP_OLD_DELAY}ms)"
-            RESULTS+=($TOTAL)
-            record_event "E3" "iteration_$i" "$TOTAL"
-        fi
+        # Taint the winner so its DaemonSet pod cannot restart there.
+        # Without this, lbnodeagent restarts in ~3s — faster than the 10s lease
+        # expiry — and re-wins before any candidate gets the VIP.
+        kubectl taint node "$WINNER" e3-timing=true:NoSchedule 2>/dev/null || true
 
-        sleep 2
+        local T_KILL=$(now_ms)
+        kubectl delete pod -n $PURELB_NS -l component=lbnodeagent \
+            --field-selector "spec.nodeName=$WINNER" --force --grace-period=0 2>/dev/null || true
+
+        # Poll ONLY the candidate nodes for VIP appearance — do NOT use poll_for_vip_any_node
+        # because that would immediately find the stale VIP still on the killed winner's eth1.
+        # Keep the taint active throughout this polling window.
+        local FOUND=false TOTAL=0
+        local POLL_DEADLINE=$(($(now_ms) + 60000))
+        while [ $(now_ms) -lt $POLL_DEADLINE ]; do
+            for cand in $CANDIDATES; do
+                local iface="${NODE_IFACE[$cand]}"
+                if node_ssh "$cand" "ip -o addr show $iface 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+                    TOTAL=$(( $(now_ms) - T_KILL ))
+                    echo "  Re-convergence: ${TOTAL}ms (VIP on $(node_label $cand) [${NODE_SUBNET[$cand]}])"
+                    if [ "${NODE_SUBNET[$cand]}" != "$SUBNET" ]; then
+                        warn "  Candidate is in wrong subnet! (${NODE_SUBNET[$cand]} != $SUBNET)"
+                    fi
+                    RESULTS+=($TOTAL)
+                    record_event "E3" "iteration_$i" "$TOTAL"
+                    FOUND=true
+                    break 2
+                fi
+            done
+            sleep 0.2
+        done
+
+        # Remove taint AFTER polling so lbnodeagent can return to original winner
+        kubectl taint node "$WINNER" e3-timing=true:NoSchedule- 2>/dev/null || true
+
+        [ "$FOUND" = "false" ] && {
+            warn "  TIMEOUT: No candidate got the VIP within 60s"
+            record_event "E3" "iteration_$i" "TIMEOUT"
+        }
+
+        # Wait for lbnodeagent to restart on the original winner and re-stabilize
+        sleep 20
     done
 
     echo ""
     echo "--- E3 Summary ---"
-    if [ ${#RESULTS[@]} -gt 0 ]; then
+    [ ${#RESULTS[@]} -gt 0 ] && {
         local STATS=$(calc_stats "${RESULTS[@]}")
-        echo "Migration time: $STATS ms"
+        echo "Re-convergence time: $STATS ms"
         record_event "E3" "summary" "$STATS"
-    else
-        echo "No successful measurements"
-    fi
+    } || echo "No successful measurements"
 
-    # Restore
-    for node in $NODES; do
-        kubectl uncordon $node 2>/dev/null || true
-    done
-    kubectl scale deployment nginx -n $NAMESPACE --replicas=1 >/dev/null
+    kubectl delete svc $SVC -n $NAMESPACE --ignore-not-found >/dev/null
 }
 
 #---------------------------------------------------------------------
@@ -743,10 +711,16 @@ test_e3_endpoint_migration() {
 cleanup() {
     info "Cleaning up timing test resources..."
     kubectl delete svc -n $NAMESPACE -l test-suite=timing --ignore-not-found 2>/dev/null || true
+    kubectl delete svc timing-e1-stability timing-e3-reconverge \
+        -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete pod curl-test -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete servicegroup "$TIMING_SG" -n purelb-system --ignore-not-found 2>/dev/null || true
     for node in $NODES; do
         kubectl uncordon $node 2>/dev/null || true
     done
+    kubectl scale deployment nginx -n $NAMESPACE --replicas=1 2>/dev/null || true
 }
+trap cleanup EXIT
 
 #---------------------------------------------------------------------
 # Main
@@ -755,38 +729,40 @@ main() {
     echo "=============================================="
     echo "PureLB Timing Behavior Test Suite"
     echo "=============================================="
-    echo "Cluster: $NODE_COUNT nodes ($NODES)"
+    echo "Cluster: $NODE_COUNT nodes, $SUBNET_COUNT subnet(s)"
     echo "Timing log: $TIMING_LOG"
     echo ""
 
-    # Initialize timing log
+    echo "Subnet topology:"
+    for s in $SUBNETS; do
+        local_nodes="${SUBNET_NODES[$s]}"
+        local_count=$(echo "$local_nodes" | wc -w)
+        node_list=""
+        for n in $local_nodes; do
+            node_list="$node_list  $(node_label $n)"
+        done
+        echo "  $s ($local_count nodes):$node_list"
+    done
+    echo ""
+
     echo "test,event,value" > "$TIMING_LOG"
 
-    # Ensure prerequisites
     kubectl get deployment nginx -n $NAMESPACE >/dev/null 2>&1 || {
-        echo "ERROR: nginx deployment not found in $NAMESPACE"
+        echo "ERROR: nginx deployment not found in namespace '$NAMESPACE'"
         exit 1
     }
 
-    # Ensure required ServiceGroups exist
-    for sg in default remote; do
-        if ! kubectl get servicegroup $sg -n purelb-system >/dev/null 2>&1; then
-            info "Creating '$sg' ServiceGroup..."
-            kubectl apply -f ${SCRIPT_DIR}/servicegroup-${sg}.yaml
-        fi
-    done
+    # Create dedicated timing-test ServiceGroup with non-overlapping IP ranges
+    setup_timing_servicegroup
 
-    # Run tests
     local ITERATIONS=${1:-3}
 
-    test_b1_cache_sync_latency $ITERATIONS
-    test_b3_endpoint_termination $ITERATIONS
+    test_b1_vip_placement $ITERATIONS
+    test_b3_vip_withdrawal $ITERATIONS
     test_d1_nftables_latency $ITERATIONS
     test_d3_end_to_end $ITERATIONS
-    test_e1_rapid_scaling
-    test_e3_endpoint_migration $ITERATIONS
-
-    cleanup
+    test_e1_vip_stability
+    test_e3_election_reconvergence $ITERATIONS
 
     echo ""
     echo "=============================================="
@@ -800,5 +776,4 @@ main() {
     done
 }
 
-# Run with optional iteration count
 main "${1:-3}"

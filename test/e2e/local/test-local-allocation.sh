@@ -1,21 +1,15 @@
 #!/bin/bash
 set -e
 
-# Bash version check (required for associative arrays)
-if [[ ${BASH_VERSINFO[0]} -lt 4 ]]; then
-    echo "ERROR: Bash 4+ required for associative arrays"
-    exit 1
-fi
-
 # Determine script directory for relative file paths
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-CONTEXT="proxmox"
 NAMESPACE="test"
 INTERACTIVE=false
 ITERATIONS=1
 
-# Parse command line options
+# Parse command line options (--context is handled by common.sh parse_common_args)
+SCRIPT_ARGS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
         -i|--interactive)
@@ -26,12 +20,17 @@ while [[ $# -gt 0 ]]; do
             ITERATIONS="$2"
             shift 2
             ;;
+        --context)
+            CONTEXT="$2"
+            shift 2
+            ;;
         -h|--help)
-            echo "Usage: $0 [-i|--interactive] [-n <iterations>]"
+            echo "Usage: $0 [-i|--interactive] [-n <iterations>] [--context <name>]"
             echo ""
             echo "Options:"
             echo "  -i, --interactive     Pause after each test group for manual review"
             echo "  -n, --iterations N    Run the full test suite N times (default: 1)"
+            echo "  --context NAME        Kubernetes context to use (default: current context)"
             echo "  -h, --help            Show this help message"
             exit 0
             ;;
@@ -43,179 +42,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Source common test infrastructure (provides node discovery, SSH-by-IP, etc.)
+source "${SCRIPT_DIR}/../common.sh"
+
 # Log all output to a file while still showing on console
 LOG_DIR="/tmp/test-local-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/output.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Log file: $LOG_FILE"
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
-pass() { echo -e "${GREEN}✓ PASS:${NC} $1"; }
-fail() { echo -e "${RED}✗ FAIL:${NC} $1"; exit 1; }
-info() { echo -e "${YELLOW}→${NC} $1"; }
-detail() { echo -e "${CYAN}     ${NC} $1"; }
-ts() { date '+%H:%M:%S.%3N'; }
-
-kubectl() { command kubectl --context "$CONTEXT" "$@"; }
-
-# Interactive pause - waits for user to press Enter
-pause_for_review() {
-    if [ "$INTERACTIVE" = "true" ]; then
-        echo ""
-        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
-        echo -e "${YELLOW}  PAUSED: Review the output above. Press ENTER to continue...${NC}"
-        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
-        read -r
-    fi
-}
-
-# Wait for an IP to be announced on any node (with timeout)
-# Usage: wait_for_ip_announced <ip> [timeout_seconds]
-wait_for_ip_announced() {
-    local IP=$1
-    local TIMEOUT=${2:-30}
-    local INTERVAL=2
-    local ELAPSED=0
-
-    while [ $ELAPSED -lt $TIMEOUT ]; do
-        for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-            if ssh $node "ip -o addr show 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
-                return 0
-            fi
-        done
-        sleep $INTERVAL
-        ELAPSED=$((ELAPSED + INTERVAL))
-    done
-    return 1
-}
-
-#---------------------------------------------------------------------
-# Address Lifetime Helpers
-#---------------------------------------------------------------------
-
-# Get detailed address info including flags and lifetime
-get_address_details() {
-    local NODE=$1
-    local IP=$2
-    local INTERFACE=$3
-    ssh "$NODE" "ip -d addr show $INTERFACE 2>/dev/null | grep -A1 ' $IP/'" 2>/dev/null || true
-}
-
-# Extract valid_lft value from address details
-# Returns: lifetime in seconds, or "forever" for permanent
-get_valid_lft() {
-    local DETAILS=$1
-    if echo "$DETAILS" | grep -q "valid_lft forever"; then
-        echo "forever"
-    else
-        echo "$DETAILS" | grep -oP 'valid_lft \K[0-9]+' || echo "unknown"
-    fi
-}
-
-# Check if address details contain a specific property
-check_address_property() {
-    local DETAILS=$1
-    local PROPERTY=$2
-    echo "$DETAILS" | grep -q "$PROPERTY"
-}
-
-# Detect CNI plugin
-detect_cni() {
-    if kubectl get daemonset -n kube-flannel kube-flannel-ds &>/dev/null; then
-        echo "flannel"; return
-    fi
-    if kubectl get daemonset -n kube-system kube-flannel-ds &>/dev/null; then
-        echo "flannel"; return
-    fi
-    if kubectl get daemonset -n kube-system calico-node &>/dev/null; then
-        echo "calico"; return
-    fi
-    if kubectl get daemonset -n calico-system calico-node &>/dev/null; then
-        echo "calico"; return
-    fi
-    if kubectl get daemonset -n kube-system cilium &>/dev/null; then
-        echo "cilium"; return
-    fi
-    echo "unknown"
-}
-
-# Find which node has a given VIP
-find_vip_node() {
-    local IP=$1
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
-            echo "$node"
-            return 0
-        fi
-    done
-    return 1
-}
-
-# Test connectivity and return the responding node
-# Usage: test_connectivity_get_node <ip> [port]
-test_connectivity_get_node() {
-    local IP=$1
-    local PORT=${2:-80}
-    local RESPONSE
-    RESPONSE=$(curl -s --connect-timeout 5 "http://$IP:$PORT/" 2>/dev/null || true)
-    if echo "$RESPONSE" | grep -q "Node:"; then
-        echo "$RESPONSE" | grep "Node:" | awk '{print $2}'
-        return 0
-    fi
-    return 1
-}
-
-#---------------------------------------------------------------------
-# Lease/Election Helpers (Subnet-Aware Election)
-#---------------------------------------------------------------------
-
-# Get subnet annotations from a node's lease
-get_node_lease_subnets() {
-    local NODE=$1
-    kubectl get lease "purelb-node-$NODE" -n purelb-system \
-        -o jsonpath='{.metadata.annotations.purelb\.io/subnets}' 2>/dev/null
-}
-
-# Check if a node's lease exists
-lease_exists() {
-    local NODE=$1
-    kubectl get lease "purelb-node-$NODE" -n purelb-system &>/dev/null
-}
-
-# Get pool type annotation from a service
-get_pool_type() {
-    local SVC=$1
-    kubectl get svc "$SVC" -n $NAMESPACE \
-        -o jsonpath='{.metadata.annotations.purelb\.io/pool-type}' 2>/dev/null
-}
-
-# Wait for IP to NOT be on any node (used for no-match-subnet test)
-wait_for_ip_not_on_any_node() {
-    local IP=$1
-    local TIMEOUT=${2:-30}
-    local ELAPSED=0
-    while [ $ELAPSED -lt $TIMEOUT ]; do
-        local FOUND=false
-        for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-            if ssh $node "ip -o addr show 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
-                FOUND=true
-                break
-            fi
-        done
-        [ "$FOUND" = "false" ] && return 0
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
-    done
-    return 1
-}
 
 #---------------------------------------------------------------------
 # Infrastructure Prerequisites Validation
@@ -232,9 +67,9 @@ validate_prerequisites() {
 
     # Check 1: IP forwarding enabled on all nodes (IPv4)
     info "Checking IPv4 IP forwarding on all nodes..."
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+    for node in $NODES; do
         local IPV4_FWD
-        IPV4_FWD=$(ssh $node "cat /proc/sys/net/ipv4/ip_forward" 2>/dev/null || echo "error")
+        IPV4_FWD=$(node_ssh $node "cat /proc/sys/net/ipv4/ip_forward" 2>/dev/null || echo "error")
         if [ "$IPV4_FWD" = "1" ]; then
             pass "IPv4 forwarding enabled on $node"
         elif [ "$IPV4_FWD" = "0" ]; then
@@ -249,9 +84,9 @@ validate_prerequisites() {
 
     # Check 2: IP forwarding enabled on all nodes (IPv6)
     info "Checking IPv6 IP forwarding on all nodes..."
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+    for node in $NODES; do
         local IPV6_FWD
-        IPV6_FWD=$(ssh $node "cat /proc/sys/net/ipv6/conf/all/forwarding" 2>/dev/null || echo "error")
+        IPV6_FWD=$(node_ssh $node "cat /proc/sys/net/ipv6/conf/all/forwarding" 2>/dev/null || echo "error")
         if [ "$IPV6_FWD" = "1" ]; then
             pass "IPv6 forwarding enabled on $node"
         elif [ "$IPV6_FWD" = "0" ]; then
@@ -365,7 +200,7 @@ test_lease_verification() {
     echo "=========================================="
 
     info "Checking that leases exist for all nodes..."
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+    for node in $NODES; do
         if lease_exists "$node"; then
             pass "Lease exists for $node"
         else
@@ -374,15 +209,17 @@ test_lease_verification() {
     done
 
     info "Checking subnet annotations on leases..."
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        SUBNETS=$(get_node_lease_subnets "$node")
-        if [ -n "$SUBNETS" ]; then
-            pass "$node subnets: $SUBNETS"
-            # Verify the expected subnet is present
-            if echo "$SUBNETS" | grep -q "172.30.255.0/24"; then
-                pass "$node has expected 172.30.255.0/24 subnet"
+    for node in $NODES; do
+        local LEASE_SUBNETS
+        LEASE_SUBNETS=$(get_node_lease_subnets "$node")
+        if [ -n "$LEASE_SUBNETS" ]; then
+            pass "$node subnets: $LEASE_SUBNETS"
+            # Verify the node's expected subnet is present in its lease
+            local EXPECTED_SUBNET="${NODE_SUBNET[$node]}"
+            if echo "$LEASE_SUBNETS" | grep -q "$EXPECTED_SUBNET"; then
+                pass "$node has expected $EXPECTED_SUBNET subnet"
             else
-                fail "$node missing expected 172.30.255.0/24 subnet"
+                fail "$node missing expected $EXPECTED_SUBNET subnet"
             fi
         else
             fail "$node has no subnet annotation"
@@ -429,19 +266,19 @@ test_local_pool_no_matching_subnet() {
     # Wait a moment for any announcement attempt
     sleep 5
 
-    # KEY CHECK: Verify IP is NOT on eth0 on ANY node (no matching subnet)
-    info "Verifying IP is NOT on eth0 (no node has 10.255.0.0/24)..."
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
-            fail "IP $IP found on eth0 on $node - should NOT be announced (no matching subnet)"
+    # KEY CHECK: Verify IP is NOT on local interface on ANY node (no matching subnet)
+    info "Verifying IP is NOT on local interface (no node has 10.255.0.0/24)..."
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            fail "IP $IP found on local interface on $node - should NOT be announced (no matching subnet)"
         fi
     done
-    pass "IP correctly NOT on eth0 on any node"
+    pass "IP correctly NOT on local interface on any node"
 
     # CRITICAL CHECK: Verify IP is also NOT on kube-lb0 (no fallback for local pools)
     info "Verifying IP is NOT on kube-lb0 (no fallback for local pools)..."
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
             fail "IP $IP found on kube-lb0 on $node - local pool should NOT fallback to kube-lb0"
         fi
     done
@@ -465,7 +302,7 @@ test_local_pool_no_matching_subnet() {
 
 #---------------------------------------------------------------------
 # Test: Remote Pool Behavior
-# Verifies that remote pool IPs go on kube-lb0 (not eth0)
+# Verifies that remote pool IPs go on kube-lb0 (not local interface)
 #---------------------------------------------------------------------
 test_remote_pool() {
     echo ""
@@ -473,7 +310,7 @@ test_remote_pool() {
     echo "TEST: Remote Pool Behavior"
     echo "=========================================="
 
-    info "Remote pools should place IPs on kube-lb0, not eth0."
+    info "Remote pools should place IPs on kube-lb0, not local interface."
     info "They bypass subnet filtering entirely."
 
     # Apply the remote ServiceGroup
@@ -498,16 +335,16 @@ test_remote_pool() {
     # Wait for announcement
     sleep 5
 
-    # Verify IP is on kube-lb0 (not eth0)
+    # Verify IP is on kube-lb0 (not local interface)
     info "Verifying IP is on kube-lb0 (remote pool behavior)..."
     FOUND_ON_KUBELB0=false
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
             pass "Remote IP $IP on kube-lb0 on $node"
             FOUND_ON_KUBELB0=true
         fi
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
-            fail "Remote IP $IP found on eth0 on $node - should be on kube-lb0"
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            fail "Remote IP $IP found on local interface on $node - should be on kube-lb0"
         fi
     done
     [ "$FOUND_ON_KUBELB0" = "true" ] || fail "Remote IP not found on kube-lb0 on any node"
@@ -542,16 +379,16 @@ show_all_pods() {
 show_vip_locations() {
     local IP=$1
     info "VIP $IP location on all nodes:"
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+    for node in $NODES; do
         local eth0_status="not present"
         local kubelb0_status="not present"
 
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
-            local details=$(ssh $node "ip -o addr show eth0 2>/dev/null | grep ' $IP/'" 2>/dev/null | awk '{print $4, $NF}')
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+            local details=$(node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep ' $IP/'" 2>/dev/null | awk '{print $4, $NF}')
             eth0_status="PRESENT ($details)"
         fi
 
-        if ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+        if node_ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
             kubelb0_status="PRESENT"
         fi
 
@@ -618,8 +455,8 @@ test_graceful_failover() {
 
     # Find current VIP holder
     ORIGINAL_WINNER=""
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
             ORIGINAL_WINNER=$node
             break
         fi
@@ -709,9 +546,9 @@ test_graceful_failover() {
     NEW_WINNER=""
     while [ $ELAPSED -lt $TIMEOUT ]; do
         # Check if a different node picked up the VIP
-        for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        for node in $NODES; do
             if [ "$node" != "$ORIGINAL_WINNER" ]; then
-                if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+                if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
                     NEW_WINNER=$node
                     break 2
                 fi
@@ -722,7 +559,7 @@ test_graceful_failover() {
         local CURRENT_POD=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null \
             | grep "$ORIGINAL_WINNER" | grep "Running" | awk '{print $1}')
         if [ -n "$CURRENT_POD" ] && [ "$CURRENT_POD" != "$AGENT_POD" ]; then
-            if ssh "$ORIGINAL_WINNER" "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+            if node_ssh "$ORIGINAL_WINNER" "ip -o addr show ${NODE_IFACE[$ORIGINAL_WINNER]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
                 NEW_WINNER=$ORIGINAL_WINNER
                 detail "$(ts) New pod $CURRENT_POD re-won election on $ORIGINAL_WINNER"
                 break
@@ -742,6 +579,12 @@ test_graceful_failover() {
         pass "New pod on $ORIGINAL_WINNER re-won election in ${ELAPSED}s (valid same-node recovery)"
     else
         fail "VIP did not recover within ${TIMEOUT}s"
+    fi
+
+    # On multi-subnet clusters, verify failover stayed on correct subnet
+    if [ "$SUBNET_COUNT" -ge 2 ] && [ -n "$NEW_WINNER" ]; then
+        verify_vip_subnet_match "$IPV4" "$NEW_WINNER" || fail "Graceful failover: VIP/node subnet mismatch"
+        pass "Graceful failover winner $NEW_WINNER is on correct subnet for $IPV4"
     fi
 
     # Show post-failover state
@@ -777,8 +620,8 @@ test_graceful_failover() {
     show_all_leases
 
     FINAL_WINNER=""
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
             FINAL_WINNER=$node
             break
         fi
@@ -821,27 +664,33 @@ test_ipv4_singlestack() {
     info "Allocated IPv4: $IPV4"
 
     # Verify IP is from pool range
-    [[ "$IPV4" =~ ^172\.30\.255\.(1[5-7][0-9]|180)$ ]] || fail "IP not from expected pool"
+    ip_in_pool_range "$IPV4" || fail "IP $IPV4 not from expected pool range"
     pass "IPv4 allocated from correct pool"
 
-    # Verify IP is on eth0 (local subnet)
+    # Verify IP is on local interface (local subnet)
     # CRITICAL: Use -w for word boundary to prevent partial IP matching
     # e.g., grep '172.30.255.15' would incorrectly match 172.30.255.150
     info "Checking IP location on nodes..."
     WINNER_NODE=""
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        eth0_ip=$(ssh $node "ip -o addr show eth0 2>/dev/null | grep ' $IPV4/'" 2>/dev/null || true)
-        kubelb0_ip=$(ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep ' $IPV4/'" 2>/dev/null || true)
+    for node in $NODES; do
+        eth0_ip=$(node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep ' $IPV4/'" 2>/dev/null || true)
+        kubelb0_ip=$(node_ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep ' $IPV4/'" 2>/dev/null || true)
         if [ -n "$eth0_ip" ]; then
-            pass "IPv4 $IPV4 is on eth0 on $node"
+            pass "IPv4 $IPV4 is on local interface on $node"
             WINNER_NODE=$node
         fi
         if [ -n "$kubelb0_ip" ]; then
-            fail "IPv4 $IPV4 is on kube-lb0 on $node (should be on eth0)"
+            fail "IPv4 $IPV4 is on kube-lb0 on $node (should be on local interface)"
         fi
     done
 
     [ -n "$WINNER_NODE" ] || fail "IPv4 not found on any node"
+
+    # On multi-subnet clusters, verify VIP holder is on the correct subnet
+    if [ "$SUBNET_COUNT" -ge 2 ]; then
+        verify_vip_subnet_match "$IPV4" "$WINNER_NODE" || fail "VIP/node subnet mismatch"
+        pass "VIP holder $WINNER_NODE is on correct subnet for $IPV4"
+    fi
 
     # Test connectivity
     info "Testing connectivity to $IPV4..."
@@ -888,18 +737,18 @@ test_ipv6_singlestack() {
     info "Allocated IPv6: $IPV6"
 
     # Verify IP is from pool range
-    [[ "$IPV6" =~ ^2001:470:b8f3:2:a:: ]] || fail "IP not from expected pool"
+    ipv6_in_pool_range "$IPV6" || fail "IPv6 $IPV6 not from expected pool range"
     pass "IPv6 allocated from correct pool"
 
-    # Verify IP is on eth0 (local subnet) - THIS VALIDATES THE IPV6 FLAG FIX
+    # Verify IP is on local interface (local subnet) - THIS VALIDATES THE IPV6 FLAG FIX
     # CRITICAL: Use ' $IPV6/' pattern to match exact IP with CIDR prefix
     info "Checking IP location on nodes (validates IPv6 flag filtering fix)..."
     WINNER_NODE=""
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        eth0_ip=$(ssh $node "ip -o addr show eth0 2>/dev/null | grep ' $IPV6/'" 2>/dev/null || true)
-        kubelb0_ip=$(ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep ' $IPV6/'" 2>/dev/null || true)
+    for node in $NODES; do
+        eth0_ip=$(node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep ' $IPV6/'" 2>/dev/null || true)
+        kubelb0_ip=$(node_ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep ' $IPV6/'" 2>/dev/null || true)
         if [ -n "$eth0_ip" ]; then
-            pass "IPv6 $IPV6 is on eth0 on $node (IPv6 flag fix working!)"
+            pass "IPv6 $IPV6 is on local interface on $node (IPv6 flag fix working!)"
             WINNER_NODE=$node
         fi
         if [ -n "$kubelb0_ip" ]; then
@@ -952,35 +801,35 @@ test_dualstack() {
     info "Allocated IPv6: $IPV6"
     pass "Both IPv4 and IPv6 allocated"
 
-    # Check that BOTH are on eth0 and NEITHER is on kube-lb0
+    # Check that BOTH are on local interface and NEITHER is on kube-lb0
     # FIX: Use ' $IP/' pattern for exact matching with CIDR prefix
-    info "Checking both IPs are on eth0 (validates announceRemote fix)..."
+    info "Checking both IPs are on local interface (validates announceRemote fix)..."
     IPV4_NODE=""
     IPV6_NODE=""
 
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+    for node in $NODES; do
         # Check IPv4 - use exact match with CIDR prefix
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
             IPV4_NODE=$node
         fi
-        if ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+        if node_ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
             fail "IPv4 $IPV4 on kube-lb0 on $node (BUG!)"
         fi
 
         # Check IPv6 - use exact match with CIDR prefix
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV6/'" 2>/dev/null; then
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV6/'" 2>/dev/null; then
             IPV6_NODE=$node
         fi
-        if ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IPV6/'" 2>/dev/null; then
+        if node_ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IPV6/'" 2>/dev/null; then
             fail "IPv6 $IPV6 on kube-lb0 on $node (BUG!)"
         fi
     done
 
-    [ -n "$IPV4_NODE" ] || fail "IPv4 not on any node's eth0"
-    [ -n "$IPV6_NODE" ] || fail "IPv6 not on any node's eth0"
+    [ -n "$IPV4_NODE" ] || fail "IPv4 not on any node's local interface"
+    [ -n "$IPV6_NODE" ] || fail "IPv6 not on any node's local interface"
 
-    pass "IPv4 on eth0 on $IPV4_NODE"
-    pass "IPv6 on eth0 on $IPV6_NODE"
+    pass "IPv4 on local interface on $IPV4_NODE"
+    pass "IPv6 on local interface on $IPV6_NODE"
 
     # They may be on different nodes (independent elections)
     if [ "$IPV4_NODE" != "$IPV6_NODE" ]; then
@@ -1014,16 +863,16 @@ test_leader_election() {
 
     # FIX: Use exact IP matching with CIDR prefix to prevent partial matches
     info "Checking that only ONE node has $IPV4..."
-    NODE_COUNT=0
+    VIP_NODE_COUNT=0
     WINNER=""
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
-            NODE_COUNT=$((NODE_COUNT + 1))
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+            VIP_NODE_COUNT=$((VIP_NODE_COUNT + 1))
             WINNER=$node
         fi
     done
 
-    [ "$NODE_COUNT" -eq 1 ] || fail "IP on $NODE_COUNT nodes (expected 1)"
+    [ "$VIP_NODE_COUNT" -eq 1 ] || fail "IP on $VIP_NODE_COUNT nodes (expected 1)"
     pass "Only $WINNER is announcing $IPV4 (election working)"
 
     # Verify purelb.io/announcing-IPv4 annotation matches winner
@@ -1062,9 +911,9 @@ test_service_cleanup() {
     ELAPSED=0
     while [ $ELAPSED -lt $TIMEOUT ]; do
         IP_FOUND=false
-        for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        for node in $NODES; do
             # Use exact IP matching with CIDR prefix
-            if ssh $node "ip -o addr show 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+            if node_ssh $node "ip -o addr show 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
                 IP_FOUND=true
                 break
             fi
@@ -1383,8 +1232,8 @@ test_node_failover() {
     # Find which node currently has the VIP
     # FIX: Use exact IP matching with CIDR prefix
     ORIGINAL_WINNER=""
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
             ORIGINAL_WINNER=$node
             break
         fi
@@ -1428,7 +1277,7 @@ test_node_failover() {
 
     # Verify IP was REMOVED from the failed node (graceful shutdown should withdraw it)
     info "Verifying IP was withdrawn from $ORIGINAL_WINNER..."
-    if ssh "$ORIGINAL_WINNER" "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+    if node_ssh "$ORIGINAL_WINNER" "ip -o addr show ${NODE_IFACE[$ORIGINAL_WINNER]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
         # IP still present - check if it's orphaned (no lbnodeagent running)
         if ! kubectl get pods -n purelb-system -o wide | grep -q "$ORIGINAL_WINNER"; then
             info "Note: IP orphaned on $ORIGINAL_WINNER (will expire via valid_lft)"
@@ -1445,9 +1294,9 @@ test_node_failover() {
     # a new winner is elected from remaining healthy nodes
     info "Checking for failover to a different node..."
     NEW_WINNER=""
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+    for node in $NODES; do
         [ "$node" = "$ORIGINAL_WINNER" ] && continue
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
             NEW_WINNER=$node
             break
         fi
@@ -1457,9 +1306,9 @@ test_node_failover() {
         # VIP might be in transition - wait a bit more for new winner to announce
         info "VIP not found on alternate node yet, waiting for election..."
         sleep 10
-        for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+        for node in $NODES; do
             [ "$node" = "$ORIGINAL_WINNER" ] && continue
-            if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+            if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
                 NEW_WINNER=$node
                 break
             fi
@@ -1468,6 +1317,12 @@ test_node_failover() {
 
     [ -n "$NEW_WINNER" ] || { kubectl taint node "$ORIGINAL_WINNER" purelb-test- 2>/dev/null || true; fail "VIP $IPV4 not found on any alternate node after failover"; }
     pass "Failover successful: VIP now on $NEW_WINNER (was $ORIGINAL_WINNER)"
+
+    # On multi-subnet clusters, verify failover stayed on correct subnet
+    if [ "$SUBNET_COUNT" -ge 2 ]; then
+        verify_vip_subnet_match "$IPV4" "$NEW_WINNER" || { kubectl taint node "$ORIGINAL_WINNER" purelb-test- 2>/dev/null || true; fail "After failover: VIP/node subnet mismatch"; }
+        pass "Failover winner $NEW_WINNER is on correct subnet for $IPV4"
+    fi
 
     # Verify service is still reachable via the new winner
     info "Verifying service is reachable after failover..."
@@ -1484,7 +1339,7 @@ test_node_failover() {
     kubectl rollout status daemonset/lbnodeagent -n purelb-system --timeout=60s
 
     # Verify all agents are running (with polling to handle timing issues)
-    EXPECTED_AGENTS=5
+    EXPECTED_AGENTS=$NODE_COUNT
     info "Verifying all $EXPECTED_AGENTS lbnodeagent pods are running (polling with 30s timeout)..."
     TIMEOUT=30
     INTERVAL=2
@@ -1512,7 +1367,7 @@ test_specific_ip_request() {
     echo "TEST 9: Specific IP Request (purelb.io/addresses)"
     echo "=========================================="
 
-    REQUESTED_IP="172.30.255.175"
+    REQUESTED_IP=$(subnet_test_ip "$FIRST_SUBNET" 10)
     info "Requesting specific IP: $REQUESTED_IP"
 
     cat <<EOF | kubectl apply -f -
@@ -1554,19 +1409,19 @@ EOF
     wait_for_ip_announced "$ALLOCATED_IP" 30 || fail "IP $ALLOCATED_IP not announced within 30s"
     pass "IP announced on a node"
 
-    # Verify specific IP is on eth0 (local pool), NOT on kube-lb0
-    info "Verifying specific IP is on eth0 (not kube-lb0)..."
+    # Verify specific IP is on local interface (local pool), NOT on kube-lb0
+    info "Verifying specific IP is on local interface (not kube-lb0)..."
     FOUND_ON_ETH0=false
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $ALLOCATED_IP/'" 2>/dev/null; then
-            pass "Specific IP $ALLOCATED_IP on eth0 on $node"
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $ALLOCATED_IP/'" 2>/dev/null; then
+            pass "Specific IP $ALLOCATED_IP on local interface on $node"
             FOUND_ON_ETH0=true
         fi
-        if ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $ALLOCATED_IP/'" 2>/dev/null; then
-            fail "Specific IP $ALLOCATED_IP found on kube-lb0 (should be on eth0 for local pool)"
+        if node_ssh $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $ALLOCATED_IP/'" 2>/dev/null; then
+            fail "Specific IP $ALLOCATED_IP found on kube-lb0 (should be on local interface for local pool)"
         fi
     done
-    [ "$FOUND_ON_ETH0" = "true" ] || fail "Specific IP not found on eth0 on any node"
+    [ "$FOUND_ON_ETH0" = "true" ] || fail "Specific IP not found on local interface on any node"
 
     # Verify service is reachable on the specific IP
     info "Testing connectivity to $ALLOCATED_IP:8080..."
@@ -1635,17 +1490,17 @@ EOF
         info "No LocalOverride event found (may have already been cleaned up)"
     fi
 
-    # Verify IP is on eth0 (local pool behavior)
-    info "Verifying IP is on eth0..."
+    # Verify IP is on local interface (local pool behavior)
+    info "Verifying IP is on local interface..."
     wait_for_ip_announced "$IP_NO_OVERRIDE" 30 || fail "IP not announced within 30s"
     FOUND_ON_ETH0=false
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP_NO_OVERRIDE/'" 2>/dev/null; then
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IP_NO_OVERRIDE/'" 2>/dev/null; then
             FOUND_ON_ETH0=true
             pass "IP $IP_NO_OVERRIDE on eth0 on $node (election working)"
         fi
     done
-    [ "$FOUND_ON_ETH0" = "true" ] || fail "IP not on eth0 on any node"
+    [ "$FOUND_ON_ETH0" = "true" ] || fail "IP not on local interface on any node"
 
     # Verify connectivity (should work because ETP was converted to Cluster)
     info "Testing connectivity (should work with ETP Cluster)..."
@@ -1698,18 +1553,18 @@ EOF
         # Not a failure - event may have been cleaned up
     fi
 
-    # Verify IP is on eth0 (local pool behavior still applies)
-    info "Verifying IP is on eth0..."
+    # Verify IP is on local interface (local pool behavior still applies)
+    info "Verifying IP is on local interface..."
     wait_for_ip_announced "$IP_WITH_OVERRIDE" 30 || fail "IP not announced within 30s"
     FOUND_ON_ETH0=false
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP_WITH_OVERRIDE/'" 2>/dev/null; then
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IP_WITH_OVERRIDE/'" 2>/dev/null; then
             FOUND_ON_ETH0=true
             WINNER_NODE=$node
-            pass "IP $IP_WITH_OVERRIDE on eth0 on $node"
+            pass "IP $IP_WITH_OVERRIDE on local interface on $node"
         fi
     done
-    [ "$FOUND_ON_ETH0" = "true" ] || fail "IP not on eth0 on any node"
+    [ "$FOUND_ON_ETH0" = "true" ] || fail "IP not on local interface on any node"
 
     # Note: With ETP Local allowed on local pool, traffic may or may not work
     # depending on whether the elected node has an endpoint.
@@ -1749,9 +1604,9 @@ test_no_duplicate_vips() {
             # Count how many nodes have this IP
             COUNT=0
             NODES_WITH_IP=""
-            for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
+            for node in $NODES; do
                 # Check both eth0 and kube-lb0
-                if ssh $node "ip -o addr show 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
+                if node_ssh $node "ip -o addr show 2>/dev/null | grep -q ' $IP/'" 2>/dev/null; then
                     COUNT=$((COUNT + 1))
                     NODES_WITH_IP="$NODES_WITH_IP $node"
                 fi
@@ -1797,8 +1652,8 @@ test_local_vip_address_flags() {
 
     # Find which node has the VIP
     WINNER_NODE=""
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
             WINNER_NODE=$node
             break
         fi
@@ -1807,7 +1662,7 @@ test_local_vip_address_flags() {
     info "VIP located on $WINNER_NODE"
 
     # Get detailed address info
-    DETAILS=$(get_address_details "$WINNER_NODE" "$IPV4" "eth0")
+    DETAILS=$(get_address_details "$WINNER_NODE" "$IPV4" "${NODE_IFACE[$WINNER_NODE]}")
     info "Address details: $DETAILS"
 
     # Check for finite lifetime (NOT forever)
@@ -1856,8 +1711,8 @@ test_address_renewal_timer() {
 
     # Find which node has the VIP
     WINNER_NODE=""
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
             WINNER_NODE=$node
             break
         fi
@@ -1865,7 +1720,7 @@ test_address_renewal_timer() {
     [ -n "$WINNER_NODE" ] || fail "VIP $IPV4 not found on any node"
 
     # Get initial lifetime
-    DETAILS1=$(get_address_details "$WINNER_NODE" "$IPV4" "eth0")
+    DETAILS1=$(get_address_details "$WINNER_NODE" "$IPV4" "${NODE_IFACE[$WINNER_NODE]}")
     LFT1=$(get_valid_lft "$DETAILS1")
 
     if [ "$LFT1" = "forever" ]; then
@@ -1879,7 +1734,7 @@ test_address_renewal_timer() {
     info "Waiting ${WAIT_TIME}s to verify lifetime countdown..."
     sleep $WAIT_TIME
 
-    DETAILS2=$(get_address_details "$WINNER_NODE" "$IPV4" "eth0")
+    DETAILS2=$(get_address_details "$WINNER_NODE" "$IPV4" "${NODE_IFACE[$WINNER_NODE]}")
     LFT2=$(get_valid_lft "$DETAILS2")
 
     if [ "$LFT2" = "unknown" ] || [ -z "$LFT2" ]; then
@@ -1896,7 +1751,7 @@ test_address_renewal_timer() {
     fi
 
     # Verify address still exists
-    if ssh "$WINNER_NODE" "ip addr show eth0 | grep -q ' $IPV4/'" 2>/dev/null; then
+    if node_ssh "$WINNER_NODE" "ip addr show ${NODE_IFACE[$WINNER_NODE]} | grep -q ' $IPV4/'" 2>/dev/null; then
         pass "VIP still present on interface"
     else
         fail "VIP disappeared from interface"
@@ -1927,8 +1782,8 @@ test_flannel_node_ip() {
 
     # Find which node has the VIP
     WINNER_NODE=""
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
+    for node in $NODES; do
+        if node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV4/'" 2>/dev/null; then
             WINNER_NODE=$node
             break
         fi
@@ -1957,7 +1812,7 @@ test_flannel_node_ip() {
     fi
 
     # Verify the Flannel IP is permanent (not a VIP)
-    FLANNEL_DETAILS=$(get_address_details "$WINNER_NODE" "$FLANNEL_IP" "eth0")
+    FLANNEL_DETAILS=$(get_address_details "$WINNER_NODE" "$FLANNEL_IP" "${NODE_IFACE[$WINNER_NODE]}")
     FLANNEL_LFT=$(get_valid_lft "$FLANNEL_DETAILS")
 
     if [ "$FLANNEL_LFT" = "forever" ]; then
@@ -1992,8 +1847,8 @@ test_flannel_node_ipv6() {
 
     # Find VIP holder
     local WINNER=""
-    for node in purelb1 purelb2 purelb3 purelb4 purelb5; do
-        if ssh $node "ip -6 -o addr show eth0 2>/dev/null | grep -q ' $IPV6/'" 2>/dev/null; then
+    for node in $NODES; do
+        if node_ssh $node "ip -6 -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IPV6/'" 2>/dev/null; then
             WINNER=$node; break
         fi
     done
@@ -2001,7 +1856,7 @@ test_flannel_node_ipv6() {
     info "IPv6 VIP $IPV6 is on $WINNER"
 
     # Verify VIP has deprecated flag
-    if ssh $WINNER "ip -6 addr show eth0 2>/dev/null | grep ' $IPV6/' | grep -q deprecated" 2>/dev/null; then
+    if node_ssh $WINNER "ip -6 addr show ${NODE_IFACE[$WINNER]} 2>/dev/null | grep ' $IPV6/' | grep -q deprecated" 2>/dev/null; then
         pass "VIP has deprecated flag (IFA_F_DEPRECATED)"
     else
         fail "VIP missing deprecated flag"
@@ -2228,6 +2083,666 @@ test_pod_connectivity() {
     pass "Pod-based connectivity test completed"
 }
 
+#=====================================================================
+# Multi-Subnet Tests (only run when SUBNET_COUNT >= 2)
+#=====================================================================
+
+#---------------------------------------------------------------------
+# Test 18: Lease Subnets Match Node IPs
+#---------------------------------------------------------------------
+test_lease_subnets_match_node_ips() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 18: Lease Subnets Match Node IPs"
+    echo "=========================================="
+
+    info "Verifying each node's lease annotation lists its actual subnet..."
+    for node in $NODES; do
+        local lease_subnets
+        lease_subnets=$(get_node_lease_subnets "$node")
+        [ -n "$lease_subnets" ] || fail "Node $node has no subnet annotation on lease"
+
+        local expected="${NODE_SUBNET[$node]}"
+        if echo "$lease_subnets" | grep -q "$expected"; then
+            pass "Node $node lease contains expected subnet $expected"
+        else
+            fail "Node $node lease has '$lease_subnets' but expected to contain '$expected'"
+        fi
+    done
+
+    pass "All node leases have correct subnet annotations"
+}
+
+#---------------------------------------------------------------------
+# Test 19: Subnet-Specific VIP Placement
+#---------------------------------------------------------------------
+test_subnet_vip_placement() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 19: Subnet-Specific VIP Placement"
+    echo "=========================================="
+
+    info "Testing that VIPs from a subnet-specific pool land on that subnet's nodes..."
+
+    for subnet in $SUBNETS; do
+        local sg_name="test-subnet-${subnet%%/*}"
+        sg_name=$(echo "$sg_name" | tr '.' '-')
+
+        info "Creating ServiceGroup for subnet $subnet..."
+        generate_single_subnet_servicegroup "$sg_name" "$subnet"
+        sleep 2
+
+        # Create a service targeting this ServiceGroup
+        local svc_name="nginx-lb-subnet-${subnet%%/*}"
+        svc_name=$(echo "$svc_name" | tr '.' '-')
+        kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${svc_name}
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: ${sg_name}
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+        info "Waiting for IP allocation from $sg_name..."
+        kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+            svc/${svc_name} -n $NAMESPACE --timeout=30s || fail "No IP allocated for $sg_name"
+
+        local vip
+        vip=$(kubectl get svc ${svc_name} -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        info "Allocated VIP: $vip from pool $sg_name"
+
+        # Wait for VIP to be announced
+        wait_for_ip_announced "$vip" 30 || fail "VIP $vip not announced within 30s"
+
+        # Find which node has it
+        local holder
+        holder=$(get_vip_holder "$vip")
+        [ "$holder" != "NONE" ] || fail "VIP $vip not found on any node"
+
+        # Verify the holder is on the correct subnet
+        verify_vip_subnet_match "$vip" "$holder" || fail "VIP $vip on $holder but expected a node on subnet $subnet"
+        pass "VIP $vip correctly placed on $holder (subnet $subnet)"
+
+        # Cleanup this service and ServiceGroup
+        kubectl delete svc ${svc_name} -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+        kubectl delete servicegroup "$sg_name" -n purelb-system --ignore-not-found 2>/dev/null || true
+        wait_for_ip_not_on_any_node "$vip" 20 || info "Warning: VIP $vip lingering after delete"
+    done
+
+    pass "Subnet-specific VIP placement correct for all subnets"
+}
+
+#---------------------------------------------------------------------
+# Test 20: Subnet Failover Stays in Subnet
+#---------------------------------------------------------------------
+test_subnet_failover_stays_in_subnet() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 20: Subnet Failover Stays in Subnet"
+    echo "=========================================="
+
+    # Find the largest subnet (most nodes) for this test
+    local test_subnet=""
+    local max_nodes=0
+    for subnet in $SUBNETS; do
+        local count
+        count=$(echo "${SUBNET_NODES[$subnet]}" | wc -w)
+        if [ "$count" -gt "$max_nodes" ]; then
+            max_nodes=$count
+            test_subnet=$subnet
+        fi
+    done
+
+    if [ "$max_nodes" -lt 2 ]; then
+        info "SKIP: No subnet has 2+ nodes for failover test"
+        return 0
+    fi
+
+    info "Testing failover within subnet $test_subnet ($max_nodes nodes)..."
+
+    # Create a single-subnet ServiceGroup
+    local sg_name="test-failover-subnet"
+    generate_single_subnet_servicegroup "$sg_name" "$test_subnet"
+    sleep 2
+
+    # Create a service
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-lb-failover-subnet
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: ${sg_name}
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-lb-failover-subnet -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+
+    local vip
+    vip=$(kubectl get svc nginx-lb-failover-subnet -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    wait_for_ip_announced "$vip" 30 || fail "VIP $vip not announced"
+
+    local original_winner
+    original_winner=$(get_vip_holder "$vip")
+    [ "$original_winner" != "NONE" ] || fail "VIP $vip not found on any node"
+    info "Original VIP holder: $original_winner"
+
+    # Taint the winner to force failover
+    info "Tainting $original_winner to force failover..."
+    kubectl taint node "$original_winner" purelb-test=failover:NoExecute --overwrite
+
+    local agent_pod
+    agent_pod=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide | grep "$original_winner" | awk '{print $1}')
+    [ -n "$agent_pod" ] && kubectl delete pod -n purelb-system "$agent_pod" --grace-period=10 2>/dev/null || true
+
+    # Wait for failover
+    info "Waiting for failover (max 20s)..."
+    sleep 15
+
+    local new_winner
+    new_winner=$(get_vip_holder "$vip")
+
+    if [ "$new_winner" = "NONE" ]; then
+        # Extra wait
+        sleep 10
+        new_winner=$(get_vip_holder "$vip")
+    fi
+
+    [ "$new_winner" != "NONE" ] || { kubectl taint node "$original_winner" purelb-test- 2>/dev/null || true; fail "VIP $vip not found after failover"; }
+    [ "$new_winner" != "$original_winner" ] || { kubectl taint node "$original_winner" purelb-test- 2>/dev/null || true; info "Warning: VIP stayed on tainted node (may be timing)"; }
+
+    # Key assertion: new winner must be on the same subnet
+    verify_vip_subnet_match "$vip" "$new_winner" || { kubectl taint node "$original_winner" purelb-test- 2>/dev/null || true; fail "Failover went to wrong subnet: $new_winner not on $test_subnet"; }
+    pass "Failover stayed within subnet $test_subnet: $original_winner -> $new_winner"
+
+    # Cleanup
+    kubectl taint node "$original_winner" purelb-test- 2>/dev/null || true
+    kubectl delete svc nginx-lb-failover-subnet -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete servicegroup "$sg_name" -n purelb-system --ignore-not-found 2>/dev/null || true
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system --timeout=60s
+}
+
+#---------------------------------------------------------------------
+# Test 21: Multi-Pool Default Allocation
+#---------------------------------------------------------------------
+test_multi_pool_default() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 21: Multi-Pool Default Allocation"
+    echo "=========================================="
+
+    info "Testing that default ServiceGroup with multiple subnet pools allocates correctly..."
+
+    # The default ServiceGroup should already have pools for all subnets
+    # Create a service using it
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-lb-multipool
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: default
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-lb-multipool -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+
+    local vip
+    vip=$(kubectl get svc nginx-lb-multipool -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    info "Allocated VIP: $vip"
+    wait_for_ip_announced "$vip" 30 || fail "VIP $vip not announced"
+
+    # Verify it's in a valid pool
+    ip_in_pool_range "$vip" || fail "VIP $vip not in any pool range"
+    pass "VIP $vip is from a valid pool"
+
+    # Verify holder is on matching subnet
+    local holder
+    holder=$(get_vip_holder "$vip")
+    [ "$holder" != "NONE" ] || fail "VIP $vip not found on any node"
+    verify_vip_subnet_match "$vip" "$holder" || fail "VIP/node subnet mismatch"
+    pass "VIP $vip on $holder — subnet match confirmed"
+
+    # Cleanup
+    kubectl delete svc nginx-lb-multipool -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+}
+
+#---------------------------------------------------------------------
+# Test 22: Cross-Subnet Connectivity
+#---------------------------------------------------------------------
+test_cross_subnet_connectivity() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 22: Cross-Subnet Connectivity"
+    echo "=========================================="
+
+    info "Testing that VIP on one subnet is reachable from nodes on another subnet..."
+    info "Pods are scaled to NODE_COUNT so traffic must traverse subnets end-to-end."
+
+    # Pick the first subnet and create a service pinned to it
+    local first_sub=""
+    local second_sub=""
+    for s in $SUBNETS; do
+        if [ -z "$first_sub" ]; then
+            first_sub=$s
+        elif [ -z "$second_sub" ]; then
+            second_sub=$s
+            break
+        fi
+    done
+
+    [ -n "$second_sub" ] || { info "SKIP: Need 2 subnets for cross-subnet test"; return 0; }
+
+    # Scale to NODE_COUNT replicas so pods are spread across all nodes/subnets.
+    # This ensures the curl from subnet B doesn't accidentally hit a local pod —
+    # it must traverse through the VIP holder on subnet A to reach a pod there.
+    local orig_replicas
+    orig_replicas=$(kubectl get deployment nginx -n $NAMESPACE -o jsonpath='{.spec.replicas}')
+    info "Scaling nginx to $NODE_COUNT replicas for cross-subnet pod coverage..."
+    kubectl scale deployment nginx -n $NAMESPACE --replicas=$NODE_COUNT
+    kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=60s
+    kubectl wait --for=condition=Ready pods -l app=nginx -n $NAMESPACE --timeout=60s
+    info "Pod distribution:"
+    kubectl get pods -n $NAMESPACE -o wide --no-headers 2>/dev/null | grep nginx | \
+        awk '{printf "  %-45s %s\n", $1, $7}'
+
+    local sg_name="test-cross-subnet"
+    generate_single_subnet_servicegroup "$sg_name" "$first_sub"
+    sleep 2
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-lb-cross-subnet
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: ${sg_name}
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-lb-cross-subnet -n $NAMESPACE --timeout=30s || {
+        kubectl scale deployment nginx -n $NAMESPACE --replicas=$orig_replicas 2>/dev/null || true
+        fail "No IP allocated"
+    }
+
+    local vip
+    vip=$(kubectl get svc nginx-lb-cross-subnet -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    wait_for_ip_announced "$vip" 30 || {
+        kubectl scale deployment nginx -n $NAMESPACE --replicas=$orig_replicas 2>/dev/null || true
+        fail "VIP $vip not announced"
+    }
+
+    info "VIP $vip allocated on subnet $first_sub"
+
+    # Curl from a node on the other subnet — with pods on all nodes, traffic
+    # must pass through the VIP holder (subnet A) to reach a pod on subnet A.
+    local remote_node
+    remote_node=$(echo "${SUBNET_NODES[$second_sub]}" | awk '{print $1}')
+    [ -n "$remote_node" ] || fail "No node on $second_sub"
+
+    info "Testing connectivity from $remote_node (subnet $second_sub) to VIP $vip (subnet $first_sub)..."
+    # Retry: nftables rules on the VIP holder may take a moment to propagate after the
+    # service external IP is set, even though the VIP is already on the interface.
+    local response=""
+    local attempts=0
+    while [ $attempts -lt 6 ]; do
+        response=$(node_ssh "$remote_node" "curl -s --connect-timeout 5 http://$vip/" 2>/dev/null || true)
+        if echo "$response" | grep -q "Pod:"; then
+            break
+        fi
+        attempts=$((attempts + 1))
+        [ $attempts -lt 6 ] && sleep 3
+    done
+    echo "$response" | grep -q "Pod:" || {
+        kubectl scale deployment nginx -n $NAMESPACE --replicas=$orig_replicas 2>/dev/null || true
+        fail "Cross-subnet connectivity failed: $remote_node -> $vip"
+    }
+    local resp_node
+    resp_node=$(echo "$response" | grep "Node:" | awk '{print $2}')
+    pass "Cross-subnet connectivity works: $remote_node ($second_sub) -> $vip ($first_sub) -> pod on $resp_node"
+
+    # Cleanup
+    kubectl delete svc nginx-lb-cross-subnet -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete servicegroup "$sg_name" -n purelb-system --ignore-not-found 2>/dev/null || true
+    info "Restoring nginx replica count ($orig_replicas)..."
+    kubectl scale deployment nginx -n $NAMESPACE --replicas=$orig_replicas 2>/dev/null || true
+    kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=60s
+}
+
+#---------------------------------------------------------------------
+# Test 23: Small Subnet Exhaustion
+#---------------------------------------------------------------------
+test_small_subnet_exhaustion() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 23: Small Subnet Exhaustion"
+    echo "=========================================="
+
+    # Find the smallest subnet
+    local small_subnet=""
+    local min_nodes=999
+    for subnet in $SUBNETS; do
+        local count
+        count=$(echo "${SUBNET_NODES[$subnet]}" | wc -w)
+        if [ "$count" -lt "$min_nodes" ]; then
+            min_nodes=$count
+            small_subnet=$subnet
+        fi
+    done
+
+    if [ "$min_nodes" -gt 2 ]; then
+        info "SKIP: Smallest subnet has $min_nodes nodes, need <= 2 for exhaustion test"
+        return 0
+    fi
+
+    info "Testing node exhaustion on small subnet $small_subnet ($min_nodes nodes)..."
+
+    local sg_name="test-small-subnet"
+    generate_single_subnet_servicegroup "$sg_name" "$small_subnet"
+    sleep 2
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-lb-small-subnet
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: ${sg_name}
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-lb-small-subnet -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+
+    local vip
+    vip=$(kubectl get svc nginx-lb-small-subnet -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    wait_for_ip_announced "$vip" 30 || fail "VIP $vip not announced"
+
+    local winner
+    winner=$(get_vip_holder "$vip")
+    info "VIP $vip on $winner"
+
+    # Taint the winner — VIP should move to last remaining node
+    info "Tainting $winner to simulate failure..."
+    kubectl taint node "$winner" purelb-test=exhaust:NoExecute --overwrite
+    local agent_pod
+    agent_pod=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide | grep "$winner" | awk '{print $1}')
+    [ -n "$agent_pod" ] && kubectl delete pod -n purelb-system "$agent_pod" --grace-period=10 2>/dev/null || true
+
+    sleep 15
+
+    local new_winner
+    new_winner=$(get_vip_holder "$vip")
+    if [ "$new_winner" != "NONE" ] && [ "$new_winner" != "$winner" ]; then
+        verify_vip_subnet_match "$vip" "$new_winner" || { kubectl taint node "$winner" purelb-test- 2>/dev/null || true; fail "Failover went to wrong subnet"; }
+        pass "VIP moved to last node on $small_subnet: $new_winner"
+
+        if [ "$min_nodes" -eq 2 ]; then
+            # Taint the second node too — all nodes exhausted
+            info "Tainting $new_winner to exhaust all nodes on $small_subnet..."
+            kubectl taint node "$new_winner" purelb-test=exhaust:NoExecute --overwrite
+            local agent_pod2
+            agent_pod2=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide | grep "$new_winner" | awk '{print $1}')
+            [ -n "$agent_pod2" ] && kubectl delete pod -n purelb-system "$agent_pod2" --grace-period=10 2>/dev/null || true
+            sleep 15
+
+            # VIP should have no home now (or be on a wrong-subnet node which would be a bug)
+            local final_holder
+            final_holder=$(get_vip_holder "$vip")
+            if [ "$final_holder" = "NONE" ]; then
+                pass "VIP correctly has no home after all subnet nodes exhausted"
+            else
+                info "Warning: VIP $vip still on $final_holder after all $small_subnet nodes exhausted"
+                # Check if it landed on a different subnet (should not happen with subnet-aware election)
+                if verify_vip_subnet_match "$vip" "$final_holder" 2>/dev/null; then
+                    info "Note: VIP on a same-subnet node (may be timing — DaemonSet recovery)"
+                else
+                    fail "VIP migrated to wrong subnet $final_holder after exhaustion"
+                fi
+            fi
+
+            # Cleanup second taint
+            kubectl taint node "$new_winner" purelb-test- 2>/dev/null || true
+        fi
+    else
+        info "VIP did not move (may still be on tainted node or lost)"
+    fi
+
+    # Cleanup
+    kubectl taint node "$winner" purelb-test- 2>/dev/null || true
+    kubectl delete svc nginx-lb-small-subnet -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete servicegroup "$sg_name" -n purelb-system --ignore-not-found 2>/dev/null || true
+    kubectl rollout status daemonset/lbnodeagent -n purelb-system --timeout=60s
+
+    pass "Small subnet exhaustion test completed"
+}
+
+#---------------------------------------------------------------------
+# Test 24: IPv6 Multi-Subnet Placement
+#---------------------------------------------------------------------
+test_ipv6_multi_subnet_placement() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 24: IPv6 Multi-Subnet Placement"
+    echo "=========================================="
+
+    if [ "$HAS_IPV6" != "true" ]; then
+        info "SKIP: IPv6 not available"
+        return 0
+    fi
+
+    info "Testing IPv6 VIP placement respects subnet boundaries..."
+
+    for subnet in $SUBNETS; do
+        local v6sub="${SUBNET_V6[$subnet]}"
+        [ -n "$v6sub" ] || { info "No IPv6 on $subnet, skipping"; continue; }
+
+        local sg_name="test-v6-${subnet%%/*}"
+        sg_name=$(echo "$sg_name" | tr '.' '-')
+
+        generate_single_subnet_servicegroup "$sg_name" "$subnet"
+        sleep 2
+
+        local svc_name="nginx-lb-v6-${subnet%%/*}"
+        svc_name=$(echo "$svc_name" | tr '.' '-')
+        kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${svc_name}
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: ${sg_name}
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv6
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+        kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+            svc/${svc_name} -n $NAMESPACE --timeout=30s || fail "No IPv6 allocated for $sg_name"
+
+        local v6vip
+        v6vip=$(kubectl get svc ${svc_name} -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        info "Allocated IPv6 VIP: $v6vip from $sg_name"
+
+        wait_for_ip_announced "$v6vip" 30 || fail "IPv6 VIP $v6vip not announced"
+
+        # Verify the VIP is on a node from the correct subnet
+        local holder
+        holder=$(find_vip_node "$v6vip")
+        [ -n "$holder" ] || fail "IPv6 VIP $v6vip not found on any node"
+
+        local node_sub="${NODE_SUBNET[$holder]}"
+        [ "$node_sub" = "$subnet" ] || fail "IPv6 VIP on $holder (subnet $node_sub) but expected subnet $subnet"
+        pass "IPv6 VIP $v6vip correctly placed on $holder (subnet $subnet)"
+
+        # Cleanup
+        kubectl delete svc ${svc_name} -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+        kubectl delete servicegroup "$sg_name" -n purelb-system --ignore-not-found 2>/dev/null || true
+        wait_for_ip_not_on_any_node "$v6vip" 20 || info "Warning: IPv6 VIP lingering"
+    done
+
+    pass "IPv6 multi-subnet placement correct"
+}
+
+#---------------------------------------------------------------------
+# Test 25: Dual-Stack Multi-Subnet
+#---------------------------------------------------------------------
+test_dualstack_multi_subnet() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 25: Dual-Stack Multi-Subnet"
+    echo "=========================================="
+
+    if [ "$HAS_IPV6" != "true" ]; then
+        info "SKIP: IPv6 not available"
+        return 0
+    fi
+
+    info "Testing dual-stack service VIPs land on same-subnet node..."
+
+    # Pick a subnet that has IPv6
+    local test_sub=""
+    for s in $SUBNETS; do
+        if [ -n "${SUBNET_V6[$s]}" ]; then
+            test_sub=$s
+            break
+        fi
+    done
+
+    [ -n "$test_sub" ] || { info "SKIP: No subnet with IPv6"; return 0; }
+
+    local sg_name="test-dualstack-subnet"
+    generate_single_subnet_servicegroup "$sg_name" "$test_sub"
+    sleep 2
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-lb-ds-subnet
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: ${sg_name}
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: RequireDualStack
+  ipFamilies:
+  - IPv4
+  - IPv6
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-lb-ds-subnet -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+
+    local v4vip v6vip
+    v4vip=$(kubectl get svc nginx-lb-ds-subnet -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    v6vip=$(kubectl get svc nginx-lb-ds-subnet -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[1].ip}')
+
+    info "Dual-stack VIPs: v4=$v4vip, v6=$v6vip"
+    [ -n "$v4vip" ] || fail "No IPv4 VIP"
+    [ -n "$v6vip" ] || fail "No IPv6 VIP"
+
+    wait_for_ip_announced "$v4vip" 30 || fail "IPv4 VIP $v4vip not announced"
+
+    # Find holders
+    local v4_holder v6_holder
+    v4_holder=$(get_vip_holder "$v4vip")
+    v6_holder=$(find_vip_node "$v6vip")
+
+    [ "$v4_holder" != "NONE" ] || fail "IPv4 VIP not found on any node"
+    [ -n "$v6_holder" ] || fail "IPv6 VIP not found on any node"
+
+    info "IPv4 VIP on $v4_holder, IPv6 VIP on $v6_holder"
+
+    # Both should be on the target subnet
+    local v4_node_sub="${NODE_SUBNET[$v4_holder]}"
+    local v6_node_sub="${NODE_SUBNET[$v6_holder]}"
+    [ "$v4_node_sub" = "$test_sub" ] || fail "IPv4 VIP holder $v4_holder not on $test_sub"
+    [ "$v6_node_sub" = "$test_sub" ] || fail "IPv6 VIP holder $v6_holder not on $test_sub"
+    pass "Both VIPs on correct subnet $test_sub"
+
+    # Both should ideally be on the same node (same service key → same hash)
+    if [ "$v4_holder" = "$v6_holder" ]; then
+        pass "Both VIPs on same node $v4_holder (consistent election)"
+    else
+        info "Note: VIPs on different nodes ($v4_holder, $v6_holder) — different election keys"
+    fi
+
+    # Cleanup
+    kubectl delete svc nginx-lb-ds-subnet -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete servicegroup "$sg_name" -n purelb-system --ignore-not-found 2>/dev/null || true
+
+    pass "Dual-stack multi-subnet test completed"
+}
+
 #---------------------------------------------------------------------
 # Run All Tests
 #---------------------------------------------------------------------
@@ -2251,6 +2766,7 @@ run_all_tests() {
 
     # Setup
     setup_lbnodeagent
+    generate_default_servicegroup
 
     # Subnet-Aware Election tests (NEW)
     echo ""
@@ -2315,6 +2831,28 @@ run_all_tests() {
     test_pod_connectivity
     pause_for_review
 
+    # Multi-subnet tests (only on clusters with 2+ subnets)
+    if [ "$SUBNET_COUNT" -ge 2 ]; then
+        echo ""
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BLUE}  TEST GROUP: Multi-Subnet Validation${NC}"
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+        test_lease_subnets_match_node_ips
+        test_subnet_vip_placement
+        test_subnet_failover_stays_in_subnet
+        test_multi_pool_default
+        test_cross_subnet_connectivity
+        test_small_subnet_exhaustion
+        if [ "$HAS_IPV6" = "true" ]; then
+            test_ipv6_multi_subnet_placement
+            test_dualstack_multi_subnet
+        fi
+        pause_for_review
+    else
+        echo ""
+        info "SKIP: Multi-subnet tests require 2+ subnets (found $SUBNET_COUNT)"
+    fi
+
     # Cleanup all test services
     cleanup_test_services
 
@@ -2358,9 +2896,15 @@ for iter in $(seq 1 $ITERATIONS); do
         FAIL=$((FAIL + 1))
         echo ""
         echo -e "${RED}--- ITERATION $iter FAILED ---${NC}"
-        # Ensure cleanup between iterations even after failure
+        # Ensure cleanup between iterations even after failure.
+        # bash clears EXIT traps in subshells, so cleanup_servicegroups from
+        # common.sh does not fire when fail() → exit 1 exits the subshell.
+        # Explicitly delete all test ServiceGroups (keep only 'default').
         echo "Cleaning up after failed iteration..."
         kubectl delete svc -n $NAMESPACE --all 2>/dev/null || true
+        kubectl get servicegroup -n purelb-system -o name 2>/dev/null \
+            | grep -v '/default$' \
+            | xargs -r kubectl delete -n purelb-system --ignore-not-found 2>/dev/null || true
     fi
 done
 

@@ -7,33 +7,19 @@ set -e
 # and are placed on the dummy interface (kube-lb0) instead of the physical interface.
 #
 # Key differences from local mode:
-# - IP on kube-lb0 (not eth0)
+# - IP on kube-lb0 (not local interface)
 # - ALL nodes announce (no leader election)
 # - externalTrafficPolicy: Local is supported
 # - Uses /32 or /128 aggregation (host routes)
 
-# Bash version check (required for associative arrays)
-if [[ ${BASH_VERSINFO[0]} -lt 4 ]]; then
-    echo "ERROR: Bash 4+ required for associative arrays"
-    exit 1
-fi
-
-CONTEXT="proxmox"
 NAMESPACE="test"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# Source shared helpers (node discovery, SSH-by-IP, colors, etc.)
+source "${SCRIPT_DIR}/../common.sh"
 
 # Generate unique test ID for this run (for test isolation)
 TEST_RUN_ID=$(date +%s)
-
-pass() { echo -e "${GREEN}✓ PASS:${NC} $1"; }
-warn() { echo -e "${YELLOW}! WARN:${NC} $1" >&2; }
-info() { echo -e "${YELLOW}→${NC} $1" >&2; }
 
 # Override fail() to dump debug state before exiting
 fail() {
@@ -42,23 +28,17 @@ fail() {
     exit 1
 }
 
-kubectl() { command kubectl --context "$CONTEXT" "$@"; }
-
-# Get node list dynamically
-NODES=$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}')
-NODE_COUNT=$(echo $NODES | wc -w)
-
 #---------------------------------------------------------------------
-# SSH Helper Functions (Red Team CRITICAL-2)
+# SSH Helper Functions
 #---------------------------------------------------------------------
 
-# All SSH commands must verify connectivity first
+# All SSH commands must verify connectivity first (uses node_ssh from common.sh)
 ssh_or_fail() {
     local NODE=$1
     shift
-    if ! ssh "$NODE" "$@" 2>/dev/null; then
+    if ! node_ssh "$NODE" "$@" 2>/dev/null; then
         # Distinguish between SSH failure and command failure
-        if ! ssh "$NODE" "true" 2>/dev/null; then
+        if ! node_ssh "$NODE" "true" 2>/dev/null; then
             fail "SSH to $NODE failed - cannot verify cluster state"
         fi
         return 1
@@ -70,7 +50,7 @@ ssh_or_fail() {
 verify_node_connectivity() {
     info "Verifying SSH connectivity to all nodes..."
     for node in $NODES; do
-        ssh "$node" "true" 2>/dev/null || fail "Cannot SSH to $node - fix connectivity before running tests"
+        node_ssh "$node" "true" 2>/dev/null || fail "Cannot SSH to $node (${NODE_IPS[$node]}) - fix connectivity before running tests"
     done
     pass "All $NODE_COUNT nodes reachable via SSH"
 }
@@ -81,7 +61,7 @@ verify_ip_forwarding() {
     local FAILED=false
     for node in $NODES; do
         local IPV4_FWD
-        IPV4_FWD=$(ssh "$node" "cat /proc/sys/net/ipv4/ip_forward" 2>/dev/null || echo "error")
+        IPV4_FWD=$(node_ssh "$node" "cat /proc/sys/net/ipv4/ip_forward" 2>/dev/null || echo "error")
         if [ "$IPV4_FWD" = "1" ]; then
             pass "IPv4 forwarding enabled on $node"
         elif [ "$IPV4_FWD" = "0" ]; then
@@ -97,7 +77,7 @@ verify_ip_forwarding() {
     info "Verifying IPv6 IP forwarding on all nodes..."
     for node in $NODES; do
         local IPV6_FWD
-        IPV6_FWD=$(ssh "$node" "cat /proc/sys/net/ipv6/conf/all/forwarding" 2>/dev/null || echo "error")
+        IPV6_FWD=$(node_ssh "$node" "cat /proc/sys/net/ipv6/conf/all/forwarding" 2>/dev/null || echo "error")
         if [ "$IPV6_FWD" = "1" ]; then
             pass "IPv6 forwarding enabled on $node"
         elif [ "$IPV6_FWD" = "0" ]; then
@@ -136,13 +116,13 @@ dump_debug_state() {
     echo "--- kube-lb0 on all nodes ---"
     for node in $NODES; do
         echo "[$node] kube-lb0:"
-        ssh $node "ip -o addr show kube-lb0 2>/dev/null" 2>/dev/null || echo "  (SSH failed or no kube-lb0)"
-        echo "[$node] eth0:"
-        ssh $node "ip -o addr show eth0 2>/dev/null" 2>/dev/null || echo "  (SSH failed)"
+        node_ssh $node "ip -o addr show kube-lb0 2>/dev/null" 2>/dev/null || echo "  (SSH failed or no kube-lb0)"
+        echo "[$node] ${NODE_IFACE[$node]}:"
+        node_ssh $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null" 2>/dev/null || echo "  (SSH failed)"
     done
     echo "--- nftables service-ips map (first node) ---"
     local FIRST_NODE=${NODES%% *}
-    ssh $FIRST_NODE "sudo nft list map ip kube-proxy service-ips 2>/dev/null | head -50" 2>/dev/null || echo "  (failed)"
+    node_ssh $FIRST_NODE "sudo nft list map ip kube-proxy service-ips 2>/dev/null | head -50" 2>/dev/null || echo "  (failed)"
     echo "--- lbnodeagent pods ---"
     kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null || echo "(failed)"
     echo "--- allocator logs (last 20 lines) ---"
@@ -382,20 +362,20 @@ verify_nftables_rules_removed() {
 # IP Placement Verification (Red Team HIGH-4)
 #---------------------------------------------------------------------
 
-# Must verify BOTH that IP is on kube-lb0 AND not on eth0
+# Must verify BOTH that IP is on kube-lb0 AND not on local interface
 verify_remote_ip_placement() {
     local IP=$1
-    info "Verifying $IP is on kube-lb0 (not eth0) on all nodes..."
+    info "Verifying $IP is on kube-lb0 (not local interface) on all nodes..."
     for node in $NODES; do
         # MUST be on kube-lb0
         ssh_or_fail $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'" || \
             fail "$IP NOT on kube-lb0 on $node"
-        # MUST NOT be on eth0
-        if ssh_or_fail $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP/'"; then
-            fail "$IP found on eth0 on $node (should ONLY be on kube-lb0)"
+        # MUST NOT be on local interface
+        if ssh_or_fail $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IP/'"; then
+            fail "$IP found on local interface on $node (should ONLY be on kube-lb0)"
         fi
     done
-    pass "$IP correctly placed on kube-lb0 (not eth0) on all nodes"
+    pass "$IP correctly placed on kube-lb0 (not local interface) on all nodes"
 }
 
 # Verify aggregation prefix
@@ -697,13 +677,13 @@ test_etp_local_connectivity() {
 verify_invariants() {
     info "Checking system invariants..."
 
-    # Invariant 1: Same IP never on BOTH eth0 AND kube-lb0
+    # Invariant 1: Same IP never on BOTH local interface AND kube-lb0
     for node in $NODES; do
-        local ETH0_IPS=$(ssh_or_fail $node "ip -o addr show eth0 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+(?=/)'" || echo "")
+        local ETH0_IPS=$(ssh_or_fail $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+(?=/)'" || echo "")
         local KUBELB_IPS=$(ssh_or_fail $node "ip -o addr show kube-lb0 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+(?=/)'" || echo "")
         for ip in $ETH0_IPS; do
             if echo "$KUBELB_IPS" | grep -q "^$ip$"; then
-                fail "INVARIANT VIOLATION: $ip on BOTH eth0 AND kube-lb0 on $node"
+                fail "INVARIANT VIOLATION: $ip on BOTH local interface AND kube-lb0 on $node"
             fi
         done
     done
@@ -826,7 +806,7 @@ test_remote_ipv4() {
     [[ "$IP" =~ ^10\.255\.0\.(1[0-4][0-9]|150|100)$ ]] || fail "IP not from expected remote pool"
     pass "IPv4 allocated from correct remote pool"
 
-    # Verify IP on kube-lb0 on ALL nodes (not eth0)
+    # Verify IP on kube-lb0 on ALL nodes (not local interface)
     verify_remote_ip_placement "$IP"
 
     # Verify /32 prefix on kube-lb0
@@ -872,8 +852,8 @@ test_remote_ipv6() {
     for node in $NODES; do
         ssh_or_fail $node "ip -o addr show kube-lb0 2>/dev/null | grep -q ' $IP/'" || \
             fail "$IP NOT on kube-lb0 on $node"
-        if ssh_or_fail $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP/'"; then
-            fail "$IP found on eth0 on $node (should ONLY be on kube-lb0)"
+        if ssh_or_fail $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IP/'"; then
+            fail "$IP found on local interface on $node (should ONLY be on kube-lb0)"
         fi
     done
     pass "IPv6 correctly placed on kube-lb0 on all nodes"
@@ -1135,13 +1115,13 @@ EOF
         fi
     done
 
-    # Verify IP is NOT on eth0 on ANY node
+    # Verify IP is NOT on local interface on ANY node
     for node in $NODES; do
-        if ssh_or_fail $node "ip -o addr show eth0 2>/dev/null | grep -q ' $IP/'"; then
-            fail "$IP found on eth0 on $node (should only be on kube-lb0)"
+        if ssh_or_fail $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $IP/'"; then
+            fail "$IP found on local interface on $node (should only be on kube-lb0)"
         fi
     done
-    pass "IP not on eth0 on any node"
+    pass "IP not on local interface on any node"
 
     # Test connectivity
     wait_for_nftables_rules "$IP" 80
@@ -1645,7 +1625,7 @@ EOF
     # Verify on all nodes (on kube-lb0, not eth0)
     wait_for_all_nodes_announce "$IP" kube-lb0 $NODE_COUNT 30
 
-    # Verify specific IP is on kube-lb0 and NOT on eth0 (remote pool)
+    # Verify specific IP is on kube-lb0 and NOT on local interface (remote pool)
     verify_remote_ip_placement "$IP"
 
     # Test connectivity from pod (bypasses hairpin NAT)
@@ -1709,15 +1689,15 @@ EOF
     # Wait for local IP to be announced
     sleep 5
 
-    # Verify local IP on eth0 (exactly 1 node)
+    # Verify local IP on local interface (exactly 1 node)
     LOCAL_NODE_COUNT=0
     for node in $NODES; do
-        if ssh_or_fail $node "ip -o addr show eth0 2>/dev/null | grep -q ' $LOCAL_IP/'"; then
+        if ssh_or_fail $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep -q ' $LOCAL_IP/'"; then
             LOCAL_NODE_COUNT=$((LOCAL_NODE_COUNT + 1))
         fi
     done
     [ "$LOCAL_NODE_COUNT" -eq 1 ] || fail "Local IP should be on 1 node, found $LOCAL_NODE_COUNT"
-    pass "Local IP on eth0 on exactly 1 node"
+    pass "Local IP on local interface on exactly 1 node"
 
     # Verify remote IP on kube-lb0 (all nodes)
     REMOTE_NODE_COUNT=0
@@ -1745,14 +1725,14 @@ test_no_cross_contamination() {
     echo "=========================================="
 
     # Get all remote IPs (10.255.x.x)
-    info "Checking that no remote IPs (10.255.x.x) are on eth0..."
+    info "Checking that no remote IPs (10.255.x.x) are on local interface..."
     for node in $NODES; do
-        REMOTE_ON_ETH0=$(ssh_or_fail $node "ip -o addr show eth0 2>/dev/null | grep ' 10\.255\.' | grep -oP '\d+\.\d+\.\d+\.\d+(?=/)'") || echo ""
+        REMOTE_ON_ETH0=$(ssh_or_fail $node "ip -o addr show ${NODE_IFACE[$node]} 2>/dev/null | grep ' 10\.255\.' | grep -oP '\d+\.\d+\.\d+\.\d+(?=/)'") || echo ""
         if [ -n "$REMOTE_ON_ETH0" ]; then
-            fail "Remote IP $REMOTE_ON_ETH0 found on eth0 on $node (cross-contamination!)"
+            fail "Remote IP $REMOTE_ON_ETH0 found on local interface on $node (cross-contamination!)"
         fi
     done
-    pass "No remote IPs on eth0"
+    pass "No remote IPs on local interface"
 
     # Get all local IPs and verify not on kube-lb0
     info "Checking that no local IPs (172.30.x.x) are on kube-lb0..."
