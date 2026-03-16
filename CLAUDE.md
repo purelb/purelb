@@ -9,6 +9,9 @@ PureLB is a Kubernetes service load balancer orchestrator that allocates IP addr
 - **Allocator** (`cmd/allocator`): Single cluster-wide pod that watches Services and ServiceGroups, manages IP allocation from pools (local or Netbox IPAM)
 - **LBNodeAgent** (`cmd/lbnodeagent`): DaemonSet running on each node, configures local OS networking via netlink to announce allocated IPs
 
+## Importance of IPv6
+Always include development of equal IPv6 functionality in every activity.
+
 ## Build Commands
 
 All commands via `make`:
@@ -36,11 +39,16 @@ For tests requiring Netbox integration, set `NETBOX_BASE_URL` and `NETBOX_USER_T
 
 **IMPORTANT**: The default `make image` builds to `ko.local/` which requires local Docker. For deploying to the test cluster, you must use `ko` directly with the correct registry and tag.
 
+### There are multiple custers used for texting. Check the cluster in use
+```bash
+kubectx
+```
+
 ### Check Current Cluster Image Tags
 
 First, check what image tags the cluster is currently using:
 ```bash
-kubectl --context proxmox get daemonset lbnodeagent -n purelb-system-o jsonpath='{.spec.template.spec.containers[0].image}'
+kubectl get daemonset lbnodeagent -n purelb-system-o jsonpath='{.spec.template.spec.containers[0].image}'
 # Example output: ghcr.io/purelb/purelb/lbnodeagent:general_k8_update
 ```
 
@@ -61,12 +69,12 @@ go run github.com/google/ko@v0.17.1 build --base-import-paths --tags=$TAG ./cmd/
 
 After pushing new images, restart the pods to pull the updated images:
 ```bash
-kubectl --context proxmox rollout restart daemonset/lbnodeagent -n purelb
-kubectl --context proxmox rollout restart deployment/allocator -n purelb
+kubectl rollout restart daemonset/lbnodeagent -n purelb-system
+kubectl rollout restart deployment/allocator -n purelb-system
 
 # Wait for rollout to complete
-kubectl --context proxmox rollout status daemonset/lbnodeagent -n purelb
-kubectl --context proxmox rollout status deployment/allocator -n purelb
+kubectl rollout status daemonset/lbnodeagent -n purelb-system
+kubectl rollout status deployment/allocator -n purelb-system
 ```
 
 ### Common Mistakes to Avoid

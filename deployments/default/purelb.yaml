@@ -240,8 +240,6 @@ spec:
       annotations:
         prometheus.io/port: '7472'
         prometheus.io/scrape: 'true'
-        # Required to allow signal delivery for graceful termination
-        container.apparmor.security.beta.kubernetes.io/lbnodeagent: unconfined
       labels:
         app: purelb
         component: lbnodeagent
@@ -284,6 +282,8 @@ spec:
             memory: 100Mi
         securityContext:
           allowPrivilegeEscalation: false
+          appArmorProfile:
+            type: Unconfined
           capabilities:
             add:
             - NET_ADMIN

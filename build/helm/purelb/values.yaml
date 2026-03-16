@@ -203,6 +203,8 @@ lbnodeagent:
     runAsUser: 0
     runAsGroup: 0
     allowPrivilegeEscalation: false
+    appArmorProfile:
+      type: Unconfined
     capabilities:
       add:
       - NET_ADMIN

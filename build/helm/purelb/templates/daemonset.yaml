@@ -17,8 +17,6 @@ spec:
       annotations:
         prometheus.io/port: '7472'
         prometheus.io/scrape: 'true'
-        # Required to allow signal delivery for graceful termination
-        container.apparmor.security.beta.kubernetes.io/lbnodeagent: unconfined
       labels:
         {{- include "purelb.labels" . | nindent 8 }}
         app.kubernetes.io/component: lbnodeagent
