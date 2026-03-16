@@ -1051,12 +1051,12 @@ func TestIsMultiPool(t *testing.T) {
 	// Pool with multiPool enabled
 	mp, _ := NewLocalPool("mp", allocatorTestLogger,
 		&purelbv2.AddressPool{Pool: "10.0.0.0/31", Subnet: "10.0.0.0/24"},
-		nil, nil, nil, purelbv2.PoolTypeLocal, false, true)
+		nil, nil, nil, purelbv2.PoolTypeLocal, false, true, false)
 
 	// Pool without multiPool
 	sp, _ := NewLocalPool("sp", allocatorTestLogger,
 		&purelbv2.AddressPool{Pool: "10.0.1.0/31", Subnet: "10.0.1.0/24"},
-		nil, nil, nil, purelbv2.PoolTypeLocal, false, false)
+		nil, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 
 	// Annotation "true" overrides pool default false
 	svc1 := service("svc1", ports("tcp/80"), "")
@@ -1171,4 +1171,39 @@ func TestMultiPoolBackwardCompat(t *testing.T) {
 	err := alloc.Allocate(&svc)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress), "non-multi-pool should get exactly 1 IP")
+}
+
+// ============================================================================
+// Balanced allocation allocator tests
+// ============================================================================
+
+func TestBalancedMultiPoolMutualExclusion(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
+	alloc.SetActiveSubnets(mockActiveSubnets([]string{"10.0.0.0/24", "10.0.1.0/24"}), "purelb")
+
+	// ServiceGroup with both multiPool and balanced set
+	groups := []*purelbv2.ServiceGroup{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "default"},
+			Spec: purelbv2.ServiceGroupSpec{
+				Local: &purelbv2.ServiceGroupLocalSpec{
+					V4Pools: []purelbv2.AddressPool{
+						{Pool: "10.0.0.1-10.0.0.5", Subnet: "10.0.0.0/24"},
+						{Pool: "10.0.1.1-10.0.1.5", Subnet: "10.0.1.0/24"},
+					},
+					MultiPool: true,
+					Balanced:  true,
+				},
+			},
+		},
+	}
+	assert.NoError(t, alloc.SetPools(groups))
+
+	svc := service("svc1", ports("tcp/80"), "")
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+
+	err := alloc.Allocate(&svc)
+	assert.Error(t, err, "multi-pool and balanced should be mutually exclusive")
+	assert.Contains(t, err.Error(), "mutually exclusive")
 }

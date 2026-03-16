@@ -59,6 +59,13 @@ var (
 		Name:      "multipool_partial_total",
 		Help:      "Multi-pool allocations where some ranges were exhausted or had no active nodes",
 	}, labelNames)
+
+	balancedAllocations = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "balanced_allocations_total",
+		Help:      "Total balanced allocations performed",
+	}, labelNames)
 )
 
 func init() {
@@ -67,4 +74,5 @@ func init() {
 	prometheus.MustRegister(allocationRejected)
 	prometheus.MustRegister(multipoolAllocations)
 	prometheus.MustRegister(multipoolPartial)
+	prometheus.MustRegister(balancedAllocations)
 }

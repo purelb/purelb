@@ -226,6 +226,12 @@ func (p NetboxPool) MultiPool() bool {
 	return false
 }
 
+// Balanced returns false for NetboxPool. Balanced allocation is
+// not supported for Netbox pools.
+func (p NetboxPool) Balanced() bool {
+	return false
+}
+
 // AssignNextPerRange is not supported for Netbox pools.
 func (p NetboxPool) AssignNextPerRange(svc *v1.Service, activeSubnets []string) error {
 	return fmt.Errorf("multi-pool allocation is not supported for Netbox pools")

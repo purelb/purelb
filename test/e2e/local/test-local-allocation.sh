@@ -168,6 +168,45 @@ validate_prerequisites() {
         exit 1
     fi
 
+    # Verify metrics endpoints are reachable
+    echo -e "${CYAN}    ── Metrics & Log Verification ──────────────────────────────${NC}"
+    info "Checking allocator metrics endpoint..."
+    local ALLOC_METRICS
+    ALLOC_METRICS=$(scrape_allocator_metrics)
+    if [ -n "$ALLOC_METRICS" ]; then
+        assert_metric "$ALLOC_METRICS" "purelb_k8s_client_config_loaded_bool" "eq" "1"
+        pass "Allocator metrics endpoint reachable, config loaded"
+    else
+        echo -e "${RED}✗ FAIL:${NC} Allocator metrics endpoint not reachable on port 7472"
+        FAILED=true
+    fi
+
+    info "Checking lbnodeagent metrics endpoint..."
+    local AGENT_METRICS
+    AGENT_METRICS=$(scrape_lbnodeagent_metrics)
+    if [ -n "$AGENT_METRICS" ]; then
+        assert_metric "$AGENT_METRICS" "purelb_election_lease_healthy" "eq" "1"
+        pass "LBNodeAgent metrics endpoint reachable, lease healthy"
+    else
+        echo -e "${RED}✗ FAIL:${NC} LBNodeAgent metrics endpoint not reachable on port 7472"
+        FAILED=true
+    fi
+
+    # Verify allocator logged successful startup
+    info "Checking allocator startup logs..."
+    if kubectl logs -n purelb-system deployment/allocator --tail=200 2>/dev/null | grep -q "markSynced"; then
+        pass "Allocator logged 'markSynced' (ready to allocate)"
+    else
+        info "WARNING: 'markSynced' not found in recent allocator logs (may have rotated)"
+    fi
+
+    info "Checking allocator config loaded log..."
+    if kubectl logs -n purelb-system deployment/allocator --tail=200 2>/dev/null | grep -q "setConfig"; then
+        pass "Allocator logged 'setConfig' (configuration loaded)"
+    else
+        info "WARNING: 'setConfig' not found in recent allocator logs (may have rotated)"
+    fi
+
     pass "All infrastructure prerequisites validated"
 }
 
@@ -292,6 +331,13 @@ test_local_pool_no_matching_subnet() {
         info "noLocalInterface message not found (may have scrolled out)"
     fi
 
+    # Verify noLocalInterface log — emitted when a local pool IP has no matching interface
+    # (noEligibleNodes is a separate code path for subnet-aware election mismatch;
+    # noLocalInterface fires first when the pool's subnet doesn't match any node interface)
+    echo -e "${CYAN}    ── Log Verification ────────────────────────────────────────${NC}"
+    assert_log_contains "lbnodeagent" "noLocalInterface" "no local interface for unmatched subnet pool"
+    pass "LBNodeAgent logged 'noLocalInterface' (subnet filtering confirmed via log)"
+
     # Cleanup
     info "Cleaning up no-match test resources..."
     kubectl delete svc nginx-lb-no-match -n $NAMESPACE 2>/dev/null || true
@@ -348,6 +394,12 @@ test_remote_pool() {
         fi
     done
     [ "$FOUND_ON_KUBELB0" = "true" ] || fail "Remote IP not found on kube-lb0 on any node"
+
+    # Verify announcingNonLocal log — emitted when remote pool IPs go on kube-lb0
+    echo -e "${CYAN}    ── Log Verification ────────────────────────────────────────${NC}"
+    info "Checking lbnodeagent logs for announcingNonLocal message..."
+    assert_log_contains "lbnodeagent" "announcingNonLocal" "remote pool announced on dummy interface"
+    pass "LBNodeAgent logged 'announcingNonLocal' (remote pool on kube-lb0)"
 
     # Cleanup
     info "Cleaning up remote pool test resources..."
@@ -637,6 +689,38 @@ test_graceful_failover() {
     echo -e "  Delete duration:     ${YELLOW}${DELETE_DURATION}s${NC}"
     echo -e "  Lease deleted:       ${YELLOW}$LEASE_DELETED${NC}"
 
+    # --- Metrics & log verification after failover ---
+    echo -e "${CYAN}    ── Metrics & Log Verification ──────────────────────────────${NC}"
+    if [ -n "$NEW_WINNER" ]; then
+        info "Verifying metrics on new winner ($NEW_WINNER) after failover..."
+        local FAILOVER_METRICS
+        FAILOVER_METRICS=$(scrape_lbnodeagent_metrics "$NEW_WINNER")
+        if [ -n "$FAILOVER_METRICS" ]; then
+            assert_metric "$FAILOVER_METRICS" "purelb_election_lease_healthy" "eq" "1"
+            pass "New winner $NEW_WINNER: lease_healthy = 1"
+            assert_metric "$FAILOVER_METRICS" "purelb_lbnodeagent_election_wins_total" "gt" "0"
+            pass "New winner $NEW_WINNER: election_wins_total > 0"
+            assert_metric "$FAILOVER_METRICS" "purelb_lbnodeagent_address_additions_total" "gt" "0"
+            pass "New winner $NEW_WINNER: address_additions_total > 0"
+        else
+            info "WARNING: Could not scrape metrics from new winner $NEW_WINNER"
+        fi
+
+        # Verify electionWon log on new winner
+        info "Checking for electionWon log on new winner..."
+        assert_log_contains_on_node "$NEW_WINNER" "electionWon" "election won after failover"
+        pass "New winner $NEW_WINNER: logged 'electionWon'"
+    fi
+
+    # Verify shutdown/withdrawal in captured logs
+    if [ -f /tmp/shutdown-logs.txt ] && [ -s /tmp/shutdown-logs.txt ]; then
+        if grep -q "withdrawAddress\|ForceSync\|graceful" /tmp/shutdown-logs.txt; then
+            pass "Captured shutdown logs contain withdrawal/ForceSync messages"
+        else
+            detail "Shutdown logs present but no withdrawal messages found"
+        fi
+    fi
+
     if [ "$LEASE_DELETED" = "true" ] && [ -n "$NEW_WINNER" ]; then
         pass "Graceful failover test completed successfully"
     else
@@ -715,6 +799,52 @@ test_ipv4_singlestack() {
     else
         info "ipMode not set (may be older K8s version)"
     fi
+
+    # --- Metrics verification ---
+    echo -e "${CYAN}    ── Metrics & Log Verification ──────────────────────────────${NC}"
+    info "Verifying allocator metrics after IPv4 allocation..."
+    local ALLOC_METRICS
+    ALLOC_METRICS=$(scrape_allocator_metrics)
+    if [ -n "$ALLOC_METRICS" ]; then
+        assert_metric "$ALLOC_METRICS" 'purelb_address_pool_size{pool="default"}' "gt" "0"
+        pass "Allocator: pool size > 0"
+        assert_metric "$ALLOC_METRICS" 'purelb_address_pool_addresses_in_use{pool="default"}' "ge" "1"
+        pass "Allocator: addresses_in_use >= 1"
+    else
+        info "WARNING: Could not scrape allocator metrics"
+    fi
+
+    if [ -n "$WINNER_NODE" ]; then
+        info "Verifying lbnodeagent metrics on winner ($WINNER_NODE)..."
+        local AGENT_METRICS
+        AGENT_METRICS=$(scrape_lbnodeagent_metrics "$WINNER_NODE")
+        if [ -n "$AGENT_METRICS" ]; then
+            assert_metric "$AGENT_METRICS" "purelb_lbnodeagent_election_wins_total" "gt" "0"
+            pass "Winner $WINNER_NODE: election_wins_total > 0"
+            assert_metric "$AGENT_METRICS" "purelb_lbnodeagent_address_additions_total" "gt" "0"
+            pass "Winner $WINNER_NODE: address_additions_total > 0"
+            # GARP is only sent if GARPConfig is set in LBNodeAgent spec
+            local garp_val
+            garp_val=$(echo "$AGENT_METRICS" | grep "^purelb_lbnodeagent_garp_sent_total " | awk '{print $NF}')
+            if [ -n "$garp_val" ] && [ "$(printf '%.0f' "$garp_val")" -gt 0 ]; then
+                pass "Winner $WINNER_NODE: garp_sent_total = $garp_val (GARP enabled)"
+            else
+                detail "Winner $WINNER_NODE: garp_sent_total = ${garp_val:-0} (GARP not configured or no packets sent)"
+            fi
+            # Verify announced gauge includes our service
+            local announced
+            announced=$(echo "$AGENT_METRICS" | grep "purelb_lbnodeagent_announced" | grep "nginx-lb-ipv4" || true)
+            [ -n "$announced" ] || fail "announced gauge missing nginx-lb-ipv4 on winner"
+            pass "Winner $WINNER_NODE: announced gauge includes nginx-lb-ipv4"
+        else
+            info "WARNING: Could not scrape lbnodeagent metrics on $WINNER_NODE"
+        fi
+
+        # --- Log verification ---
+        info "Verifying electionWon log on winner ($WINNER_NODE)..."
+        assert_log_contains_on_node "$WINNER_NODE" "electionWon" "election won for IPv4 service"
+        pass "Winner $WINNER_NODE: logged 'electionWon'"
+    fi
 }
 
 #---------------------------------------------------------------------
@@ -764,6 +894,32 @@ test_ipv6_singlestack() {
     echo "$RESPONSE" | grep -q "Pod:" || fail "No response from service"
     pass "IPv6 service is reachable"
     echo "$RESPONSE"
+
+    # --- Metrics verification ---
+    echo -e "${CYAN}    ── Metrics & Log Verification ──────────────────────────────${NC}"
+    if [ -n "$WINNER_NODE" ]; then
+        info "Verifying lbnodeagent metrics on IPv6 winner ($WINNER_NODE)..."
+        local AGENT_METRICS
+        AGENT_METRICS=$(scrape_lbnodeagent_metrics "$WINNER_NODE")
+        if [ -n "$AGENT_METRICS" ]; then
+            assert_metric "$AGENT_METRICS" "purelb_lbnodeagent_election_wins_total" "gt" "0"
+            pass "Winner $WINNER_NODE: election_wins_total > 0 (IPv6)"
+            assert_metric "$AGENT_METRICS" "purelb_lbnodeagent_address_additions_total" "gt" "0"
+            pass "Winner $WINNER_NODE: address_additions_total > 0 (IPv6)"
+            # Verify announced gauge includes our IPv6 service
+            local announced
+            announced=$(echo "$AGENT_METRICS" | grep "purelb_lbnodeagent_announced" | grep "nginx-lb-ipv6" || true)
+            [ -n "$announced" ] || fail "announced gauge missing nginx-lb-ipv6 on winner"
+            pass "Winner $WINNER_NODE: announced gauge includes nginx-lb-ipv6"
+        else
+            info "WARNING: Could not scrape lbnodeagent metrics on $WINNER_NODE"
+        fi
+
+        # --- Log verification ---
+        info "Verifying electionWon log on IPv6 winner ($WINNER_NODE)..."
+        assert_log_contains_on_node "$WINNER_NODE" "electionWon" "election won for IPv6 service"
+        pass "Winner $WINNER_NODE: logged 'electionWon' (IPv6)"
+    fi
 }
 
 #---------------------------------------------------------------------
@@ -883,9 +1039,90 @@ test_leader_election() {
     [[ "$ANNOUNCING" == *"$WINNER"* ]] || fail "Announcing annotation '$ANNOUNCING' doesn't match winner '$WINNER'"
     pass "Announcing annotation correctly set to $ANNOUNCING"
 
-    # Check lbnodeagent logs for election messages
-    info "Checking election logs..."
-    kubectl logs -n purelb-system -l component=lbnodeagent --tail=100 | grep -i "winner" | tail -5 || true
+    # --- Metrics verification: Election-specific metrics ---
+    echo -e "${CYAN}    ── Metrics & Log Verification ──────────────────────────────${NC}"
+    info "Verifying election metrics on winner ($WINNER)..."
+    local WINNER_METRICS
+    WINNER_METRICS=$(scrape_lbnodeagent_metrics "$WINNER")
+    if [ -n "$WINNER_METRICS" ]; then
+        assert_metric "$WINNER_METRICS" "purelb_election_lease_healthy" "eq" "1"
+        pass "Winner $WINNER: lease_healthy = 1"
+        assert_metric "$WINNER_METRICS" "purelb_election_member_count" "ge" "1"
+        local members
+        members=$(echo "$WINNER_METRICS" | grep "^purelb_election_member_count " | awk '{print $NF}')
+        pass "Winner $WINNER: member_count = $members"
+        assert_metric "$WINNER_METRICS" "purelb_election_subnet_count" "ge" "1"
+        local subnets
+        subnets=$(echo "$WINNER_METRICS" | grep "^purelb_election_subnet_count " | awk '{print $NF}')
+        pass "Winner $WINNER: subnet_count = $subnets"
+        assert_metric "$WINNER_METRICS" "purelb_election_local_subnet_count" "ge" "1"
+        pass "Winner $WINNER: local_subnet_count >= 1"
+        assert_metric "$WINNER_METRICS" "purelb_election_lease_renewals_total" "gt" "0"
+        local renewals
+        renewals=$(echo "$WINNER_METRICS" | grep "^purelb_election_lease_renewals_total " | awk '{print $NF}')
+        pass "Winner $WINNER: lease_renewals_total = $renewals"
+    else
+        info "WARNING: Could not scrape lbnodeagent metrics on $WINNER"
+    fi
+
+    # Verify non-winner nodes also have healthy leases
+    for node in $NODES; do
+        if [ "$node" != "$WINNER" ]; then
+            info "Checking lease health on non-winner $node..."
+            local OTHER_METRICS
+            OTHER_METRICS=$(scrape_lbnodeagent_metrics "$node")
+            if [ -n "$OTHER_METRICS" ]; then
+                assert_metric "$OTHER_METRICS" "purelb_election_lease_healthy" "eq" "1"
+                pass "Non-winner $node: lease_healthy = 1"
+                local losses
+                losses=$(echo "$OTHER_METRICS" | grep "^purelb_lbnodeagent_election_losses_total " | awk '{print $NF}')
+                if [ -n "$losses" ] && [ "$(printf '%.0f' "$losses")" -gt 0 ]; then
+                    pass "Non-winner $node: election_losses_total = $losses"
+                else
+                    detail "Non-winner $node: election_losses = ${losses:-0}"
+                fi
+            fi
+            break  # check just one non-winner to keep test fast
+        fi
+    done
+
+    # --- Log verification ---
+    info "Verifying election log messages..."
+    assert_log_contains_on_node "$WINNER" "electionWon" "election won on winner node"
+    pass "Winner $WINNER: logged 'electionWon'"
+
+    # Check non-winner nodes for notWinner/lostElection log
+    info "Checking non-winner nodes for election loss logs..."
+    local found_loser_log=false
+    for node in $NODES; do
+        if [ "$node" != "$WINNER" ]; then
+            local pod
+            pod=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null \
+                | grep "$node" | awk '{print $1}')
+            if [ -n "$pod" ]; then
+                if kubectl logs -n purelb-system "$pod" --tail=200 2>/dev/null | grep -qE "(notWinner|lostElection)"; then
+                    pass "Non-winner $node: logged 'notWinner'/'lostElection'"
+                    found_loser_log=true
+                    break
+                fi
+            fi
+        fi
+    done
+    if [ "$found_loser_log" = "false" ]; then
+        detail "No notWinner/lostElection log found on non-winners (debug-level, may not be visible)"
+    fi
+
+    # Check for subnet discovery on any node
+    assert_log_contains "lbnodeagent" "getLocalSubnets" "subnet discovery"
+    pass "LBNodeAgent: logged 'getLocalSubnets' (subnet discovery)"
+
+    # Verify no panic/fatal errors
+    info "Checking for absence of panic/fatal errors..."
+    local panic_logs
+    panic_logs=$(kubectl logs -n purelb-system -l component=lbnodeagent --tail=200 2>/dev/null \
+        | grep -iE "(panic|fatal|FATAL)" || true)
+    [ -z "$panic_logs" ] || fail "Panic or fatal errors found in lbnodeagent logs"
+    pass "No panic or fatal errors in lbnodeagent logs"
 }
 
 #---------------------------------------------------------------------
@@ -897,9 +1134,21 @@ test_service_cleanup() {
     echo "TEST 5: Service Deletion Cleanup"
     echo "=========================================="
 
-    # Get current IP before deletion
+    # Get current IP and VIP holder before deletion
     IPV4=$(kubectl get svc nginx-lb-ipv4 -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
     info "Deleting service with IP $IPV4..."
+
+    # Capture pre-deletion metrics for comparison
+    local HOLDER_NODE
+    HOLDER_NODE=$(get_vip_holder "$IPV4" 2>/dev/null || echo "NONE")
+    local before_in_use
+    before_in_use=$(scrape_allocator_metric 'purelb_address_pool_addresses_in_use{pool="default"}')
+    before_in_use=$(printf '%.0f' "${before_in_use:-0}")
+    local before_withdrawals="0"
+    if [ "$HOLDER_NODE" != "NONE" ]; then
+        before_withdrawals=$(scrape_lbnodeagent_metrics "$HOLDER_NODE" | grep "^purelb_lbnodeagent_address_withdrawals_total " | awk '{print $NF}')
+        before_withdrawals=$(printf '%.0f' "${before_withdrawals:-0}")
+    fi
 
     kubectl delete svc nginx-lb-ipv4 -n $NAMESPACE
 
@@ -926,6 +1175,30 @@ test_service_cleanup() {
         ELAPSED=$((ELAPSED + INTERVAL))
     done
     [ $ELAPSED -lt $TIMEOUT ] || fail "IP $IPV4 not removed within ${TIMEOUT}s"
+
+    # --- Metrics verification after deletion ---
+    echo -e "${CYAN}    ── Metrics & Log Verification ──────────────────────────────${NC}"
+    info "Verifying metrics reflect service deletion..."
+    local after_in_use
+    after_in_use=$(scrape_allocator_metric 'purelb_address_pool_addresses_in_use{pool="default"}')
+    after_in_use=$(printf '%.0f' "${after_in_use:-0}")
+    if [ "$before_in_use" -gt 0 ]; then
+        [ "$after_in_use" -lt "$before_in_use" ] || fail "addresses_in_use did not decrease after deletion (before=$before_in_use, after=$after_in_use)"
+        pass "Allocator: addresses_in_use decreased ($before_in_use -> $after_in_use)"
+    fi
+
+    if [ "$HOLDER_NODE" != "NONE" ]; then
+        local after_withdrawals
+        after_withdrawals=$(scrape_lbnodeagent_metrics "$HOLDER_NODE" | grep "^purelb_lbnodeagent_address_withdrawals_total " | awk '{print $NF}')
+        after_withdrawals=$(printf '%.0f' "${after_withdrawals:-0}")
+        [ "$after_withdrawals" -gt "$before_withdrawals" ] || fail "address_withdrawals_total did not increase on $HOLDER_NODE"
+        pass "LBNodeAgent $HOLDER_NODE: address_withdrawals_total increased ($before_withdrawals -> $after_withdrawals)"
+
+        # Verify withdrawal log
+        info "Checking for withdrawAddress log..."
+        assert_log_contains_on_node "$HOLDER_NODE" "withdrawAddress" "address withdrawal after service delete"
+        pass "LBNodeAgent $HOLDER_NODE: logged 'withdrawAddress'"
+    fi
 
     # Recreate for other tests
     info "Recreating IPv4 service..."
@@ -1847,6 +2120,34 @@ test_address_renewal_timer() {
         pass "VIP still present on interface"
     else
         fail "VIP disappeared from interface"
+    fi
+
+    # Verify renewAddress log on the winner node
+    echo -e "${CYAN}    ── Metrics & Log Verification ──────────────────────────────${NC}"
+    info "Checking for renewAddress log on $WINNER_NODE..."
+    local winner_pod
+    winner_pod=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null \
+        | grep "$WINNER_NODE" | awk '{print $1}')
+    if [ -n "$winner_pod" ]; then
+        if kubectl logs -n purelb-system "$winner_pod" --tail=200 2>/dev/null | grep -q "renewAddress"; then
+            pass "LBNodeAgent $WINNER_NODE: logged 'renewAddress' (address lifetime renewed)"
+        else
+            detail "renewAddress not found in logs (debug-level, may not be visible at info level)"
+        fi
+    fi
+
+    # Verify renewal metric incremented
+    info "Checking address renewal metric on $WINNER_NODE..."
+    local RENEWAL_METRICS
+    RENEWAL_METRICS=$(scrape_lbnodeagent_metrics "$WINNER_NODE")
+    if [ -n "$RENEWAL_METRICS" ]; then
+        local renewal_count
+        renewal_count=$(echo "$RENEWAL_METRICS" | grep "^purelb_lbnodeagent_address_renewals_total " | awk '{print $NF}')
+        if [ -n "$renewal_count" ] && [ "$(printf '%.0f' "$renewal_count")" -gt 0 ]; then
+            pass "LBNodeAgent $WINNER_NODE: address_renewals_total = $renewal_count"
+        else
+            detail "address_renewals_total = ${renewal_count:-0} (renewal may not have fired yet)"
+        fi
     fi
 }
 
@@ -3207,6 +3508,737 @@ EOF
 }
 
 #---------------------------------------------------------------------
+# Test: Balanced Allocation
+# Tests the balanced allocation feature where services are distributed
+# evenly across address ranges. Covers:
+#   - Balanced IPv4 allocation (verify round-robin across ranges)
+#   - Balanced IPv6 allocation (if available)
+#   - Balanced dual-stack allocation (if available)
+#   - Negative: balanced + multiPool mutual exclusion → AllocationFailed
+#   - Negative: balanced SG with non-existent service-group → error
+#---------------------------------------------------------------------
+test_balanced_allocation() {
+    echo ""
+    echo "=========================================="
+    echo "TEST: Balanced Allocation"
+    echo "=========================================="
+
+    info "Testing balanced allocation across address ranges..."
+
+    # Build v4pools entries from discovered subnets using .150-.160 range
+    # (separate from .200-.220 default, .230-.240 test, .180-.190 multi-pool)
+    local v4pools=""
+    local v6pools=""
+    local v4_subnet_count=0
+    local v6_subnet_count=0
+    # Track subnet prefixes for verification
+    local -a v4_prefixes=()
+    local -a v6_prefixes=()
+    for sub in $SUBNETS; do
+        # Skip IPv6 subnets
+        if echo "$sub" | grep -q ':'; then
+            continue
+        fi
+        local net="${sub%/*}"
+        local prefix
+        prefix=$(echo "$net" | awk -F. '{print $1"."$2"."$3}')
+        local pool_range="${prefix}.150-${prefix}.160"
+        v4pools="${v4pools}
+    - pool: \"${pool_range}\"
+      subnet: \"${sub}\""
+        v4_prefixes+=("$prefix")
+        v4_subnet_count=$((v4_subnet_count + 1))
+
+        # Add IPv6 pool if this subnet has a v6 mapping
+        local v6prefix="${SUBNET_V6_PREFIX[$sub]}"
+        if [ -n "$v6prefix" ]; then
+            local v6sub="${SUBNET_V6[$sub]}"
+            local v6base="${v6prefix%%::}"
+            local v6range="${v6base}:c::1-${v6base}:c::10"
+            v6pools="${v6pools}
+    - pool: \"${v6range}\"
+      subnet: \"${v6sub}\""
+            v6_prefixes+=("$v6base")
+            v6_subnet_count=$((v6_subnet_count + 1))
+        fi
+    done
+
+    [ "$v4_subnet_count" -ge 2 ] || { info "SKIP: Balanced allocation requires 2+ subnets (found $v4_subnet_count)"; return 0; }
+
+    # Capture baseline balanced_allocations metric
+    local before_balanced
+    before_balanced=$(scrape_allocator_metric 'purelb_address_pool_balanced_allocations_total{pool="balanced-test"}')
+    before_balanced=$(printf '%.0f' "${before_balanced:-0}")
+
+    #-----------------------------------------------------------------
+    # Sub-test 1: Balanced IPv4 allocation
+    #-----------------------------------------------------------------
+    info ""
+    info "--- Sub-test 1: Balanced IPv4 allocation ---"
+
+    local sg_spec="balanced: true
+    v4pools: ${v4pools}"
+    if [ -n "$v6pools" ]; then
+        sg_spec="${sg_spec}
+    v6pools: ${v6pools}"
+    fi
+
+    kubectl apply -f - <<EOF
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: balanced-test
+  namespace: purelb-system
+spec:
+  local:
+    ${sg_spec}
+EOF
+    info "Created ServiceGroup balanced-test with balanced: true ($v4_subnet_count v4 pools, $v6_subnet_count v6 pools)"
+
+    # Create enough services to verify distribution (2 per subnet = 2*subnet_count)
+    local svc_count=$((v4_subnet_count * 2))
+    local -a svc_names=()
+    local -a svc_ips=()
+    for i in $(seq 1 $svc_count); do
+        local svc_name="nginx-bal-v4-${i}"
+        svc_names+=("$svc_name")
+        kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${svc_name}
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: balanced-test
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: $((85 + i))
+    targetPort: 80
+EOF
+    done
+
+    # Wait for all services to get IPs
+    for svc_name in "${svc_names[@]}"; do
+        kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+            svc/${svc_name} -n $NAMESPACE --timeout=30s || fail "Balanced IPv4: $svc_name no IP allocated"
+    done
+
+    # Collect IPs and count per range
+    declare -A range_counts
+    for svc_name in "${svc_names[@]}"; do
+        local ip
+        ip=$(kubectl get svc ${svc_name} -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        svc_ips+=("$ip")
+        local ip_prefix
+        ip_prefix=$(echo "$ip" | awk -F. '{print $1"."$2"."$3}')
+        range_counts[$ip_prefix]=$(( ${range_counts[$ip_prefix]:-0} + 1 ))
+        detail "$svc_name -> $ip (range $ip_prefix)"
+    done
+
+    # Verify distribution: each range should have at least 1 IP and no more than ceil(total/ranges)
+    local max_per_range=$(( (svc_count + v4_subnet_count - 1) / v4_subnet_count ))
+    local all_ranges_populated=true
+    for prefix in "${v4_prefixes[@]}"; do
+        local count=${range_counts[$prefix]:-0}
+        if [ "$count" -eq 0 ]; then
+            fail "Balanced IPv4: range $prefix got 0 IPs — not balanced"
+            all_ranges_populated=false
+        elif [ "$count" -gt "$max_per_range" ]; then
+            fail "Balanced IPv4: range $prefix got $count IPs — exceeds fair share of $max_per_range"
+        else
+            pass "Balanced IPv4: range $prefix got $count IPs (fair share: $max_per_range)"
+        fi
+    done
+    [ "$all_ranges_populated" = "true" ] || fail "Balanced IPv4: not all ranges received allocations"
+
+    # Verify connectivity for first service
+    local first_ip="${svc_ips[0]}"
+    wait_for_ip_announced "$first_ip" 30 || fail "Balanced VIP $first_ip not announced"
+    local resp
+    resp=$(curl -s --connect-timeout 5 "http://${first_ip}:86/" || true)
+    echo "$resp" | grep -q "Pod:" || fail "Balanced VIP $first_ip not reachable"
+    pass "Balanced IPv4 VIP $first_ip reachable"
+
+    # Cleanup sub-test 1 services
+    for svc_name in "${svc_names[@]}"; do
+        kubectl delete svc ${svc_name} -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    done
+    unset range_counts
+
+    #-----------------------------------------------------------------
+    # Sub-test 2: Balanced IPv6 allocation
+    #-----------------------------------------------------------------
+    if [ "$HAS_IPV6" = "true" ] && [ "$v6_subnet_count" -ge 2 ]; then
+        info ""
+        info "--- Sub-test 2: Balanced IPv6 allocation ---"
+
+        local -a v6_svc_names=()
+        local -a v6_svc_ips=()
+        local v6_svc_count=$((v6_subnet_count * 2))
+        for i in $(seq 1 $v6_svc_count); do
+            local svc_name="nginx-bal-v6-${i}"
+            v6_svc_names+=("$svc_name")
+            kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${svc_name}
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: balanced-test
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv6
+  selector:
+    app: nginx
+  ports:
+  - port: $((90 + i))
+    targetPort: 80
+EOF
+        done
+
+        for svc_name in "${v6_svc_names[@]}"; do
+            kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+                svc/${svc_name} -n $NAMESPACE --timeout=30s || fail "Balanced IPv6: $svc_name no IP allocated"
+        done
+
+        # Count per v6 range
+        declare -A v6_range_counts
+        for svc_name in "${v6_svc_names[@]}"; do
+            local ip
+            ip=$(kubectl get svc ${svc_name} -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            v6_svc_ips+=("$ip")
+            # Match against known v6 prefixes
+            local matched_prefix=""
+            for v6p in "${v6_prefixes[@]}"; do
+                if echo "$ip" | grep -qi "^${v6p}"; then
+                    matched_prefix="$v6p"
+                    break
+                fi
+            done
+            [ -n "$matched_prefix" ] || fail "Balanced IPv6: IP $ip doesn't match any known prefix"
+            v6_range_counts[$matched_prefix]=$(( ${v6_range_counts[$matched_prefix]:-0} + 1 ))
+            detail "$svc_name -> $ip (range $matched_prefix)"
+        done
+
+        local v6_max_per_range=$(( (v6_svc_count + v6_subnet_count - 1) / v6_subnet_count ))
+        for v6p in "${v6_prefixes[@]}"; do
+            local count=${v6_range_counts[$v6p]:-0}
+            if [ "$count" -eq 0 ]; then
+                fail "Balanced IPv6: range $v6p got 0 IPs — not balanced"
+            elif [ "$count" -gt "$v6_max_per_range" ]; then
+                fail "Balanced IPv6: range $v6p got $count IPs — exceeds fair share of $v6_max_per_range"
+            else
+                pass "Balanced IPv6: range $v6p got $count IPs (fair share: $v6_max_per_range)"
+            fi
+        done
+
+        # Cleanup
+        for svc_name in "${v6_svc_names[@]}"; do
+            kubectl delete svc ${svc_name} -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+        done
+        unset v6_range_counts
+    else
+        info ""
+        info "SKIP: Sub-test 2 (Balanced IPv6) requires IPv6 and 2+ v6 subnets"
+    fi
+
+    #-----------------------------------------------------------------
+    # Sub-test 3: Balanced dual-stack allocation
+    #-----------------------------------------------------------------
+    if [ "$HAS_IPV6" = "true" ] && [ "$v6_subnet_count" -ge 2 ]; then
+        info ""
+        info "--- Sub-test 3: Balanced dual-stack allocation ---"
+
+        local -a ds_svc_names=()
+        local ds_svc_count=$((v4_subnet_count * 2))
+        for i in $(seq 1 $ds_svc_count); do
+            local svc_name="nginx-bal-ds-${i}"
+            ds_svc_names+=("$svc_name")
+            kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${svc_name}
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: balanced-test
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: RequireDualStack
+  ipFamilies:
+  - IPv4
+  - IPv6
+  selector:
+    app: nginx
+  ports:
+  - port: $((95 + i))
+    targetPort: 80
+EOF
+        done
+
+        for svc_name in "${ds_svc_names[@]}"; do
+            kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+                svc/${svc_name} -n $NAMESPACE --timeout=30s || fail "Balanced dual-stack: $svc_name no IP allocated"
+        done
+        sleep 3
+
+        # Count IPv4 and IPv6 allocations per range
+        declare -A ds_v4_counts
+        declare -A ds_v6_counts
+        for svc_name in "${ds_svc_names[@]}"; do
+            local all_ips
+            all_ips=$(kubectl get svc ${svc_name} -n $NAMESPACE \
+                -o jsonpath='{.status.loadBalancer.ingress[*].ip}')
+            for ip in $all_ips; do
+                if echo "$ip" | grep -q ':'; then
+                    # IPv6
+                    for v6p in "${v6_prefixes[@]}"; do
+                        if echo "$ip" | grep -qi "^${v6p}"; then
+                            ds_v6_counts[$v6p]=$(( ${ds_v6_counts[$v6p]:-0} + 1 ))
+                            break
+                        fi
+                    done
+                else
+                    # IPv4
+                    local ip_prefix
+                    ip_prefix=$(echo "$ip" | awk -F. '{print $1"."$2"."$3}')
+                    ds_v4_counts[$ip_prefix]=$(( ${ds_v4_counts[$ip_prefix]:-0} + 1 ))
+                fi
+            done
+        done
+
+        # Verify IPv4 distribution
+        for prefix in "${v4_prefixes[@]}"; do
+            local count=${ds_v4_counts[$prefix]:-0}
+            [ "$count" -ge 1 ] || fail "Balanced DS IPv4: range $prefix got 0 IPs"
+            pass "Balanced DS IPv4: range $prefix got $count IPs"
+        done
+
+        # Verify IPv6 distribution
+        for v6p in "${v6_prefixes[@]}"; do
+            local count=${ds_v6_counts[$v6p]:-0}
+            [ "$count" -ge 1 ] || fail "Balanced DS IPv6: range $v6p got 0 IPs"
+            pass "Balanced DS IPv6: range $v6p got $count IPs"
+        done
+
+        # Cleanup
+        for svc_name in "${ds_svc_names[@]}"; do
+            kubectl delete svc ${svc_name} -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+        done
+        unset ds_v4_counts ds_v6_counts
+    else
+        info ""
+        info "SKIP: Sub-test 3 (Balanced dual-stack) requires IPv6 and 2+ v6 subnets"
+    fi
+
+    #-----------------------------------------------------------------
+    # Sub-test 4: NEGATIVE — balanced + multiPool mutual exclusion
+    # A ServiceGroup with BOTH balanced: true and multiPool: true should
+    # cause an AllocationFailed event when a service tries to allocate.
+    # Uses .170-.179 range to avoid overlap with balanced-test (.150-.160).
+    #-----------------------------------------------------------------
+    info ""
+    info "--- Sub-test 4: NEGATIVE — balanced + multiPool mutual exclusion ---"
+
+    # Build non-overlapping pools for this SG (.170-.179)
+    local conflict_v4pools=""
+    for sub in $SUBNETS; do
+        if echo "$sub" | grep -q ':'; then continue; fi
+        local net="${sub%/*}"
+        local prefix
+        prefix=$(echo "$net" | awk -F. '{print $1"."$2"."$3}')
+        conflict_v4pools="${conflict_v4pools}
+    - pool: ${prefix}.170-${prefix}.179
+      subnet: ${sub}"
+    done
+
+    kubectl apply -f - <<EOF
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: balanced-multipool-conflict
+  namespace: purelb-system
+spec:
+  local:
+    balanced: true
+    multiPool: true
+    v4pools: ${conflict_v4pools}
+EOF
+    info "Created ServiceGroup with BOTH balanced and multiPool (should conflict)"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-bal-conflict
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: balanced-multipool-conflict
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    # Wait a few seconds — allocation should fail
+    sleep 8
+
+    local conflict_ip
+    conflict_ip=$(kubectl get svc nginx-bal-conflict -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+
+    if [ -n "$conflict_ip" ]; then
+        fail "Balanced+MultiPool: got IP $conflict_ip — mutual exclusion NOT enforced"
+    fi
+
+    # Check for AllocationFailed event with "mutually exclusive" message
+    local events
+    events=$(kubectl get events -n $NAMESPACE \
+        --field-selector involvedObject.name=nginx-bal-conflict,reason=AllocationFailed \
+        -o jsonpath='{.items[*].message}' 2>/dev/null || true)
+    if echo "$events" | grep -q "mutually exclusive"; then
+        pass "Balanced+MultiPool correctly rejected: $events"
+    elif [ -n "$events" ]; then
+        fail "Balanced+MultiPool: got AllocationFailed but wrong reason: $events"
+    else
+        # Also check allocator logs for the mutual exclusion error
+        local log_msg
+        log_msg=$(kubectl logs -n purelb-system deployment/allocator --tail=50 2>/dev/null \
+            | grep -i "mutually exclusive" || true)
+        if [ -n "$log_msg" ]; then
+            pass "Balanced+MultiPool correctly rejected (found in allocator logs)"
+        else
+            fail "Balanced+MultiPool: no IP allocated but 'mutually exclusive' error not found"
+        fi
+    fi
+
+    # Cleanup
+    kubectl delete svc nginx-bal-conflict -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete servicegroup balanced-multipool-conflict -n purelb-system --ignore-not-found 2>/dev/null || true
+
+    #-----------------------------------------------------------------
+    # Sub-test 5: NEGATIVE — service targeting non-existent ServiceGroup
+    # Verify the allocator rejects a service requesting a pool that
+    # doesn't exist and produces an appropriate error event.
+    #-----------------------------------------------------------------
+    info ""
+    info "--- Sub-test 5: NEGATIVE — non-existent ServiceGroup ---"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-bal-nosuchsg
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: does-not-exist
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    sleep 8
+
+    local nosuch_ip
+    nosuch_ip=$(kubectl get svc nginx-bal-nosuchsg -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+    if [ -n "$nosuch_ip" ]; then
+        fail "Non-existent SG: got IP $nosuch_ip — should have been rejected"
+    fi
+
+    local nosuch_events
+    nosuch_events=$(kubectl get events -n $NAMESPACE \
+        --field-selector involvedObject.name=nginx-bal-nosuchsg,reason=AllocationFailed \
+        -o jsonpath='{.items[*].message}' 2>/dev/null || true)
+    if [ -n "$nosuch_events" ]; then
+        pass "Non-existent SG correctly rejected: $nosuch_events"
+    else
+        pass "Non-existent SG: allocation correctly prevented (no IP assigned)"
+    fi
+
+    # Cleanup
+    kubectl delete svc nginx-bal-nosuchsg -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+
+    #-----------------------------------------------------------------
+    # Sub-test 6: NEGATIVE — balanced SG with annotation override
+    # multi-pool: "true" on a balanced SG should also be rejected.
+    #-----------------------------------------------------------------
+    info ""
+    info "--- Sub-test 6: NEGATIVE — multi-pool annotation on balanced SG ---"
+
+    # The balanced-test SG still exists (balanced: true, multiPool: false)
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-bal-annoverride
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: balanced-test
+    purelb.io/multi-pool: "true"
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    sleep 8
+
+    local override_ip
+    override_ip=$(kubectl get svc nginx-bal-annoverride -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+    if [ -n "$override_ip" ]; then
+        fail "Multi-pool annotation on balanced SG: got IP $override_ip — mutual exclusion NOT enforced"
+    fi
+
+    local override_events
+    override_events=$(kubectl get events -n $NAMESPACE \
+        --field-selector involvedObject.name=nginx-bal-annoverride,reason=AllocationFailed \
+        -o jsonpath='{.items[*].message}' 2>/dev/null || true)
+    if [ -n "$override_events" ]; then
+        pass "Multi-pool annotation on balanced SG correctly rejected: $override_events"
+    else
+        pass "Multi-pool annotation on balanced SG: allocation correctly prevented (no IP assigned)"
+    fi
+
+    # Cleanup
+    kubectl delete svc nginx-bal-annoverride -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+
+    # --- Metrics verification for balanced allocation ---
+    info ""
+    echo -e "${CYAN}    ── Metrics & Log Verification ──────────────────────────────${NC}"
+    info "Verifying balanced allocation metrics..."
+    local after_balanced
+    after_balanced=$(scrape_allocator_metric 'purelb_address_pool_balanced_allocations_total{pool="balanced-test"}')
+    after_balanced=$(printf '%.0f' "${after_balanced:-0}")
+    if [ "$after_balanced" -gt "$before_balanced" ]; then
+        pass "Allocator: balanced_allocations_total increased ($before_balanced -> $after_balanced)"
+    else
+        info "WARNING: balanced_allocations_total did not increase (before=$before_balanced, after=$after_balanced)"
+        info "  (metric may reset if allocator restarted, or pool name may differ)"
+    fi
+
+    # Verify balanced allocation log message
+    info "Checking for balanced allocation log message..."
+    if kubectl logs -n purelb-system deployment/allocator --tail=300 2>/dev/null | grep -q "assignFamilyBalanced"; then
+        pass "Allocator: logged 'assignFamilyBalanced' (balanced range selection)"
+    else
+        info "WARNING: 'assignFamilyBalanced' not found in recent allocator logs"
+    fi
+
+    # Final cleanup
+    info ""
+    info "Cleaning up balanced allocation test resources..."
+    kubectl delete servicegroup balanced-test -n purelb-system --ignore-not-found 2>/dev/null || true
+    pass "Balanced allocation tests completed"
+}
+
+#---------------------------------------------------------------------
+# Metrics & Logging Helpers
+#---------------------------------------------------------------------
+
+# scrape_metrics PORT_FORWARD_TARGET
+# Scrapes /metrics from a pod via kubectl port-forward.
+# Writes raw metrics to stdout. Caller should capture output.
+# Usage: OUTPUT=$(scrape_pod_metrics <pod-name>)
+scrape_pod_metrics() {
+    local pod=$1
+    local local_port=$((30000 + RANDOM % 5000))
+    # Start port-forward in background
+    kubectl port-forward -n purelb-system "$pod" ${local_port}:7472 >/dev/null 2>&1 &
+    local pf_pid=$!
+    # Retry curl until port-forward is ready (up to 5 attempts)
+    local metrics=""
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        sleep 1
+        metrics=$(curl -s --connect-timeout 3 "http://127.0.0.1:${local_port}/metrics" 2>/dev/null || true)
+        if [ -n "$metrics" ]; then
+            break
+        fi
+    done
+    kill $pf_pid 2>/dev/null || true
+    wait $pf_pid 2>/dev/null || true
+    echo "$metrics"
+}
+
+# scrape_allocator_metrics
+# Scrapes metrics from the allocator deployment pod.
+scrape_allocator_metrics() {
+    local pod
+    pod=$(kubectl get pods -n purelb-system -l component=allocator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -z "$pod" ]; then
+        echo ""
+        return
+    fi
+    scrape_pod_metrics "$pod"
+}
+
+# scrape_lbnodeagent_metrics [node]
+# Scrapes metrics from an lbnodeagent pod. LBNodeAgent uses hostPort 7472,
+# so we curl the node IP directly instead of using port-forward.
+# If node is specified, scrapes that node. Otherwise scrapes the first node.
+scrape_lbnodeagent_metrics() {
+    local node=${1:-}
+    local node_ip
+    if [ -n "$node" ]; then
+        node_ip="${NODE_IPS[$node]:-}"
+    else
+        # Use first node
+        for n in $NODES; do
+            node_ip="${NODE_IPS[$n]:-}"
+            break
+        done
+    fi
+    if [ -z "$node_ip" ]; then
+        echo ""
+        return
+    fi
+    curl -s --connect-timeout 5 "http://${node_ip}:7472/metrics" 2>/dev/null || true
+}
+
+# assert_metric METRICS_OUTPUT METRIC_NAME COMPARISON VALUE
+# Checks that a metric exists and satisfies the comparison.
+# COMPARISON: "ge" (>=), "gt" (>), "eq" (==), "exists" (just present)
+# For gauge/counter without labels, extracts the bare metric line.
+# For labeled metrics, pass the full metric name with labels.
+# Example: assert_metric "$OUT" "purelb_election_lease_healthy" "eq" "1"
+# Example: assert_metric "$OUT" 'purelb_address_pool_size{pool="default"}' "gt" "0"
+assert_metric() {
+    local metrics="$1"
+    local metric_name="$2"
+    local comparison="$3"
+    local expected="${4:-}"
+
+    # Extract the metric value - handle both labeled and unlabeled
+    local value
+    if echo "$metric_name" | grep -q '{'; then
+        # Labeled metric: use grep -F for fixed-string (literal) match
+        value=$(echo "$metrics" | grep -F "$metric_name" | head -1 | awk '{print $NF}')
+    else
+        # Unlabeled metric: match exactly (no labels)
+        value=$(echo "$metrics" | grep "^${metric_name} " | head -1 | awk '{print $NF}')
+    fi
+
+    if [ -z "$value" ]; then
+        if [ "$comparison" = "exists" ]; then
+            fail "Metric $metric_name not found in output"
+        fi
+        fail "Metric $metric_name not found in output"
+    fi
+
+    if [ "$comparison" = "exists" ]; then
+        return 0
+    fi
+
+    # Convert scientific notation and floats to integers for comparison
+    local int_value
+    int_value=$(printf '%.0f' "$value" 2>/dev/null || echo "0")
+    local int_expected
+    int_expected=$(printf '%.0f' "$expected" 2>/dev/null || echo "0")
+
+    case "$comparison" in
+        ge)
+            [ "$int_value" -ge "$int_expected" ] || fail "Metric $metric_name: expected >= $expected, got $value"
+            ;;
+        gt)
+            [ "$int_value" -gt "$int_expected" ] || fail "Metric $metric_name: expected > $expected, got $value"
+            ;;
+        eq)
+            [ "$int_value" -eq "$int_expected" ] || fail "Metric $metric_name: expected == $expected, got $value"
+            ;;
+        *)
+            fail "Unknown comparison: $comparison"
+            ;;
+    esac
+}
+
+# assert_log_contains COMPONENT PATTERN DESCRIPTION
+# Checks that recent logs from a component contain the given pattern.
+# COMPONENT: "allocator" or "lbnodeagent"
+# For lbnodeagent, checks ALL pods (any match counts as success).
+assert_log_contains() {
+    local component="$1"
+    local pattern="$2"
+    local description="$3"
+
+    if [ "$component" = "allocator" ]; then
+        if kubectl logs -n purelb-system deployment/allocator --tail=200 2>/dev/null | grep -q "$pattern"; then
+            return 0
+        fi
+        fail "Allocator logs missing: $description (pattern: $pattern)"
+    elif [ "$component" = "lbnodeagent" ]; then
+        local pods
+        pods=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+        for pod in $pods; do
+            if kubectl logs -n purelb-system "$pod" --tail=200 2>/dev/null | grep -q "$pattern"; then
+                return 0
+            fi
+        done
+        fail "LBNodeAgent logs missing on all pods: $description (pattern: $pattern)"
+    else
+        fail "Unknown component: $component"
+    fi
+}
+
+# assert_log_contains_on_node NODE PATTERN DESCRIPTION
+# Checks that the lbnodeagent pod on a specific node has the log pattern.
+assert_log_contains_on_node() {
+    local node="$1"
+    local pattern="$2"
+    local description="$3"
+
+    local pod
+    pod=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null \
+        | grep "$node" | awk '{print $1}')
+    if [ -z "$pod" ]; then
+        fail "No lbnodeagent pod found on node $node"
+    fi
+    if kubectl logs -n purelb-system "$pod" --tail=200 2>/dev/null | grep -q "$pattern"; then
+        return 0
+    fi
+    fail "LBNodeAgent logs on $node missing: $description (pattern: $pattern)"
+}
+
+# scrape_allocator_metric METRIC_NAME
+# Quick helper: scrapes allocator and returns just the value for one metric.
+scrape_allocator_metric() {
+    local metric_name="$1"
+    local metrics
+    metrics=$(scrape_allocator_metrics)
+    if echo "$metric_name" | grep -q '{'; then
+        echo "$metrics" | grep -F "$metric_name" | head -1 | awk '{print $NF}'
+    else
+        echo "$metrics" | grep "^${metric_name} " | head -1 | awk '{print $NF}'
+    fi
+}
+
+#---------------------------------------------------------------------
 # Run All Tests
 #---------------------------------------------------------------------
 run_all_tests() {
@@ -3306,6 +4338,7 @@ run_all_tests() {
         test_subnet_failover_stays_in_subnet
         test_multi_pool_default
         test_multi_pool_allocation
+        test_balanced_allocation
         test_cross_subnet_connectivity
         test_small_subnet_exhaustion
         if [ "$HAS_IPV6" = "true" ]; then

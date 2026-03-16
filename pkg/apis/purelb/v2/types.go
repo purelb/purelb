@@ -104,6 +104,15 @@ type ServiceGroupLocalSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	MultiPool bool `json:"multiPool,omitempty"`
+
+	// Balanced enables balanced allocation across address ranges.
+	// When true, new allocations pick the range with the fewest IPs
+	// currently in use, distributing services evenly across subnets.
+	// Each IP family (IPv4/IPv6) is balanced independently.
+	// Mutually exclusive with MultiPool.
+	// +kubebuilder:default=false
+	// +optional
+	Balanced bool `json:"balanced,omitempty"`
 }
 
 // PoolForAddress returns the AddressPool that contains the given IP address.
@@ -168,6 +177,15 @@ type ServiceGroupRemoteSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	MultiPool bool `json:"multiPool,omitempty"`
+
+	// Balanced enables balanced allocation across address ranges.
+	// When true, new allocations pick the range with the fewest IPs
+	// currently in use, distributing services evenly across subnets.
+	// Each IP family (IPv4/IPv6) is balanced independently.
+	// Mutually exclusive with MultiPool.
+	// +kubebuilder:default=false
+	// +optional
+	Balanced bool `json:"balanced,omitempty"`
 }
 
 // PoolForAddress returns the AddressPool that contains the given IP address.

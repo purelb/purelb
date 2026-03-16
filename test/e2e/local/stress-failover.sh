@@ -59,6 +59,7 @@ echo "  - Force kill (--grace-period=0)"
 echo "  - Cascading failover (kill new winner)"
 echo "  - Election noise (random pod deletions)"
 echo "  - Multiple VIPs (election contention per subnet)"
+echo "  - Balanced VIPs (failover with balanced allocation)"
 echo "  - Node tainting (prevents pod rescheduling)"
 echo ""
 
@@ -234,6 +235,75 @@ EOF
         done
     fi
 
+    # Add balanced allocation VIPs (2 services from a balanced SG)
+    # Uses .170-.179 / :e::1-:e::10 (non-overlapping with other test ranges)
+    if [ "$SUBNET_COUNT" -ge 2 ]; then
+        echo "Setting up balanced allocation VIPs..."
+        local bal_sg="stress-balanced"
+        STRESS_SGS+=("$bal_sg")
+
+        local bal_v4pools=""
+        local bal_v6pools=""
+        for s in $SUBNETS; do
+            if echo "$s" | grep -q ':'; then continue; fi
+            local net="${s%/*}"
+            local prefix
+            prefix=$(echo "$net" | awk -F. '{print $1"."$2"."$3}')
+            bal_v4pools="${bal_v4pools}
+    - pool: ${prefix}.170-${prefix}.179
+      subnet: ${s}"
+
+            local v6prefix="${SUBNET_V6_PREFIX[$s]}"
+            if [ -n "$v6prefix" ]; then
+                local v6sub="${SUBNET_V6[$s]}"
+                local v6base="${v6prefix%%::}"
+                bal_v6pools="${bal_v6pools}
+    - pool: ${v6base}:e::1-${v6base}:e::10
+      subnet: ${v6sub}"
+            fi
+        done
+
+        local bal_spec="balanced: true
+    v4pools: ${bal_v4pools}"
+        [ -n "$bal_v6pools" ] && bal_spec="${bal_spec}
+    v6pools: ${bal_v6pools}"
+
+        kubectl apply -f - <<EOF 2>/dev/null
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: ${bal_sg}
+  namespace: purelb-system
+spec:
+  local:
+    ${bal_spec}
+EOF
+        echo "  ServiceGroup $bal_sg -> balanced across $SUBNET_COUNT subnets"
+
+        for j in 1 2; do
+            local svc_name="nginx-lb-stress-bal-${j}"
+            EXTRA_SERVICES+=("$svc_name")
+            cat <<EOF | kubectl apply -f - 2>/dev/null
+apiVersion: v1
+kind: Service
+metadata:
+  name: $svc_name
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: $bal_sg
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies: [IPv4]
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+        done
+    fi
+
     echo "Waiting for VIPs to be allocated..."
     for svc in "${EXTRA_SERVICES[@]}"; do
         kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
@@ -295,6 +365,16 @@ run_single_test() {
         IPV6_DS=$(kubectl get svc nginx-lb-dualstack -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[1].ip}' 2>/dev/null || true)
     fi
 
+    # Collect balanced VIPs
+    local BAL_VIPS=()
+    local bal_svc_names
+    bal_svc_names=$(kubectl get svc -n $NAMESPACE -o name 2>/dev/null | grep "nginx-lb-stress-bal" || true)
+    for svc in $bal_svc_names; do
+        local bal_ip
+        bal_ip=$(kubectl get $svc -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+        [ -n "$bal_ip" ] && BAL_VIPS+=("$bal_ip")
+    done
+
     if [ -z "$IPV4" ]; then
         echo -e "${RED}  ERROR: No IPv4 VIP found${NC}"
         echo "ERROR: No IPv4 VIP found" >> "$LOGFILE"
@@ -317,6 +397,9 @@ run_single_test() {
     fi
     if [ -n "$IPV4_DS" ]; then
         echo "  Dual-stack: v4=$IPV4_DS  v6=${IPV6_DS:-none}"
+    fi
+    if [ ${#BAL_VIPS[@]} -gt 0 ]; then
+        echo "  Balanced VIPs: ${BAL_VIPS[*]}"
     fi
 
     capture_state "PRE-FAILOVER" "$LOGFILE"
@@ -596,6 +679,34 @@ run_single_test() {
                         echo "  Dual-stack v4 on $(node_label $DS4_HOLDER) [${NODE_SUBNET[$DS4_HOLDER]}] - correct" | tee -a "$LOGFILE"
                     fi
                 fi
+            fi
+
+            # --- BALANCED VIP SUBNET VALIDATION ---
+            if [ ${#BAL_VIPS[@]} -gt 0 ] && [ "$SUBNET_COUNT" -ge 2 ] && [[ "$RESULT" == PASS* ]]; then
+                for bal_vip in "${BAL_VIPS[@]}"; do
+                    local BAL_HOLDER
+                    BAL_HOLDER=$(get_vip_holder "$bal_vip" 2>/dev/null || echo "NONE")
+                    if [ "$BAL_HOLDER" = "NONE" ]; then
+                        RESULT="FAIL_BAL_MISSING"
+                        echo -e "  ${RED}FAIL${NC}: Balanced VIP $bal_vip not announced on any node"
+                        echo "RESULT: FAIL - Balanced VIP $bal_vip not on any node" >> "$LOGFILE"
+                        break
+                    fi
+                    if ! verify_vip_subnet_match "$bal_vip" "$BAL_HOLDER" 2>/dev/null; then
+                        RESULT="FAIL_BAL_SUBNET"
+                        echo -e "  ${RED}FAIL${NC}: Balanced VIP $bal_vip on wrong subnet node $(node_label $BAL_HOLDER) [${NODE_SUBNET[$BAL_HOLDER]}]"
+                        echo "RESULT: FAIL - Balanced VIP $bal_vip on wrong subnet node $BAL_HOLDER" >> "$LOGFILE"
+                        break
+                    fi
+                    # Reachability check
+                    if ! curl -s --connect-timeout 3 "http://$bal_vip/" | grep -q "nginx\|Pod:\|Welcome"; then
+                        RESULT="FAIL_BAL_UNREACHABLE"
+                        echo -e "  ${RED}FAIL${NC}: Balanced VIP $bal_vip on $(node_label $BAL_HOLDER) but not reachable"
+                        echo "RESULT: FAIL - Balanced VIP $bal_vip unreachable" >> "$LOGFILE"
+                        break
+                    fi
+                    echo "  Balanced VIP $bal_vip on $(node_label $BAL_HOLDER) [${NODE_SUBNET[$BAL_HOLDER]}] - correct & reachable" | tee -a "$LOGFILE"
+                done
             fi
         else
             RESULT="FAIL_UNREACHABLE"
