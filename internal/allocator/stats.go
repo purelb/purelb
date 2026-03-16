@@ -45,10 +45,26 @@ var (
 		Name:      "allocation_rejected_total",
 		Help:      "Number of allocation requests rejected due to sharing constraints or exhaustion",
 	}, []string{"pool", "reason"})
+
+	multipoolAllocations = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "multipool_allocations_total",
+		Help:      "Total multi-pool allocations performed",
+	}, labelNames)
+
+	multipoolPartial = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "multipool_partial_total",
+		Help:      "Multi-pool allocations where some ranges were exhausted or had no active nodes",
+	}, labelNames)
 )
 
 func init() {
 	prometheus.MustRegister(poolCapacity)
 	prometheus.MustRegister(poolActive)
 	prometheus.MustRegister(allocationRejected)
+	prometheus.MustRegister(multipoolAllocations)
+	prometheus.MustRegister(multipoolPartial)
 }

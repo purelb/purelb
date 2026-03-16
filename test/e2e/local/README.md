@@ -30,6 +30,7 @@ connectivity, and CNI compatibility.
 |------|-------------|
 | `-i`, `--interactive` | Pause after each test group for manual review |
 | `-n`, `--iterations N` | Run the full suite N times (default: 1) |
+| `--context NAME` | Kubernetes context to use (default: current context) |
 | `-h`, `--help` | Show help |
 
 **Log output:** `/tmp/test-local-<timestamp>/output.log`
@@ -60,6 +61,7 @@ multi-iteration runs.
 | IP Sharing | Tests `purelb.io/allow-shared-ip` for sharing IPs between services; verifies port conflicts are rejected |
 | Specific IP Request | Tests `purelb.io/addresses` annotation for requesting specific IPs |
 | Multi-Pod Load Balancing | Verifies traffic is distributed across multiple backend pods |
+| LoadBalancerClass Filtering | Verifies foreign LBClass is ignored and explicit PureLB LBClass allocates correctly |
 
 **Failover & High Availability**
 
@@ -89,6 +91,16 @@ multi-iteration runs.
 |------|-------------|
 | Cross-Node Connectivity | Verifies VIP is reachable from every node in the cluster |
 | Pod Connectivity | Verifies VIP is reachable from inside a pod |
+
+**Multi-Pool Allocation** *(multi-subnet clusters only)*
+
+| Test | Description |
+|------|-------------|
+| SG-based Multi-Pool (IPv4) | ServiceGroup with `multiPool: true` allocates one IPv4 per active subnet; verifies subnet placement and HTTP connectivity |
+| Annotation-based Multi-Pool (IPv4) | `purelb.io/multi-pool: "true"` annotation on a non-multi SG allocates one IPv4 per subnet |
+| Annotation Override (multi-pool=false) | `purelb.io/multi-pool: "false"` on a multi-pool SG correctly limits to 1 IP |
+| SG-based Multi-Pool (IPv6) | ServiceGroup with `multiPool: true` allocates one IPv6 per active subnet; verifies announcement and connectivity |
+| SG-based Multi-Pool (Dual-Stack) | Allocates one IPv4 + one IPv6 per active subnet (4 IPs total on a 2-subnet cluster); verifies all reachable |
 
 ---
 

@@ -69,6 +69,16 @@ type Pool interface {
 	// be skipped for addresses from this pool. This can speed up address
 	// configuration but should only be used when address conflicts are impossible.
 	SkipIPv6DAD() bool
+
+	// MultiPool returns whether this pool has multi-pool allocation enabled.
+	// When true, services get one IP from each address range (per family)
+	// that has active nodes.
+	MultiPool() bool
+
+	// AssignNextPerRange allocates one IP per address range (per family)
+	// that has an active subnet. activeSubnets is the set of subnets with
+	// healthy lbnodeagents. Returns error only if NO IPs could be allocated.
+	AssignNextPerRange(svc *v1.Service, activeSubnets []string) error
 }
 
 func sharingOK(existing, new *Key) error {
@@ -89,12 +99,14 @@ func parsePool(log log.Logger, name string, group purelbv2.ServiceGroupSpec) (Po
 		return NewLocalPool(name, log,
 			group.Local.V4Pool, group.Local.V6Pool,
 			group.Local.V4Pools, group.Local.V6Pools,
-			purelbv2.PoolTypeLocal, group.Local.SkipIPv6DAD)
+			purelbv2.PoolTypeLocal, group.Local.SkipIPv6DAD,
+			group.Local.MultiPool)
 	} else if group.Remote != nil {
 		return NewLocalPool(name, log,
 			group.Remote.V4Pool, group.Remote.V6Pool,
 			group.Remote.V4Pools, group.Remote.V6Pools,
-			purelbv2.PoolTypeRemote, false)
+			purelbv2.PoolTypeRemote, false,
+			group.Remote.MultiPool)
 	} else if group.Netbox != nil {
 		return NewNetboxPool(name, log, *group.Netbox)
 	}

@@ -41,6 +41,12 @@ const (
 	// This annotation overrides that policy.
 	AllowLocalAnnotation string = "purelb.io/allow-local"
 
+	// MultiPoolAnnotation enables or disables multi-pool allocation for
+	// a service. When "true", the service gets one IP from each address
+	// range (per family) that has active nodes. This overrides the
+	// ServiceGroup's MultiPool setting if present.
+	MultiPoolAnnotation string = "purelb.io/multi-pool"
+
 	// ============================================================================
 	// PureLB-set annotations (informational)
 	// ============================================================================

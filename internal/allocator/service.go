@@ -84,6 +84,25 @@ func analyzeIPFamilyTransition(svc *v1.Service) (missingFamilies []v1.IPFamily, 
 	return missingFamilies, excessIPs, keepIPs
 }
 
+// isMultiPoolService determines if a service should use multi-pool allocation
+// by checking the service annotation first, then the pool's default.
+func (c *controller) isMultiPoolService(svc *v1.Service) bool {
+	// Check the annotation first - it overrides everything
+	if ann, ok := svc.Annotations[purelbv2.MultiPoolAnnotation]; ok {
+		return ann == "true"
+	}
+
+	// Look up the pool to check its default
+	poolName := defaultPoolName
+	if userPool, has := svc.Annotations[purelbv2.DesiredGroupAnnotation]; has {
+		poolName = userPool
+	}
+	if pool, has := c.ips.pools[poolName]; has {
+		return pool.MultiPool()
+	}
+	return false
+}
+
 // SetBalancer is the main entry point that handles LoadBalancer
 // create/change events. It takes a Service and decides what to do
 // based on that Service's configuration. It returns a k8s.SyncState
@@ -155,50 +174,66 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 		return k8s.SyncStateSuccess
 	}
 
-	// Analyze whether the service needs IP family transitions
-	// (e.g., SingleStack → DualStack or DualStack → SingleStack)
-	missingFamilies, excessIPs, keepIPs := analyzeIPFamilyTransition(svc)
+	// Determine if this is a multi-pool service. We need the pool to check,
+	// so look it up from the annotation or default.
+	multiPool := c.isMultiPoolService(svc)
 
-	// Check if the service already has addresses
-	if len(svc.Status.LoadBalancer.Ingress) > 0 {
-		logging.Debug(l, "op", "setBalancer", "msg", "hasIngress", "ingress", svc.Status.LoadBalancer.Ingress,
-			"missingFamilies", missingFamilies, "excessIPs", excessIPs)
-
-		// If it's one of ours, notify the allocator about existing IPs
-		// (for database warmup at startup or after config changes)
-		if svc.Annotations[purelbv2.BrandAnnotation] == purelbv2.Brand {
+	// Multi-pool services: if already allocated by us, notify existing IPs
+	// and return. Re-allocation happens only on new services (no ingress yet)
+	// or when the user deletes and recreates the service.
+	if multiPool {
+		if len(svc.Status.LoadBalancer.Ingress) > 0 && svc.Annotations[purelbv2.BrandAnnotation] == purelbv2.Brand {
 			if err := c.ips.NotifyExisting(svc); err != nil {
 				logging.Info(l, "op", "notifyExisting", "error", err, "ingress", svc.Status.LoadBalancer.Ingress)
 			}
-		}
-
-		// Handle DualStack → SingleStack transition: release excess IPs
-		if len(excessIPs) > 0 {
-			logging.Info(l, "op", "ipFamilyTransition", "action", "releaseExcess", "excessIPs", excessIPs)
-
-			// Release the excess IPs from the pool
-			if err := c.ips.ReleaseIPs(nsName, excessIPs); err != nil {
-				logging.Info(l, "op", "releaseExcess", "error", err)
-				// Continue anyway - we'll update the ingress to remove them
-			}
-
-			// Update ingress to only keep the IPs that match requested families
-			ipModeVIP := v1.LoadBalancerIPModeVIP
-			svc.Status.LoadBalancer.Ingress = nil
-			for _, ipStr := range keepIPs {
-				svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress,
-					v1.LoadBalancerIngress{IP: ipStr, IPMode: &ipModeVIP})
-			}
-			c.client.Infof(svc, "AddressReleased", "Released addresses no longer needed after IP family transition: %v", excessIPs)
-		}
-
-		// If no families are missing, we're done
-		if len(missingFamilies) == 0 {
 			return k8s.SyncStateSuccess
 		}
+		// New multi-pool service — fall through to Allocate
+	} else {
+		// Non-multi-pool: analyze IP family transitions as before
+		missingFamilies, excessIPs, keepIPs := analyzeIPFamilyTransition(svc)
 
-		// Handle SingleStack → DualStack transition: allocate missing families
-		logging.Info(l, "op", "ipFamilyTransition", "action", "allocateMissing", "missingFamilies", missingFamilies)
+		// Check if the service already has addresses
+		if len(svc.Status.LoadBalancer.Ingress) > 0 {
+			logging.Debug(l, "op", "setBalancer", "msg", "hasIngress", "ingress", svc.Status.LoadBalancer.Ingress,
+				"missingFamilies", missingFamilies, "excessIPs", excessIPs)
+
+			// If it's one of ours, notify the allocator about existing IPs
+			// (for database warmup at startup or after config changes)
+			if svc.Annotations[purelbv2.BrandAnnotation] == purelbv2.Brand {
+				if err := c.ips.NotifyExisting(svc); err != nil {
+					logging.Info(l, "op", "notifyExisting", "error", err, "ingress", svc.Status.LoadBalancer.Ingress)
+				}
+			}
+
+			// Handle DualStack → SingleStack transition: release excess IPs
+			if len(excessIPs) > 0 {
+				logging.Info(l, "op", "ipFamilyTransition", "action", "releaseExcess", "excessIPs", excessIPs)
+
+				// Release the excess IPs from the pool
+				if err := c.ips.ReleaseIPs(nsName, excessIPs); err != nil {
+					logging.Info(l, "op", "releaseExcess", "error", err)
+					// Continue anyway - we'll update the ingress to remove them
+				}
+
+				// Update ingress to only keep the IPs that match requested families
+				ipModeVIP := v1.LoadBalancerIPModeVIP
+				svc.Status.LoadBalancer.Ingress = nil
+				for _, ipStr := range keepIPs {
+					svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress,
+						v1.LoadBalancerIngress{IP: ipStr, IPMode: &ipModeVIP})
+				}
+				c.client.Infof(svc, "AddressReleased", "Released addresses no longer needed after IP family transition: %v", excessIPs)
+			}
+
+			// If no families are missing, we're done
+			if len(missingFamilies) == 0 {
+				return k8s.SyncStateSuccess
+			}
+
+			// Handle SingleStack → DualStack transition: allocate missing families
+			logging.Info(l, "op", "ipFamilyTransition", "action", "allocateMissing", "missingFamilies", missingFamilies)
+		}
 	}
 
 	// Annotate the service as "ours"

@@ -219,3 +219,14 @@ func (p NetboxPool) PoolType() string {
 func (p NetboxPool) SkipIPv6DAD() bool {
 	return false
 }
+
+// MultiPool returns false for NetboxPool. Multi-pool allocation is
+// not supported for Netbox pools.
+func (p NetboxPool) MultiPool() bool {
+	return false
+}
+
+// AssignNextPerRange is not supported for Netbox pools.
+func (p NetboxPool) AssignNextPerRange(svc *v1.Service, activeSubnets []string) error {
+	return fmt.Errorf("multi-pool allocation is not supported for Netbox pools")
+}

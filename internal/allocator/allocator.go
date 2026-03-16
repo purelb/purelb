@@ -31,11 +31,18 @@ const (
 	defaultPoolName string = "default"
 )
 
+// ActiveSubnetsFunc is a function that returns the set of subnets with
+// active lbnodeagents. Used for multi-pool allocation to avoid allocating
+// IPs on subnets with no healthy nodes.
+type ActiveSubnetsFunc func(namespace string) ([]string, error)
+
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
-	client k8s.ServiceEvent
-	logger log.Logger
-	pools  map[string]Pool
+	client         k8s.ServiceEvent
+	logger         log.Logger
+	pools          map[string]Pool
+	activeSubnets  ActiveSubnetsFunc
+	purelbNamespace string
 }
 
 // New returns an Allocator managing no pools.
@@ -49,6 +56,13 @@ func New(log log.Logger) *Allocator {
 // SetClient sets this Allocator's client field.
 func (a *Allocator) SetClient(client k8s.ServiceEvent) {
 	a.client = client
+}
+
+// SetActiveSubnets sets the function used to query active subnets
+// for multi-pool allocation.
+func (a *Allocator) SetActiveSubnets(fn ActiveSubnetsFunc, namespace string) {
+	a.activeSubnets = fn
+	a.purelbNamespace = namespace
 }
 
 // SetPools updates the set of address pools that the allocator owns.
@@ -140,8 +154,12 @@ func (a *Allocator) Allocate(svc *v1.Service) error {
 			return fmt.Errorf("unknown pool %q", poolName)
 		}
 
-		// Try to allocate from the pool.
-		if err = a.allocateFromPool(svc, pool); err != nil {
+		// Check if this should be a multi-pool allocation
+		if isMultiPool(svc, pool) {
+			if err = a.allocateMultiPool(svc, pool); err != nil {
+				return err
+			}
+		} else if err = a.allocateFromPool(svc, pool); err != nil {
 			return err
 		}
 	}
@@ -260,6 +278,64 @@ func (a *Allocator) allocateFromPool(svc *v1.Service, pool Pool) error {
 		delete(svc.Annotations, purelbv2.SkipIPv6DADAnnotation)
 	}
 
+	a.updateStats(pool)
+
+	return nil
+}
+
+// isMultiPool determines whether a service should use multi-pool allocation.
+// The service annotation overrides the pool's default setting.
+func isMultiPool(svc *v1.Service, pool Pool) bool {
+	if ann, ok := svc.Annotations[purelbv2.MultiPoolAnnotation]; ok {
+		return ann == "true"
+	}
+	return pool.MultiPool()
+}
+
+// allocateMultiPool performs multi-pool allocation: one IP per range
+// per family from ranges with active nodes.
+func (a *Allocator) allocateMultiPool(svc *v1.Service, pool Pool) error {
+	// Multi-pool and IP sharing are mutually exclusive
+	if SharingKey(svc) != "" {
+		return fmt.Errorf("multi-pool allocation cannot be combined with IP sharing (annotation %s)", purelbv2.SharingAnnotation)
+	}
+
+	if a.activeSubnets == nil {
+		return fmt.Errorf("multi-pool allocation requires ActiveSubnets to be configured")
+	}
+
+	// Release any existing allocations for this service
+	if err := a.Unassign(namespacedName(svc)); err != nil {
+		return err
+	}
+	svc.Status.LoadBalancer.Ingress = nil
+
+	// Get the current set of subnets with active nodes
+	activeSubnets, err := a.activeSubnets(a.purelbNamespace)
+	if err != nil {
+		return fmt.Errorf("querying active subnets: %w", err)
+	}
+
+	logging.Info(a.logger, "op", "allocateMultiPool", "activeSubnets", strings.Join(activeSubnets, ","),
+		"svc", namespacedName(svc))
+
+	if err := pool.AssignNextPerRange(svc, activeSubnets); err != nil {
+		return err
+	}
+
+	// Set annotations
+	a.client.Infof(svc, "AddressAssigned", "Multi-pool: assigned %d IPs from pool %s", len(svc.Status.LoadBalancer.Ingress), pool)
+	svc.Annotations[purelbv2.PoolAnnotation] = pool.String()
+	svc.Annotations[purelbv2.PoolTypeAnnotation] = pool.PoolType()
+
+	if pool.SkipIPv6DAD() {
+		svc.Annotations[purelbv2.SkipIPv6DADAnnotation] = "true"
+	} else {
+		delete(svc.Annotations, purelbv2.SkipIPv6DADAnnotation)
+	}
+
+	// Update metrics
+	multipoolAllocations.WithLabelValues(pool.String()).Inc()
 	a.updateStats(pool)
 
 	return nil

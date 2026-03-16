@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -308,7 +309,18 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	if svc.Annotations == nil {
 		svc.Annotations = map[string]string{}
 	}
-	svc.Annotations[purelbv2.AnnounceAnnotation+addrFamilyName(lbIP)] = a.myNode + "," + announceInt.Attrs().Name
+	// Update the announcing annotation only if our entry isn't already present.
+	// This prevents unnecessary service updates that would trigger reprocessing loops.
+	// Format: "node,iface,ip[ node2,iface2,ip2]" — space-separated entries.
+	announceKey := purelbv2.AnnounceAnnotation + addrFamilyName(lbIP)
+	entry := a.myNode + "," + announceInt.Attrs().Name + "," + lbIP.String()
+	if existing := svc.Annotations[announceKey]; !strings.Contains(existing, entry) {
+		if existing != "" {
+			svc.Annotations[announceKey] = existing + " " + entry
+		} else {
+			svc.Annotations[announceKey] = entry
+		}
+	}
 	announcing.With(prometheus.Labels{
 		"service": nsName,
 		"node":    a.myNode,

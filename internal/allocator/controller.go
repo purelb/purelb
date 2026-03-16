@@ -16,6 +16,8 @@
 package allocator
 
 import (
+	"os"
+
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 
@@ -25,6 +27,8 @@ import (
 
 	"github.com/go-kit/log"
 )
+
+const namespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 // Controller provides an event-handling interface for the k8s client
 // to use.
@@ -60,6 +64,13 @@ func NewController(l log.Logger, ips *Allocator) (Controller, error) {
 func (c *controller) SetClient(client *k8s.Client) {
 	c.client = client
 	c.ips.SetClient(client)
+
+	data, err := os.ReadFile(namespacePath)
+	if err != nil {
+		logging.Info(c.logger, "op", "setClient", "error", err, "msg", "failed to read namespace, multi-pool allocation will not work")
+		return
+	}
+	c.ips.SetActiveSubnets(client.ActiveSubnets, string(data))
 }
 
 func (c *controller) DeleteBalancer(name string) k8s.SyncState {

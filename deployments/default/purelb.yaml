@@ -147,6 +147,22 @@ rules:
   - list
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app: purelb
+  name: purelb:allocator:leases
+  namespace: purelb-system
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   labels:
@@ -190,6 +206,21 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: lbnodeagent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app: purelb
+  name: purelb:allocator:leases
+  namespace: purelb-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: purelb:allocator:leases
+subjects:
+- kind: ServiceAccount
+  name: allocator
 ---
 apiVersion: apps/v1
 kind: DaemonSet

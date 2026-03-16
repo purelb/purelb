@@ -1217,6 +1217,98 @@ test_multi_pod_lb() {
 }
 
 #---------------------------------------------------------------------
+# Test: LoadBalancerClass Filtering
+# Tests that PureLB ignores services with a non-PureLB LoadBalancerClass
+# and correctly allocates when the PureLB class is explicitly set.
+#---------------------------------------------------------------------
+test_loadbalancer_class() {
+    echo ""
+    echo "=========================================="
+    echo "TEST: LoadBalancerClass Filtering"
+    echo "=========================================="
+
+    # Test 1: Service with a foreign LoadBalancerClass should be ignored
+    info "Creating service with non-PureLB LoadBalancerClass..."
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-foreign-lbclass
+  namespace: $NAMESPACE
+spec:
+  type: LoadBalancer
+  loadBalancerClass: other.io/foreign-lb
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    info "Waiting 10s to confirm no IP is allocated..."
+    sleep 10
+
+    FOREIGN_IP=$(kubectl get svc nginx-foreign-lbclass -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+    FOREIGN_BRAND=$(kubectl get svc nginx-foreign-lbclass -n $NAMESPACE -o jsonpath='{.metadata.annotations.purelb\.io/allocated-by}' 2>/dev/null || true)
+
+    if [ -z "$FOREIGN_IP" ] && [ -z "$FOREIGN_BRAND" ]; then
+        pass "Foreign LoadBalancerClass correctly ignored — no IP allocated, no PureLB annotations"
+    else
+        fail "PureLB should NOT allocate for foreign LBClass (got IP=$FOREIGN_IP, brand=$FOREIGN_BRAND)"
+    fi
+
+    # Test 2: Service with PureLB's explicit LoadBalancerClass should allocate
+    info "Creating service with explicit PureLB LoadBalancerClass..."
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-purelb-lbclass
+  namespace: $NAMESPACE
+spec:
+  type: LoadBalancer
+  loadBalancerClass: purelb.io/purelbv2
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    info "Waiting for IP allocation..."
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-purelb-lbclass -n $NAMESPACE --timeout=30s || fail "No IP allocated for PureLB LBClass"
+
+    PURELB_IP=$(kubectl get svc nginx-purelb-lbclass -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    PURELB_BRAND=$(kubectl get svc nginx-purelb-lbclass -n $NAMESPACE -o jsonpath='{.metadata.annotations.purelb\.io/allocated-by}')
+
+    info "Allocated IP: $PURELB_IP"
+    [ "$PURELB_BRAND" = "PureLB" ] || fail "Missing or wrong allocated-by annotation (got: $PURELB_BRAND)"
+    ip_in_pool_range "$PURELB_IP" || fail "IP $PURELB_IP not from expected pool range"
+    pass "Explicit PureLB LBClass correctly allocates IP $PURELB_IP"
+
+    # Test connectivity
+    info "Waiting for IP to be announced..."
+    wait_for_ip_announced "$PURELB_IP" 30 || fail "IP $PURELB_IP not announced within 30s"
+
+    info "Testing connectivity to $PURELB_IP..."
+    RESPONSE=$(curl -s --connect-timeout 5 "http://$PURELB_IP/" || true)
+    echo "$RESPONSE" | grep -q "Pod:" || fail "No response from PureLB LBClass service"
+    pass "PureLB LBClass service is reachable"
+
+    # Cleanup
+    info "Cleaning up LoadBalancerClass test services..."
+    kubectl delete svc nginx-foreign-lbclass nginx-purelb-lbclass -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    pass "LoadBalancerClass filtering test completed successfully"
+}
+
+#---------------------------------------------------------------------
 # Test 8: Node Failure and Failover
 #---------------------------------------------------------------------
 test_node_failover() {
@@ -2342,6 +2434,377 @@ EOF
 }
 
 #---------------------------------------------------------------------
+# Test: Multi-Pool Allocation (one IP per range)
+# Tests the multiPool feature where a service gets one IP from each
+# address range that has active nodes. Covers:
+#   - ServiceGroup-based multiPool: true (IPv4)
+#   - Annotation-based purelb.io/multi-pool: "true" on non-multi SG (IPv4)
+#   - Annotation override: multi-pool: "false" on multi SG (IPv4)
+#   - ServiceGroup-based multiPool: true (IPv6, if available)
+#   - ServiceGroup-based multiPool: true (Dual-Stack, if available)
+#   - Connectivity verification for all allocated IPs
+#---------------------------------------------------------------------
+test_multi_pool_allocation() {
+    echo ""
+    echo "=========================================="
+    echo "TEST: Multi-Pool Allocation (1 IP per range)"
+    echo "=========================================="
+
+    info "Testing multiPool allocation across annotation and SG modes, IPv4 and IPv6..."
+
+    # Build v4pools entries from discovered subnets using .180-.190 range
+    # (separate from .200-.220 used by default and .230-.240 used by other tests)
+    local v4pools=""
+    local v6pools=""
+    local v4_subnet_count=0
+    local v6_subnet_count=0
+    for sub in $SUBNETS; do
+        # Skip IPv6 subnets (we handle v6 via SUBNET_V6 mapping)
+        if echo "$sub" | grep -q ':'; then
+            continue
+        fi
+        local net="${sub%/*}"
+        local prefix
+        prefix=$(echo "$net" | awk -F. '{print $1"."$2"."$3}')
+        local pool_range="${prefix}.180-${prefix}.190"
+        v4pools="${v4pools}
+    - pool: \"${pool_range}\"
+      subnet: \"${sub}\""
+        v4_subnet_count=$((v4_subnet_count + 1))
+
+        # Add IPv6 pool if this subnet has a v6 mapping
+        local v6prefix="${SUBNET_V6_PREFIX[$sub]}"
+        if [ -n "$v6prefix" ]; then
+            local v6sub="${SUBNET_V6[$sub]}"
+            local v6base="${v6prefix%%::}"
+            local v6range="${v6base}:d::1-${v6base}:d::10"
+            v6pools="${v6pools}
+    - pool: \"${v6range}\"
+      subnet: \"${v6sub}\""
+            v6_subnet_count=$((v6_subnet_count + 1))
+        fi
+    done
+
+    [ -n "$v4pools" ] || { info "SKIP: No IPv4 subnets for multi-pool test"; return 0; }
+
+    #-----------------------------------------------------------------
+    # Sub-test 1: ServiceGroup-based multiPool: true (IPv4)
+    #-----------------------------------------------------------------
+    info ""
+    info "--- Sub-test 1: SG-based multiPool: true (IPv4) ---"
+
+    local sg_spec="multiPool: true
+    v4pools: ${v4pools}"
+    if [ -n "$v6pools" ]; then
+        sg_spec="${sg_spec}
+    v6pools: ${v6pools}"
+    fi
+
+    kubectl apply -f - <<EOF
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: multipool-test
+  namespace: purelb-system
+spec:
+  local:
+    ${sg_spec}
+EOF
+    info "Created ServiceGroup multipool-test with multiPool: true ($v4_subnet_count v4 pools, $v6_subnet_count v6 pools)"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-mp-sg-v4
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: multipool-test
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-mp-sg-v4 -n $NAMESPACE --timeout=60s || fail "SG multi-pool IPv4: no IP allocated"
+    sleep 3
+
+    local ip_count
+    ip_count=$(kubectl get svc nginx-mp-sg-v4 -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | wc -w)
+    info "SG multi-pool IPv4: allocated $ip_count IPs (expected $v4_subnet_count)"
+
+    [ "$ip_count" -ge "$v4_subnet_count" ] || fail "SG multi-pool IPv4: expected $v4_subnet_count IPs, got $ip_count"
+    pass "SG multi-pool IPv4: $ip_count IPs for $v4_subnet_count subnets"
+
+    # Verify each IP is announced on the correct subnet and reachable
+    local all_ips
+    all_ips=$(kubectl get svc nginx-mp-sg-v4 -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}')
+    for vip in $all_ips; do
+        wait_for_ip_announced "$vip" 30 || fail "SG multi-pool VIP $vip not announced"
+        local holder
+        holder=$(get_vip_holder "$vip")
+        [ "$holder" != "NONE" ] || fail "SG multi-pool VIP $vip not found on any node"
+        verify_vip_subnet_match "$vip" "$holder" || fail "SG multi-pool VIP $vip / node $holder subnet mismatch"
+        pass "SG multi-pool VIP $vip on $holder — subnet match"
+
+        # Connectivity check
+        local resp
+        resp=$(curl -s --connect-timeout 5 "http://$vip/" || true)
+        echo "$resp" | grep -q "Pod:" || fail "SG multi-pool VIP $vip not reachable via HTTP"
+        pass "SG multi-pool VIP $vip reachable"
+    done
+
+    #-----------------------------------------------------------------
+    # Sub-test 2: Annotation-based multi-pool on default SG (IPv4)
+    # The default SG does NOT have multiPool: true, so the annotation
+    # must enable it.
+    #-----------------------------------------------------------------
+    info ""
+    info "--- Sub-test 2: Annotation-based multi-pool on default SG (IPv4) ---"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-mp-ann-v4
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: default
+    purelb.io/multi-pool: "true"
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 81
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-mp-ann-v4 -n $NAMESPACE --timeout=60s || fail "Annotation multi-pool IPv4: no IP allocated"
+    sleep 3
+
+    local ann_count
+    ann_count=$(kubectl get svc nginx-mp-ann-v4 -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | wc -w)
+    info "Annotation multi-pool IPv4: allocated $ann_count IPs (expected $v4_subnet_count)"
+
+    [ "$ann_count" -ge "$v4_subnet_count" ] || fail "Annotation multi-pool IPv4: expected $v4_subnet_count IPs, got $ann_count"
+    pass "Annotation multi-pool IPv4: $ann_count IPs from default SG"
+
+    # Verify connectivity for annotation-based multi-pool
+    local ann_ips
+    ann_ips=$(kubectl get svc nginx-mp-ann-v4 -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}')
+    for vip in $ann_ips; do
+        wait_for_ip_announced "$vip" 30 || fail "Annotation multi-pool VIP $vip not announced"
+        local resp
+        resp=$(curl -s --connect-timeout 5 "http://${vip}:81/" || true)
+        echo "$resp" | grep -q "Pod:" || fail "Annotation multi-pool VIP $vip not reachable on port 81"
+        pass "Annotation multi-pool VIP $vip reachable"
+    done
+
+    #-----------------------------------------------------------------
+    # Sub-test 3: Annotation override multi-pool: "false" on multi SG
+    # The multipool-test SG has multiPool: true, but the annotation
+    # should force single-IP allocation.
+    #-----------------------------------------------------------------
+    info ""
+    info "--- Sub-test 3: Annotation override multi-pool=false on multi SG ---"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-mp-override
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: multipool-test
+    purelb.io/multi-pool: "false"
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 82
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-mp-override -n $NAMESPACE --timeout=30s || fail "Override: no IP allocated"
+    sleep 2
+
+    local override_count
+    override_count=$(kubectl get svc nginx-mp-override -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | wc -w)
+    if [ "$override_count" -eq 1 ]; then
+        pass "Annotation override: multi-pool=false correctly gives 1 IP"
+    else
+        fail "Annotation override: expected 1 IP but got $override_count"
+    fi
+
+    #-----------------------------------------------------------------
+    # Sub-test 4: SG-based multiPool: true (IPv6-only)
+    #-----------------------------------------------------------------
+    if [ "$HAS_IPV6" = "true" ] && [ "$v6_subnet_count" -ge 2 ]; then
+        info ""
+        info "--- Sub-test 4: SG-based multiPool: true (IPv6-only) ---"
+
+        kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-mp-sg-v6
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: multipool-test
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv6
+  selector:
+    app: nginx
+  ports:
+  - port: 83
+    targetPort: 80
+EOF
+
+        kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+            svc/nginx-mp-sg-v6 -n $NAMESPACE --timeout=60s || fail "SG multi-pool IPv6: no IP allocated"
+        sleep 3
+
+        local v6_count
+        v6_count=$(kubectl get svc nginx-mp-sg-v6 -n $NAMESPACE \
+            -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | wc -w)
+        info "SG multi-pool IPv6: allocated $v6_count IPs (expected $v6_subnet_count)"
+
+        [ "$v6_count" -ge "$v6_subnet_count" ] || fail "SG multi-pool IPv6: expected $v6_subnet_count IPs, got $v6_count"
+        pass "SG multi-pool IPv6: $v6_count IPs for $v6_subnet_count subnets"
+
+        # Verify each IPv6 VIP is announced
+        local v6_ips
+        v6_ips=$(kubectl get svc nginx-mp-sg-v6 -n $NAMESPACE \
+            -o jsonpath='{.status.loadBalancer.ingress[*].ip}')
+        for vip in $v6_ips; do
+            wait_for_ip_announced "$vip" 30 || fail "SG multi-pool IPv6 VIP $vip not announced"
+            pass "SG multi-pool IPv6 VIP $vip announced"
+
+            # Test IPv6 connectivity
+            local resp
+            resp=$(curl -6 -s --connect-timeout 5 "http://[${vip}]:83/" || true)
+            echo "$resp" | grep -q "Pod:" || fail "SG multi-pool IPv6 VIP $vip not reachable"
+            pass "SG multi-pool IPv6 VIP $vip reachable"
+        done
+    else
+        info ""
+        info "SKIP: Sub-test 4 (IPv6 multi-pool) requires IPv6 and 2+ v6 subnets"
+    fi
+
+    #-----------------------------------------------------------------
+    # Sub-test 5: SG-based multiPool: true (Dual-Stack)
+    #-----------------------------------------------------------------
+    if [ "$HAS_IPV6" = "true" ] && [ "$v6_subnet_count" -ge 2 ]; then
+        info ""
+        info "--- Sub-test 5: SG-based multiPool: true (Dual-Stack) ---"
+
+        kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-mp-sg-ds
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: multipool-test
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: RequireDualStack
+  ipFamilies:
+  - IPv4
+  - IPv6
+  selector:
+    app: nginx
+  ports:
+  - port: 84
+    targetPort: 80
+EOF
+
+        kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+            svc/nginx-mp-sg-ds -n $NAMESPACE --timeout=60s || fail "SG multi-pool dual-stack: no IP allocated"
+        sleep 3
+
+        local ds_count
+        ds_count=$(kubectl get svc nginx-mp-sg-ds -n $NAMESPACE \
+            -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | wc -w)
+        local expected_ds=$((v4_subnet_count + v6_subnet_count))
+        info "SG multi-pool dual-stack: allocated $ds_count IPs (expected $expected_ds: $v4_subnet_count v4 + $v6_subnet_count v6)"
+
+        [ "$ds_count" -ge "$expected_ds" ] || fail "SG multi-pool dual-stack: expected $expected_ds IPs, got $ds_count"
+        pass "SG multi-pool dual-stack: $ds_count IPs ($v4_subnet_count v4 + $v6_subnet_count v6)"
+
+        # Verify announcing annotations show all nodes
+        local ann_v4
+        ann_v4=$(kubectl get svc nginx-mp-sg-ds -n $NAMESPACE \
+            -o jsonpath='{.metadata.annotations.purelb\.io/announcing-IPv4}')
+        local ann_v6
+        ann_v6=$(kubectl get svc nginx-mp-sg-ds -n $NAMESPACE \
+            -o jsonpath='{.metadata.annotations.purelb\.io/announcing-IPv6}')
+        info "announcing-IPv4: $ann_v4"
+        info "announcing-IPv6: $ann_v6"
+
+        # Each announcing annotation should have entries for each subnet
+        local ann_v4_count
+        ann_v4_count=$(echo "$ann_v4" | tr ' ' '\n' | grep -c '.' || true)
+        local ann_v6_count
+        ann_v6_count=$(echo "$ann_v6" | tr ' ' '\n' | grep -c '.' || true)
+        [ "$ann_v4_count" -ge "$v4_subnet_count" ] || info "Warning: announcing-IPv4 has $ann_v4_count entries, expected $v4_subnet_count"
+        [ "$ann_v6_count" -ge "$v6_subnet_count" ] || info "Warning: announcing-IPv6 has $ann_v6_count entries, expected $v6_subnet_count"
+
+        # Connectivity check for all dual-stack IPs
+        local ds_ips
+        ds_ips=$(kubectl get svc nginx-mp-sg-ds -n $NAMESPACE \
+            -o jsonpath='{.status.loadBalancer.ingress[*].ip}')
+        for vip in $ds_ips; do
+            wait_for_ip_announced "$vip" 30 || fail "Dual-stack multi-pool VIP $vip not announced"
+            local resp
+            if echo "$vip" | grep -q ':'; then
+                resp=$(curl -6 -s --connect-timeout 5 "http://[${vip}]:84/" || true)
+            else
+                resp=$(curl -s --connect-timeout 5 "http://${vip}:84/" || true)
+            fi
+            echo "$resp" | grep -q "Pod:" || fail "Dual-stack multi-pool VIP $vip not reachable"
+            pass "Dual-stack multi-pool VIP $vip reachable"
+        done
+    else
+        info ""
+        info "SKIP: Sub-test 5 (dual-stack multi-pool) requires IPv6 and 2+ v6 subnets"
+    fi
+
+    # Cleanup
+    info ""
+    info "Cleaning up multi-pool test resources..."
+    kubectl delete svc nginx-mp-sg-v4 nginx-mp-ann-v4 nginx-mp-override \
+        nginx-mp-sg-v6 nginx-mp-sg-ds -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete servicegroup multipool-test -n purelb-system --ignore-not-found 2>/dev/null || true
+    pass "Multi-pool allocation tests completed"
+}
+
+#---------------------------------------------------------------------
 # Test 22: Cross-Subnet Connectivity
 #---------------------------------------------------------------------
 test_cross_subnet_connectivity() {
@@ -2791,6 +3254,7 @@ run_all_tests() {
     test_ip_sharing
     test_specific_ip_request
     test_multi_pod_lb
+    test_loadbalancer_class
     pause_for_review
 
     # Failover tests
@@ -2841,6 +3305,7 @@ run_all_tests() {
         test_subnet_vip_placement
         test_subnet_failover_stays_in_subnet
         test_multi_pool_default
+        test_multi_pool_allocation
         test_cross_subnet_connectivity
         test_small_subnet_exhaustion
         if [ "$HAS_IPV6" = "true" ]; then

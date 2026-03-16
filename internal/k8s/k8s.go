@@ -20,12 +20,15 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	"purelb.io/pkg/generated/clientset/versioned"
 	"purelb.io/pkg/generated/informers/externalversions"
+
+	"purelb.io/internal/election"
 
 	"github.com/go-kit/log"
 	corev1 "k8s.io/api/core/v1"
@@ -395,6 +398,51 @@ func (c *Client) ForceSync() {
 // This is used by components that need direct API access, such as the election.
 func (c *Client) Clientset() kubernetes.Interface {
 	return c.client
+}
+
+// ActiveSubnets returns the set of subnets that have at least one healthy
+// lbnodeagent, determined by listing PureLB leases and checking their
+// renewal timestamps. This is a one-shot API call (not cached) because
+// it's only called during multi-pool allocation, which is a rare event.
+func (c *Client) ActiveSubnets(namespace string) ([]string, error) {
+	ctx, cancel := c.apiContext()
+	defer cancel()
+
+	leases, err := c.client.CoordinationV1().Leases(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing leases: %w", err)
+	}
+
+	subnets := map[string]bool{}
+	now := time.Now()
+
+	for _, lease := range leases.Items {
+		// Only consider PureLB node leases
+		if !strings.HasPrefix(lease.Name, election.LeasePrefix) {
+			continue
+		}
+		// Skip leases without renewal info
+		if lease.Spec.RenewTime == nil || lease.Spec.LeaseDurationSeconds == nil {
+			continue
+		}
+		// Skip expired leases
+		expiry := lease.Spec.RenewTime.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second)
+		if now.After(expiry) {
+			continue
+		}
+		// Extract subnets from the lease annotation
+		if ann, ok := lease.Annotations[election.SubnetsAnnotation]; ok {
+			for _, s := range election.ParseSubnetsAnnotation(ann) {
+				subnets[s] = true
+			}
+		}
+	}
+
+	result := make([]string, 0, len(subnets))
+	for s := range subnets {
+		result = append(result, s)
+	}
+	return result, nil
 }
 
 // maybeUpdateService writes the "is" service back to the cluster, but

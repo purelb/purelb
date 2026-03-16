@@ -41,6 +41,11 @@ type LocalPool struct {
 	// skipIPv6DAD indicates whether to skip IPv6 Duplicate Address Detection.
 	skipIPv6DAD bool
 
+	// multiPool indicates whether multi-pool allocation is enabled.
+	// When true, services get one IP from each address range (per family)
+	// that has active nodes.
+	multiPool bool
+
 	// v4Ranges contains the IPV4 addresses that are part of this
 	// pool. config.Parse guarantees that these are non-overlapping,
 	// both within and between pools.
@@ -50,6 +55,13 @@ type LocalPool struct {
 	// pool. config.Parse guarantees that these are non-overlapping,
 	// both within and between pools.
 	v6Ranges []*purelbv2.IPRange
+
+	// v4Subnets stores the subnet CIDR for each v4Range, in parallel.
+	// Used by AssignNextPerRange to match ranges to active subnets.
+	v4Subnets []string
+
+	// v6Subnets stores the subnet CIDR for each v6Range, in parallel.
+	v6Subnets []string
 
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
@@ -69,12 +81,14 @@ type LocalPool struct {
 // NewLocalPool creates a new LocalPool from the given address pools.
 // poolType should be "local" for addresses announced on the node's interface,
 // or "remote" for addresses announced on the dummy interface (for BGP/routing).
-func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6Pool *purelbv2.AddressPool, v4Pools []purelbv2.AddressPool, v6Pools []purelbv2.AddressPool, poolType string, skipIPv6DAD bool) (LocalPool, error) {
+// multiPool enables multi-pool allocation where services get one IP per range.
+func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6Pool *purelbv2.AddressPool, v4Pools []purelbv2.AddressPool, v6Pools []purelbv2.AddressPool, poolType string, skipIPv6DAD bool, multiPool bool) (LocalPool, error) {
 	pool := LocalPool{
 		name:           name,
 		logger:         log,
 		poolType:       poolType,
 		skipIPv6DAD:    skipIPv6DAD,
+		multiPool:      multiPool,
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
@@ -106,6 +120,7 @@ func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6P
 		}
 
 		pool.v6Ranges = append(pool.v6Ranges, &iprange)
+		pool.v6Subnets = append(pool.v6Subnets, v6pool.Subnet)
 	}
 
 	// See if there's an IPV4 range in the spec
@@ -125,6 +140,7 @@ func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6P
 		}
 
 		pool.v4Ranges = append(pool.v4Ranges, &iprange)
+		pool.v4Subnets = append(pool.v4Subnets, v4pool.Subnet)
 	}
 
 	// Last check: if we don't have *any* valid range then it's a bad spec
@@ -607,4 +623,113 @@ func (p LocalPool) PoolType() string {
 // be skipped for addresses from this pool.
 func (p LocalPool) SkipIPv6DAD() bool {
 	return p.skipIPv6DAD
+}
+
+// MultiPool returns whether multi-pool allocation is enabled for this pool.
+func (p LocalPool) MultiPool() bool {
+	return p.multiPool
+}
+
+// assignFromRange tries to assign the next available IP from a single range
+// to the service. Returns nil on success, error if the range is exhausted
+// or all IPs have conflicts.
+func (p LocalPool) assignFromRange(ipRange *purelbv2.IPRange, service *v1.Service) error {
+	var lastErr error
+	for ip := ipRange.First(); ip != nil; ip = ipRange.Next(ip) {
+		if err := p.Assign(ip, service); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("range %s is empty", ipRange)
+	}
+	return lastErr
+}
+
+// AssignNextPerRange allocates one IP per address range (per family) that
+// has an active subnet. activeSubnets is the set of subnets (in CIDR notation)
+// with healthy lbnodeagents. Returns error only if NO IPs could be allocated.
+func (p LocalPool) AssignNextPerRange(svc *v1.Service, activeSubnets []string) error {
+	activeSet := make(map[string]bool, len(activeSubnets))
+	for _, s := range activeSubnets {
+		activeSet[s] = true
+	}
+
+	families, err := p.whichFamilies(svc)
+	if err != nil {
+		return err
+	}
+	// Default to IPv4 if no families specified
+	if len(families) == 0 {
+		families = []int{nl.FAMILY_V4}
+	}
+
+	allocated := 0
+	activeRanges := 0
+	skippedNoActive := 0
+
+	for _, family := range families {
+		var ranges []*purelbv2.IPRange
+		var subnets []string
+		if family == nl.FAMILY_V6 {
+			ranges = p.v6Ranges
+			subnets = p.v6Subnets
+		} else {
+			ranges = p.v4Ranges
+			subnets = p.v4Subnets
+		}
+
+		for i, ipRange := range ranges {
+			// Skip ranges whose subnet has no active nodes
+			if !activeSet[subnets[i]] {
+				skippedNoActive++
+				p.logger.Log("op", "assignNextPerRange", "range", ipRange,
+					"subnet", subnets[i], "msg", "skipping, no active nodes on subnet")
+				continue
+			}
+			activeRanges++
+
+			// Skip if service already has an IP from this range
+			if p.serviceHasIPInRange(svc, ipRange) {
+				p.logger.Log("op", "assignNextPerRange", "range", ipRange,
+					"msg", "skipping, service already has IP in this range")
+				allocated++ // Count existing as allocated
+				continue
+			}
+
+			if err := p.assignFromRange(ipRange, svc); err != nil {
+				p.logger.Log("op", "assignNextPerRange", "range", ipRange,
+					"subnet", subnets[i], "error", err, "msg", "range exhausted, continuing")
+				allocationRejected.WithLabelValues(p.name, "exhausted").Inc()
+				continue
+			}
+			allocated++
+		}
+	}
+
+	if allocated == 0 {
+		return fmt.Errorf("no IPs allocated for service %s: %d ranges skipped (no active nodes)",
+			namespacedName(svc), skippedNoActive)
+	}
+
+	// Track partial allocations where some active ranges couldn't provide IPs
+	if allocated < activeRanges {
+		multipoolPartial.WithLabelValues(p.name).Inc()
+	}
+
+	return nil
+}
+
+// serviceHasIPInRange checks if the service already has an ingress IP
+// that falls within the given range.
+func (p LocalPool) serviceHasIPInRange(svc *v1.Service, ipRange *purelbv2.IPRange) bool {
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		ip := net.ParseIP(ingress.IP)
+		if ip != nil && ipRange.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

@@ -97,6 +97,13 @@ type ServiceGroupLocalSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	SkipIPv6DAD bool `json:"skipIPv6DAD,omitempty"`
+
+	// MultiPool enables multi-pool allocation. When true, services get one IP
+	// from each address range (per family) that has active nodes, making the
+	// service reachable from every subnet.
+	// +kubebuilder:default=false
+	// +optional
+	MultiPool bool `json:"multiPool,omitempty"`
 }
 
 // PoolForAddress returns the AddressPool that contains the given IP address.
@@ -154,6 +161,13 @@ type ServiceGroupRemoteSpec struct {
 	// V6Pools specifies multiple pools of IPv6 addresses.
 	// +optional
 	V6Pools []AddressPool `json:"v6pools,omitempty"`
+
+	// MultiPool enables multi-pool allocation. When true, services get one IP
+	// from each address range (per family) that has active nodes, making the
+	// service reachable from every subnet.
+	// +kubebuilder:default=false
+	// +optional
+	MultiPool bool `json:"multiPool,omitempty"`
 }
 
 // PoolForAddress returns the AddressPool that contains the given IP address.
