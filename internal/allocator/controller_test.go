@@ -792,3 +792,53 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	assert.NotEmpty(t, svc2.Status.LoadBalancer.Ingress, "svc2 didn't get an IP")
 	assert.Equal(t, "1.2.3.0", svc2.Status.LoadBalancer.Ingress[0].IP, "svc2 got the wrong IP")
 }
+
+func TestIncrementalMultiPoolViaSetBalancer(t *testing.T) {
+	// Start with 2 active subnets, 3 pool ranges
+	c, _ := newMultiPoolController(t,
+		[]purelbv2.AddressPool{
+			{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"},
+			{Pool: "192.168.2.0/31", Subnet: "192.168.2.0/24"},
+			{Pool: "192.168.3.0/31", Subnet: "192.168.3.0/24"},
+		}, nil,
+		[]string{"192.168.1.0/24", "192.168.2.0/24"},
+	)
+
+	svc := multiPoolSvc("svc1")
+
+	// First allocation: 2 IPs (subnets 1 and 2 active)
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc, nil))
+	assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "initial: 2 IPs")
+
+	// Second call with same subnets: stable, no new IPs
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc, nil))
+	assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "stable: still 2 IPs")
+
+	// Now subnet 3 becomes active (simulates new node joining + config update)
+	c.ips.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24", "192.168.2.0/24", "192.168.3.0/24"}), "purelb")
+
+	// Next SetBalancer should pick up the 3rd IP
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc, nil))
+	assert.Equal(t, 3, len(svc.Status.LoadBalancer.Ingress), "incremental: should now have 3 IPs")
+}
+
+func TestReEvaluateAnnotationCleared(t *testing.T) {
+	c, _ := newMultiPoolController(t,
+		[]purelbv2.AddressPool{
+			{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"},
+		}, nil,
+		[]string{"192.168.1.0/24"},
+	)
+
+	svc := multiPoolSvc("svc1")
+	svc.Annotations[purelbv2.ReEvaluateAnnotation] = "true"
+
+	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc, nil))
+
+	// Annotation should be cleared after processing
+	_, hasReEval := svc.Annotations[purelbv2.ReEvaluateAnnotation]
+	assert.False(t, hasReEval, "re-evaluate annotation should be cleared after processing")
+
+	// Service should still get allocated normally
+	assert.NotEmpty(t, svc.Status.LoadBalancer.Ingress, "service should be allocated")
+}

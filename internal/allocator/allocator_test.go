@@ -1252,3 +1252,67 @@ func TestSkipIPv6DADAnnotation(t *testing.T) {
 	assert.False(t, hasAnnotation,
 		"skip-ipv6-dad annotation should not be present when pool has skipIPv6DAD=false")
 }
+
+func TestIncrementalMultiPool(t *testing.T) {
+	// Start with 2 active subnets
+	activeSubnets := []string{"192.168.1.0/24", "192.168.2.0/24"}
+	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
+	alloc.SetActiveSubnets(mockActiveSubnets(activeSubnets), "purelb")
+
+	groups := []*purelbv2.ServiceGroup{
+		multiPoolServiceGroup(defaultPoolName, []purelbv2.AddressPool{
+			{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"},
+			{Pool: "192.168.2.0/31", Subnet: "192.168.2.0/24"},
+			{Pool: "192.168.3.0/31", Subnet: "192.168.3.0/24"}, // No active nodes yet
+		}),
+	}
+	assert.NoError(t, alloc.SetPools(groups))
+
+	// Initial allocation — gets 2 IPs (subnets 1 and 2 active)
+	svc := service("svc1", ports("tcp/80"), "")
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	err := alloc.Allocate(&svc)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "initial: should get 2 IPs")
+
+	// IncrementalMultiPool with same subnets — no-op
+	added, err := alloc.IncrementalMultiPool(&svc)
+	assert.NoError(t, err)
+	assert.False(t, added, "no new subnets, should be no-op")
+	assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "still 2 IPs")
+
+	// Now a 3rd subnet becomes active
+	alloc.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24", "192.168.2.0/24", "192.168.3.0/24"}), "purelb")
+
+	// IncrementalMultiPool should add a 3rd IP
+	added, err = alloc.IncrementalMultiPool(&svc)
+	assert.NoError(t, err)
+	assert.True(t, added, "new subnet available, should add IP")
+	assert.Equal(t, 3, len(svc.Status.LoadBalancer.Ingress), "should now have 3 IPs")
+}
+
+func TestIncrementalMultiPoolNoOp(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
+	alloc.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24"}), "purelb")
+
+	groups := []*purelbv2.ServiceGroup{
+		multiPoolServiceGroup(defaultPoolName, []purelbv2.AddressPool{
+			{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"},
+		}),
+	}
+	assert.NoError(t, alloc.SetPools(groups))
+
+	// Allocate — gets 1 IP (only 1 range)
+	svc := service("svc1", ports("tcp/80"), "")
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	assert.NoError(t, alloc.Allocate(&svc))
+	assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress))
+
+	// IncrementalMultiPool with all ranges covered — no-op
+	added, err := alloc.IncrementalMultiPool(&svc)
+	assert.NoError(t, err)
+	assert.False(t, added, "all ranges covered, should be no-op")
+	assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress))
+}

@@ -137,6 +137,14 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 		svc.Annotations = map[string]string{}
 	}
 
+	// Clean up re-evaluate annotation if present. The annotation change
+	// is what triggers the informer to reprocess this service; we just
+	// delete it so it doesn't retrigger on the next sync.
+	if svc.Annotations[purelbv2.ReEvaluateAnnotation] == "true" {
+		delete(svc.Annotations, purelbv2.ReEvaluateAnnotation)
+		logging.Info(l, "op", "setBalancer", "msg", "re-evaluate annotation detected, reprocessing")
+	}
+
 	// If the service isn't a LoadBalancer then we might need to clean
 	// up. It might have been a load balancer before and the user might
 	// have changed it to tell us to release the address
@@ -179,12 +187,20 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 	multiPool := c.isMultiPoolService(svc)
 
 	// Multi-pool services: if already allocated by us, notify existing IPs
-	// and return. Re-allocation happens only on new services (no ingress yet)
-	// or when the user deletes and recreates the service.
+	// and try incremental allocation from any newly available ranges.
+	// AssignNextPerRange skips ranges where the service already has an IP,
+	// so this is a cheap no-op in steady state.
 	if multiPool {
 		if len(svc.Status.LoadBalancer.Ingress) > 0 && svc.Annotations[purelbv2.BrandAnnotation] == purelbv2.Brand {
 			if err := c.ips.NotifyExisting(svc); err != nil {
 				logging.Info(l, "op", "notifyExisting", "error", err, "ingress", svc.Status.LoadBalancer.Ingress)
+			}
+			added, err := c.ips.IncrementalMultiPool(svc)
+			if err != nil {
+				logging.Info(l, "op", "incrementalMultiPool", "error", err)
+			}
+			if added {
+				logging.Info(l, "op", "incrementalMultiPool", "msg", "allocated from new ranges")
 			}
 			return k8s.SyncStateSuccess
 		}

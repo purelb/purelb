@@ -764,8 +764,9 @@ func (p LocalPool) AssignNextPerRange(svc *v1.Service, activeSubnets []string) e
 		}
 
 		for i, ipRange := range ranges {
-			// Skip ranges whose subnet has no active nodes
-			if !activeSet[subnets[i]] {
+			// Remote pools: all ranges are always active (all nodes announce to kubelb0)
+			// Local pools: only ranges with active node subnets participate
+			if p.poolType == purelbv2.PoolTypeLocal && !activeSet[subnets[i]] {
 				skippedNoActive++
 				p.logger.Log("op", "assignNextPerRange", "range", ipRange,
 					"subnet", subnets[i], "msg", "skipping, no active nodes on subnet")

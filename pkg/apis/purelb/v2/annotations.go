@@ -47,6 +47,11 @@ const (
 	// ServiceGroup's MultiPool setting if present.
 	MultiPoolAnnotation string = "purelb.io/multi-pool"
 
+	// ReEvaluateAnnotation is a one-shot trigger to force reprocessing of
+	// a service. Set to "true" by the user; the allocator deletes it after
+	// processing. Useful when subnets change without a config change.
+	ReEvaluateAnnotation string = "purelb.io/re-evaluate"
+
 	// ============================================================================
 	// PureLB-set annotations (informational)
 	// ============================================================================

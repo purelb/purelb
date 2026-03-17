@@ -128,6 +128,47 @@ func TestLocalPoolSkipIPv6DAD(t *testing.T) {
 	assert.False(t, p.SkipIPv6DAD(), "Remote pools should not skip DAD")
 }
 
+func TestRemotePoolMultiPoolSkipsActiveSubnetFilter(t *testing.T) {
+	// Remote pools should allocate from ALL ranges regardless of activeSubnets,
+	// because all nodes announce remote IPs on kubelb0 (dummy interface).
+	v4Pools := []purelbv2.AddressPool{
+		{Pool: "10.100.0.0/31", Subnet: "10.100.0.0/24"},
+		{Pool: "10.200.0.0/31", Subnet: "10.200.0.0/24"},
+	}
+	p, err := NewLocalPool("remote-mp", localPoolTestLogger, nil, nil, v4Pools, nil,
+		purelbv2.PoolTypeRemote, false, true, false)
+	assert.NoError(t, err)
+
+	svc := v1.Service{}
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	svc.Status.LoadBalancer.Ingress = nil
+
+	// activeSubnets has NEITHER of the remote pool subnets —
+	// but remote pools should ignore the filter
+	err = p.AssignNextPerRange(&svc, []string{"192.168.1.0/24"})
+	assert.NoError(t, err, "remote pool multi-pool should succeed even without matching active subnets")
+	assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "should get IPs from both remote ranges")
+}
+
+func TestLocalPoolMultiPoolRespectsActiveSubnetFilter(t *testing.T) {
+	// Local pools should only allocate from ranges with active subnets.
+	v4Pools := []purelbv2.AddressPool{
+		{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"},
+		{Pool: "192.168.2.0/31", Subnet: "192.168.2.0/24"},
+	}
+	p, err := NewLocalPool("local-mp", localPoolTestLogger, nil, nil, v4Pools, nil,
+		purelbv2.PoolTypeLocal, false, true, false)
+	assert.NoError(t, err)
+
+	svc := v1.Service{}
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+
+	// Only subnet 1 active — should get 1 IP, not 2
+	err = p.AssignNextPerRange(&svc, []string{"192.168.1.0/24"})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress), "should only get IP from active subnet")
+}
+
 func TestFirstNext(t *testing.T) {
 	p := mustDualStackPool(t, []string{"192.168.2.0/31", "192.168.1.3/32", "192.168.1.2/32"}, []string{"fc00::0043:0000/128", "fc00::0042:0000/128"})
 

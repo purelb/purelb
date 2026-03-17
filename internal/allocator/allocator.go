@@ -346,6 +346,53 @@ func (a *Allocator) allocateMultiPool(svc *v1.Service, pool Pool) error {
 	return nil
 }
 
+// IncrementalMultiPool attempts to allocate additional IPs from newly
+// available ranges for an existing multi-pool service. It does NOT
+// release existing IPs — AssignNextPerRange skips ranges where the
+// service already has an IP. Returns true if new IPs were added.
+func (a *Allocator) IncrementalMultiPool(svc *v1.Service) (bool, error) {
+	poolName, ok := svc.Annotations[purelbv2.PoolAnnotation]
+	if !ok {
+		return false, fmt.Errorf("service missing %s annotation", purelbv2.PoolAnnotation)
+	}
+	pool, ok := a.pools[poolName]
+	if !ok {
+		return false, fmt.Errorf("unknown pool %q", poolName)
+	}
+	if a.activeSubnets == nil {
+		return false, fmt.Errorf("activeSubnets not configured")
+	}
+
+	activeSubnets, err := a.activeSubnets(a.purelbNamespace)
+	if err != nil {
+		return false, fmt.Errorf("querying active subnets: %w", err)
+	}
+
+	existingCount := len(svc.Status.LoadBalancer.Ingress)
+
+	if err := pool.AssignNextPerRange(svc, activeSubnets); err != nil {
+		return false, err
+	}
+
+	newCount := len(svc.Status.LoadBalancer.Ingress)
+	if newCount > existingCount {
+		added := newCount - existingCount
+		a.client.Infof(svc, "AddressAssigned", "Incremental multi-pool: added %d IPs (total %d) from pool %s", added, newCount, pool)
+		svc.Annotations[purelbv2.PoolAnnotation] = pool.String()
+		svc.Annotations[purelbv2.PoolTypeAnnotation] = pool.PoolType()
+		if pool.SkipIPv6DAD() {
+			svc.Annotations[purelbv2.SkipIPv6DADAnnotation] = "true"
+		} else {
+			delete(svc.Annotations, purelbv2.SkipIPv6DADAnnotation)
+		}
+		multipoolAllocations.WithLabelValues(pool.String()).Inc()
+		a.updateStats(pool)
+		return true, nil
+	}
+
+	return false, nil
+}
+
 // Unassign frees the IP associated with service, if any.
 func (a *Allocator) Unassign(svc string) error {
 	var err error

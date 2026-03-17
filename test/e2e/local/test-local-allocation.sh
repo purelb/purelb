@@ -3251,6 +3251,180 @@ EOF
 }
 
 #---------------------------------------------------------------------
+# Test 21b: Incremental Multi-Pool Allocation
+# Verifies that existing multi-pool services pick up IPs from newly
+# added pool ranges when the ServiceGroup config is updated.
+#---------------------------------------------------------------------
+test_incremental_multi_pool() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 21b: Incremental Multi-Pool Allocation"
+    echo "=========================================="
+
+    if [ "$SUBNET_COUNT" -lt 2 ]; then
+        info "SKIP: Requires 2+ subnets"
+        return
+    fi
+
+    # Get the first subnet for initial allocation
+    local first_subnet second_subnet
+    first_subnet=$(echo $SUBNETS | awk '{print $1}')
+    second_subnet=$(echo $SUBNETS | awk '{print $2}')
+
+    local pool1 pool2
+    pool1=$(subnet_test_pool_range "$first_subnet")
+    pool2=$(subnet_test_pool_range "$second_subnet")
+
+    # Create ServiceGroup with only 1 range initially
+    info "Creating ServiceGroup with 1 pool range (subnet $first_subnet)..."
+    kubectl apply -f - <<EOF
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: incremental-test
+  namespace: purelb-system
+spec:
+  local:
+    multiPool: true
+    v4pools:
+    - aggregation: default
+      pool: ${pool1}
+      subnet: ${first_subnet}
+EOF
+
+    # Create multi-pool service
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-incremental
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: incremental-test
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-incremental -n $NAMESPACE --timeout=30s || { fail "No IP allocated"; return; }
+
+    local initial_count
+    initial_count=$(kubectl get svc nginx-incremental -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | wc -w)
+    info "Initial allocation: $initial_count IP(s)"
+    [ "$initial_count" -eq 1 ] || fail "Expected 1 IP initially, got $initial_count"
+    pass "Initial allocation: 1 IP from 1 pool range"
+
+    # Now update ServiceGroup to add 2nd range
+    info "Updating ServiceGroup with 2nd pool range (subnet $second_subnet)..."
+    kubectl apply -f - <<EOF
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: incremental-test
+  namespace: purelb-system
+spec:
+  local:
+    multiPool: true
+    v4pools:
+    - aggregation: default
+      pool: ${pool1}
+      subnet: ${first_subnet}
+    - aggregation: default
+      pool: ${pool2}
+      subnet: ${second_subnet}
+EOF
+
+    # Config change triggers SyncStateReprocessAll → SetBalancer → IncrementalMultiPool
+    info "Waiting for incremental allocation (config change triggers reprocess)..."
+    sleep 10
+
+    local new_count
+    new_count=$(kubectl get svc nginx-incremental -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | wc -w)
+    info "After config update: $new_count IP(s)"
+    [ "$new_count" -eq 2 ] || fail "Expected 2 IPs after adding 2nd range, got $new_count"
+    pass "Incremental multi-pool: service picked up 2nd IP from new range"
+
+    # Cleanup
+    kubectl delete svc nginx-incremental -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete servicegroup incremental-test -n purelb-system --ignore-not-found 2>/dev/null || true
+}
+
+#---------------------------------------------------------------------
+# Test 21c: Re-evaluate Annotation
+# Verifies that setting purelb.io/re-evaluate: "true" on a service
+# triggers reprocessing and the annotation is cleared.
+#---------------------------------------------------------------------
+test_re_evaluate_annotation() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 21c: Re-evaluate Annotation"
+    echo "=========================================="
+
+    # Use the default pool for a simple service
+    info "Creating test service..."
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-reeval
+  namespace: $NAMESPACE
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-reeval -n $NAMESPACE --timeout=30s || { fail "No IP allocated"; return; }
+
+    local ip_before
+    ip_before=$(kubectl get svc nginx-reeval -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    info "IP before re-evaluate: $ip_before"
+
+    # Set re-evaluate annotation
+    info "Setting purelb.io/re-evaluate annotation..."
+    kubectl annotate svc nginx-reeval -n $NAMESPACE purelb.io/re-evaluate=true --overwrite
+
+    # Wait for allocator to process
+    sleep 5
+
+    # Verify annotation was cleared
+    local reeval_ann
+    reeval_ann=$(kubectl get svc nginx-reeval -n $NAMESPACE \
+        -o jsonpath='{.metadata.annotations.purelb\.io/re-evaluate}' 2>/dev/null || true)
+    if [ -z "$reeval_ann" ]; then
+        pass "Re-evaluate annotation was cleared after processing"
+    else
+        fail "Re-evaluate annotation still present: '$reeval_ann'"
+    fi
+
+    # Verify service still has an IP (wasn't disrupted)
+    local ip_after
+    ip_after=$(kubectl get svc nginx-reeval -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    [ -n "$ip_after" ] || fail "Service lost its IP after re-evaluate"
+    pass "Service still has IP after re-evaluate: $ip_after"
+
+    # Cleanup
+    kubectl delete svc nginx-reeval -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+}
+
+#---------------------------------------------------------------------
 # Test 22: Cross-Subnet Connectivity
 #---------------------------------------------------------------------
 test_cross_subnet_connectivity() {
@@ -4432,6 +4606,7 @@ run_all_tests() {
     test_specific_ip_request
     test_multi_pod_lb
     test_loadbalancer_class
+    test_re_evaluate_annotation
     pause_for_review
 
     # Failover tests
@@ -4484,6 +4659,7 @@ run_all_tests() {
         test_subnet_failover_stays_in_subnet
         test_multi_pool_default
         test_multi_pool_allocation
+        test_incremental_multi_pool
         test_balanced_allocation
         test_cross_subnet_connectivity
         test_small_subnet_exhaustion
