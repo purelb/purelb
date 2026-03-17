@@ -106,6 +106,28 @@ func TestNewLocalPool(t *testing.T) {
 	assert.Error(t, err, "pool isn't contained in its subnet")
 }
 
+func TestLocalPoolSkipIPv6DAD(t *testing.T) {
+	v4Pool := &purelbv2.AddressPool{
+		Pool:   "192.168.1.1/32",
+		Subnet: "192.168.1.1/32",
+	}
+
+	// Pool with skipIPv6DAD=false
+	p, err := NewLocalPool("no-dad-skip", localPoolTestLogger, v4Pool, nil, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
+	assert.NoError(t, err)
+	assert.False(t, p.SkipIPv6DAD(), "SkipIPv6DAD should be false when not enabled")
+
+	// Pool with skipIPv6DAD=true
+	p, err = NewLocalPool("dad-skip", localPoolTestLogger, v4Pool, nil, nil, nil, purelbv2.PoolTypeLocal, true, false, false)
+	assert.NoError(t, err)
+	assert.True(t, p.SkipIPv6DAD(), "SkipIPv6DAD should be true when enabled")
+
+	// Remote pool always has skipIPv6DAD=false (DAD is L2, meaningless on dummy interfaces)
+	p, err = NewLocalPool("remote", localPoolTestLogger, v4Pool, nil, nil, nil, purelbv2.PoolTypeRemote, false, false, false)
+	assert.NoError(t, err)
+	assert.False(t, p.SkipIPv6DAD(), "Remote pools should not skip DAD")
+}
+
 func TestFirstNext(t *testing.T) {
 	p := mustDualStackPool(t, []string{"192.168.2.0/31", "192.168.1.3/32", "192.168.1.2/32"}, []string{"fc00::0043:0000/128", "fc00::0042:0000/128"})
 

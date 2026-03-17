@@ -158,6 +158,9 @@ type AddressOptions struct {
 	PreferedLft int
 	// NoPrefixRoute prevents automatic prefix route creation when true.
 	NoPrefixRoute bool
+	// SkipDAD when true sets IFA_F_NODAD to skip IPv6 Duplicate Address
+	// Detection. This is an IPv6-only kernel flag, harmlessly ignored for IPv4.
+	SkipDAD bool
 }
 
 // addNetworkWithOptions adds lbIPNet to link with the specified options.
@@ -175,6 +178,9 @@ func addNetworkWithOptions(lbIPNet net.IPNet, link netlink.Link, opts AddressOpt
 
 	if opts.NoPrefixRoute {
 		addr.Flags |= 0x200 // IFA_F_NOPREFIXROUTE
+	}
+	if opts.SkipDAD {
+		addr.Flags |= 0x02 // IFA_F_NODAD
 	}
 
 	if err := netlink.AddrReplace(link, addr); err != nil {

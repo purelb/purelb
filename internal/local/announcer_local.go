@@ -300,6 +300,9 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 	if lbIP.To4() == nil {
 		opts.PreferedLft = 0
 	}
+	if svc.Annotations[purelbv2.SkipIPv6DADAnnotation] == "true" {
+		opts.SkipDAD = true
+	}
 	if err := addNetworkWithOptions(lbIPNet, announceInt, opts); err != nil {
 		return err
 	}

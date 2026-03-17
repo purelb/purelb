@@ -1207,3 +1207,48 @@ func TestBalancedMultiPoolMutualExclusion(t *testing.T) {
 	assert.Error(t, err, "multi-pool and balanced should be mutually exclusive")
 	assert.Contains(t, err.Error(), "mutually exclusive")
 }
+
+func TestSkipIPv6DADAnnotation(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
+
+	groups := []*purelbv2.ServiceGroup{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "dad-skip", Namespace: "purelb"},
+			Spec: purelbv2.ServiceGroupSpec{
+				Local: &purelbv2.ServiceGroupLocalSpec{
+					V4Pool:      &purelbv2.AddressPool{Pool: "10.0.0.1/32", Subnet: "10.0.0.1/32"},
+					SkipIPv6DAD: true,
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "no-dad-skip", Namespace: "purelb"},
+			Spec: purelbv2.ServiceGroupSpec{
+				Local: &purelbv2.ServiceGroupLocalSpec{
+					V4Pool: &purelbv2.AddressPool{Pool: "10.0.1.1/32", Subnet: "10.0.1.1/32"},
+				},
+			},
+		},
+	}
+	assert.NoError(t, alloc.SetPools(groups))
+
+	// Allocate from pool with skipIPv6DAD=true — annotation should be set
+	svc := service("svc-dad", ports("tcp/80"), "")
+	svc.Annotations[purelbv2.DesiredGroupAnnotation] = "dad-skip"
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	err := alloc.Allocate(&svc)
+	assert.NoError(t, err)
+	assert.Equal(t, "true", svc.Annotations[purelbv2.SkipIPv6DADAnnotation],
+		"skip-ipv6-dad annotation should be set when pool has skipIPv6DAD=true")
+
+	// Allocate from pool with skipIPv6DAD=false — annotation should not be set
+	svc2 := service("svc-no-dad", ports("tcp/80"), "")
+	svc2.Annotations[purelbv2.DesiredGroupAnnotation] = "no-dad-skip"
+	svc2.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	err = alloc.Allocate(&svc2)
+	assert.NoError(t, err)
+	_, hasAnnotation := svc2.Annotations[purelbv2.SkipIPv6DADAnnotation]
+	assert.False(t, hasAnnotation,
+		"skip-ipv6-dad annotation should not be present when pool has skipIPv6DAD=false")
+}

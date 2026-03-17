@@ -498,4 +498,71 @@ func TestAddressOptions_Struct(t *testing.T) {
 	assert.Equal(t, 300, opts.ValidLft)
 	assert.Equal(t, 150, opts.PreferedLft)
 	assert.True(t, opts.NoPrefixRoute)
+	assert.False(t, opts.SkipDAD, "SkipDAD should default to false")
+}
+
+func TestAddressOptions_SkipDAD(t *testing.T) {
+	opts := AddressOptions{
+		ValidLft:      300,
+		PreferedLft:   150,
+		NoPrefixRoute: true,
+		SkipDAD:       true,
+	}
+
+	assert.True(t, opts.SkipDAD, "SkipDAD should be true when explicitly set")
+	assert.Equal(t, 300, opts.ValidLft, "other fields should be unaffected")
+	assert.True(t, opts.NoPrefixRoute, "other fields should be unaffected")
+}
+
+func TestSkipDADFromServiceAnnotation(t *testing.T) {
+	// This tests the annotation-reading pattern used in announceLocal():
+	//   opts := a.getLocalAddressOptions()
+	//   if svc.Annotations[purelbv2.SkipIPv6DADAnnotation] == "true" {
+	//       opts.SkipDAD = true
+	//   }
+
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		wantSkipDAD bool
+	}{
+		{
+			name:        "no annotation",
+			annotations: map[string]string{},
+			wantSkipDAD: false,
+		},
+		{
+			name:        "annotation set to true",
+			annotations: map[string]string{purelbv2.SkipIPv6DADAnnotation: "true"},
+			wantSkipDAD: true,
+		},
+		{
+			name:        "annotation set to false",
+			annotations: map[string]string{purelbv2.SkipIPv6DADAnnotation: "false"},
+			wantSkipDAD: false,
+		},
+		{
+			name:        "annotation absent among other annotations",
+			annotations: map[string]string{"purelb.io/allocated-by": "PureLB"},
+			wantSkipDAD: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Start with default options (as getLocalAddressOptions would return)
+			opts := AddressOptions{
+				ValidLft:      300,
+				PreferedLft:   300,
+				NoPrefixRoute: true,
+			}
+
+			// Apply the annotation-reading logic from announceLocal
+			if tt.annotations[purelbv2.SkipIPv6DADAnnotation] == "true" {
+				opts.SkipDAD = true
+			}
+
+			assert.Equal(t, tt.wantSkipDAD, opts.SkipDAD)
+		})
+	}
 }

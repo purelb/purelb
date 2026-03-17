@@ -2059,6 +2059,151 @@ test_local_vip_address_flags() {
     else
         info "Local VIP does not have secondary flag (may be only address)"
     fi
+
+    # Verify IPv6 VIP does NOT have nodad flag (skipIPv6DAD defaults to false)
+    local IPV6_SVC
+    IPV6_SVC=$(kubectl get svc nginx-lb-ipv6 -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+    if [ -n "$IPV6_SVC" ]; then
+        # Verify skip-ipv6-dad annotation is absent (default pools don't set it)
+        local DAD_ANN
+        DAD_ANN=$(kubectl get svc nginx-lb-ipv6 -n $NAMESPACE -o jsonpath='{.metadata.annotations.purelb\.io/skip-ipv6-dad}' 2>/dev/null || true)
+        if [ -z "$DAD_ANN" ]; then
+            pass "IPv6 VIP: skip-ipv6-dad annotation correctly absent (default)"
+        else
+            fail "IPv6 VIP: skip-ipv6-dad annotation unexpectedly set to '$DAD_ANN'"
+        fi
+
+        # Find node with IPv6 VIP and check for nodad flag absence
+        for node in $NODES; do
+            local V6_DETAILS
+            V6_DETAILS=$(get_address_details "$node" "$IPV6_SVC" "${NODE_IFACE[$node]}")
+            if [ -n "$V6_DETAILS" ]; then
+                if check_address_property "$V6_DETAILS" "nodad"; then
+                    fail "IPv6 VIP has nodad flag but skipIPv6DAD is not enabled"
+                else
+                    pass "IPv6 VIP correctly does NOT have nodad flag (default)"
+                fi
+                break
+            fi
+        done
+    else
+        info "No IPv6 service found, skipping DAD flag check"
+    fi
+}
+
+#---------------------------------------------------------------------
+# Test 12b: IPv6 DAD Skip (skipIPv6DAD)
+# Verifies that skipIPv6DAD: true on a ServiceGroup causes the
+# IFA_F_NODAD flag to be set on IPv6 VIP addresses.
+#---------------------------------------------------------------------
+test_skip_ipv6_dad() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 12b: IPv6 DAD Skip (skipIPv6DAD)"
+    echo "=========================================="
+
+    if [ "$HAS_IPV6" != "true" ]; then
+        info "SKIP: No IPv6 available"
+        return
+    fi
+
+    # Pick the first subnet that has IPv6
+    local test_subnet=""
+    local test_v6sub=""
+    local test_v6prefix=""
+    for s in $SUBNETS; do
+        if [ -n "${SUBNET_V6[$s]}" ]; then
+            test_subnet=$s
+            test_v6sub="${SUBNET_V6[$s]}"
+            test_v6prefix="${SUBNET_V6_PREFIX[$s]}"
+            break
+        fi
+    done
+    [ -n "$test_subnet" ] || { info "SKIP: No IPv6 subnet found"; return; }
+
+    # Use :c:: range to avoid conflicts with other pools
+    local v6base="${test_v6prefix%%::}"
+    local v6pool="${v6base}:c::1-${v6base}:c::5"
+
+    info "Creating ServiceGroup with skipIPv6DAD: true (subnet=$test_v6sub, pool=$v6pool)..."
+    kubectl apply -f - <<EOF
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: dad-skip-test
+  namespace: purelb-system
+spec:
+  local:
+    skipIPv6DAD: true
+    v6pools:
+    - aggregation: default
+      pool: ${v6pool}
+      subnet: ${test_v6sub}
+EOF
+    CLEANUP_SGS+=("dad-skip-test")
+
+    info "Creating IPv6 service from dad-skip pool..."
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-dad-test
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: dad-skip-test
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv6
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+    CLEANUP_SVCS+=("nginx-dad-test")
+
+    info "Waiting for IPv6 allocation..."
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-dad-test -n $NAMESPACE --timeout=30s || { fail "No IPv6 allocated"; return; }
+
+    local DAD_IP
+    DAD_IP=$(kubectl get svc nginx-dad-test -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    info "Allocated IPv6: $DAD_IP"
+
+    # Verify skip-ipv6-dad annotation is set
+    local DAD_ANN
+    DAD_ANN=$(kubectl get svc nginx-dad-test -n $NAMESPACE -o jsonpath='{.metadata.annotations.purelb\.io/skip-ipv6-dad}' 2>/dev/null || true)
+    if [ "$DAD_ANN" = "true" ]; then
+        pass "skip-ipv6-dad annotation is set to 'true'"
+    else
+        fail "skip-ipv6-dad annotation not set (got: '$DAD_ANN')"
+    fi
+
+    sleep 3  # Give time for address configuration
+
+    # Find node with the VIP and check for nodad flag
+    local found=false
+    for node in $NODES; do
+        local V6_DETAILS
+        V6_DETAILS=$(get_address_details "$node" "$DAD_IP" "${NODE_IFACE[$node]}")
+        if [ -n "$V6_DETAILS" ]; then
+            info "Address details on $node: $V6_DETAILS"
+            if check_address_property "$V6_DETAILS" "nodad"; then
+                pass "IPv6 VIP has nodad flag (skipIPv6DAD working)"
+            else
+                fail "IPv6 VIP missing nodad flag (skipIPv6DAD not applied)"
+            fi
+            found=true
+            break
+        fi
+    done
+    [ "$found" = "true" ] || fail "IPv6 VIP $DAD_IP not found on any node"
+
+    # Cleanup
+    kubectl delete svc nginx-dad-test -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete servicegroup dad-skip-test -n purelb-system --ignore-not-found 2>/dev/null || true
 }
 
 #---------------------------------------------------------------------
@@ -4313,6 +4458,7 @@ run_all_tests() {
     echo -e "${BLUE}  TEST GROUP: Address Lifetime & CNI Compatibility${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
     test_local_vip_address_flags
+    test_skip_ipv6_dad
     test_address_renewal_timer
     test_flannel_node_ip
     test_flannel_node_ipv6

@@ -280,18 +280,17 @@ annotations:
   purelb.io/subnets: "192.168.1.0/24,192.168.2.0/24,10.0.0.0/24"
 ```
 
-### 7. Subnet Change Detection
+### 7. Subnet Change Detection — DROPPED
 
-Watch netlink for real-time interface changes:
-- Subscribe to `RTM_NEWADDR` and `RTM_DELADDR` events via `netlink.AddrSubscribe()`
-- Filter events to configured interfaces only
-- On change, update lease annotation with new subnets
-- Trigger `ForceSync()` to re-evaluate services
+**Decision:** A dedicated netlink watcher (`netlink.AddrSubscribe()`) was evaluated and dropped.
 
-**Leverage existing code** in `internal/local/network.go`:
-- `checkLocal(intf, lbIP)` - determines if IP belongs to same network as interface
-- `findLocal(regex, lbIP)` - finds local interface matching regex with IP in subnet
-- These can be adapted for the `GetLocalSubnets()` callback
+**Rationale:** The existing lease renewal loop (`renewLease()`) already calls `GetLocalSubnets()` every ~2s (RetryPeriod) and updates the lease annotation if subnets changed. A netlink watcher would improve detection by ~1s on average but adds:
+- A new goroutine and netlink subscription per node
+- Dependency on `netlink.AddrSubscribe()` which can silently drop events under load
+- Concurrency complexity (watcher goroutine vs renewal goroutine)
+- A new failure mode with no functional benefit — the renewal loop is the reliable fallback regardless
+
+The existing renewal-based detection is adequate for production use.
 
 ### 8. Lease Garbage Collection
 
@@ -2007,7 +2006,7 @@ helm template purelb ./build/helm/purelb
 
 ## Decisions Made
 
-1. **Subnet change detection**: Watch netlink for `RTM_NEWADDR`/`RTM_DELADDR` events for real-time updates
+1. **Subnet change detection**: Rely on existing lease renewal loop (~2s) rather than a dedicated netlink watcher. The improvement (~1s average) does not justify the added complexity and failure modes.
 
 2. **Pool types**: Mutually exclusive `spec.local` and `spec.remote` in ServiceGroup CR
    - `local`: Subnet-filtered election, IP on real interface
