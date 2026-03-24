@@ -75,9 +75,9 @@ type Pool interface {
 	// that has active nodes.
 	MultiPool() bool
 
-	// Balanced returns whether balanced allocation across ranges is enabled.
+	// BalancePools returns whether balanced allocation across ranges is enabled.
 	// When true, new allocations pick the range with the fewest IPs in use.
-	Balanced() bool
+	BalancePools() bool
 
 	// AssignNextPerRange allocates one IP per address range (per family)
 	// that has an active subnet. activeSubnets is the set of subnets with
@@ -104,13 +104,13 @@ func parsePool(log log.Logger, name string, group purelbv2.ServiceGroupSpec) (Po
 			group.Local.V4Pool, group.Local.V6Pool,
 			group.Local.V4Pools, group.Local.V6Pools,
 			purelbv2.PoolTypeLocal, group.Local.SkipIPv6DAD,
-			group.Local.MultiPool, group.Local.Balanced)
+			group.Local.MultiPool, group.Local.BalancePools)
 	} else if group.Remote != nil {
 		return NewLocalPool(name, log,
 			group.Remote.V4Pool, group.Remote.V6Pool,
 			group.Remote.V4Pools, group.Remote.V6Pools,
 			purelbv2.PoolTypeRemote, false,
-			group.Remote.MultiPool, group.Remote.Balanced)
+			group.Remote.MultiPool, group.Remote.BalancePools)
 	} else if group.Netbox != nil {
 		return NewNetboxPool(name, log, *group.Netbox)
 	}

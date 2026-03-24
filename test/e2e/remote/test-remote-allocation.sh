@@ -6,11 +6,19 @@ set -e
 # Tests for remote IP allocation - addresses that don't match any physical NIC subnet
 # and are placed on the dummy interface (kube-lb0) instead of the physical interface.
 #
+# Usage:
+#   test-remote-allocation.sh [--context <name>]
+#
+# Examples:
+#   test-remote-allocation.sh                        # Uses current context
+#   test-remote-allocation.sh --context prox-purelb2
+#
 # Key differences from local mode:
 # - IP on kube-lb0 (not local interface)
 # - ALL nodes announce (no leader election)
 # - externalTrafficPolicy: Local is supported
 # - Uses /32 or /128 aggregation (host routes)
+# - IPv6 DAD skip is N/A (DAD is L2, kube-lb0 is a dummy interface)
 
 NAMESPACE="test"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +35,9 @@ fail() {
     dump_debug_state
     exit 1
 }
+
+# warn is not in common.sh; define it for non-fatal warnings
+warn() { echo -e "${YELLOW}! WARN:${NC} $1"; }
 
 #---------------------------------------------------------------------
 # SSH Helper Functions
@@ -200,7 +211,7 @@ wait_for_service_announced() {
     local IFACE=$2
     local TIMEOUT=${3:-60}
 
-    info "Waiting for $SVC to be allocated and announced..."
+    info "Waiting for $SVC to be allocated and announced..." >&2
 
     # First wait for K8s to report the IP (redirect to stderr so it doesn't pollute return value)
     kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
@@ -784,6 +795,31 @@ test_prerequisites() {
     kubectl apply -f "$SCRIPT_DIR/servicegroup-remote.yaml"
     pass "Remote ServiceGroup applied"
 
+    # Verify metrics endpoints are reachable
+    info "Checking allocator metrics endpoint..."
+    local ALLOC_METRICS
+    ALLOC_METRICS=$(scrape_allocator_metrics)
+    if [ -n "$ALLOC_METRICS" ]; then
+        assert_metric "$ALLOC_METRICS" "purelb_k8s_client_config_loaded_bool" "eq" "1"
+        print_allocator_metrics "$ALLOC_METRICS"
+        pass "Allocator metrics endpoint reachable, config loaded"
+    else
+        info "WARNING: Allocator metrics endpoint not reachable (non-fatal)"
+    fi
+
+    info "Checking lbnodeagent metrics endpoint..."
+    local AGENT_METRICS
+    AGENT_METRICS=$(scrape_lbnodeagent_metrics)
+    if [ -n "$AGENT_METRICS" ]; then
+        assert_metric "$AGENT_METRICS" "purelb_election_lease_healthy" "eq" "1"
+        local first_node
+        for first_node in $NODES; do break; done
+        print_lbnodeagent_metrics "$AGENT_METRICS" "$first_node"
+        pass "LBNodeAgent metrics endpoint reachable, lease healthy"
+    else
+        info "WARNING: LBNodeAgent metrics endpoint not reachable (non-fatal)"
+    fi
+
     pass "All prerequisites met"
 }
 
@@ -824,6 +860,16 @@ test_remote_ipv4() {
     [ "$ALLOCATED_BY" = "PureLB" ] || fail "Missing or wrong purelb.io/allocated-by annotation"
     [ "$ALLOCATED_FROM" = "remote" ] || fail "Expected allocated-from=remote, got $ALLOCATED_FROM"
     pass "PureLB annotations correctly set"
+
+    # Metrics verification
+    local ALLOC_METRICS
+    ALLOC_METRICS=$(scrape_allocator_metrics)
+    if [ -n "$ALLOC_METRICS" ]; then
+        print_allocator_metrics "$ALLOC_METRICS"
+        assert_metric "$ALLOC_METRICS" 'purelb_address_pool_size{pool="remote"}' "gt" "0"
+        assert_metric "$ALLOC_METRICS" 'purelb_address_pool_addresses_in_use{pool="remote"}' "ge" "1"
+        pass "Allocator: pool metrics verified"
+    fi
 
     pass "Remote IPv4 test completed"
 }
@@ -1446,6 +1492,13 @@ EOF
     # Verify on all nodes
     wait_for_all_nodes_announce "$IP" kube-lb0 $NODE_COUNT 30
 
+    # Capture pre-deletion metrics
+    local ALLOC_BEFORE
+    ALLOC_BEFORE=$(scrape_allocator_metrics)
+    local before_in_use
+    before_in_use=$(extract_metric "${ALLOC_BEFORE:-}" 'purelb_address_pool_addresses_in_use{pool="remote"}')
+    before_in_use=${before_in_use:-0}
+
     # Delete service
     info "Deleting service..."
     kubectl delete svc nginx-remote-delete-test -n $NAMESPACE
@@ -1460,6 +1513,20 @@ EOF
 
     # Verify nftables rules also cleaned up
     verify_nftables_rules_removed "$IP" 8081
+
+    # Metrics verification after deletion
+    local ALLOC_AFTER
+    ALLOC_AFTER=$(scrape_allocator_metrics)
+    if [ -n "$ALLOC_AFTER" ]; then
+        print_allocator_metrics "$ALLOC_AFTER"
+        local after_in_use
+        after_in_use=$(extract_metric "$ALLOC_AFTER" 'purelb_address_pool_addresses_in_use{pool="remote"}')
+        after_in_use=${after_in_use:-0}
+        if [ "$before_in_use" -gt 0 ]; then
+            [ "$after_in_use" -lt "$before_in_use" ] || fail "addresses_in_use did not decrease ($before_in_use -> $after_in_use)"
+            pass "Allocator: addresses_in_use decreased ($before_in_use -> $after_in_use)"
+        fi
+    fi
 
     pass "Service deletion cleanup test completed"
 }
@@ -2659,6 +2726,448 @@ EOF
 }
 
 #---------------------------------------------------------------------
+# Test 28: Remote Multi-Pool Allocation
+# Verifies that multi-pool with remote pools allocates one IP per range
+# on kube-lb0 on ALL nodes. This was completely broken before the
+# activeSubnets filter fix (commit 4e830564).
+#---------------------------------------------------------------------
+test_remote_multi_pool() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 28: Remote Multi-Pool Allocation"
+    echo "=========================================="
+
+    # Create ServiceGroup with multiPool and two ranges per family
+    info "Creating remote multi-pool ServiceGroup..."
+    kubectl apply -f - <<EOF
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: remote-multipool
+  namespace: purelb-system
+spec:
+  remote:
+    multiPool: true
+    v4pools:
+    - aggregation: /32
+      pool: 10.255.10.100-10.255.10.110
+      subnet: 10.255.10.0/24
+    - aggregation: /32
+      pool: 10.255.11.100-10.255.11.110
+      subnet: 10.255.11.0/24
+    v6pools:
+    - aggregation: /128
+      pool: fd00:10:255:10::100-fd00:10:255:10::110
+      subnet: fd00:10:255:10::/64
+    - aggregation: /128
+      pool: fd00:10:255:11::100-fd00:10:255:11::110
+      subnet: fd00:10:255:11::/64
+EOF
+    pass "Remote multi-pool ServiceGroup created"
+
+    # Create dual-stack service
+    info "Creating multi-pool dual-stack service..."
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-remote-multipool
+  namespace: $NAMESPACE
+  labels:
+    test-suite: remote
+  annotations:
+    purelb.io/service-group: remote-multipool
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: PreferDualStack
+  ipFamilies:
+  - IPv4
+  - IPv6
+  selector:
+    app: nginx
+  ports:
+  - port: 8095
+    targetPort: 80
+EOF
+
+    # Wait for at least one IP
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-remote-multipool -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+
+    # Multi-pool allocates incrementally; wait for all IPs
+    sleep 10
+
+    # Check IPv4 count
+    local v4_ips v4_count
+    v4_ips=$(kubectl get svc nginx-remote-multipool -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | tr ' ' '\n' | grep -E '^[0-9]')
+    v4_count=$(echo "$v4_ips" | grep -c . || echo 0)
+    info "IPv4 IPs allocated: $v4_count"
+    echo "$v4_ips" | while read -r ip; do detail "  $ip"; done
+    [ "$v4_count" -eq 2 ] || fail "Expected 2 IPv4 IPs (one per range), got $v4_count"
+    pass "Multi-pool: 2 IPv4 IPs allocated (one per range)"
+
+    # Verify IPv4 IPs are from correct ranges
+    echo "$v4_ips" | grep -q "^10\.255\.10\." || fail "No IPv4 from range 10.255.10.x"
+    echo "$v4_ips" | grep -q "^10\.255\.11\." || fail "No IPv4 from range 10.255.11.x"
+    pass "IPv4 IPs from both remote ranges"
+
+    # Verify all IPv4 IPs on kube-lb0 on all nodes
+    for ip in $v4_ips; do
+        verify_remote_ip_placement "$ip"
+    done
+
+    # Check IPv6 count
+    local v6_ips v6_count
+    v6_ips=$(kubectl get svc nginx-remote-multipool -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | tr ' ' '\n' | grep -E ':')
+    v6_count=$(echo "$v6_ips" | grep -c . || echo 0)
+    info "IPv6 IPs allocated: $v6_count"
+    echo "$v6_ips" | while read -r ip; do detail "  $ip"; done
+    [ "$v6_count" -eq 2 ] || fail "Expected 2 IPv6 IPs (one per range), got $v6_count"
+    pass "Multi-pool: 2 IPv6 IPs allocated (one per range)"
+
+    # Metrics
+    local ALLOC_METRICS
+    ALLOC_METRICS=$(scrape_allocator_metrics)
+    if [ -n "$ALLOC_METRICS" ]; then
+        print_allocator_metrics "$ALLOC_METRICS" "remote-multipool"
+    fi
+
+    # Cleanup
+    kubectl delete svc nginx-remote-multipool -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete servicegroup remote-multipool -n purelb-system --ignore-not-found 2>/dev/null || true
+
+    pass "Remote multi-pool allocation test completed"
+}
+
+#---------------------------------------------------------------------
+# Test 29: Incremental Multi-Pool for Remote Pools
+# Verifies that adding a new range to an existing remote multi-pool
+# ServiceGroup causes the service to pick up a new IP without
+# releasing existing ones.
+#---------------------------------------------------------------------
+test_remote_incremental_multi_pool() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 29: Incremental Multi-Pool (Remote)"
+    echo "=========================================="
+
+    # Create ServiceGroup with only 1 range initially
+    info "Creating remote ServiceGroup with 1 pool range..."
+    kubectl apply -f - <<EOF
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: remote-incremental
+  namespace: purelb-system
+spec:
+  remote:
+    multiPool: true
+    v4pools:
+    - aggregation: /32
+      pool: 10.255.12.100-10.255.12.110
+      subnet: 10.255.12.0/24
+EOF
+
+    # Create service
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-remote-incremental
+  namespace: $NAMESPACE
+  labels:
+    test-suite: remote
+  annotations:
+    purelb.io/service-group: remote-incremental
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 8096
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-remote-incremental -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+
+    local initial_count initial_ip
+    initial_ip=$(kubectl get svc nginx-remote-incremental -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    initial_count=$(kubectl get svc nginx-remote-incremental -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | wc -w)
+    info "Initial allocation: $initial_count IP(s) — $initial_ip"
+    [ "$initial_count" -eq 1 ] || fail "Expected 1 IP initially, got $initial_count"
+    pass "Initial allocation: 1 IP from 1 pool range"
+
+    # Verify on kube-lb0
+    verify_remote_ip_placement "$initial_ip"
+
+    # Update ServiceGroup to add 2nd range
+    info "Updating ServiceGroup with 2nd pool range..."
+    kubectl apply -f - <<EOF
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: remote-incremental
+  namespace: purelb-system
+spec:
+  remote:
+    multiPool: true
+    v4pools:
+    - aggregation: /32
+      pool: 10.255.12.100-10.255.12.110
+      subnet: 10.255.12.0/24
+    - aggregation: /32
+      pool: 10.255.13.100-10.255.13.110
+      subnet: 10.255.13.0/24
+EOF
+
+    # Config change triggers SyncStateReprocessAll → SetBalancer → IncrementalMultiPool
+    info "Waiting for incremental allocation (config change triggers reprocess)..."
+    sleep 10
+
+    local new_count
+    new_count=$(kubectl get svc nginx-remote-incremental -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}' | wc -w)
+    info "After config update: $new_count IP(s)"
+    [ "$new_count" -eq 2 ] || fail "Expected 2 IPs after adding 2nd range, got $new_count"
+
+    # Verify original IP was preserved
+    local all_ips
+    all_ips=$(kubectl get svc nginx-remote-incremental -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[*].ip}')
+    echo "$all_ips" | grep -q "$initial_ip" || fail "Original IP $initial_ip was lost during incremental allocation"
+    pass "Incremental multi-pool: service picked up 2nd IP, original preserved"
+
+    # Verify both on kube-lb0
+    for ip in $all_ips; do
+        verify_remote_ip_placement "$ip"
+    done
+
+    # Cleanup
+    kubectl delete svc nginx-remote-incremental -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+    kubectl delete servicegroup remote-incremental -n purelb-system --ignore-not-found 2>/dev/null || true
+
+    pass "Incremental remote multi-pool test completed"
+}
+
+#---------------------------------------------------------------------
+# Test 30: Re-evaluate Annotation (Remote)
+# Verifies that setting purelb.io/re-evaluate: "true" on a remote
+# service triggers reprocessing and the annotation is cleared without
+# disrupting the service.
+#---------------------------------------------------------------------
+test_remote_re_evaluate() {
+    echo ""
+    echo "=========================================="
+    echo "TEST 30: Re-evaluate Annotation (Remote)"
+    echo "=========================================="
+
+    info "Creating test service..."
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-remote-reeval
+  namespace: $NAMESPACE
+  labels:
+    test-suite: remote
+  annotations:
+    purelb.io/service-group: remote
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 8097
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/nginx-remote-reeval -n $NAMESPACE --timeout=30s || fail "No IP allocated"
+
+    local ip_before
+    ip_before=$(kubectl get svc nginx-remote-reeval -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    info "IP before re-evaluate: $ip_before"
+
+    # Set re-evaluate annotation
+    info "Setting purelb.io/re-evaluate annotation..."
+    kubectl annotate svc nginx-remote-reeval -n $NAMESPACE purelb.io/re-evaluate=true --overwrite
+
+    # Wait for allocator to process
+    sleep 5
+
+    # Verify annotation was cleared
+    local reeval_ann
+    reeval_ann=$(kubectl get svc nginx-remote-reeval -n $NAMESPACE \
+        -o jsonpath='{.metadata.annotations.purelb\.io/re-evaluate}' 2>/dev/null || true)
+    if [ -z "$reeval_ann" ]; then
+        pass "Re-evaluate annotation was cleared after processing"
+    else
+        fail "Re-evaluate annotation still present: '$reeval_ann'"
+    fi
+
+    # Verify service still has its IP (not disrupted)
+    local ip_after
+    ip_after=$(kubectl get svc nginx-remote-reeval -n $NAMESPACE \
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    [ -n "$ip_after" ] || fail "Service lost its IP after re-evaluate"
+    pass "Service still has IP after re-evaluate: $ip_after"
+
+    # Verify IP still on kube-lb0
+    verify_remote_ip_placement "$ip_after"
+
+    # Cleanup
+    kubectl delete svc nginx-remote-reeval -n $NAMESPACE --ignore-not-found 2>/dev/null || true
+
+    pass "Re-evaluate annotation test completed (remote)"
+}
+
+#---------------------------------------------------------------------
+# Metrics & Logging Helpers
+#---------------------------------------------------------------------
+
+# scrape_pod_metrics POD_NAME
+# Scrapes /metrics from a pod via kubectl port-forward.
+scrape_pod_metrics() {
+    local pod=$1
+    local local_port=$((30000 + RANDOM % 5000))
+    kubectl port-forward -n purelb-system "$pod" ${local_port}:7472 >/dev/null 2>&1 &
+    local pf_pid=$!
+    local metrics=""
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        sleep 1
+        metrics=$(curl -s --connect-timeout 3 "http://127.0.0.1:${local_port}/metrics" 2>/dev/null || true)
+        if [ -n "$metrics" ]; then
+            break
+        fi
+    done
+    kill $pf_pid 2>/dev/null || true
+    wait $pf_pid 2>/dev/null || true
+    echo "$metrics"
+}
+
+# scrape_allocator_metrics
+scrape_allocator_metrics() {
+    local pod
+    pod=$(kubectl get pods -n purelb-system -l component=allocator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -z "$pod" ]; then
+        echo ""
+        return
+    fi
+    scrape_pod_metrics "$pod"
+}
+
+# scrape_lbnodeagent_metrics [node]
+# LBNodeAgent uses hostPort 7472, so curl the node IP directly.
+scrape_lbnodeagent_metrics() {
+    local node=${1:-}
+    local node_ip
+    if [ -n "$node" ]; then
+        node_ip="${NODE_IPS[$node]:-}"
+    else
+        for n in $NODES; do
+            node_ip="${NODE_IPS[$n]:-}"
+            break
+        done
+    fi
+    if [ -z "$node_ip" ]; then
+        echo ""
+        return
+    fi
+    curl -s --connect-timeout 5 "http://${node_ip}:7472/metrics" 2>/dev/null || true
+}
+
+# extract_metric METRICS_TEXT METRIC_NAME
+extract_metric() {
+    local metrics="$1"
+    local metric_name="$2"
+    local value
+    if echo "$metric_name" | grep -q '{'; then
+        value=$(echo "$metrics" | grep -F "$metric_name" | head -1 | awk '{print $NF}')
+    else
+        value=$(echo "$metrics" | grep "^${metric_name} " | head -1 | awk '{print $NF}')
+    fi
+    if [ -n "$value" ]; then
+        printf '%.0f' "$value" 2>/dev/null || echo "$value"
+    fi
+}
+
+# assert_metric METRICS_OUTPUT METRIC_NAME COMPARISON VALUE
+assert_metric() {
+    local metrics="$1"
+    local metric_name="$2"
+    local comparison="$3"
+    local expected="${4:-}"
+    local value
+    if echo "$metric_name" | grep -q '{'; then
+        value=$(echo "$metrics" | grep -F "$metric_name" | head -1 | awk '{print $NF}')
+    else
+        value=$(echo "$metrics" | grep "^${metric_name} " | head -1 | awk '{print $NF}')
+    fi
+    [ -n "$value" ] || fail "Metric $metric_name not found in output"
+    [ "$comparison" = "exists" ] && return 0
+    local int_value int_expected
+    int_value=$(printf '%.0f' "$value" 2>/dev/null || echo "0")
+    int_expected=$(printf '%.0f' "$expected" 2>/dev/null || echo "0")
+    case "$comparison" in
+        ge) [ "$int_value" -ge "$int_expected" ] || fail "Metric $metric_name: expected >= $expected, got $value" ;;
+        gt) [ "$int_value" -gt "$int_expected" ] || fail "Metric $metric_name: expected > $expected, got $value" ;;
+        eq) [ "$int_value" -eq "$int_expected" ] || fail "Metric $metric_name: expected == $expected, got $value" ;;
+        *) fail "Unknown comparison: $comparison" ;;
+    esac
+}
+
+# print_allocator_metrics METRICS_TEXT [POOL_NAME]
+print_allocator_metrics() {
+    local metrics="$1"
+    local pool="${2:-remote}"
+    if [ -z "$metrics" ]; then
+        detail "allocator metrics: (unavailable)"
+        return
+    fi
+    local config_loaded pool_size in_use
+    config_loaded=$(extract_metric "$metrics" "purelb_k8s_client_config_loaded_bool")
+    pool_size=$(extract_metric "$metrics" "purelb_address_pool_size{pool=\"${pool}\"}")
+    in_use=$(extract_metric "$metrics" "purelb_address_pool_addresses_in_use{pool=\"${pool}\"}")
+    echo -e "${CYAN}    ── Metrics ────────────────────────────────────────────────${NC}"
+    detail "allocator │ config_loaded=${config_loaded:-?}  pool_size(${pool})=${pool_size:-?}  in_use(${pool})=${in_use:-?}"
+}
+
+# print_lbnodeagent_metrics METRICS_TEXT NODE_NAME
+print_lbnodeagent_metrics() {
+    local metrics="$1"
+    local node="${2:-?}"
+    if [ -z "$metrics" ]; then
+        detail "lbnodeagent metrics on $node: (unavailable)"
+        return
+    fi
+    local lease_healthy member_count subnet_count wins adds withdrawals garp renewals
+    lease_healthy=$(extract_metric "$metrics" "purelb_election_lease_healthy")
+    member_count=$(extract_metric "$metrics" "purelb_election_member_count")
+    subnet_count=$(extract_metric "$metrics" "purelb_election_subnet_count")
+    wins=$(extract_metric "$metrics" "purelb_lbnodeagent_election_wins_total")
+    adds=$(extract_metric "$metrics" "purelb_lbnodeagent_address_additions_total")
+    withdrawals=$(extract_metric "$metrics" "purelb_lbnodeagent_address_withdrawals_total")
+    garp=$(extract_metric "$metrics" "purelb_lbnodeagent_garp_sent_total")
+    renewals=$(extract_metric "$metrics" "purelb_election_lease_renewals_total")
+    echo -e "${CYAN}    ── Metrics ────────────────────────────────────────────────${NC}"
+    detail "lbnodeagent($node) │ lease_healthy=${lease_healthy:-?}  members=${member_count:-?}  subnets=${subnet_count:-?}"
+    detail "  counters │ wins=${wins:-0}  adds=${adds:-0}  withdrawals=${withdrawals:-0}  garp=${garp:-0}  lease_renewals=${renewals:-0}"
+}
+
+#---------------------------------------------------------------------
 # Cleanup
 #---------------------------------------------------------------------
 cleanup_test_services() {
@@ -2740,6 +3249,11 @@ run_all_tests() {
 
     # Address flags verification (Test 27)
     test_remote_vip_address_flags
+
+    # Multi-pool and config update tests (Tests 28-30)
+    test_remote_multi_pool
+    test_remote_incremental_multi_pool
+    test_remote_re_evaluate
 
     # Cleanup
     cleanup_test_services

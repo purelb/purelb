@@ -1174,15 +1174,15 @@ func TestMultiPoolBackwardCompat(t *testing.T) {
 }
 
 // ============================================================================
-// Balanced allocation allocator tests
+// BalancePools allocation allocator tests
 // ============================================================================
 
-func TestBalancedMultiPoolMutualExclusion(t *testing.T) {
+func TestBalancePoolsMultiPoolMutualExclusion(t *testing.T) {
 	alloc := New(allocatorTestLogger)
 	alloc.SetClient(&testK8S{t: t})
 	alloc.SetActiveSubnets(mockActiveSubnets([]string{"10.0.0.0/24", "10.0.1.0/24"}), "purelb")
 
-	// ServiceGroup with both multiPool and balanced set
+	// ServiceGroup with both multiPool and balancePools set
 	groups := []*purelbv2.ServiceGroup{
 		{
 			ObjectMeta: metav1.ObjectMeta{Name: "default"},
@@ -1193,7 +1193,7 @@ func TestBalancedMultiPoolMutualExclusion(t *testing.T) {
 						{Pool: "10.0.1.1-10.0.1.5", Subnet: "10.0.1.0/24"},
 					},
 					MultiPool: true,
-					Balanced:  true,
+					BalancePools: true,
 				},
 			},
 		},
@@ -1204,7 +1204,7 @@ func TestBalancedMultiPoolMutualExclusion(t *testing.T) {
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
 
 	err := alloc.Allocate(&svc)
-	assert.Error(t, err, "multi-pool and balanced should be mutually exclusive")
+	assert.Error(t, err, "multi-pool and balancePools should be mutually exclusive")
 	assert.Contains(t, err.Error(), "mutually exclusive")
 }
 

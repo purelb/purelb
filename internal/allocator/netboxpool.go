@@ -226,9 +226,9 @@ func (p NetboxPool) MultiPool() bool {
 	return false
 }
 
-// Balanced returns false for NetboxPool. Balanced allocation is
+// BalancePools returns false for NetboxPool. BalancePools allocation is
 // not supported for Netbox pools.
-func (p NetboxPool) Balanced() bool {
+func (p NetboxPool) BalancePools() bool {
 	return false
 }
 

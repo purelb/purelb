@@ -3,6 +3,14 @@
 # Stress test for graceful failover to find race conditions.
 # Runs the failover test multiple times with varied timing parameters.
 #
+# Usage:
+#   stress-failover.sh [iterations] [--context <name>]
+#
+# Examples:
+#   stress-failover.sh                  # 10 iterations, current context
+#   stress-failover.sh 50               # 50 iterations, current context
+#   stress-failover.sh 20 --context prox-purelb2
+#
 # Features:
 # - Multiple VIPs distributed across subnets (election contention per subnet)
 # - Dual-stack VIP (verifies IPv4 + IPv6 subnet correctness together)
@@ -263,7 +271,7 @@ EOF
             fi
         done
 
-        local bal_spec="balanced: true
+        local bal_spec="balancePools: true
     v4pools: ${bal_v4pools}"
         [ -n "$bal_v6pools" ] && bal_spec="${bal_spec}
     v6pools: ${bal_v6pools}"

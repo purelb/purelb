@@ -48,10 +48,10 @@ type LocalPool struct {
 	// that has active nodes.
 	multiPool bool
 
-	// balanced indicates whether balanced allocation is enabled.
+	// balancePools indicates whether balanced allocation is enabled.
 	// When true, new allocations pick the range with the fewest IPs
 	// currently in use, distributing services evenly across subnets.
-	balanced bool
+	balancePools bool
 
 	// v4Ranges contains the IPV4 addresses that are part of this
 	// pool. config.Parse guarantees that these are non-overlapping,
@@ -89,15 +89,15 @@ type LocalPool struct {
 // poolType should be "local" for addresses announced on the node's interface,
 // or "remote" for addresses announced on the dummy interface (for BGP/routing).
 // multiPool enables multi-pool allocation where services get one IP per range.
-// balanced enables balanced allocation where new services get IPs from the least-used range.
-func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6Pool *purelbv2.AddressPool, v4Pools []purelbv2.AddressPool, v6Pools []purelbv2.AddressPool, poolType string, skipIPv6DAD bool, multiPool bool, balanced bool) (LocalPool, error) {
+// balancePools enables balanced allocation where new services get IPs from the least-used range.
+func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6Pool *purelbv2.AddressPool, v4Pools []purelbv2.AddressPool, v6Pools []purelbv2.AddressPool, poolType string, skipIPv6DAD bool, multiPool bool, balancePools bool) (LocalPool, error) {
 	pool := LocalPool{
 		name:           name,
 		logger:         log,
 		poolType:       poolType,
 		skipIPv6DAD:    skipIPv6DAD,
 		multiPool:      multiPool,
-		balanced:       balanced,
+		balancePools:   balancePools,
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
@@ -296,8 +296,8 @@ func (p LocalPool) assignFamily(family int, service *v1.Service) error {
 
 	// Balanced allocation: pick least-used range.
 	// Skip for services with sharing keys — they must use the bound IP.
-	if p.balanced && SharingKey(service) == "" {
-		return p.assignFamilyBalanced(family, service)
+	if p.balancePools && SharingKey(service) == "" {
+		return p.assignFamilyBalancePools(family, service)
 	}
 
 	var lastErr error
@@ -645,9 +645,9 @@ func (p LocalPool) MultiPool() bool {
 	return p.multiPool
 }
 
-// Balanced returns whether balanced allocation is enabled for this pool.
-func (p LocalPool) Balanced() bool {
-	return p.balanced
+// BalancePools returns whether balanced allocation is enabled for this pool.
+func (p LocalPool) BalancePools() bool {
+	return p.balancePools
 }
 
 // countAllocationsPerRange counts how many IPs are currently allocated
@@ -669,10 +669,10 @@ func (p LocalPool) countAllocationsPerRange(ranges []*purelbv2.IPRange) []int {
 	return counts
 }
 
-// assignFamilyBalanced allocates an IP from the range with the fewest
+// assignFamilyBalancePools allocates an IP from the range with the fewest
 // current allocations, distributing services evenly across subnets.
 // Falls through to subsequent ranges if the preferred range is exhausted.
-func (p LocalPool) assignFamilyBalanced(family int, service *v1.Service) error {
+func (p LocalPool) assignFamilyBalancePools(family int, service *v1.Service) error {
 	var ranges []*purelbv2.IPRange
 	if family == nl.FAMILY_V6 {
 		ranges = p.v6Ranges
@@ -694,21 +694,21 @@ func (p LocalPool) assignFamilyBalanced(family int, service *v1.Service) error {
 		return counts[indices[a]] < counts[indices[b]]
 	})
 
-	logging.Debug(p.logger, "op", "assignFamilyBalanced", "service", namespacedName(service),
+	logging.Debug(p.logger, "op", "assignFamilyBalancePools", "service", namespacedName(service),
 		"family", family, "rangeCounts", fmt.Sprintf("%v", counts), "order", fmt.Sprintf("%v", indices))
 
 	// Try ranges in least-allocated order
 	for _, idx := range indices {
 		if err := p.assignFromRange(ranges[idx], service); err == nil {
-			logging.Info(p.logger, "op", "assignFamilyBalanced", "service", namespacedName(service),
-				"range", ranges[idx], "msg", "balanced allocation selected range")
-			balancedAllocations.WithLabelValues(p.name).Inc()
+			logging.Info(p.logger, "op", "assignFamilyBalancePools", "service", namespacedName(service),
+				"range", ranges[idx], "msg", "balancePools allocation selected range")
+			balancePoolsAllocations.WithLabelValues(p.name).Inc()
 			return nil
 		}
 	}
 
 	allocationRejected.WithLabelValues(p.name, "exhausted").Inc()
-	return fmt.Errorf("no available addresses for service %s in family %d (balanced, all ranges exhausted)",
+	return fmt.Errorf("no available addresses for service %s in family %d (balancePools, all ranges exhausted)",
 		namespacedName(service), family)
 }
 

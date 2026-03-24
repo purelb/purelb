@@ -154,9 +154,9 @@ func (a *Allocator) Allocate(svc *v1.Service) error {
 			return fmt.Errorf("unknown pool %q", poolName)
 		}
 
-		// Multi-pool and balanced are mutually exclusive
-		if isMultiPool(svc, pool) && pool.Balanced() {
-			return fmt.Errorf("multi-pool and balanced allocation are mutually exclusive for pool %s", pool)
+		// Multi-pool and balancePools are mutually exclusive
+		if isMultiPool(svc, pool) && pool.BalancePools() {
+			return fmt.Errorf("multi-pool and balancePools allocation are mutually exclusive for pool %s", pool)
 		}
 
 		// Check if this should be a multi-pool allocation

@@ -659,10 +659,10 @@ func TestAssignNextPerRange(t *testing.T) {
 }
 
 // ============================================================================
-// Balanced allocation tests
+// BalancePools allocation tests
 // ============================================================================
 
-func mustBalancedPool(t *testing.T, v4Pools []purelbv2.AddressPool, v6Pools []purelbv2.AddressPool) LocalPool {
+func mustBalancePoolsPool(t *testing.T, v4Pools []purelbv2.AddressPool, v6Pools []purelbv2.AddressPool) LocalPool {
 	t.Helper()
 	p, err := NewLocalPool("balanced-test", allocatorTestLogger, nil, nil, v4Pools, v6Pools, purelbv2.PoolTypeLocal, false, false, true)
 	if err != nil {
@@ -671,15 +671,15 @@ func mustBalancedPool(t *testing.T, v4Pools []purelbv2.AddressPool, v6Pools []pu
 	return p
 }
 
-func TestBalancedBasic(t *testing.T) {
+func TestBalancePoolsBasic(t *testing.T) {
 	// 2 v4 ranges with 3 IPs each
-	p := mustBalancedPool(t,
+	p := mustBalancePoolsPool(t,
 		[]purelbv2.AddressPool{
 			{Pool: "10.0.0.1-10.0.0.3", Subnet: "10.0.0.0/24"},
 			{Pool: "10.0.1.1-10.0.1.3", Subnet: "10.0.1.0/24"},
 		}, nil)
 
-	assert.True(t, p.Balanced())
+	assert.True(t, p.BalancePools())
 
 	// Allocate 4 services — should alternate between ranges
 	svcs := make([]v1.Service, 4)
@@ -708,9 +708,9 @@ func TestBalancedBasic(t *testing.T) {
 	assert.Equal(t, 2, range1Count, "should have 2 IPs from range 1")
 }
 
-func TestBalancedExhaustion(t *testing.T) {
+func TestBalancePoolsExhaustion(t *testing.T) {
 	// Range A has 1 IP, range B has 5 IPs
-	p := mustBalancedPool(t,
+	p := mustBalancePoolsPool(t,
 		[]purelbv2.AddressPool{
 			{Pool: "10.0.0.1/32", Subnet: "10.0.0.0/24"},
 			{Pool: "10.0.1.1-10.0.1.5", Subnet: "10.0.1.0/24"},
@@ -729,9 +729,9 @@ func TestBalancedExhaustion(t *testing.T) {
 	assert.Error(t, p.AssignNext(&svc), "should fail when all ranges exhausted")
 }
 
-func TestBalancedIPv6(t *testing.T) {
+func TestBalancePoolsIPv6(t *testing.T) {
 	// 2 v6 ranges with 2 IPs each
-	p := mustBalancedPool(t, nil,
+	p := mustBalancePoolsPool(t, nil,
 		[]purelbv2.AddressPool{
 			{Pool: "fd00:a::1-fd00:a::2", Subnet: "fd00:a::/64"},
 			{Pool: "fd00:b::1-fd00:b::2", Subnet: "fd00:b::/64"},
@@ -760,9 +760,9 @@ func TestBalancedIPv6(t *testing.T) {
 	assert.Equal(t, 2, rangeB, "should have 2 IPs from range B")
 }
 
-func TestBalancedDualStack(t *testing.T) {
+func TestBalancePoolsDualStack(t *testing.T) {
 	// 2 v4 ranges and 2 v6 ranges
-	p := mustBalancedPool(t,
+	p := mustBalancePoolsPool(t,
 		[]purelbv2.AddressPool{
 			{Pool: "10.0.0.1-10.0.0.2", Subnet: "10.0.0.0/24"},
 			{Pool: "10.0.1.1-10.0.1.2", Subnet: "10.0.1.0/24"},
@@ -781,7 +781,7 @@ func TestBalancedDualStack(t *testing.T) {
 		assert.Equal(t, 2, len(svcs[i].Status.LoadBalancer.Ingress), "should get 1 v4 + 1 v6")
 	}
 
-	// Each family should be balanced: 1 per range
+	// Each family should be balancePools: 1 per range
 	v4ranges := map[string]int{}
 	v6ranges := map[string]int{}
 	_, v4sub0, _ := net.ParseCIDR("10.0.0.0/24")
@@ -810,15 +810,15 @@ func TestBalancedDualStack(t *testing.T) {
 	assert.Equal(t, 1, v6ranges["sub1"], "v6 should have 1 from sub1")
 }
 
-func TestBalancedDisabled(t *testing.T) {
-	// Non-balanced pool (default) — should exhaust range 0 first
+func TestBalancePoolsDisabled(t *testing.T) {
+	// Non-balancePools pool (default) — should exhaust range 0 first
 	p, err := NewLocalPool("seq-test", allocatorTestLogger, nil, nil,
 		[]purelbv2.AddressPool{
 			{Pool: "10.0.0.1-10.0.0.2", Subnet: "10.0.0.0/24"},
 			{Pool: "10.0.1.1-10.0.1.2", Subnet: "10.0.1.0/24"},
 		}, nil, purelbv2.PoolTypeLocal, false, false, false)
 	assert.NoError(t, err)
-	assert.False(t, p.Balanced())
+	assert.False(t, p.BalancePools())
 
 	// Allocate 2 services — both should come from range 0 (sequential)
 	for i := 0; i < 2; i++ {
@@ -831,9 +831,9 @@ func TestBalancedDisabled(t *testing.T) {
 	}
 }
 
-func TestBalancedAfterRelease(t *testing.T) {
+func TestBalancePoolsAfterRelease(t *testing.T) {
 	// 2 ranges with 3 IPs each
-	p := mustBalancedPool(t,
+	p := mustBalancePoolsPool(t,
 		[]purelbv2.AddressPool{
 			{Pool: "10.0.0.1-10.0.0.3", Subnet: "10.0.0.0/24"},
 			{Pool: "10.0.1.1-10.0.1.3", Subnet: "10.0.1.0/24"},
@@ -867,9 +867,9 @@ func TestBalancedAfterRelease(t *testing.T) {
 	assert.True(t, sub0.Contains(newIP), "after release, should rebalance to range 0, got %s", newIP)
 }
 
-func TestBalancedWithSharingKeyBypass(t *testing.T) {
+func TestBalancePoolsWithSharingKeyBypass(t *testing.T) {
 	// 2 ranges — range B has fewer allocations
-	p := mustBalancedPool(t,
+	p := mustBalancePoolsPool(t,
 		[]purelbv2.AddressPool{
 			{Pool: "10.0.0.1-10.0.0.3", Subnet: "10.0.0.0/24"},
 			{Pool: "10.0.1.1-10.0.1.3", Subnet: "10.0.1.0/24"},
