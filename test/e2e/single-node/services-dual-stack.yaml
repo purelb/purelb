@@ -1,0 +1,22 @@
+---
+# Dual-stack (IPv4 + IPv6) test service
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-dual-stack
+  namespace: test
+  labels:
+    test-suite: single-node
+  annotations:
+    purelb.io/service-group: test-local-v2
+spec:
+  type: LoadBalancer
+  ipFamilies:
+  - IPv4
+  - IPv6
+  ipFamilyPolicy: RequireDualStack
+  selector:
+    app: nginx
+  ports:
+  - port: 87
+    targetPort: 80

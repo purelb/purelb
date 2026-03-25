@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"net/http"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -29,21 +29,21 @@ const subsystem = "k8s_client"
 
 var (
 	updates = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "updates_total",
 		Help:      "Number of k8s object updates that have been processed.",
 	})
 
 	updateErrors = prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "update_errors_total",
 		Help:      "Number of k8s object updates that failed for some reason.",
 	})
 
 	configLoaded = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: purelbv1.MetricsNamespace,
+		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "config_loaded_bool",
 		Help:      "1 if the PureLB configuration was successfully loaded at least once.",

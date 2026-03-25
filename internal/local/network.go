@@ -24,7 +24,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 // findLocal tries to find a "local" network interface based on the
@@ -65,7 +65,7 @@ func findLocal(regex *regexp.Regexp, lbIP net.IP) (net.IPNet, netlink.Link, erro
 func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	var lbIPNet net.IPNet = net.IPNet{IP: lbIP}
 
-	family := purelbv1.AddrFamily(lbIP)
+	family := purelbv2.AddrFamily(lbIP)
 
 	defaddrs, err := netlink.AddrList(intf, family)
 	if err != nil {
@@ -158,6 +158,9 @@ type AddressOptions struct {
 	PreferedLft int
 	// NoPrefixRoute prevents automatic prefix route creation when true.
 	NoPrefixRoute bool
+	// SkipDAD when true sets IFA_F_NODAD to skip IPv6 Duplicate Address
+	// Detection. This is an IPv6-only kernel flag, harmlessly ignored for IPv4.
+	SkipDAD bool
 }
 
 // addNetworkWithOptions adds lbIPNet to link with the specified options.
@@ -175,6 +178,9 @@ func addNetworkWithOptions(lbIPNet net.IPNet, link netlink.Link, opts AddressOpt
 
 	if opts.NoPrefixRoute {
 		addr.Flags |= 0x200 // IFA_F_NOPREFIXROUTE
+	}
+	if opts.SkipDAD {
+		addr.Flags |= 0x02 // IFA_F_NODAD
 	}
 
 	if err := netlink.AddrReplace(link, addr); err != nil {
@@ -257,9 +263,10 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string, o
 
 	lbIPNet := net.IPNet{IP: lbIP}
 
-	if aggregation == "default" {
+	// Empty aggregation defaults to using the subnet's mask
+	if aggregation == "default" || aggregation == "" {
 
-		switch purelbv1.AddrFamily(lbIP) {
+		switch purelbv2.AddrFamily(lbIP) {
 		case (nl.FAMILY_V4):
 			_, poolipnet, err := net.ParseCIDR(subnet)
 			if err != nil {
@@ -287,7 +294,7 @@ func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string, o
 
 	} else {
 
-		switch purelbv1.AddrFamily(lbIP) {
+		switch purelbv2.AddrFamily(lbIP) {
 		case (nl.FAMILY_V4):
 			_, poolaggr, err := net.ParseCIDR("0.0.0.0" + aggregation)
 			if err != nil {

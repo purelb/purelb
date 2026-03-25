@@ -1,0 +1,30 @@
+---
+# v2 API - Local pool (IPs on real interface)
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: test-local-v2
+  namespace: purelb-system
+spec:
+  local:
+    v4pool:
+      subnet: 192.168.151.0/24
+      pool: 192.168.151.210-192.168.151.215
+    v6pool:
+      subnet: 2001:470:b8f3:1::/64
+      pool: 2001:470:b8f3:1::f010-2001:470:b8f3:1::f015
+---
+# v2 API - Remote pool (IPs on kube-lb0)
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: test-remote-v2
+  namespace: purelb-system
+spec:
+  remote:
+    v4pool:
+      subnet: 10.200.0.0/24
+      pool: 10.200.0.10-10.200.0.15
+    v6pool:
+      subnet: fd00:10:200::/48
+      pool: fd00:10:200::10-fd00:10:200::15

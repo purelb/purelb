@@ -17,8 +17,6 @@ spec:
       annotations:
         prometheus.io/port: '7472'
         prometheus.io/scrape: 'true'
-        # Required to allow signal delivery for graceful termination
-        container.apparmor.security.beta.kubernetes.io/lbnodeagent: unconfined
       labels:
         {{- include "purelb.labels" . | nindent 8 }}
         app.kubernetes.io/component: lbnodeagent
@@ -43,14 +41,21 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        - name: PURELB_ML_NAMESPACE
+        - name: PURELB_NAMESPACE
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        - name: PURELB_ML_LABELS
-          value: "{{- include "purelb.memberlistLabels" . }}"
-        - name: ML_GROUP
-          value: "{{ .Values.memberlistSecretKey }}"
+        - name: PURELB_POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        # Lease-based election configuration
+        - name: PURELB_LEASE_DURATION
+          value: "{{ .Values.leaseConfig.leaseDuration }}"
+        - name: PURELB_RENEW_DEADLINE
+          value: "{{ .Values.leaseConfig.renewDeadline }}"
+        - name: PURELB_RETRY_PERIOD
+          value: "{{ .Values.leaseConfig.retryPeriod }}"
         image: "{{ .Values.image.repository }}/lbnodeagent:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         name: lbnodeagent
@@ -72,7 +77,12 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       serviceAccountName: lbnodeagent
-      terminationGracePeriodSeconds: 10
+      # Allow enough time for graceful shutdown:
+      # - Mark unhealthy + ForceSync (~1s)
+      # - Traffic drain wait (2s)
+      # - Lease deletion + cleanup (~1s)
+      # Plus buffer for slow API server responses
+      terminationGracePeriodSeconds: 30
       {{- if .Values.priorityClassName }}
       priorityClassName: {{ .Values.priorityClassName }}
       {{- end }}

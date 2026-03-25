@@ -10,7 +10,17 @@ https://purelb.io/
 
 ## Quick Start
 
-Install PureLB using Helm:
+### Option 1: Simple Manifest
+
+Install PureLB with a single command:
+
+```sh
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.15.0/install-v0.15.0.yaml
+```
+
+### Option 2: Helm (Recommended for Production)
+
+Install PureLB using Helm for more configuration options:
 
 ```sh
 helm repo add purelb https://purelb.github.io/purelb/charts
@@ -21,7 +31,7 @@ Or using OCI registry (Helm 3.8+, `--version` required):
 
 ```sh
 helm install --create-namespace --namespace=purelb-system purelb \
-    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.14.1
+    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.15.0
 ```
 
 For detailed installation and configuration, see https://purelb.github.io/purelb/install/

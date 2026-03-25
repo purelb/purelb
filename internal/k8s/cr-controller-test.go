@@ -33,7 +33,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	"purelb.io/pkg/generated/clientset/versioned/fake"
 	informers "purelb.io/pkg/generated/informers/externalversions"
 )
@@ -49,7 +49,7 @@ type fixture struct {
 	client     *fake.Clientset
 	kubeclient *k8sfake.Clientset
 	// Objects to put in the store.
-	serviceGroupLister []*purelbv1.ServiceGroup
+	serviceGroupLister []*purelbv2.ServiceGroup
 	// Actions expected to happen on the client.
 	kubeactions []core.Action
 	actions     []core.Action
@@ -66,14 +66,14 @@ func newFixture(t *testing.T) *fixture {
 	return f
 }
 
-func newServiceGroup(name string, replicas *int32) *purelbv1.ServiceGroup {
-	return &purelbv1.ServiceGroup{
-		TypeMeta: metav1.TypeMeta{APIVersion: purelbv1.SchemeGroupVersion.String()},
+func newServiceGroup(name string, replicas *int32) *purelbv2.ServiceGroup {
+	return &purelbv2.ServiceGroup{
+		TypeMeta: metav1.TypeMeta{APIVersion: purelbv2.SchemeGroupVersion.String()},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: metav1.NamespaceDefault,
 		},
-		Spec: purelbv1.ServiceGroupSpec{},
+		Spec: purelbv2.ServiceGroupSpec{},
 	}
 }
 
@@ -84,7 +84,7 @@ func (f *fixture) newController() (*Controller, informers.SharedInformerFactory,
 	i := informers.NewSharedInformerFactory(f.client, noResyncPeriodFunc())
 	k8sI := kubeinformers.NewSharedInformerFactory(f.kubeclient, noResyncPeriodFunc())
 
-	stubConfigChanged := func(*purelbv1.Config) SyncState {
+	stubConfigChanged := func(*purelbv2.Config) SyncState {
 		return SyncStateSuccess
 	}
 
@@ -96,7 +96,7 @@ func (f *fixture) newController() (*Controller, informers.SharedInformerFactory,
 	c.recorder = &record.FakeRecorder{}
 
 	for _, f := range f.serviceGroupLister {
-		i.Purelb().V1().ServiceGroups().Informer().GetIndexer().Add(f)
+		i.Purelb().V2().ServiceGroups().Informer().GetIndexer().Add(f)
 	}
 
 	return c, i, k8sI
@@ -231,14 +231,14 @@ func (f *fixture) expectUpdateDeploymentAction(d *apps.Deployment) {
 	f.kubeactions = append(f.kubeactions, core.NewUpdateAction(schema.GroupVersionResource{Resource: "deployments"}, d.Namespace, d))
 }
 
-func (f *fixture) expectUpdateServiceGroupStatusAction(serviceGroup *purelbv1.ServiceGroup) {
+func (f *fixture) expectUpdateServiceGroupStatusAction(serviceGroup *purelbv2.ServiceGroup) {
 	action := core.NewUpdateAction(schema.GroupVersionResource{Resource: "serviceGroups"}, serviceGroup.Namespace, serviceGroup)
 	// TODO: Until #38113 is merged, we can't use Subresource
 	//action.Subresource = "status"
 	f.actions = append(f.actions, action)
 }
 
-func getKey(serviceGroup *purelbv1.ServiceGroup, t *testing.T) string {
+func getKey(serviceGroup *purelbv2.ServiceGroup, t *testing.T) string {
 	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(serviceGroup)
 	if err != nil {
 		t.Errorf("Unexpected error getting key for serviceGroup %v: %v", serviceGroup.Name, err)

@@ -9,117 +9,868 @@
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the sp
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package election
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
-	"log"
+	"fmt"
+	"net"
 	"sort"
+	"sync/atomic"
 	"time"
 
-	"purelb.io/internal/k8s"
+	"github.com/go-kit/log"
+	coordinationv1 "k8s.io/api/coordination/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/utils/ptr"
 
-	gokitlog "github.com/go-kit/log"
-	"github.com/hashicorp/memberlist"
+	"purelb.io/internal/logging"
+)
+
+const (
+	// LeasePrefix is prepended to node names to form lease names
+	LeasePrefix = "purelb-node-"
+
+	// Default timing values (can be overridden via Config)
+	DefaultLeaseDuration = 5 * time.Second
+	DefaultRenewDeadline = 7 * time.Second
+	DefaultRetryPeriod   = 2 * time.Second
+
+	// maxRenewFailures is the number of consecutive renewal failures
+	// before marking ourselves unhealthy
+	maxRenewFailures = 3
 )
 
 // Config provides the configuration data that New() needs.
 type Config struct {
+	// Namespace is where PureLB leases are created
 	Namespace string
-	Labels    string
-	NodeName  string
-	BindAddr  string
-	BindPort  int
-	Secret    []byte
-	StopCh    chan struct{}
-	Logger    *gokitlog.Logger
-	Client    *k8s.Client
+
+	// NodeName is this node's name (used for lease identity)
+	NodeName string
+
+	// InstanceID is a unique identifier for this lbnodeagent instance (Pod UID).
+	// Used to prevent race conditions during DaemonSet pod recreation where
+	// an old pod might delete a new pod's lease.
+	InstanceID string
+
+	// Client is the Kubernetes client
+	Client kubernetes.Interface
+
+	// LeaseDuration is how long a lease is valid
+	LeaseDuration time.Duration
+
+	// RenewDeadline is how long to retry renewals before giving up
+	RenewDeadline time.Duration
+
+	// RetryPeriod is the interval between renewal attempts
+	RetryPeriod time.Duration
+
+	// Logger for structured logging
+	Logger log.Logger
+
+	// StopCh signals shutdown
+	StopCh <-chan struct{}
+
+	// OnMemberChange is called when membership changes (node join/leave/update)
+	// This typically calls client.ForceSync() to re-evaluate all services
+	OnMemberChange func()
+
+	// GetLocalSubnets returns this node's local subnets for the lease annotation
+	GetLocalSubnets func() ([]string, error)
 }
 
+// electionState holds an immutable snapshot of election data.
+// Used with atomic.Pointer for lock-free access.
+type electionState struct {
+	// liveNodes contains node names with valid (non-expired) leases
+	liveNodes []string
+
+	// subnetToNodes maps subnet CIDR to nodes that have that subnet
+	// e.g., "192.168.1.0/24" -> ["node-a", "node-c"]
+	subnetToNodes map[string][]string
+
+	// nodeToSubnets maps node name to its subnets
+	// e.g., "node-a" -> ["192.168.1.0/24", "10.0.0.0/24"]
+	nodeToSubnets map[string][]string
+}
+
+// Election manages leader election for service IP announcements using
+// Kubernetes Leases. Each node creates a lease with its subnet annotations,
+// and election winners are determined by consistent hashing.
 type Election struct {
-	namespace  string
-	labels     string
-	Memberlist *memberlist.Memberlist
-	logger     gokitlog.Logger
-	stopCh     chan struct{}
-	eventCh    chan memberlist.NodeEvent
-	Client     *k8s.Client
+	config Config
+
+	// leaseName is this node's lease name (LeasePrefix + NodeName)
+	leaseName string
+
+	// state holds the current election state (atomic for lock-free access)
+	state atomic.Pointer[electionState]
+
+	// leaseInformer watches all PureLB leases in the namespace
+	leaseInformer cache.SharedIndexInformer
+
+	// informerFactory manages the informer lifecycle
+	informerFactory informers.SharedInformerFactory
+
+	// leaseHealthy tracks whether our own lease is valid
+	// When false, Winner() returns "" to force withdrawal of all announcements
+	leaseHealthy atomic.Bool
+
+	// renewFailures counts consecutive renewal failures
+	renewFailures atomic.Int32
+
+	// renewTicker triggers periodic lease renewal
+	renewTicker *time.Ticker
+
+	// ctx and cancel for managing goroutines
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
-func New(cfg *Config) (Election, error) {
-	election := Election{stopCh: cfg.StopCh, logger: *cfg.Logger}
-
-	mconfig := memberlist.DefaultLANConfig()
-	mconfig.Name = cfg.NodeName
-	mconfig.BindAddr = cfg.BindAddr
-	mconfig.BindPort = cfg.BindPort
-	mconfig.AdvertisePort = cfg.BindPort
-	mconfig.SecretKey = cfg.Secret
-
-	loggerout := gokitlog.NewStdlibAdapter(gokitlog.With(*cfg.Logger, "component", "MemberList"))
-	mconfig.Logger = log.New(loggerout, "", log.Lshortfile)
-
-	eventCh := make(chan memberlist.NodeEvent, 16)
-	mconfig.Events = &memberlist.ChannelEventDelegate{Ch: eventCh}
-	election.eventCh = eventCh
-	election.namespace = cfg.Namespace
-	election.labels = cfg.Labels
-
-	mlist, err := memberlist.Create(mconfig)
-	election.Memberlist = mlist
-	election.Client = cfg.Client
-
-	return election, err
-}
-
-func (e *Election) Join(iplist []string) error {
-	go e.watchEvents()
-
-	// To minimize the system impact of joining the memberlist we limit
-	// the number of initial peers to 5 no matter how many pods we have.
-	podCount := len(iplist)
-	if podCount > 5 {
-		podCount = 5
+// New creates a new Election instance. Call Start() to begin operation.
+func New(cfg Config) (*Election, error) {
+	// Apply defaults
+	if cfg.LeaseDuration == 0 {
+		cfg.LeaseDuration = DefaultLeaseDuration
+	}
+	if cfg.RenewDeadline == 0 {
+		cfg.RenewDeadline = DefaultRenewDeadline
+	}
+	if cfg.RetryPeriod == 0 {
+		cfg.RetryPeriod = DefaultRetryPeriod
 	}
 
-	n, err := e.Memberlist.Join(iplist[0:podCount])
-	e.logger.Log("op", "startup", "msg", "Memberlist join", "hosts contacted", n)
-	return err
+	if cfg.Client == nil {
+		return nil, fmt.Errorf("Client is required")
+	}
+	if cfg.NodeName == "" {
+		return nil, fmt.Errorf("NodeName is required")
+	}
+	if cfg.Namespace == "" {
+		return nil, fmt.Errorf("Namespace is required")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	e := &Election{
+		config:    cfg,
+		leaseName: LeasePrefix + cfg.NodeName,
+		ctx:       ctx,
+		cancel:    cancel,
+	}
+
+	// Initialize with empty state
+	e.state.Store(&electionState{
+		liveNodes:     []string{},
+		subnetToNodes: make(map[string][]string),
+		nodeToSubnets: make(map[string][]string),
+	})
+
+	// Mark ourselves as healthy initially (will be confirmed when lease is created)
+	e.leaseHealthy.Store(true)
+
+	return e, nil
 }
 
-func (e *Election) shutdown() error {
-	err := e.Memberlist.Leave(1 * time.Second)
-	e.Memberlist.Shutdown()
-	e.logger.Log("op", "shutdown", "msg", "MemberList shut down", "error", err)
+// Start begins the election process:
+// 1. Creates our lease
+// 2. Starts the lease informer
+// 3. Starts the renewal goroutine
+//
+// Note: The caller is responsible for calling Shutdown() during graceful shutdown.
+// Do NOT rely on stopCh alone - the shutdown sequence requires coordination
+// between election and announcer to properly withdraw addresses before
+// deleting the lease.
+func (e *Election) Start() error {
+	logging.Info(e.config.Logger, "op", "election", "action", "starting",
+		"node", e.config.NodeName, "namespace", e.config.Namespace,
+		"leaseDuration", e.config.LeaseDuration.String())
 
-	return err
-}
+	// Create our lease first
+	if err := e.createOrUpdateLease(); err != nil {
+		return fmt.Errorf("failed to create lease: %w", err)
+	}
 
-// Winner returns the node name of the "winning" node, i.e., the node
-// that will announce the service represented by "key".
-func (e *Election) Winner(key string) string {
-	members := e.Memberlist.Members()
-	pods, err := e.Client.GetPodsIPs(e.namespace, e.labels)
+	// Set up informer factory with label selector for PureLB leases
+	e.informerFactory = informers.NewSharedInformerFactoryWithOptions(
+		e.config.Client,
+		e.config.LeaseDuration, // Resync period to detect expired leases
+		informers.WithNamespace(e.config.Namespace),
+		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
+			// Only watch leases that start with our prefix
+			opts.FieldSelector = ""
+		}),
+	)
+
+	// Get the lease informer
+	e.leaseInformer = e.informerFactory.Coordination().V1().Leases().Informer()
+
+	// Add event handlers
+	_, err := e.leaseInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    e.onLeaseAdd,
+		UpdateFunc: e.onLeaseUpdate,
+		DeleteFunc: e.onLeaseDelete,
+	})
 	if err != nil {
-		e.logger.Log("op", "Election", "error", err, "msg", "failed to get Pod count")
+		return fmt.Errorf("failed to add event handlers: %w", err)
 	}
 
-	// if the number of pods that k8s reports is different than the
-	// number of members in the memberlist then something has gotten out
-	// of sync.
-	if len(members) != len(pods) {
-		e.logger.Log("op", "Election", "error", "members/pods out of sync", "members", members, "pods", pods)
+	// Start the informer
+	e.informerFactory.Start(e.config.StopCh)
+
+	// Wait for cache sync
+	logging.Debug(e.config.Logger, "op", "election", "action", "waiting for cache sync")
+	if !cache.WaitForCacheSync(e.config.StopCh, e.leaseInformer.HasSynced) {
+		return fmt.Errorf("timed out waiting for lease informer cache sync")
+	}
+	logging.Info(e.config.Logger, "op", "election", "action", "cache synced",
+		"msg", "lease informer ready")
+
+	// Build initial state
+	e.rebuildMaps()
+
+	// Start renewal goroutine
+	e.renewTicker = time.NewTicker(e.config.LeaseDuration / 2)
+	go e.renewLoop()
+
+	// Note: We intentionally do NOT auto-shutdown when stopCh closes.
+	// The shutdown sequence must be coordinated by main() to ensure
+	// addresses are withdrawn before the lease is deleted.
+
+	return nil
+}
+
+// Shutdown gracefully stops the election process. This performs the full
+// shutdown sequence: marks unhealthy, stops renewals, and deletes the lease.
+//
+// For more granular control during graceful shutdown, use:
+//   1. MarkUnhealthy() - causes Winner() to return ""
+//   2. [caller triggers address withdrawal via ForceSync]
+//   3. StopRenewals() - stops the renewal goroutine
+//   4. DeleteOurLease() - removes our lease from the cluster
+func (e *Election) Shutdown() {
+	logging.Info(e.config.Logger, "op", "election", "action", "shutdown", "msg", "starting graceful shutdown")
+
+	// Mark ourselves unhealthy so Winner() returns ""
+	e.MarkUnhealthy()
+
+	// Stop renewals
+	e.StopRenewals()
+
+	// Delete our lease so other nodes see us gone immediately
+	if err := e.DeleteOurLease(); err != nil {
+		logging.Info(e.config.Logger, "op", "election", "action", "delete lease",
+			"error", err, "msg", "failed to delete lease during shutdown")
 	}
 
-	nodes := []string{}
-	for _, node := range members {
-		nodes = append(nodes, node.Name)
+	logging.Info(e.config.Logger, "op", "election", "action", "shutdown", "msg", "complete")
+}
+
+// StopRenewals stops the lease renewal goroutine and cancels the context.
+// Call this after marking unhealthy and triggering address withdrawal.
+func (e *Election) StopRenewals() {
+	e.cancel()
+
+	if e.renewTicker != nil {
+		e.renewTicker.Stop()
 	}
 
-	return election(key, nodes)[0]
+	logging.Debug(e.config.Logger, "op", "election", "action", "stopRenewals",
+		"msg", "lease renewals stopped")
+}
+
+// MarkUnhealthy marks this node as unhealthy, causing Winner() to return ""
+// for all queries. Use this during graceful shutdown.
+func (e *Election) MarkUnhealthy() {
+	e.leaseHealthy.Store(false)
+	RecordLeaseHealthy(false)
+	logging.Info(e.config.Logger, "op", "election", "action", "markUnhealthy",
+		"msg", "node marked unhealthy, withdrawing from elections")
+}
+
+// IsHealthy returns whether this node's lease is currently valid
+func (e *Election) IsHealthy() bool {
+	return e.leaseHealthy.Load()
+}
+
+// MemberCount returns the number of nodes with valid leases
+func (e *Election) MemberCount() int {
+	state := e.state.Load()
+	return len(state.liveNodes)
+}
+
+// Winner returns the node name that should announce the given IP address.
+// Returns "" if:
+// - Our lease is unhealthy (prevents split-brain)
+// - No nodes are available
+// - The informer hasn't synced yet
+// - No nodes have a subnet containing the IP (subnet-aware filtering)
+//
+// The key parameter is the IP address string (e.g., "192.168.1.100").
+// Only nodes whose local subnets contain this IP are eligible candidates.
+func (e *Election) Winner(key string) string {
+	// Self-health check: if our lease is unhealthy, we cannot participate
+	// This prevents split-brain during API server partitions
+	if !e.leaseHealthy.Load() {
+		logging.Debug(e.config.Logger, "op", "election", "action", "winner",
+			"key", key, "result", "", "reason", "lease unhealthy")
+		return ""
+	}
+
+	// Check if informer has synced
+	if e.leaseInformer != nil && !e.leaseInformer.HasSynced() {
+		logging.Debug(e.config.Logger, "op", "election", "action", "winner",
+			"key", key, "result", "", "reason", "informer not synced")
+		return ""
+	}
+
+	state := e.state.Load()
+	if state == nil || len(state.liveNodes) == 0 {
+		logging.Debug(e.config.Logger, "op", "election", "action", "winner",
+			"key", key, "result", "", "reason", "no live nodes")
+		return ""
+	}
+
+	// Parse the IP address
+	ip := net.ParseIP(key)
+	if ip == nil {
+		// If key is not a valid IP, fall back to all nodes
+		// This maintains backward compatibility for non-IP keys
+		logging.Debug(e.config.Logger, "op", "election", "action", "winner",
+			"key", key, "msg", "key is not a valid IP, using all nodes")
+		candidates := make([]string, len(state.liveNodes))
+		copy(candidates, state.liveNodes)
+		return election(key, candidates)[0]
+	}
+
+	// Find candidates: nodes that have a subnet containing this IP
+	candidates := e.findCandidatesForIP(state, ip)
+
+	if len(candidates) == 0 {
+		// No node has a matching subnet - return empty string
+		// The announcer will handle this (no announcement)
+		logging.Debug(e.config.Logger, "op", "election", "action", "winner",
+			"key", key, "result", "", "reason", "no nodes with matching subnet")
+		return ""
+	}
+
+	winner := election(key, candidates)[0]
+
+	logging.Debug(e.config.Logger, "op", "election", "action", "winner",
+		"key", key, "candidates", len(candidates), "winner", winner)
+
+	return winner
+}
+
+// findCandidatesForIP returns all nodes that have a subnet containing the given IP.
+// The returned slice is deduplicated and sorted for deterministic results.
+func (e *Election) findCandidatesForIP(state *electionState, ip net.IP) []string {
+	candidateSet := make(map[string]struct{})
+
+	// Check each subnet to see if it contains the IP
+	for subnet, nodes := range state.subnetToNodes {
+		_, ipnet, err := net.ParseCIDR(subnet)
+		if err != nil {
+			continue
+		}
+		if ipnet.Contains(ip) {
+			// All nodes with this subnet are candidates
+			for _, node := range nodes {
+				candidateSet[node] = struct{}{}
+			}
+		}
+	}
+
+	// Convert to sorted slice for deterministic election
+	candidates := make([]string, 0, len(candidateSet))
+	for node := range candidateSet {
+		candidates = append(candidates, node)
+	}
+	sort.Strings(candidates)
+
+	return candidates
+}
+
+// HasLocalCandidate returns true if this node has a subnet containing the given IP.
+// This is useful for the announcer to know if it should even attempt to announce.
+func (e *Election) HasLocalCandidate(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+
+	state := e.state.Load()
+	if state == nil {
+		return false
+	}
+
+	// Check if our node has any subnet containing this IP
+	mySubnets, ok := state.nodeToSubnets[e.config.NodeName]
+	if !ok {
+		return false
+	}
+
+	for _, subnet := range mySubnets {
+		_, ipnet, err := net.ParseCIDR(subnet)
+		if err != nil {
+			continue
+		}
+		if ipnet.Contains(ip) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// DeleteOurLease removes this node's lease from the cluster, but only if
+// we still own it. Uses a fresh context since this may be called after
+// StopRenewals() which cancels the election context.
+//
+// Ownership is verified by checking the InstanceAnnotation matches our
+// InstanceID. This prevents race conditions during DaemonSet pod recreation
+// where an old pod might try to delete a new pod's lease.
+func (e *Election) DeleteOurLease() error {
+	// Use a fresh context with timeout since e.ctx may be cancelled
+	// during graceful shutdown (StopRenewals cancels e.ctx)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Get the current lease to check ownership
+	lease, err := e.config.Client.CoordinationV1().Leases(e.config.Namespace).Get(
+		ctx, e.leaseName, metav1.GetOptions{},
+	)
+	if err != nil {
+		// Lease doesn't exist or other error - nothing to delete
+		logging.Debug(e.config.Logger, "op", "election", "action", "deleteLease",
+			"lease", e.leaseName, "error", err, "msg", "failed to get lease for deletion")
+		return nil
+	}
+
+	// Verify we own this lease by checking the instance annotation
+	leaseInstance := ""
+	if lease.Annotations != nil {
+		leaseInstance = lease.Annotations[InstanceAnnotation]
+	}
+
+	if leaseInstance != e.config.InstanceID {
+		// Lease belongs to a different instance (likely new pod) - don't delete
+		logging.Debug(e.config.Logger, "op", "election", "action", "deleteLease",
+			"lease", e.leaseName, "ourInstance", e.config.InstanceID,
+			"leaseInstance", leaseInstance, "msg", "lease owned by different instance, skipping delete")
+		return nil
+	}
+
+	// Delete with ResourceVersion precondition for atomic operation
+	// This ensures we delete the exact lease we just checked
+	err = e.config.Client.CoordinationV1().Leases(e.config.Namespace).Delete(
+		ctx,
+		e.leaseName,
+		metav1.DeleteOptions{
+			Preconditions: &metav1.Preconditions{
+				ResourceVersion: &lease.ResourceVersion,
+			},
+		},
+	)
+	if err != nil {
+		// If delete fails due to ResourceVersion conflict, another instance
+		// has already updated the lease - that's fine, we don't own it anymore
+		logging.Debug(e.config.Logger, "op", "election", "action", "deleteLease",
+			"lease", e.leaseName, "error", err, "msg", "delete failed (likely ownership changed)")
+		return nil
+	}
+
+	logging.Info(e.config.Logger, "op", "election", "action", "deleteLease",
+		"lease", e.leaseName, "msg", "lease deleted")
+	return nil
+}
+
+// createOrUpdateLease creates our lease or updates it if it exists
+func (e *Election) createOrUpdateLease() error {
+	ctx := e.ctx
+
+	// Get subnets for annotation
+	var subnetsAnnotation string
+	if e.config.GetLocalSubnets != nil {
+		subnets, err := e.config.GetLocalSubnets()
+		if err != nil {
+			logging.Info(e.config.Logger, "op", "election", "action", "getSubnets",
+				"error", err, "msg", "failed to get local subnets, continuing without")
+		} else {
+			subnetsAnnotation = FormatSubnetsAnnotation(subnets)
+		}
+	}
+
+	// Get the Node object for OwnerReference (enables garbage collection)
+	node, err := e.config.Client.CoreV1().Nodes().Get(ctx, e.config.NodeName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get node for owner reference: %w", err)
+	}
+
+	now := metav1.NewMicroTime(time.Now())
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      e.leaseName,
+			Namespace: e.config.Namespace,
+			Annotations: map[string]string{
+				SubnetsAnnotation:  subnetsAnnotation,
+				InstanceAnnotation: e.config.InstanceID,
+			},
+			Labels: map[string]string{
+				"app.kubernetes.io/component": "lbnodeagent",
+				"app.kubernetes.io/name":      "purelb",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "v1",
+					Kind:               "Node",
+					Name:               node.Name,
+					UID:                node.UID,
+					BlockOwnerDeletion: ptr.To(false),
+					Controller:         ptr.To(false),
+				},
+			},
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &e.config.NodeName,
+			LeaseDurationSeconds: ptr.To(int32(e.config.LeaseDuration.Seconds())),
+			RenewTime:            &now,
+		},
+	}
+
+	// Try to create the lease
+	_, err = e.config.Client.CoordinationV1().Leases(e.config.Namespace).Create(
+		ctx, lease, metav1.CreateOptions{},
+	)
+	if err == nil {
+		logging.Info(e.config.Logger, "op", "election", "action", "createLease",
+			"lease", e.leaseName, "subnets", subnetsAnnotation, "msg", "lease created")
+		e.leaseHealthy.Store(true)
+		e.renewFailures.Store(0)
+		RecordLeaseHealthy(true)
+		if e.config.GetLocalSubnets != nil {
+			if subnets, err := e.config.GetLocalSubnets(); err == nil {
+				RecordLocalSubnetCount(len(subnets))
+			}
+		}
+		return nil
+	}
+
+	// Lease might already exist, try to update it
+	existing, getErr := e.config.Client.CoordinationV1().Leases(e.config.Namespace).Get(
+		ctx, e.leaseName, metav1.GetOptions{},
+	)
+	if getErr != nil {
+		return fmt.Errorf("failed to create or get lease: create=%w, get=%v", err, getErr)
+	}
+
+	// Update the existing lease
+	existing.Spec.RenewTime = &now
+	existing.Annotations = lease.Annotations
+	existing.OwnerReferences = lease.OwnerReferences
+
+	_, err = e.config.Client.CoordinationV1().Leases(e.config.Namespace).Update(
+		ctx, existing, metav1.UpdateOptions{},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update existing lease: %w", err)
+	}
+
+	logging.Info(e.config.Logger, "op", "election", "action", "updateLease",
+		"lease", e.leaseName, "subnets", subnetsAnnotation, "msg", "lease updated")
+	e.leaseHealthy.Store(true)
+	e.renewFailures.Store(0)
+	RecordLeaseHealthy(true)
+	if e.config.GetLocalSubnets != nil {
+		if subnets, err := e.config.GetLocalSubnets(); err == nil {
+			RecordLocalSubnetCount(len(subnets))
+		}
+	}
+	return nil
+}
+
+// renewLease renews our lease to indicate we're still alive
+func (e *Election) renewLease() error {
+	ctx := e.ctx
+
+	// Get current lease
+	lease, err := e.config.Client.CoordinationV1().Leases(e.config.Namespace).Get(
+		ctx, e.leaseName, metav1.GetOptions{},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get lease for renewal: %w", err)
+	}
+
+	// Update renew time
+	now := metav1.NewMicroTime(time.Now())
+	lease.Spec.RenewTime = &now
+
+	// Ensure annotations map exists
+	if lease.Annotations == nil {
+		lease.Annotations = make(map[string]string)
+	}
+
+	// Always set our instance ID (ensures ownership even if lease was orphaned)
+	lease.Annotations[InstanceAnnotation] = e.config.InstanceID
+
+	// Optionally update subnets if they changed
+	if e.config.GetLocalSubnets != nil {
+		subnets, err := e.config.GetLocalSubnets()
+		if err == nil {
+			newAnnotation := FormatSubnetsAnnotation(subnets)
+			if lease.Annotations[SubnetsAnnotation] != newAnnotation {
+				lease.Annotations[SubnetsAnnotation] = newAnnotation
+				logging.Info(e.config.Logger, "op", "election", "action", "subnetsChanged",
+					"lease", e.leaseName, "subnets", newAnnotation)
+			}
+		}
+	}
+
+	_, err = e.config.Client.CoordinationV1().Leases(e.config.Namespace).Update(
+		ctx, lease, metav1.UpdateOptions{},
+	)
+	if err != nil {
+		failures := e.renewFailures.Add(1)
+		RecordLeaseRenewalFailure()
+		if failures >= maxRenewFailures {
+			e.leaseHealthy.Store(false)
+			RecordLeaseHealthy(false)
+			logging.Info(e.config.Logger, "op", "election", "action", "renewFailed",
+				"lease", e.leaseName, "failures", failures,
+				"msg", "marking unhealthy after repeated failures")
+		}
+		return fmt.Errorf("failed to renew lease: %w", err)
+	}
+
+	// Success - reset failures and mark healthy
+	RecordLeaseRenewal()
+	if e.renewFailures.Load() > 0 {
+		logging.Info(e.config.Logger, "op", "election", "action", "renewRecovered",
+			"lease", e.leaseName, "msg", "lease renewal recovered")
+	}
+	e.renewFailures.Store(0)
+	if !e.leaseHealthy.Load() {
+		e.leaseHealthy.Store(true)
+		RecordLeaseHealthy(true)
+		logging.Info(e.config.Logger, "op", "election", "action", "healthRestored",
+			"lease", e.leaseName, "msg", "re-enabling elections after recovery")
+		if e.config.OnMemberChange != nil {
+			e.config.OnMemberChange()
+		}
+	}
+
+	logging.Debug(e.config.Logger, "op", "election", "action", "renewLease",
+		"lease", e.leaseName, "msg", "lease renewed")
+	return nil
+}
+
+// renewLoop periodically renews our lease
+func (e *Election) renewLoop() {
+	for {
+		select {
+		case <-e.renewTicker.C:
+			if err := e.renewLease(); err != nil {
+				logging.Info(e.config.Logger, "op", "election", "action", "renewLoop",
+					"error", err, "msg", "lease renewal failed")
+			}
+		case <-e.ctx.Done():
+			return
+		}
+	}
+}
+
+// rebuildMaps rebuilds the election state from the lease informer cache.
+// Uses copy-on-write pattern: builds new state, then atomically swaps.
+func (e *Election) rebuildMaps() {
+	newState := &electionState{
+		liveNodes:     make([]string, 0),
+		subnetToNodes: make(map[string][]string),
+		nodeToSubnets: make(map[string][]string),
+	}
+
+	now := time.Now()
+
+	// Iterate through all leases in the cache
+	for _, obj := range e.leaseInformer.GetStore().List() {
+		lease, ok := obj.(*coordinationv1.Lease)
+		if !ok {
+			continue
+		}
+
+		// Only process PureLB leases
+		if len(lease.Name) <= len(LeasePrefix) || lease.Name[:len(LeasePrefix)] != LeasePrefix {
+			continue
+		}
+
+		// Check if lease is still valid (not expired)
+		if !e.isLeaseValid(lease, now) {
+			logging.Debug(e.config.Logger, "op", "election", "action", "rebuildMaps",
+				"lease", lease.Name, "msg", "skipping expired lease")
+			continue
+		}
+
+		// Extract node name from lease
+		nodeName := lease.Name[len(LeasePrefix):]
+		newState.liveNodes = append(newState.liveNodes, nodeName)
+
+		// Parse subnet annotation
+		if lease.Annotations != nil {
+			subnetsStr := lease.Annotations[SubnetsAnnotation]
+			subnets := ParseSubnetsAnnotation(subnetsStr)
+			newState.nodeToSubnets[nodeName] = subnets
+
+			for _, subnet := range subnets {
+				newState.subnetToNodes[subnet] = append(newState.subnetToNodes[subnet], nodeName)
+			}
+		}
+	}
+
+	// Sort for determinism
+	sort.Strings(newState.liveNodes)
+
+	// Atomic swap
+	e.state.Store(newState)
+
+	// Record metrics
+	RecordMemberCount(len(newState.liveNodes))
+	RecordSubnetCount(len(newState.subnetToNodes))
+
+	logging.Debug(e.config.Logger, "op", "election", "action", "rebuildMaps",
+		"liveNodes", len(newState.liveNodes), "subnets", len(newState.subnetToNodes),
+		"msg", "election state rebuilt")
+}
+
+// sameMembership returns true if two election states have the same
+// set of live nodes with the same subnet assignments.
+func (e *Election) sameMembership(a, b *electionState) bool {
+	if len(a.liveNodes) != len(b.liveNodes) {
+		return false
+	}
+	// liveNodes is sorted, so direct comparison works
+	for i := range a.liveNodes {
+		if a.liveNodes[i] != b.liveNodes[i] {
+			return false
+		}
+	}
+	// Check if subnet assignments changed
+	if len(a.subnetToNodes) != len(b.subnetToNodes) {
+		return false
+	}
+	for subnet, aNodes := range a.subnetToNodes {
+		bNodes, ok := b.subnetToNodes[subnet]
+		if !ok || len(aNodes) != len(bNodes) {
+			return false
+		}
+		for i := range aNodes {
+			if aNodes[i] != bNodes[i] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// isLeaseValid checks if a lease is still valid (not expired)
+func (e *Election) isLeaseValid(lease *coordinationv1.Lease, now time.Time) bool {
+	if lease.Spec.RenewTime == nil || lease.Spec.LeaseDurationSeconds == nil {
+		return false
+	}
+
+	renewTime := lease.Spec.RenewTime.Time
+	duration := time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second
+	expiry := renewTime.Add(duration)
+
+	return now.Before(expiry)
+}
+
+// Event handlers for lease informer
+
+func (e *Election) onLeaseAdd(obj interface{}) {
+	lease, ok := obj.(*coordinationv1.Lease)
+	if !ok {
+		return
+	}
+
+	// Only process PureLB leases
+	if len(lease.Name) <= len(LeasePrefix) || lease.Name[:len(LeasePrefix)] != LeasePrefix {
+		return
+	}
+
+	nodeName := lease.Name[len(LeasePrefix):]
+	logging.Info(e.config.Logger, "op", "election", "event", "leaseAdd",
+		"node", nodeName, "msg", "node joined cluster")
+
+	e.rebuildMaps()
+	if e.config.OnMemberChange != nil {
+		e.config.OnMemberChange()
+	}
+}
+
+func (e *Election) onLeaseUpdate(oldObj, newObj interface{}) {
+	newLease, ok := newObj.(*coordinationv1.Lease)
+	if !ok {
+		return
+	}
+
+	// Only process PureLB leases
+	if len(newLease.Name) <= len(LeasePrefix) || newLease.Name[:len(LeasePrefix)] != LeasePrefix {
+		return
+	}
+
+	// Snapshot current membership before rebuild
+	oldState := e.state.Load()
+
+	// Rebuild maps from local cache - filters out expired leases
+	e.rebuildMaps()
+
+	// Check if membership changed (node joined/left, subnet changed, or lease expired)
+	newState := e.state.Load()
+	if !e.sameMembership(oldState, newState) {
+		logging.Info(e.config.Logger, "op", "election", "event", "membershipChanged",
+			"oldNodes", len(oldState.liveNodes), "newNodes", len(newState.liveNodes),
+			"msg", "membership change detected")
+		if e.config.OnMemberChange != nil {
+			e.config.OnMemberChange()
+		}
+	}
+}
+
+func (e *Election) onLeaseDelete(obj interface{}) {
+	lease, ok := obj.(*coordinationv1.Lease)
+	if !ok {
+		// Handle DeletedFinalStateUnknown
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		lease, ok = tombstone.Obj.(*coordinationv1.Lease)
+		if !ok {
+			return
+		}
+	}
+
+	// Only process PureLB leases
+	if len(lease.Name) <= len(LeasePrefix) || lease.Name[:len(LeasePrefix)] != LeasePrefix {
+		return
+	}
+
+	nodeName := lease.Name[len(LeasePrefix):]
+	logging.Info(e.config.Logger, "op", "election", "event", "leaseDelete",
+		"node", nodeName, "msg", "node left cluster")
+
+	e.rebuildMaps()
+	if e.config.OnMemberChange != nil {
+		e.config.OnMemberChange()
+	}
 }
 
 // election conducts an election among the candidates based on the
@@ -137,21 +888,4 @@ func election(key string, candidates []string) []string {
 	})
 
 	return candidates
-}
-
-func event2String(e memberlist.NodeEventType) string {
-	return [...]string{"NodeJoin", "NodeLeave", "NodeUpdate"}[e]
-}
-
-func (e *Election) watchEvents() {
-	for {
-		select {
-		case event := <-e.eventCh:
-			e.logger.Log("msg", "Node event", "node addr", event.Node.Addr, "node name", event.Node.Name, "node event", event2String(event.Event))
-			e.Client.ForceSync()
-		case <-e.stopCh:
-			e.shutdown()
-			return
-		}
-	}
 }

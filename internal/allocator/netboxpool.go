@@ -25,7 +25,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/netbox"
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 // NetboxPool is the IP address pool that requests IP addresses from a
@@ -52,7 +52,7 @@ type NetboxPool struct {
 
 // NewNetboxPool initializes a new instance of NetboxPool. If error is
 // non-nil then the returned NetboxPool should not be used.
-func NewNetboxPool(name string, log log.Logger, spec purelbv1.ServiceGroupNetboxSpec) (*NetboxPool, error) {
+func NewNetboxPool(name string, log log.Logger, spec purelbv2.ServiceGroupNetboxSpec) (*NetboxPool, error) {
 	// Make sure that we've got credentials for Netbox
 	userToken, ok := os.LookupEnv("NETBOX_USER_TOKEN")
 	if !ok {
@@ -206,4 +206,33 @@ func (p NetboxPool) Contains(ip net.IP) bool {
 
 func (p NetboxPool) String() string {
 	return p.name
+}
+
+// PoolType returns "remote" because NetboxPool addresses come from an
+// external IPAM system and should be announced on the dummy interface.
+func (p NetboxPool) PoolType() string {
+	return "remote"
+}
+
+// SkipIPv6DAD returns false for NetboxPool. External IPAM systems
+// manage their own address allocation, so DAD should be performed.
+func (p NetboxPool) SkipIPv6DAD() bool {
+	return false
+}
+
+// MultiPool returns false for NetboxPool. Multi-pool allocation is
+// not supported for Netbox pools.
+func (p NetboxPool) MultiPool() bool {
+	return false
+}
+
+// BalancePools returns false for NetboxPool. BalancePools allocation is
+// not supported for Netbox pools.
+func (p NetboxPool) BalancePools() bool {
+	return false
+}
+
+// AssignNextPerRange is not supported for Netbox pools.
+func (p NetboxPool) AssignNextPerRange(svc *v1.Service, activeSubnets []string) error {
+	return fmt.Errorf("multi-pool allocation is not supported for Netbox pools")
 }

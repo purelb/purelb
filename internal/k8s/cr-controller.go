@@ -32,11 +32,11 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	clientset "purelb.io/pkg/generated/clientset/versioned"
 	purelbscheme "purelb.io/pkg/generated/clientset/versioned/scheme"
 	"purelb.io/pkg/generated/informers/externalversions"
-	listers "purelb.io/pkg/generated/listers/purelb/v1"
+	listers "purelb.io/pkg/generated/listers/purelb/v2"
 )
 
 const controllerAgentName = "cr-controller"
@@ -50,7 +50,7 @@ type Controller struct {
 	purelbclientset clientset.Interface
 
 	sgsSynced   cache.InformerSynced
-	configCB    func(*purelbv1.Config) SyncState
+	configCB    func(*purelbv2.Config) SyncState
 	forceSync   func()
 	sgLister    listers.ServiceGroupLister
 	lbnasSynced cache.InformerSynced
@@ -73,14 +73,14 @@ type Controller struct {
 // to PureLB custom resources.
 func NewCRController(
 	logger log.Logger,
-	configCB func(*purelbv1.Config) SyncState,
+	configCB func(*purelbv2.Config) SyncState,
 	forceSync func(),
 	kubeclientset kubernetes.Interface,
 	purelbclientset clientset.Interface,
 	informerFactory externalversions.SharedInformerFactory) *Controller {
 
-	sgInformer := informerFactory.Purelb().V1().ServiceGroups()
-	lbnaInformer := informerFactory.Purelb().V1().LBNodeAgents()
+	sgInformer := informerFactory.Purelb().V2().ServiceGroups()
+	lbnaInformer := informerFactory.Purelb().V2().LBNodeAgents()
 
 	// Create event broadcaster
 	// Add cr-controller types to the default Kubernetes Scheme so Events can be
@@ -204,7 +204,7 @@ func (c *Controller) processNextWorkItem() bool {
 func (c *Controller) syncHandler() error {
 	var (
 		err error
-		cfg purelbv1.Config = purelbv1.Config{}
+		cfg purelbv2.Config = purelbv2.Config{}
 	)
 
 	cfg.Groups, err = c.sgLister.ServiceGroups("").List(labels.Everything())
@@ -219,7 +219,7 @@ func (c *Controller) syncHandler() error {
 	}
 
 	// Check whether we should be the default service announcer
-	if os.Getenv("DEFAULT_ANNOUNCER") == purelbv1.Brand {
+	if os.Getenv("DEFAULT_ANNOUNCER") == purelbv2.Brand {
 		cfg.DefaultAnnouncer = true
 	}
 

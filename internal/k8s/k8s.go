@@ -20,12 +20,15 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"time"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	"purelb.io/pkg/generated/clientset/versioned"
 	"purelb.io/pkg/generated/informers/externalversions"
+
+	"purelb.io/internal/election"
 
 	"github.com/go-kit/log"
 	corev1 "k8s.io/api/core/v1"
@@ -72,7 +75,7 @@ type Client struct {
 
 	serviceChanged func(*corev1.Service, []*discoveryv1.EndpointSlice) SyncState
 	serviceDeleted func(string) SyncState
-	configChanged  func(*purelbv1.Config) SyncState
+	configChanged  func(*purelbv2.Config) SyncState
 	synced         func()
 	shutdown       func()
 }
@@ -109,7 +112,7 @@ type Config struct {
 
 	ServiceChanged func(*corev1.Service, []*discoveryv1.EndpointSlice) SyncState
 	ServiceDeleted func(string) SyncState
-	ConfigChanged  func(*purelbv1.Config) SyncState
+	ConfigChanged  func(*purelbv2.Config) SyncState
 	Synced         func()
 	Shutdown       func()
 }
@@ -357,7 +360,9 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 	for {
 		key, quit := c.queue.Get()
 		if quit {
-			c.shutdown()
+			if c.shutdown != nil {
+				c.shutdown()
+			}
 			return nil
 		}
 		updates.Inc()
@@ -377,16 +382,67 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 }
 
 // ForceSync reprocesses all watched services. This is called when
-// membership changes (memberlist events) and we need to re-evaluate
-// all services immediately. We use Add() instead of AddRateLimited()
-// because this is not an error retry - it's a legitimate need to
-// reprocess due to cluster state changes.
+// election membership changes and we need to re-evaluate all services
+// immediately. We use Add() instead of AddRateLimited() because this
+// is not an error retry - it's a legitimate need to reprocess due to
+// cluster state changes.
 func (c *Client) ForceSync() {
 	if c.svcIndexer != nil {
 		for _, k := range c.svcIndexer.ListKeys() {
 			c.queue.Add(svcKey(k))
 		}
 	}
+}
+
+// Clientset returns the underlying Kubernetes clientset.
+// This is used by components that need direct API access, such as the election.
+func (c *Client) Clientset() kubernetes.Interface {
+	return c.client
+}
+
+// ActiveSubnets returns the set of subnets that have at least one healthy
+// lbnodeagent, determined by listing PureLB leases and checking their
+// renewal timestamps. This is a one-shot API call (not cached) because
+// it's only called during multi-pool allocation, which is a rare event.
+func (c *Client) ActiveSubnets(namespace string) ([]string, error) {
+	ctx, cancel := c.apiContext()
+	defer cancel()
+
+	leases, err := c.client.CoordinationV1().Leases(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing leases: %w", err)
+	}
+
+	subnets := map[string]bool{}
+	now := time.Now()
+
+	for _, lease := range leases.Items {
+		// Only consider PureLB node leases
+		if !strings.HasPrefix(lease.Name, election.LeasePrefix) {
+			continue
+		}
+		// Skip leases without renewal info
+		if lease.Spec.RenewTime == nil || lease.Spec.LeaseDurationSeconds == nil {
+			continue
+		}
+		// Skip expired leases
+		expiry := lease.Spec.RenewTime.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second)
+		if now.After(expiry) {
+			continue
+		}
+		// Extract subnets from the lease annotation
+		if ann, ok := lease.Annotations[election.SubnetsAnnotation]; ok {
+			for _, s := range election.ParseSubnetsAnnotation(ann) {
+				subnets[s] = true
+			}
+		}
+	}
+
+	result := make([]string, 0, len(subnets))
+	for s := range subnets {
+		result = append(result, s)
+	}
+	return result, nil
 }
 
 // maybeUpdateService writes the "is" service back to the cluster, but

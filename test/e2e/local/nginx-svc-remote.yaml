@@ -1,0 +1,19 @@
+---
+# Service requesting IP from remote pool
+# Expected: IP allocated and announced on kube-lb0 (not eth0)
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-lb-remote
+  namespace: test
+  annotations:
+    purelb.io/service-group: remote-pool
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies: [IPv4]
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80

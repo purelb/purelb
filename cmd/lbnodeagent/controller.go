@@ -20,7 +20,8 @@ import (
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
 	"purelb.io/internal/local"
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	"purelb.io/internal/logging"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 
 	"github.com/go-kit/log"
 	v1 "k8s.io/api/core/v1"
@@ -64,17 +65,17 @@ func (c *controller) ServiceChanged(svc *v1.Service, epSlices []*discoveryv1.End
 	// clean up. It might have been a load balancer before and the user
 	// might have changed it (for example, to NodePort) to tell us to
 	// release the address.
-	if svc.Spec.Type != "LoadBalancer" && svc.Annotations[purelbv1.BrandAnnotation] == purelbv1.Brand {
+	if svc.Spec.Type != "LoadBalancer" && svc.Annotations[purelbv2.BrandAnnotation] == purelbv2.Brand {
 
 		// Remove our annotations in case the user wants the service to be
 		// managed by something else
-		delete(svc.Annotations, purelbv1.BrandAnnotation)
-		delete(svc.Annotations, purelbv1.AnnounceAnnotation)
-		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-IPv4")
-		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-IPv6")
-		delete(svc.Annotations, purelbv1.AnnounceAnnotation+"-unknown")
+		delete(svc.Annotations, purelbv2.BrandAnnotation)
+		delete(svc.Annotations, purelbv2.AnnounceAnnotation)
+		delete(svc.Annotations, purelbv2.AnnounceAnnotation+"-IPv4")
+		delete(svc.Annotations, purelbv2.AnnounceAnnotation+"-IPv6")
+		delete(svc.Annotations, purelbv2.AnnounceAnnotation+"-unknown")
 
-		c.logger.Log("op", "withdraw", "reason", "notLoadBalancerType", "node", c.myNode, "service", nsName)
+		logging.Info(c.logger, "op", "withdraw", "reason", "notLoadBalancerType", "node", c.myNode, "service", nsName)
 		c.DeleteBalancer(nsName)
 
 		// This is a "best-effort" operation. If it fails there's not much
@@ -87,13 +88,13 @@ func (c *controller) ServiceChanged(svc *v1.Service, epSlices []*discoveryv1.End
 	// If the service has no addresses assigned then there's nothing
 	// that we can do.
 	if len(svc.Status.LoadBalancer.Ingress) < 1 {
-		c.logger.Log("msg", "noAddressAllocated", "node", c.myNode, "service", nsName)
+		logging.Debug(c.logger, "msg", "noAddressAllocated", "node", c.myNode, "service", nsName)
 		return k8s.SyncStateSuccess
 	}
 
 	// If we didn't allocate the address then we shouldn't announce it.
-	if svc.Annotations != nil && svc.Annotations[purelbv1.BrandAnnotation] != purelbv1.Brand {
-		c.logger.Log("msg", "notAllocatedByPureLB", "node", c.myNode, "service", nsName)
+	if svc.Annotations != nil && svc.Annotations[purelbv2.BrandAnnotation] != purelbv2.Brand {
+		logging.Debug(c.logger, "msg", "notAllocatedByPureLB", "node", c.myNode, "service", nsName)
 		return k8s.SyncStateSuccess
 	}
 
@@ -101,7 +102,7 @@ func (c *controller) ServiceChanged(svc *v1.Service, epSlices []*discoveryv1.End
 	announceError := k8s.SyncStateSuccess
 	for _, announcer := range c.announcers {
 		if err := announcer.SetBalancer(svc, epSlices); err != nil {
-			c.logger.Log("op", "setBalancer", "error", err, "msg", "failed to announce service")
+			logging.Info(c.logger, "op", "setBalancer", "error", err, "msg", "failed to announce service")
 			announceError = k8s.SyncStateError
 		}
 	}
@@ -115,11 +116,11 @@ func (c *controller) ServiceChanged(svc *v1.Service, epSlices []*discoveryv1.End
 func (c *controller) DeleteBalancer(nsName string) k8s.SyncState {
 	retval := k8s.SyncStateSuccess
 
-	c.logger.Log("op", "deleteBalancer", "name", nsName)
+	logging.Debug(c.logger, "op", "deleteBalancer", "name", nsName)
 
 	for _, announcer := range c.announcers {
 		if err := announcer.DeleteBalancer(nsName, "cluster event", nil); err != nil {
-			c.logger.Log("op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
+			logging.Info(c.logger, "op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
 			retval = k8s.SyncStateError
 		}
 	}
@@ -127,12 +128,12 @@ func (c *controller) DeleteBalancer(nsName string) k8s.SyncState {
 	return retval
 }
 
-func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
+func (c *controller) SetConfig(cfg *purelbv2.Config) k8s.SyncState {
 	retval := k8s.SyncStateReprocessAll
 
 	for _, announcer := range c.announcers {
 		if err := announcer.SetConfig(cfg); err != nil {
-			c.logger.Log("op", "setConfig", "error", err)
+			logging.Info(c.logger, "op", "setConfig", "error", err)
 			retval = k8s.SyncStateError
 		}
 	}

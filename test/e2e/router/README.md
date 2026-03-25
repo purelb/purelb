@@ -16,8 +16,10 @@ Tests connectivity without needing router CLI access. Proves that traffic flows 
 Extended tests that query the FRR router's RIB to verify:
 - Routes appear/disappear correctly
 - Correct number of ECMP next-hops
-- Proper /32 aggregation
+- Proper /32 and /128 aggregation (host routes)
+- Default /24 and /64 aggregation (subnet routes)
 - Route withdrawal timing
+- ETP Local next-hop filtering
 
 ## Architecture
 
@@ -90,28 +92,47 @@ export ROUTER_HOST="frr-router"
 
 ## Test Cases
 
-### Basic Version Tests
+### Basic Version Tests (15 tests)
 
 | Test | Description |
 |------|-------------|
-| 0 | Prerequisites (SSH, PureLB, ServiceGroup) |
+| 0 | Prerequisites (SSH, PureLB, ServiceGroups, metrics) |
 | 1 | Basic Connectivity (IPv4) |
 | 2 | ECMP Traffic Distribution |
 | 3 | Node Failure and Recovery |
-| 4 | ETP Local Connectivity |
+| 4 | ETP Local (IPv4): scale, migrate, zero-endpoints, restore |
 | 5 | Service Deletion Cleanup |
 | 6 | Full Lifecycle Test |
+| 7 | Basic Connectivity (IPv6) |
+| 8 | ETP Local (IPv6): placement, zero-endpoints, restore |
+| 9 | Service Deletion Cleanup (IPv6) |
+| 10 | Dual-Stack Connectivity |
+| 11 | Dual-Stack ETP Local: placement, zero-endpoints, restore |
+| 12 | Dual-Stack Service Deletion |
+| 13 | Default Aggregation IPv4 (/24) |
+| 14 | Default Aggregation IPv6 (/64) |
 
-### FRR Version Tests
+### FRR Version Tests (17 tests)
 
 | Test | Description |
 |------|-------------|
-| 0 | Prerequisites (+ FRR vtysh, BGP sessions) |
+| 0 | Prerequisites (+ FRR vtysh, BGP sessions, metrics) |
 | 1 | Basic Connectivity with Route Verification |
 | 2 | ECMP with Next-Hop Verification |
 | 3 | Node Failure with Route Withdrawal |
 | 4 | Service Deletion with Route Withdrawal |
 | 5 | Route Aggregation Verification (/32) |
+| 6 | IPv6 Connectivity with Route Verification |
+| 7 | IPv6 Service Deletion with Route Withdrawal |
+| 8 | IPv6 Route Aggregation Verification (/128) |
+| 9 | ETP Local Route Verification (IPv4): scale, migrate, zero-endpoints, restore |
+| 10 | ETP Local Route Verification (IPv6): scale, zero-endpoints, restore |
+| 11 | Dual-Stack Route Verification |
+| 12 | Dual-Stack ETP Local Route Verification: zero-endpoints, restore |
+| 13 | Default Aggregation Route Verification (IPv4 /24) |
+| 14 | Default Aggregation Route Verification (IPv6 /64) |
+| 15 | Default Aggregation Shared Route (IPv4) |
+| 16 | Default Aggregation Shared Route (IPv6) |
 
 ## Environment Variables
 
@@ -121,7 +142,10 @@ export ROUTER_HOST="frr-router"
 | `SERVICE_GROUP` | No | `remote` | ServiceGroup to use |
 | `BGP_CONVERGE_TIMEOUT` | No | `30` | Seconds to wait for BGP |
 | `ECMP_TEST_REQUESTS` | No | `100` | Requests for ECMP test |
-| `VIP_SUBNET` | No | `10.255.0.0/24` | Subnet for FRR queries |
+| `VIP_SUBNET` | No | `10.255.0.0/24` | IPv4 subnet for FRR queries |
+| `VIP6_SUBNET` | No | `fd00:10:255::/64` | IPv6 subnet for FRR queries |
+| `VIP_DEFAGGR_SUBNET` | No | `10.255.1.0/24` | IPv4 default-aggr subnet |
+| `VIP6_DEFAGGR_SUBNET` | No | `fd00:10:256::/64` | IPv6 default-aggr subnet |
 
 ## Troubleshooting
 
@@ -142,7 +166,7 @@ ssh $ROUTER_HOST "sudo vtysh -c 'show version'"
 vtysh -c "show bgp summary"
 
 # On cluster node (GoBGP)
-kubectl logs -n purelb-system-l component=lbnodeagent | grep -i bgp
+kubectl logs -n purelb-system -l component=lbnodeagent | grep -i bgp
 ```
 
 ### "ECMP not distributing traffic"
@@ -150,7 +174,20 @@ kubectl logs -n purelb-system-l component=lbnodeagent | grep -i bgp
 - Verify FRR has `maximum-paths` configured
 - Different source ports should create different flows
 
-## Related Files
+## Files
 
-- `../remote/` - Tests that verify IP placement without external routing
-- `../remote/servicegroup-remote.yaml` - Default ServiceGroup used by these tests
+| File | Description |
+|------|-------------|
+| `test-router-connectivity.sh` | Basic connectivity tests (no router CLI) |
+| `test-router-connectivity-frr.sh` | Extended tests with FRR route verification |
+| `svc-router-ipv4.yaml` | IPv4 SingleStack service |
+| `svc-router-ipv6.yaml` | IPv6 SingleStack service |
+| `svc-router-ipv4-etp-local.yaml` | IPv4 ETP Local service |
+| `svc-router-ipv6-etp-local.yaml` | IPv6 ETP Local service |
+| `svc-router-dualstack.yaml` | Dual-stack service (IPv4 + IPv6) |
+| `svc-router-dualstack-etp-local.yaml` | Dual-stack ETP Local service |
+| `svc-router-ipv4-default-aggr.yaml` | IPv4 default aggregation (/24) service |
+| `svc-router-ipv6-default-aggr.yaml` | IPv6 default aggregation (/64) service |
+| `servicegroup-remote.yaml` | Remote ServiceGroup (/32, /128 aggregation) |
+| `servicegroup-remote-default-aggr.yaml` | Remote ServiceGroup (default aggregation) |
+| `SETUP.md` | Setup guide and architecture |

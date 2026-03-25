@@ -1,0 +1,21 @@
+---
+# ServiceGroup with v4pools and v6pools arrays (v2 feature)
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: test-pool-arrays
+  namespace: purelb-system
+spec:
+  local:
+    v4pools:
+    - subnet: 192.168.151.0/24
+      pool: 192.168.151.220-192.168.151.225
+      aggregation: default
+    - subnet: 192.168.151.0/24
+      pool: 192.168.151.226-192.168.151.230
+      aggregation: default
+    v6pools:
+    - subnet: 2001:470:b8f3:1::/64
+      pool: 2001:470:b8f3:1::f020-2001:470:b8f3:1::f025
+    - subnet: 2001:470:b8f3:1::/64
+      pool: 2001:470:b8f3:1::f026-2001:470:b8f3:1::f030

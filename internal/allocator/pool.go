@@ -23,7 +23,7 @@ import (
 	"github.com/go-kit/log"
 	v1 "k8s.io/api/core/v1"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 // Port represents one port in use by a service.
@@ -58,6 +58,31 @@ type Pool interface {
 	Contains(net.IP) bool // FIXME: I'm not sure that we need this. It might be the case that we can always rely on the service's pool annotation to find to which pool an address belongs
 	Size() uint64
 	String() string
+
+	// PoolType returns the type of this pool: "local" for addresses that
+	// should be announced on the node's local interface (same subnet as nodes),
+	// or "remote" for addresses that should be announced on the dummy interface
+	// (different subnet, typically for BGP/routing scenarios or external IPAM).
+	PoolType() string
+
+	// SkipIPv6DAD returns whether IPv6 Duplicate Address Detection should
+	// be skipped for addresses from this pool. This can speed up address
+	// configuration but should only be used when address conflicts are impossible.
+	SkipIPv6DAD() bool
+
+	// MultiPool returns whether this pool has multi-pool allocation enabled.
+	// When true, services get one IP from each address range (per family)
+	// that has active nodes.
+	MultiPool() bool
+
+	// BalancePools returns whether balanced allocation across ranges is enabled.
+	// When true, new allocations pick the range with the fewest IPs in use.
+	BalancePools() bool
+
+	// AssignNextPerRange allocates one IP per address range (per family)
+	// that has an active subnet. activeSubnets is the set of subnets with
+	// healthy lbnodeagents. Returns error only if NO IPs could be allocated.
+	AssignNextPerRange(svc *v1.Service, activeSubnets []string) error
 }
 
 func sharingOK(existing, new *Key) error {
@@ -73,12 +98,22 @@ func sharingOK(existing, new *Key) error {
 	return nil
 }
 
-func parsePool(log log.Logger, name string, group purelbv1.ServiceGroupSpec) (Pool, error) {
+func parsePool(log log.Logger, name string, group purelbv2.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
-		return NewLocalPool(name, log, *group.Local)
+		return NewLocalPool(name, log,
+			group.Local.V4Pool, group.Local.V6Pool,
+			group.Local.V4Pools, group.Local.V6Pools,
+			purelbv2.PoolTypeLocal, group.Local.SkipIPv6DAD,
+			group.Local.MultiPool, group.Local.BalancePools)
+	} else if group.Remote != nil {
+		return NewLocalPool(name, log,
+			group.Remote.V4Pool, group.Remote.V6Pool,
+			group.Remote.V4Pools, group.Remote.V6Pools,
+			purelbv2.PoolTypeRemote, false,
+			group.Remote.MultiPool, group.Remote.BalancePools)
 	} else if group.Netbox != nil {
 		return NewNetboxPool(name, log, *group.Netbox)
 	}
 
-	return nil, fmt.Errorf("Pool is not local or Netbox")
+	return nil, fmt.Errorf("Pool must specify local, remote, or netbox")
 }

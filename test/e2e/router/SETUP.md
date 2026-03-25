@@ -34,26 +34,37 @@ Cluster Nodes (GoBGP)
 
 ## ServiceGroup Configuration
 
-The tests use the existing `remote` ServiceGroup from `../remote/servicegroup-remote.yaml`:
+The tests use two ServiceGroups:
 
+**`remote`** — host routes (/32 IPv4, /128 IPv6):
 ```yaml
-apiVersion: purelb.io/v1
-kind: ServiceGroup
-metadata:
-  name: remote
-  namespace: purelb-system
 spec:
-  local:
+  remote:
     v4pools:
     - aggregation: /32
       pool: 10.255.0.100-10.255.0.150
       subnet: 10.255.0.0/24
+    v6pools:
+    - aggregation: /128
+      pool: fd00:10:255::100-fd00:10:255::150
+      subnet: fd00:10:255::/64
 ```
 
-To use a different ServiceGroup:
-```bash
-export SERVICE_GROUP="my-custom-group"
+**`remote-default-aggr`** — subnet routes (/24 IPv4, /64 IPv6):
+```yaml
+spec:
+  remote:
+    v4pools:
+    - aggregation: default
+      pool: 10.255.1.100-10.255.1.150
+      subnet: 10.255.1.0/24
+    v6pools:
+    - aggregation: default
+      pool: fd00:10:256::100-fd00:10:256::150
+      subnet: fd00:10:256::/64
 ```
+
+The prerequisite test applies both ServiceGroups automatically.
 
 ## FRR Router Configuration
 
@@ -109,7 +120,9 @@ curl -s http://10.255.0.100/
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `ROUTER_HOST` | FRR only | - | FRR router for vtysh |
-| `SERVICE_GROUP` | No | `remote` | ServiceGroup name |
 | `BGP_CONVERGE_TIMEOUT` | No | `30` | BGP wait timeout (seconds) |
 | `ECMP_TEST_REQUESTS` | No | `100` | Requests for ECMP test |
-| `VIP_SUBNET` | No | `10.255.0.0/24` | Subnet for FRR queries |
+| `VIP_SUBNET` | No | `10.255.0.0/24` | IPv4 subnet for FRR queries |
+| `VIP6_SUBNET` | No | `fd00:10:255::/64` | IPv6 subnet for FRR queries |
+| `VIP_DEFAGGR_SUBNET` | No | `10.255.1.0/24` | IPv4 default-aggr subnet |
+| `VIP6_DEFAGGR_SUBNET` | No | `fd00:10:256::/64` | IPv6 default-aggr subnet |

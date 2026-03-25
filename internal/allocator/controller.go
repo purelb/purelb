@@ -16,20 +16,25 @@
 package allocator
 
 import (
+	"os"
+
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 
 	"purelb.io/internal/k8s"
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	"purelb.io/internal/logging"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 
 	"github.com/go-kit/log"
 )
+
+const namespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 // Controller provides an event-handling interface for the k8s client
 // to use.
 type Controller interface {
 	SetClient(*k8s.Client)
-	SetConfig(*purelbv1.Config) k8s.SyncState
+	SetConfig(*purelbv2.Config) k8s.SyncState
 	SetBalancer(*v1.Service, []*discoveryv1.EndpointSlice) k8s.SyncState
 	DeleteBalancer(string) k8s.SyncState
 	MarkSynced()
@@ -59,28 +64,35 @@ func NewController(l log.Logger, ips *Allocator) (Controller, error) {
 func (c *controller) SetClient(client *k8s.Client) {
 	c.client = client
 	c.ips.SetClient(client)
+
+	data, err := os.ReadFile(namespacePath)
+	if err != nil {
+		logging.Info(c.logger, "op", "setClient", "error", err, "msg", "failed to read namespace, multi-pool allocation will not work")
+		return
+	}
+	c.ips.SetActiveSubnets(client.ActiveSubnets, string(data))
 }
 
 func (c *controller) DeleteBalancer(name string) k8s.SyncState {
 	if err := c.ips.Unassign(name); err != nil {
-		c.logger.Log("event", "serviceDelete", "error", err)
+		logging.Info(c.logger, "op", "deleteBalancer", "error", err)
 		return k8s.SyncStateError
 	}
 
-	c.logger.Log("event", "serviceDelete", "msg", "service deleted successfully")
+	logging.Debug(c.logger, "op", "deleteBalancer", "msg", "service deleted successfully")
 	return k8s.SyncStateReprocessAll
 }
 
-func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
-	defer c.logger.Log("event", "configUpdated")
+func (c *controller) SetConfig(cfg *purelbv2.Config) k8s.SyncState {
+	defer logging.Debug(c.logger, "op", "setConfig", "msg", "config updated")
 
 	if cfg == nil {
-		c.logger.Log("op", "setConfig", "error", "no PureLB configuration in cluster", "msg", "configuration is missing, PureLB will not function")
+		logging.Info(c.logger, "op", "setConfig", "error", "no PureLB configuration in cluster", "msg", "PureLB will not function")
 		return k8s.SyncStateError
 	}
 
 	if err := c.ips.SetPools(cfg.Groups); err != nil {
-		c.logger.Log("op", "setConfig", "error", err)
+		logging.Info(c.logger, "op", "setConfig", "error", err)
 		return k8s.SyncStateError
 	}
 
@@ -93,9 +105,9 @@ func (c *controller) SetConfig(cfg *purelbv1.Config) k8s.SyncState {
 
 func (c *controller) MarkSynced() {
 	c.synced = true
-	c.logger.Log("event", "stateSynced", "msg", "controller synced, can allocate IPs now")
+	logging.Info(c.logger, "op", "markSynced", "msg", "controller synced, can allocate IPs now")
 }
 
 func (c *controller) Shutdown() {
-	c.logger.Log("event", "shutdown")
+	logging.Info(c.logger, "op", "shutdown")
 }

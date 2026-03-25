@@ -23,7 +23,7 @@ import (
 	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 func intPtr(i int) *int {
@@ -161,9 +161,9 @@ func TestGetLocalAddressOptions_WithConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &announcer{
 				logger: log.NewNopLogger(),
-				config: &purelbv1.LBNodeAgentLocalSpec{
-					AddressConfig: &purelbv1.AddressConfig{
-						LocalInterface: &purelbv1.InterfaceAddressConfig{
+				config: &purelbv2.LBNodeAgentLocalSpec{
+					AddressConfig: &purelbv2.AddressConfig{
+						LocalInterface: &purelbv2.InterfaceAddressConfig{
 							ValidLifetime:     tt.validLifetime,
 							PreferredLifetime: tt.preferredLifetime,
 							NoPrefixRoute:     tt.noPrefixRoute,
@@ -237,9 +237,9 @@ func TestGetDummyAddressOptions_WithConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &announcer{
 				logger: log.NewNopLogger(),
-				config: &purelbv1.LBNodeAgentLocalSpec{
-					AddressConfig: &purelbv1.AddressConfig{
-						DummyInterface: &purelbv1.InterfaceAddressConfig{
+				config: &purelbv2.LBNodeAgentLocalSpec{
+					AddressConfig: &purelbv2.AddressConfig{
+						DummyInterface: &purelbv2.InterfaceAddressConfig{
 							ValidLifetime:     tt.validLifetime,
 							PreferredLifetime: tt.preferredLifetime,
 							NoPrefixRoute:     tt.noPrefixRoute,
@@ -262,7 +262,7 @@ func TestGetAddressOptions_NilConfigLevels(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		config *purelbv1.LBNodeAgentLocalSpec
+		config *purelbv2.LBNodeAgentLocalSpec
 	}{
 		{
 			name:   "nil config",
@@ -270,18 +270,18 @@ func TestGetAddressOptions_NilConfigLevels(t *testing.T) {
 		},
 		{
 			name:   "nil AddressConfig",
-			config: &purelbv1.LBNodeAgentLocalSpec{},
+			config: &purelbv2.LBNodeAgentLocalSpec{},
 		},
 		{
 			name: "nil LocalInterface",
-			config: &purelbv1.LBNodeAgentLocalSpec{
-				AddressConfig: &purelbv1.AddressConfig{},
+			config: &purelbv2.LBNodeAgentLocalSpec{
+				AddressConfig: &purelbv2.AddressConfig{},
 			},
 		},
 		{
 			name: "nil DummyInterface",
-			config: &purelbv1.LBNodeAgentLocalSpec{
-				AddressConfig: &purelbv1.AddressConfig{},
+			config: &purelbv2.LBNodeAgentLocalSpec{
+				AddressConfig: &purelbv2.AddressConfig{},
 			},
 		},
 	}
@@ -498,4 +498,71 @@ func TestAddressOptions_Struct(t *testing.T) {
 	assert.Equal(t, 300, opts.ValidLft)
 	assert.Equal(t, 150, opts.PreferedLft)
 	assert.True(t, opts.NoPrefixRoute)
+	assert.False(t, opts.SkipDAD, "SkipDAD should default to false")
+}
+
+func TestAddressOptions_SkipDAD(t *testing.T) {
+	opts := AddressOptions{
+		ValidLft:      300,
+		PreferedLft:   150,
+		NoPrefixRoute: true,
+		SkipDAD:       true,
+	}
+
+	assert.True(t, opts.SkipDAD, "SkipDAD should be true when explicitly set")
+	assert.Equal(t, 300, opts.ValidLft, "other fields should be unaffected")
+	assert.True(t, opts.NoPrefixRoute, "other fields should be unaffected")
+}
+
+func TestSkipDADFromServiceAnnotation(t *testing.T) {
+	// This tests the annotation-reading pattern used in announceLocal():
+	//   opts := a.getLocalAddressOptions()
+	//   if svc.Annotations[purelbv2.SkipIPv6DADAnnotation] == "true" {
+	//       opts.SkipDAD = true
+	//   }
+
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		wantSkipDAD bool
+	}{
+		{
+			name:        "no annotation",
+			annotations: map[string]string{},
+			wantSkipDAD: false,
+		},
+		{
+			name:        "annotation set to true",
+			annotations: map[string]string{purelbv2.SkipIPv6DADAnnotation: "true"},
+			wantSkipDAD: true,
+		},
+		{
+			name:        "annotation set to false",
+			annotations: map[string]string{purelbv2.SkipIPv6DADAnnotation: "false"},
+			wantSkipDAD: false,
+		},
+		{
+			name:        "annotation absent among other annotations",
+			annotations: map[string]string{"purelb.io/allocated-by": "PureLB"},
+			wantSkipDAD: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Start with default options (as getLocalAddressOptions would return)
+			opts := AddressOptions{
+				ValidLft:      300,
+				PreferedLft:   300,
+				NoPrefixRoute: true,
+			}
+
+			// Apply the annotation-reading logic from announceLocal
+			if tt.annotations[purelbv2.SkipIPv6DADAnnotation] == "true" {
+				opts.SkipDAD = true
+			}
+
+			assert.Equal(t, tt.wantSkipDAD, opts.SkipDAD)
+		})
+	}
 }

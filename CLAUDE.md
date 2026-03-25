@@ -9,6 +9,9 @@ PureLB is a Kubernetes service load balancer orchestrator that allocates IP addr
 - **Allocator** (`cmd/allocator`): Single cluster-wide pod that watches Services and ServiceGroups, manages IP allocation from pools (local or Netbox IPAM)
 - **LBNodeAgent** (`cmd/lbnodeagent`): DaemonSet running on each node, configures local OS networking via netlink to announce allocated IPs
 
+## Importance of IPv6
+Always include development of equal IPv6 functionality in every activity.
+
 ## Build Commands
 
 All commands via `make`:
@@ -36,11 +39,16 @@ For tests requiring Netbox integration, set `NETBOX_BASE_URL` and `NETBOX_USER_T
 
 **IMPORTANT**: The default `make image` builds to `ko.local/` which requires local Docker. For deploying to the test cluster, you must use `ko` directly with the correct registry and tag.
 
+### There are multiple custers used for texting. Check the cluster in use
+```bash
+kubectx
+```
+
 ### Check Current Cluster Image Tags
 
 First, check what image tags the cluster is currently using:
 ```bash
-kubectl --context proxmox get daemonset lbnodeagent -n purelb-system-o jsonpath='{.spec.template.spec.containers[0].image}'
+kubectl get daemonset lbnodeagent -n purelb-system-o jsonpath='{.spec.template.spec.containers[0].image}'
 # Example output: ghcr.io/purelb/purelb/lbnodeagent:general_k8_update
 ```
 
@@ -61,12 +69,12 @@ go run github.com/google/ko@v0.17.1 build --base-import-paths --tags=$TAG ./cmd/
 
 After pushing new images, restart the pods to pull the updated images:
 ```bash
-kubectl --context proxmox rollout restart daemonset/lbnodeagent -n purelb
-kubectl --context proxmox rollout restart deployment/allocator -n purelb
+kubectl rollout restart daemonset/lbnodeagent -n purelb-system
+kubectl rollout restart deployment/allocator -n purelb-system
 
 # Wait for rollout to complete
-kubectl --context proxmox rollout status daemonset/lbnodeagent -n purelb
-kubectl --context proxmox rollout status deployment/allocator -n purelb
+kubectl rollout status daemonset/lbnodeagent -n purelb-system
+kubectl rollout status deployment/allocator -n purelb-system
 ```
 
 ### Common Mistakes to Avoid
@@ -98,7 +106,7 @@ kubectl --context proxmox rollout status deployment/allocator -n purelb
 - `internal/allocator/` - IP pool management and service allocation logic. Supports LocalPool (in-memory) and NetboxPool (external IPAM)
 - `internal/local/` - Linux networking via netlink (interfaces, routes, ARP/NDP). Contains `LocalAnnouncer` implementation
 - `internal/k8s/` - Kubernetes client integration using informers and work queues. The `Client` struct watches Services/Endpoints and invokes callbacks on changes
-- `internal/election/` - Memberlist-based leader election for node agents. Uses SHA256 hash of (node name + service key) to deterministically elect a winner per service address
+- `internal/election/` - Lease-based subnet-aware leader election for node agents. Each node maintains a Kubernetes Lease with its subnets annotated; uses SHA256 hash of (node name + service key) to deterministically elect a winner from nodes that have the IP's subnet
 
 ## Custom Resources
 
@@ -145,3 +153,87 @@ go test -race -short ./...
 
 Mock implementations exist in `internal/netbox/fake/` for Netbox testing.
 
+
+## Design Principle: Avoid Locks and Mutexes
+
+**Locks and mutexes should be avoided wherever possible.** They introduce complexity, potential deadlocks, contention, and are difficult to reason about. When concurrent access is needed, prefer these alternatives in order:
+
+### Preferred Approaches (Lock-Free)
+
+1. **Single-goroutine ownership**: Design so only one goroutine accesses mutable state
+   - Example: K8s work queue processes items sequentially
+   - Example: `svcIngresses` map is only accessed from work queue goroutine
+
+2. **Atomic operations**: Use `atomic.Bool`, `atomic.Int64`, `atomic.Pointer[T]`
+   - Example: `addressRenewal.cancelled` uses `atomic.Bool`
+   - Example: Election state uses `atomic.Pointer[electionState]` for copy-on-write
+
+3. **sync.Map**: For simple key-value stores with concurrent access
+   - Example: `addressRenewals sync.Map` for renewal timer tracking
+   - Note: Not ideal for iteration-heavy workloads
+
+4. **Channels**: For coordination between goroutines
+   - Example: `stopCh chan struct{}` for shutdown signaling
+
+5. **Immutable data + atomic swap**: Build new state, swap atomically
+   - Example: `rebuildMaps()` creates new `electionState`, calls `state.Store(newState)`
+   - Readers see old OR new state, never partial updates
+
+### When Locks Might Seem Necessary
+
+If you find yourself reaching for `sync.Mutex` or `sync.RWMutex`, first ask:
+
+1. Can the data be owned by a single goroutine?
+2. Can the operation be made atomic?
+3. Can the data structure be replaced with atomic pointer swap?
+4. Can the coordination be done via channels?
+
+### If a Lock is Truly Required
+
+Document it clearly with:
+- Why lock-free alternatives don't work
+- What goroutines contend for the lock
+- Lock ordering if multiple locks exist
+- Consider using `sync.RWMutex` if reads >> writes
+
+**No locks are used in this implementation.** All concurrent access is handled via:
+- `atomic.Pointer[electionState]` for election maps
+- `atomic.Bool` for renewal cancellation
+- `sync.Map` for address renewals
+
+## Election System
+
+The election system (`internal/election/`) determines which node announces each LoadBalancer IP address. It uses Kubernetes Leases for distributed coordination.
+
+### How It Works
+
+1. Each lbnodeagent creates a Lease in its namespace with:
+   - Node name as holder identity
+   - Local subnets as annotation (`purelb.io/subnets`)
+   - Periodic renewal timestamp
+
+2. When determining which node should announce an IP:
+   - Find all nodes with valid (non-expired) leases
+   - Filter to nodes that have the IP's subnet in their annotations
+   - Use deterministic hash of (node name + service key) to pick winner
+
+3. Graceful shutdown:
+   - Node marks itself unhealthy (Winner() returns "")
+   - ForceSync withdraws all addresses
+   - Lease is deleted so other nodes see it gone immediately
+
+### Key Configuration
+
+- `PURELB_LEASE_DURATION` - How long a lease is valid (default: 10s)
+- `PURELB_RENEW_DEADLINE` - How long to retry renewals (default: 7s)
+- `PURELB_RETRY_PERIOD` - Interval between renewal attempts (default: 2s)
+
+### Monitoring
+
+Election metrics available at `/metrics`:
+- `purelb_election_lease_healthy` - Whether this node's lease is valid
+- `purelb_election_member_count` - Number of healthy nodes in election
+- `purelb_election_lease_renewals_total` - Successful lease renewals
+
+## Logging
+Logging must be implemented, two level info and debug.  Info for normal operation, debug for codelevel troubleshooting.

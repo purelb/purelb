@@ -18,30 +18,57 @@ package allocator
 import (
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 
 	"github.com/go-kit/log"
 	"github.com/vishvananda/netlink/nl"
 	v1 "k8s.io/api/core/v1"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
+	"purelb.io/internal/logging"
 )
 
-// Pool is the configuration of an IP address pool.
+// LocalPool is the configuration of an IP address pool.
 type LocalPool struct {
 	name string
 
 	logger log.Logger
 
+	// poolType indicates whether this is a "local" or "remote" pool.
+	// Local pools announce on the node's real interface (same subnet).
+	// Remote pools announce on the dummy interface (different subnet, for BGP).
+	poolType string
+
+	// skipIPv6DAD indicates whether to skip IPv6 Duplicate Address Detection.
+	skipIPv6DAD bool
+
+	// multiPool indicates whether multi-pool allocation is enabled.
+	// When true, services get one IP from each address range (per family)
+	// that has active nodes.
+	multiPool bool
+
+	// balancePools indicates whether balanced allocation is enabled.
+	// When true, new allocations pick the range with the fewest IPs
+	// currently in use, distributing services evenly across subnets.
+	balancePools bool
+
 	// v4Ranges contains the IPV4 addresses that are part of this
 	// pool. config.Parse guarantees that these are non-overlapping,
 	// both within and between pools.
-	v4Ranges []*purelbv1.IPRange
+	v4Ranges []*purelbv2.IPRange
 
 	// v6Ranges contains the IPV6 addresses that are part of this
 	// pool. config.Parse guarantees that these are non-overlapping,
 	// both within and between pools.
-	v6Ranges []*purelbv1.IPRange
+	v6Ranges []*purelbv2.IPRange
+
+	// v4Subnets stores the subnet CIDR for each v4Range, in parallel.
+	// Used by AssignNextPerRange to match ranges to active subnets.
+	v4Subnets []string
+
+	// v6Subnets stores the subnet CIDR for each v6Range, in parallel.
+	v6Subnets []string
 
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
@@ -58,27 +85,36 @@ type LocalPool struct {
 	sharingKeyToIP map[string]string // "sharingKey:family" -> ip.String()
 }
 
-func NewLocalPool(name string, log log.Logger, spec purelbv1.ServiceGroupLocalSpec) (LocalPool, error) {
+// NewLocalPool creates a new LocalPool from the given address pools.
+// poolType should be "local" for addresses announced on the node's interface,
+// or "remote" for addresses announced on the dummy interface (for BGP/routing).
+// multiPool enables multi-pool allocation where services get one IP per range.
+// balancePools enables balanced allocation where new services get IPs from the least-used range.
+func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6Pool *purelbv2.AddressPool, v4Pools []purelbv2.AddressPool, v6Pools []purelbv2.AddressPool, poolType string, skipIPv6DAD bool, multiPool bool, balancePools bool) (LocalPool, error) {
 	pool := LocalPool{
 		name:           name,
 		logger:         log,
+		poolType:       poolType,
+		skipIPv6DAD:    skipIPv6DAD,
+		multiPool:      multiPool,
+		balancePools:   balancePools,
 		addressesInUse: map[string]map[string]bool{},
 		sharingKeys:    map[string]*Key{},
 		portsInUse:     map[string]map[Port]string{},
 		sharingKeyToIP: map[string]string{},
 	}
 
-	// If there ranges in the "legacy" slots, add them to the slices.
-	if spec.V6Pool != nil {
-		spec.V6Pools = append(spec.V6Pools, spec.V6Pool)
+	// If there are ranges in the singular slots, add them to the slices.
+	if v6Pool != nil {
+		v6Pools = append(v6Pools, *v6Pool)
 	}
-	if spec.V4Pool != nil {
-		spec.V4Pools = append(spec.V4Pools, spec.V4Pool)
+	if v4Pool != nil {
+		v4Pools = append(v4Pools, *v4Pool)
 	}
 
 	// See if there's an IPV6 range in the spec
-	for _, v6pool := range spec.V6Pools {
-		iprange, err := purelbv1.NewIPRange(v6pool.Pool)
+	for _, v6pool := range v6Pools {
+		iprange, err := purelbv2.NewIPRange(v6pool.Pool)
 		if err != nil {
 			return pool, err
 		}
@@ -93,11 +129,12 @@ func NewLocalPool(name string, log log.Logger, spec purelbv1.ServiceGroupLocalSp
 		}
 
 		pool.v6Ranges = append(pool.v6Ranges, &iprange)
+		pool.v6Subnets = append(pool.v6Subnets, v6pool.Subnet)
 	}
 
 	// See if there's an IPV4 range in the spec
-	for _, v4pool := range spec.V4Pools {
-		iprange, err := purelbv1.NewIPRange(v4pool.Pool)
+	for _, v4pool := range v4Pools {
+		iprange, err := purelbv2.NewIPRange(v4pool.Pool)
 		if err != nil {
 			return pool, err
 		}
@@ -112,42 +149,10 @@ func NewLocalPool(name string, log log.Logger, spec purelbv1.ServiceGroupLocalSp
 		}
 
 		pool.v4Ranges = append(pool.v4Ranges, &iprange)
+		pool.v4Subnets = append(pool.v4Subnets, v4pool.Subnet)
 	}
 
-	// See if there's a top-level range in the spec
-	if spec.Pool != "" {
-		// Validate that Subnet is at least well-formed
-		iprange, err := purelbv1.NewIPRange(spec.Pool)
-		if err == nil {
-			// Validate that the range is contained by the subnet.
-			_, subnet, err := net.ParseCIDR(spec.Subnet)
-			if err != nil {
-				return pool, err
-			}
-			if !iprange.ContainedBy(*subnet) {
-				return pool, fmt.Errorf("Legacy range %s not contained by network %s", iprange, subnet)
-			}
-
-			// We have a legacy (i.e., top-level) range, let's see where it
-			// goes
-			if iprange.Family() == nl.FAMILY_V6 {
-				if pool.v6Ranges == nil {
-					pool.v6Ranges = append(pool.v6Ranges, &iprange)
-				} else {
-					return pool, fmt.Errorf("Invalid Spec: both legacy Pool and V6Pool are IPV6")
-				}
-			} else if iprange.Family() == nl.FAMILY_V4 {
-				if pool.v4Ranges == nil {
-					pool.v4Ranges = append(pool.v4Ranges, &iprange)
-				} else {
-					return pool, fmt.Errorf("Invalid Spec: both legacy Pool and V4Pool are IPV4")
-				}
-			}
-		}
-	}
-
-	// Last check: if we don't have *any* valid range then it's a bad
-	// Spec
+	// Last check: if we don't have *any* valid range then it's a bad spec
 	if pool.v6Ranges == nil && pool.v4Ranges == nil {
 		return pool, fmt.Errorf("no valid address range found")
 	}
@@ -183,7 +188,7 @@ func (p LocalPool) Notify(service *v1.Service) error {
 
 		// Update reverse index: sharing key -> IP (per address family)
 		if sharingKey.Sharing != "" {
-			family := purelbv1.AddrFamily(ip)
+			family := purelbv2.AddrFamily(ip)
 			indexKey := fmt.Sprintf("%s:%d", sharingKey.Sharing, family)
 			p.sharingKeyToIP[indexKey] = ipstr
 		}
@@ -205,7 +210,7 @@ func (p LocalPool) available(ip net.IP, service *v1.Service) error {
 	// bound to a different IP in this address family. If so, this service
 	// MUST use that IP - it cannot be assigned to any other IP.
 	if key.Sharing != "" {
-		family := purelbv1.AddrFamily(ip)
+		family := purelbv2.AddrFamily(ip)
 		boundIP := p.ipForSharingKey(key.Sharing, family)
 		if boundIP != nil && !boundIP.Equal(ip) {
 			return fmt.Errorf("sharing key %q is bound to %s, cannot use %s",
@@ -289,6 +294,12 @@ func (p LocalPool) assignFamily(family int, service *v1.Service) error {
 		}
 	}
 
+	// Balanced allocation: pick least-used range.
+	// Skip for services with sharing keys — they must use the bound IP.
+	if p.balancePools && SharingKey(service) == "" {
+		return p.assignFamilyBalancePools(family, service)
+	}
+
 	var lastErr error
 	var boundIPErr error
 
@@ -365,7 +376,7 @@ func (p LocalPool) Release(service string) error {
 			// Clean up sharing key reverse index before deleting the forward mapping
 			if key := p.sharingKeys[ipstr]; key != nil && key.Sharing != "" {
 				ip := net.ParseIP(ipstr)
-				family := purelbv1.AddrFamily(ip)
+				family := purelbv2.AddrFamily(ip)
 				indexKey := fmt.Sprintf("%s:%d", key.Sharing, family)
 				delete(p.sharingKeyToIP, indexKey)
 			}
@@ -403,7 +414,7 @@ func (p LocalPool) ReleaseIP(service string, ip net.IP) error {
 
 		// Clean up sharing key reverse index before deleting the forward mapping
 		if key := p.sharingKeys[ipstr]; key != nil && key.Sharing != "" {
-			family := purelbv1.AddrFamily(ip)
+			family := purelbv2.AddrFamily(ip)
 			indexKey := fmt.Sprintf("%s:%d", key.Sharing, family)
 			delete(p.sharingKeyToIP, indexKey)
 		}
@@ -484,7 +495,7 @@ func (p LocalPool) first(family int) net.IP {
 // next returns the next net.IP within this Pool, or nil if the
 // provided net.IP is the last address in the range.
 func (p LocalPool) next(ip net.IP) net.IP {
-	if purelbv1.AddrFamily(ip) == nl.FAMILY_V6 {
+	if purelbv2.AddrFamily(ip) == nl.FAMILY_V6 {
 		for i, v6 := range p.v6Ranges {
 			// If this range contains the current address, and has another
 			// address available then return that.
@@ -507,7 +518,7 @@ func (p LocalPool) next(ip net.IP) net.IP {
 		}
 	}
 
-	if purelbv1.AddrFamily(ip) == nl.FAMILY_V4 {
+	if purelbv2.AddrFamily(ip) == nl.FAMILY_V4 {
 		for i, v4 := range p.v4Ranges {
 			// If this range contains the current address, and has another
 			// address available then return that.
@@ -614,4 +625,194 @@ func (p LocalPool) whichFamilies(service *v1.Service) ([]int, error) {
 
 func (p LocalPool) String() string {
 	return p.name
+}
+
+// PoolType returns the type of this pool: "local" for addresses announced
+// on the node's local interface (same subnet), or "remote" for addresses
+// announced on the dummy interface (different subnet, for BGP/routing).
+func (p LocalPool) PoolType() string {
+	return p.poolType
+}
+
+// SkipIPv6DAD returns whether IPv6 Duplicate Address Detection should
+// be skipped for addresses from this pool.
+func (p LocalPool) SkipIPv6DAD() bool {
+	return p.skipIPv6DAD
+}
+
+// MultiPool returns whether multi-pool allocation is enabled for this pool.
+func (p LocalPool) MultiPool() bool {
+	return p.multiPool
+}
+
+// BalancePools returns whether balanced allocation is enabled for this pool.
+func (p LocalPool) BalancePools() bool {
+	return p.balancePools
+}
+
+// countAllocationsPerRange counts how many IPs are currently allocated
+// in each range. Used by balanced allocation to pick the least-used range.
+func (p LocalPool) countAllocationsPerRange(ranges []*purelbv2.IPRange) []int {
+	counts := make([]int, len(ranges))
+	for ipStr := range p.addressesInUse {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		for i, r := range ranges {
+			if r.Contains(ip) {
+				counts[i]++
+				break // IP can only be in one range
+			}
+		}
+	}
+	return counts
+}
+
+// assignFamilyBalancePools allocates an IP from the range with the fewest
+// current allocations, distributing services evenly across subnets.
+// Falls through to subsequent ranges if the preferred range is exhausted.
+func (p LocalPool) assignFamilyBalancePools(family int, service *v1.Service) error {
+	var ranges []*purelbv2.IPRange
+	if family == nl.FAMILY_V6 {
+		ranges = p.v6Ranges
+	} else {
+		ranges = p.v4Ranges
+	}
+	if len(ranges) == 0 {
+		return fmt.Errorf("no ranges for family %d", family)
+	}
+
+	// Count current allocations per range and sort by least-used.
+	// Stable sort preserves declaration order on ties.
+	counts := p.countAllocationsPerRange(ranges)
+	indices := make([]int, len(ranges))
+	for i := range indices {
+		indices[i] = i
+	}
+	sort.SliceStable(indices, func(a, b int) bool {
+		return counts[indices[a]] < counts[indices[b]]
+	})
+
+	logging.Debug(p.logger, "op", "assignFamilyBalancePools", "service", namespacedName(service),
+		"family", family, "rangeCounts", fmt.Sprintf("%v", counts), "order", fmt.Sprintf("%v", indices))
+
+	// Try ranges in least-allocated order
+	for _, idx := range indices {
+		if err := p.assignFromRange(ranges[idx], service); err == nil {
+			logging.Info(p.logger, "op", "assignFamilyBalancePools", "service", namespacedName(service),
+				"range", ranges[idx], "msg", "balancePools allocation selected range")
+			balancePoolsAllocations.WithLabelValues(p.name).Inc()
+			return nil
+		}
+	}
+
+	allocationRejected.WithLabelValues(p.name, "exhausted").Inc()
+	return fmt.Errorf("no available addresses for service %s in family %d (balancePools, all ranges exhausted)",
+		namespacedName(service), family)
+}
+
+// assignFromRange tries to assign the next available IP from a single range
+// to the service. Returns nil on success, error if the range is exhausted
+// or all IPs have conflicts.
+func (p LocalPool) assignFromRange(ipRange *purelbv2.IPRange, service *v1.Service) error {
+	var lastErr error
+	for ip := ipRange.First(); ip != nil; ip = ipRange.Next(ip) {
+		if err := p.Assign(ip, service); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("range %s is empty", ipRange)
+	}
+	return lastErr
+}
+
+// AssignNextPerRange allocates one IP per address range (per family) that
+// has an active subnet. activeSubnets is the set of subnets (in CIDR notation)
+// with healthy lbnodeagents. Returns error only if NO IPs could be allocated.
+func (p LocalPool) AssignNextPerRange(svc *v1.Service, activeSubnets []string) error {
+	activeSet := make(map[string]bool, len(activeSubnets))
+	for _, s := range activeSubnets {
+		activeSet[s] = true
+	}
+
+	families, err := p.whichFamilies(svc)
+	if err != nil {
+		return err
+	}
+	// Default to IPv4 if no families specified
+	if len(families) == 0 {
+		families = []int{nl.FAMILY_V4}
+	}
+
+	allocated := 0
+	activeRanges := 0
+	skippedNoActive := 0
+
+	for _, family := range families {
+		var ranges []*purelbv2.IPRange
+		var subnets []string
+		if family == nl.FAMILY_V6 {
+			ranges = p.v6Ranges
+			subnets = p.v6Subnets
+		} else {
+			ranges = p.v4Ranges
+			subnets = p.v4Subnets
+		}
+
+		for i, ipRange := range ranges {
+			// Remote pools: all ranges are always active (all nodes announce to kubelb0)
+			// Local pools: only ranges with active node subnets participate
+			if p.poolType == purelbv2.PoolTypeLocal && !activeSet[subnets[i]] {
+				skippedNoActive++
+				p.logger.Log("op", "assignNextPerRange", "range", ipRange,
+					"subnet", subnets[i], "msg", "skipping, no active nodes on subnet")
+				continue
+			}
+			activeRanges++
+
+			// Skip if service already has an IP from this range
+			if p.serviceHasIPInRange(svc, ipRange) {
+				p.logger.Log("op", "assignNextPerRange", "range", ipRange,
+					"msg", "skipping, service already has IP in this range")
+				allocated++ // Count existing as allocated
+				continue
+			}
+
+			if err := p.assignFromRange(ipRange, svc); err != nil {
+				p.logger.Log("op", "assignNextPerRange", "range", ipRange,
+					"subnet", subnets[i], "error", err, "msg", "range exhausted, continuing")
+				allocationRejected.WithLabelValues(p.name, "exhausted").Inc()
+				continue
+			}
+			allocated++
+		}
+	}
+
+	if allocated == 0 {
+		return fmt.Errorf("no IPs allocated for service %s: %d ranges skipped (no active nodes)",
+			namespacedName(svc), skippedNoActive)
+	}
+
+	// Track partial allocations where some active ranges couldn't provide IPs
+	if allocated < activeRanges {
+		multipoolPartial.WithLabelValues(p.name).Inc()
+	}
+
+	return nil
+}
+
+// serviceHasIPInRange checks if the service already has an ingress IP
+// that falls within the given range.
+func (p LocalPool) serviceHasIPInRange(svc *v1.Service, ipRange *purelbv2.IPRange) bool {
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		ip := net.ParseIP(ingress.IP)
+		if ip != nil && ipRange.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

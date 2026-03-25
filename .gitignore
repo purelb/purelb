@@ -10,4 +10,4 @@ website/resources/_gen
 website/hugo_stats.json
 .hugo_build.lock
 pkg/generated
-pkg/apis/purelb/v1/zz_generated.deepcopy.go
+pkg/apis/purelb/*/zz_generated.deepcopy.go

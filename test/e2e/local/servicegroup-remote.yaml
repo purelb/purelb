@@ -1,0 +1,13 @@
+---
+# ServiceGroup with remote pool (bypasses subnet filtering)
+# Used to test that remote pools work regardless of node subnets
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: remote-pool
+  namespace: purelb-system
+spec:
+  remote:
+    v4pools:
+    - pool: 10.255.1.100-10.255.1.110
+      subnet: 10.255.1.0/24

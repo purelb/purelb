@@ -54,6 +54,13 @@ rules:
   verbs:
   - create
   - patch
+- apiGroups:
+  - ''
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -104,6 +111,25 @@ rules:
   verbs:
   - create
   - patch
+- apiGroups:
+  - ''
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+# Leases are used for leader election (subnet-aware election via K8s leases)
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - delete
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -118,6 +144,22 @@ rules:
   resources:
   - pods
   verbs:
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app: purelb
+  name: purelb:allocator:leases
+  namespace: purelb-system
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
   - list
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -165,6 +207,21 @@ subjects:
 - kind: ServiceAccount
   name: lbnodeagent
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app: purelb
+  name: purelb:allocator:leases
+  namespace: purelb-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: purelb:allocator:leases
+subjects:
+- kind: ServiceAccount
+  name: allocator
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -183,14 +240,14 @@ spec:
       annotations:
         prometheus.io/port: '7472'
         prometheus.io/scrape: 'true'
-        # Required to allow signal delivery for graceful termination
-        container.apparmor.security.beta.kubernetes.io/lbnodeagent: unconfined
       labels:
         app: purelb
         component: lbnodeagent
     spec:
       containers:
       - env:
+        - name: DEFAULT_ANNOUNCER
+          value: "PureLB"
         - name: PURELB_NODE_NAME
           valueFrom:
             fieldRef:
@@ -199,14 +256,23 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        - name: PURELB_ML_NAMESPACE
+        - name: PURELB_NAMESPACE
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        - name: ML_GROUP
-          value: 8sb7ikA5qHwQQqxc
-        image: purelb/lbnodeagent:test-local
-        imagePullPolicy: Never
+        - name: PURELB_POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        # Lease-based election configuration
+        - name: PURELB_LEASE_DURATION
+          value: "10s"
+        - name: PURELB_RENEW_DEADLINE
+          value: "7s"
+        - name: PURELB_RETRY_PERIOD
+          value: "2s"
+        image: ghcr.io/purelb/purelb/lbnodeagent:VERSION_TAG
+        imagePullPolicy: IfNotPresent
         name: lbnodeagent
         ports:
         - containerPort: 7472
@@ -216,6 +282,8 @@ spec:
             memory: 100Mi
         securityContext:
           allowPrivilegeEscalation: false
+          appArmorProfile:
+            type: Unconfined
           capabilities:
             add:
             - NET_ADMIN
@@ -229,7 +297,12 @@ spec:
       nodeSelector:
         kubernetes.io/os: linux
       serviceAccountName: lbnodeagent
-      terminationGracePeriodSeconds: 10
+      # Allow enough time for graceful shutdown:
+      # - Mark unhealthy + ForceSync (~1s)
+      # - Traffic drain wait (2s)
+      # - Lease deletion + cleanup (~1s)
+      # Plus buffer for slow API server responses
+      terminationGracePeriodSeconds: 30
       tolerations:
       - effect: NoSchedule
         key: node-role.kubernetes.io/master
@@ -258,8 +331,8 @@ spec:
         component: allocator
     spec:
       containers:
-      - image: purelb/allocator:test-local
-        imagePullPolicy: Never
+      - image: ghcr.io/purelb/purelb/allocator:VERSION_TAG
+        imagePullPolicy: IfNotPresent
         env:
         - name: NETBOX_USER_TOKEN
           valueFrom:

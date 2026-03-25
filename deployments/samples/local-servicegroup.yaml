@@ -1,5 +1,5 @@
 ---
-apiVersion: purelb.io/v1
+apiVersion: purelb.io/v2
 kind: ServiceGroup
 metadata:
   name: default

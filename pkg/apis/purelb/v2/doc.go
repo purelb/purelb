@@ -1,4 +1,5 @@
 // Copyright 2020 Acnodal, Inc.
+// Copyright 2024 Acnodal, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +16,10 @@
 // +k8s:deepcopy-gen=package
 // +groupName=purelb.io
 
-// The v1 version of the API, which is basically just custom resources
-// for our configuration.
-package v1 // import "purelb.io/pkg/apis/purelb/v1"
+// Package v2 is the v2 version of the PureLB API.
+//
+// Key changes from v1:
+//   - ServiceGroup: Local/Remote/Netbox are now mutually exclusive fields
+//   - LBNodeAgent: Renamed fields for clarity, integrated GARPConfig
+//   - Added skipIPv6DAD option for ServiceGroup local pools
+package v2 // import "purelb.io/pkg/apis/purelb/v2"

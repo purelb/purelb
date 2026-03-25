@@ -1,0 +1,22 @@
+---
+# Per-iteration standard LB service template for timing tests.
+# Used by tests D1, D3. The service name is replaced at runtime.
+# NAME is substituted by the script.
+apiVersion: v1
+kind: Service
+metadata:
+  name: NAME
+  namespace: test
+  labels:
+    test-suite: timing
+  annotations:
+    purelb.io/service-group: remote
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80

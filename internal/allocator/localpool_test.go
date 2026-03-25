@@ -14,8 +14,10 @@
 package allocator
 
 import (
+	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/go-kit/log"
@@ -23,7 +25,7 @@ import (
 	"github.com/vishvananda/netlink/nl"
 	v1 "k8s.io/api/core/v1"
 
-	purelbv1 "purelb.io/pkg/apis/purelb/v1"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 var (
@@ -48,23 +50,19 @@ func TestNewLocalPool(t *testing.T) {
 	ip4 := "192.168.1.1"
 	ip6 := "2001:470:1f07:98e:d62a:159b:41a3:93d3"
 
-	// Test old-fashioned config (i.e., using the top-level Pool)
-	p, err := NewLocalPool("testpool", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+	// Test v4 pool config
+	v4Pool := &purelbv2.AddressPool{
 		Pool:   "192.168.1.1/32",
 		Subnet: "192.168.1.1/32",
-	})
+	}
+	p, err := NewLocalPool("testpool", localPoolTestLogger, v4Pool, nil, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
 	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
 	assert.Equal(t, ip4, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
-	// Test IPV4 config
-	p, err = NewLocalPool("v4pool", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
-		V4Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool:   "192.168.1.1/32",
-			Subnet: "192.168.1.1/32",
-		},
-	})
+	// Test IPV4 config with V4Pool
+	p, err = NewLocalPool("v4pool", localPoolTestLogger, v4Pool, nil, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
 	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
@@ -73,58 +71,102 @@ func TestNewLocalPool(t *testing.T) {
 	assert.Equal(t, ip4, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
 	// Test IPV6 config
-	p, err = NewLocalPool("v6pool", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
-		Pool:   "192.168.1.1/32",
-		Subnet: "192.168.1.1/32",
-		V6Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
-			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
-		},
-	})
+	v6Pool := &purelbv2.AddressPool{
+		Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+		Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+	}
+	p, err = NewLocalPool("v6pool", localPoolTestLogger, nil, v6Pool, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
 	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
-	// We specified the top-level Pool and the V6Pool so the V6Pool
-	// should take precedence
 	assert.Equal(t, ip6, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
-	// Test IPV6 config
-	p, err = NewLocalPool("bothpools", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
-		V4Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool:   "192.168.1.1/32",
-			Subnet: "192.168.1.1/32",
-		},
-		V6Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
-			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
-		},
-	})
+	// Test both pools config
+	p, err = NewLocalPool("bothpools", localPoolTestLogger, v4Pool, v6Pool, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
 	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
 	// We specified both pools so the V6Pool should take precedence
 	assert.Equal(t, ip6, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
-	// Test invalid ranges
-	_, err = NewLocalPool("uncontained", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
-		V4Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool:   "192.168.1.0-192.168.1.1",
-			Subnet: "192.168.1.0/32",
-		},
-	})
-	assert.Error(t, err, "pool isn't contained in its subnet")
-	_, err = NewLocalPool("uncontained", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
-		V6Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3-2001:470:1f07:98e:d62a:159b:41a3:93d4",
-			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
-		},
-	})
-	assert.Error(t, err, "pool isn't contained in its subnet")
-	_, err = NewLocalPool("uncontained", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
+	// Test invalid ranges - v4 pool not contained in subnet
+	invalidV4Pool := &purelbv2.AddressPool{
 		Pool:   "192.168.1.0-192.168.1.1",
 		Subnet: "192.168.1.0/32",
-	})
+	}
+	_, err = NewLocalPool("uncontained", localPoolTestLogger, invalidV4Pool, nil, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 	assert.Error(t, err, "pool isn't contained in its subnet")
+
+	// Test invalid ranges - v6 pool not contained in subnet
+	invalidV6Pool := &purelbv2.AddressPool{
+		Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3-2001:470:1f07:98e:d62a:159b:41a3:93d4",
+		Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+	}
+	_, err = NewLocalPool("uncontained", localPoolTestLogger, nil, invalidV6Pool, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
+	assert.Error(t, err, "pool isn't contained in its subnet")
+}
+
+func TestLocalPoolSkipIPv6DAD(t *testing.T) {
+	v4Pool := &purelbv2.AddressPool{
+		Pool:   "192.168.1.1/32",
+		Subnet: "192.168.1.1/32",
+	}
+
+	// Pool with skipIPv6DAD=false
+	p, err := NewLocalPool("no-dad-skip", localPoolTestLogger, v4Pool, nil, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
+	assert.NoError(t, err)
+	assert.False(t, p.SkipIPv6DAD(), "SkipIPv6DAD should be false when not enabled")
+
+	// Pool with skipIPv6DAD=true
+	p, err = NewLocalPool("dad-skip", localPoolTestLogger, v4Pool, nil, nil, nil, purelbv2.PoolTypeLocal, true, false, false)
+	assert.NoError(t, err)
+	assert.True(t, p.SkipIPv6DAD(), "SkipIPv6DAD should be true when enabled")
+
+	// Remote pool always has skipIPv6DAD=false (DAD is L2, meaningless on dummy interfaces)
+	p, err = NewLocalPool("remote", localPoolTestLogger, v4Pool, nil, nil, nil, purelbv2.PoolTypeRemote, false, false, false)
+	assert.NoError(t, err)
+	assert.False(t, p.SkipIPv6DAD(), "Remote pools should not skip DAD")
+}
+
+func TestRemotePoolMultiPoolSkipsActiveSubnetFilter(t *testing.T) {
+	// Remote pools should allocate from ALL ranges regardless of activeSubnets,
+	// because all nodes announce remote IPs on kubelb0 (dummy interface).
+	v4Pools := []purelbv2.AddressPool{
+		{Pool: "10.100.0.0/31", Subnet: "10.100.0.0/24"},
+		{Pool: "10.200.0.0/31", Subnet: "10.200.0.0/24"},
+	}
+	p, err := NewLocalPool("remote-mp", localPoolTestLogger, nil, nil, v4Pools, nil,
+		purelbv2.PoolTypeRemote, false, true, false)
+	assert.NoError(t, err)
+
+	svc := v1.Service{}
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	svc.Status.LoadBalancer.Ingress = nil
+
+	// activeSubnets has NEITHER of the remote pool subnets —
+	// but remote pools should ignore the filter
+	err = p.AssignNextPerRange(&svc, []string{"192.168.1.0/24"})
+	assert.NoError(t, err, "remote pool multi-pool should succeed even without matching active subnets")
+	assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "should get IPs from both remote ranges")
+}
+
+func TestLocalPoolMultiPoolRespectsActiveSubnetFilter(t *testing.T) {
+	// Local pools should only allocate from ranges with active subnets.
+	v4Pools := []purelbv2.AddressPool{
+		{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"},
+		{Pool: "192.168.2.0/31", Subnet: "192.168.2.0/24"},
+	}
+	p, err := NewLocalPool("local-mp", localPoolTestLogger, nil, nil, v4Pools, nil,
+		purelbv2.PoolTypeLocal, false, true, false)
+	assert.NoError(t, err)
+
+	svc := v1.Service{}
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+
+	// Only subnet 1 active — should get 1 IP, not 2
+	err = p.AssignNextPerRange(&svc, []string{"192.168.1.0/24"})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress), "should only get IP from active subnet")
 }
 
 func TestFirstNext(t *testing.T) {
@@ -283,16 +325,15 @@ func TestAssignNext(t *testing.T) {
 }
 
 func TestPoolSize(t *testing.T) {
-	p, err := NewLocalPool("sizetest", localPoolTestLogger, purelbv1.ServiceGroupLocalSpec{
-		V4Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool:   "192.168.1.0/31",
-			Subnet: "192.168.1.0/31",
-		},
-		V6Pool: &purelbv1.ServiceGroupAddressPool{
-			Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
-			Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
-		},
-	})
+	v4Pool := &purelbv2.AddressPool{
+		Pool:   "192.168.1.0/31",
+		Subnet: "192.168.1.0/31",
+	}
+	v6Pool := &purelbv2.AddressPool{
+		Pool:   "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+		Subnet: "2001:470:1f07:98e:d62a:159b:41a3:93d3/128",
+	}
+	p, err := NewLocalPool("sizetest", localPoolTestLogger, v4Pool, v6Pool, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 	assert.NoError(t, err, "Pool instantiation failed")
 	assert.Equal(t, uint64(3), p.Size(), "Pool Size() failed")
 }
@@ -346,7 +387,15 @@ func sameStrings(t *testing.T, want []string, got []string) {
 }
 
 func mustLocalPool(_ *testing.T, name string, r string) LocalPool {
-	p, err := NewLocalPool(name, allocatorTestLogger, purelbv1.ServiceGroupLocalSpec{Pool: r, Subnet: r})
+	pool := &purelbv2.AddressPool{Pool: r, Subnet: r}
+	// Detect if this is an IPv6 range by checking for ':'
+	var v4Pool, v6Pool *purelbv2.AddressPool
+	if strings.Contains(r, ":") {
+		v6Pool = pool
+	} else {
+		v4Pool = pool
+	}
+	p, err := NewLocalPool(name, allocatorTestLogger, v4Pool, v6Pool, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 	if err != nil {
 		panic(err)
 	}
@@ -354,14 +403,15 @@ func mustLocalPool(_ *testing.T, name string, r string) LocalPool {
 }
 
 func mustDualStackPool(_ *testing.T, pools4 []string, pools6 []string) LocalPool {
-	spec := purelbv1.ServiceGroupLocalSpec{}
+	var v4Pools []purelbv2.AddressPool
+	var v6Pools []purelbv2.AddressPool
 	for _, pool6 := range pools6 {
-		spec.V6Pools = append(spec.V6Pools, &purelbv1.ServiceGroupAddressPool{Pool: pool6, Subnet: pool6})
+		v6Pools = append(v6Pools, purelbv2.AddressPool{Pool: pool6, Subnet: pool6})
 	}
 	for _, pool4 := range pools4 {
-		spec.V4Pools = append(spec.V4Pools, &purelbv1.ServiceGroupAddressPool{Pool: pool4, Subnet: pool4})
+		v4Pools = append(v4Pools, purelbv2.AddressPool{Pool: pool4, Subnet: pool4})
 	}
-	p, err := NewLocalPool("unittest", allocatorTestLogger, spec)
+	p, err := NewLocalPool("unittest", allocatorTestLogger, nil, nil, v4Pools, v6Pools, purelbv2.PoolTypeLocal, false, false, false)
 	if err != nil {
 		panic(err)
 	}
@@ -453,4 +503,392 @@ func TestDifferentSharingKeysGetDifferentIPs(t *testing.T) {
 	// svc2 should get a different IP because it has a different sharing key
 	assert.NoError(t, p.AssignNext(&svc2))
 	assert.Equal(t, "192.168.1.1", svc2.Status.LoadBalancer.Ingress[0].IP)
+}
+
+// ============================================================================
+// Multi-pool tests
+// ============================================================================
+
+func mustMultiPoolLocalPool(t *testing.T, v4Pools []purelbv2.AddressPool, v6Pools []purelbv2.AddressPool) LocalPool {
+	t.Helper()
+	p, err := NewLocalPool("multipool-test", allocatorTestLogger, nil, nil, v4Pools, v6Pools, purelbv2.PoolTypeLocal, false, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestMultiPool(t *testing.T) {
+	t.Run("MultiPool flag", func(t *testing.T) {
+		p := mustMultiPoolLocalPool(t,
+			[]purelbv2.AddressPool{
+				{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"},
+			}, nil)
+		assert.True(t, p.MultiPool())
+
+		p2 := mustDualStackPool(t, []string{"192.168.1.0/31"}, nil)
+		assert.False(t, p2.MultiPool())
+	})
+}
+
+func TestAssignNextPerRange(t *testing.T) {
+	t.Run("2 ranges both active", func(t *testing.T) {
+		p := mustMultiPoolLocalPool(t,
+			[]purelbv2.AddressPool{
+				{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"},
+				{Pool: "192.168.2.0/31", Subnet: "192.168.2.0/24"},
+			}, nil)
+
+		svc := service("svc1", ports("tcp/80"), "")
+		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+
+		err := p.AssignNextPerRange(&svc, []string{"192.168.1.0/24", "192.168.2.0/24"})
+		assert.NoError(t, err)
+		assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "should get 2 IPs")
+
+		// Verify one IP from each range
+		ips := map[string]bool{}
+		for _, ing := range svc.Status.LoadBalancer.Ingress {
+			ips[ing.IP] = true
+		}
+		assert.True(t, ips["192.168.1.0"] || ips["192.168.1.1"], "should have IP from range 1")
+		assert.True(t, ips["192.168.2.0"] || ips["192.168.2.1"], "should have IP from range 2")
+	})
+
+	t.Run("2 ranges 1 active", func(t *testing.T) {
+		p := mustMultiPoolLocalPool(t,
+			[]purelbv2.AddressPool{
+				{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"},
+				{Pool: "192.168.2.0/31", Subnet: "192.168.2.0/24"},
+			}, nil)
+
+		svc := service("svc1", ports("tcp/80"), "")
+		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+
+		// Only subnet 1 is active
+		err := p.AssignNextPerRange(&svc, []string{"192.168.1.0/24"})
+		assert.NoError(t, err)
+		assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress), "should get 1 IP")
+		ip := svc.Status.LoadBalancer.Ingress[0].IP
+		assert.True(t, ip == "192.168.1.0" || ip == "192.168.1.1", "IP should be from active range")
+	})
+
+	t.Run("no active subnets", func(t *testing.T) {
+		p := mustMultiPoolLocalPool(t,
+			[]purelbv2.AddressPool{
+				{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"},
+			}, nil)
+
+		svc := service("svc1", ports("tcp/80"), "")
+		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+
+		err := p.AssignNextPerRange(&svc, []string{})
+		assert.Error(t, err, "should fail with no active subnets")
+		assert.Equal(t, 0, len(svc.Status.LoadBalancer.Ingress))
+	})
+
+	t.Run("range exhausted partial allocation", func(t *testing.T) {
+		p := mustMultiPoolLocalPool(t,
+			[]purelbv2.AddressPool{
+				{Pool: "192.168.1.0/32", Subnet: "192.168.1.0/24"}, // 1 IP
+				{Pool: "192.168.2.0/31", Subnet: "192.168.2.0/24"}, // 2 IPs
+			}, nil)
+
+		// Exhaust range 1
+		svc0 := service("svc0", ports("tcp/80"), "")
+		svc0.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+		err := p.AssignNextPerRange(&svc0, []string{"192.168.1.0/24", "192.168.2.0/24"})
+		assert.NoError(t, err)
+		assert.Equal(t, 2, len(svc0.Status.LoadBalancer.Ingress))
+
+		// Now range 1 is exhausted, svc1 should still get an IP from range 2
+		svc1 := service("svc1", ports("tcp/80"), "")
+		svc1.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+		err = p.AssignNextPerRange(&svc1, []string{"192.168.1.0/24", "192.168.2.0/24"})
+		assert.NoError(t, err)
+		assert.Equal(t, 1, len(svc1.Status.LoadBalancer.Ingress), "should get partial allocation")
+		assert.Equal(t, "192.168.2.1", svc1.Status.LoadBalancer.Ingress[0].IP)
+	})
+
+	t.Run("dual-stack multi-range", func(t *testing.T) {
+		p := mustMultiPoolLocalPool(t,
+			[]purelbv2.AddressPool{
+				{Pool: "192.168.1.0/32", Subnet: "192.168.1.0/24"},
+				{Pool: "192.168.2.0/32", Subnet: "192.168.2.0/24"},
+			},
+			[]purelbv2.AddressPool{
+				{Pool: "fd00:1::1/128", Subnet: "fd00:1::/64"},
+				{Pool: "fd00:2::1/128", Subnet: "fd00:2::/64"},
+			})
+
+		svc := service("svc1", ports("tcp/80"), "")
+		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol}
+
+		err := p.AssignNextPerRange(&svc, []string{
+			"192.168.1.0/24", "192.168.2.0/24",
+			"fd00:1::/64", "fd00:2::/64",
+		})
+		assert.NoError(t, err)
+		// Should get 4 IPs: 2 v4 + 2 v6
+		assert.Equal(t, 4, len(svc.Status.LoadBalancer.Ingress), "should get 4 IPs for dual-stack multi-range")
+	})
+
+	t.Run("existing IP in range skipped", func(t *testing.T) {
+		p := mustMultiPoolLocalPool(t,
+			[]purelbv2.AddressPool{
+				{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"},
+				{Pool: "192.168.2.0/31", Subnet: "192.168.2.0/24"},
+			}, nil)
+
+		svc := service("svc1", ports("tcp/80"), "")
+		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+
+		// Pre-populate with an IP from range 1
+		ipModeVIP := v1.LoadBalancerIPModeVIP
+		svc.Status.LoadBalancer.Ingress = []v1.LoadBalancerIngress{
+			{IP: "192.168.1.0", IPMode: &ipModeVIP},
+		}
+		// Notify the pool about the existing IP
+		assert.NoError(t, p.Notify(&svc))
+
+		err := p.AssignNextPerRange(&svc, []string{"192.168.1.0/24", "192.168.2.0/24"})
+		assert.NoError(t, err)
+		// Should get 2 total: the existing one + 1 new from range 2
+		assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "should have 2 IPs total")
+	})
+}
+
+// ============================================================================
+// BalancePools allocation tests
+// ============================================================================
+
+func mustBalancePoolsPool(t *testing.T, v4Pools []purelbv2.AddressPool, v6Pools []purelbv2.AddressPool) LocalPool {
+	t.Helper()
+	p, err := NewLocalPool("balanced-test", allocatorTestLogger, nil, nil, v4Pools, v6Pools, purelbv2.PoolTypeLocal, false, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestBalancePoolsBasic(t *testing.T) {
+	// 2 v4 ranges with 3 IPs each
+	p := mustBalancePoolsPool(t,
+		[]purelbv2.AddressPool{
+			{Pool: "10.0.0.1-10.0.0.3", Subnet: "10.0.0.0/24"},
+			{Pool: "10.0.1.1-10.0.1.3", Subnet: "10.0.1.0/24"},
+		}, nil)
+
+	assert.True(t, p.BalancePools())
+
+	// Allocate 4 services — should alternate between ranges
+	svcs := make([]v1.Service, 4)
+	for i := range svcs {
+		svcs[i] = service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
+		svcs[i].Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+		assert.NoError(t, p.AssignNext(&svcs[i]))
+		assert.Equal(t, 1, len(svcs[i].Status.LoadBalancer.Ingress))
+	}
+
+	// Count IPs per range
+	range0Count, range1Count := 0, 0
+	r0 := net.IPNet{IP: net.ParseIP("10.0.0.0"), Mask: net.CIDRMask(24, 32)}
+	r1 := net.IPNet{IP: net.ParseIP("10.0.1.0"), Mask: net.CIDRMask(24, 32)}
+	for _, svc := range svcs {
+		ip := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
+		if r0.Contains(ip) {
+			range0Count++
+		} else if r1.Contains(ip) {
+			range1Count++
+		}
+	}
+
+	// Should be evenly distributed: 2 from each range
+	assert.Equal(t, 2, range0Count, "should have 2 IPs from range 0")
+	assert.Equal(t, 2, range1Count, "should have 2 IPs from range 1")
+}
+
+func TestBalancePoolsExhaustion(t *testing.T) {
+	// Range A has 1 IP, range B has 5 IPs
+	p := mustBalancePoolsPool(t,
+		[]purelbv2.AddressPool{
+			{Pool: "10.0.0.1/32", Subnet: "10.0.0.0/24"},
+			{Pool: "10.0.1.1-10.0.1.5", Subnet: "10.0.1.0/24"},
+		}, nil)
+
+	// Allocate 6 services — should use all 6 IPs
+	for i := 0; i < 6; i++ {
+		svc := service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
+		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+		assert.NoError(t, p.AssignNext(&svc), "allocation %d should succeed", i)
+	}
+
+	// 7th should fail — all exhausted
+	svc := service("svc-overflow", ports("tcp/80"), "")
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	assert.Error(t, p.AssignNext(&svc), "should fail when all ranges exhausted")
+}
+
+func TestBalancePoolsIPv6(t *testing.T) {
+	// 2 v6 ranges with 2 IPs each
+	p := mustBalancePoolsPool(t, nil,
+		[]purelbv2.AddressPool{
+			{Pool: "fd00:a::1-fd00:a::2", Subnet: "fd00:a::/64"},
+			{Pool: "fd00:b::1-fd00:b::2", Subnet: "fd00:b::/64"},
+		})
+
+	svcs := make([]v1.Service, 4)
+	for i := range svcs {
+		svcs[i] = service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
+		svcs[i].Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol}
+		assert.NoError(t, p.AssignNext(&svcs[i]))
+	}
+
+	// Count per range
+	rangeA, rangeB := 0, 0
+	_, subA, _ := net.ParseCIDR("fd00:a::/64")
+	_, subB, _ := net.ParseCIDR("fd00:b::/64")
+	for _, svc := range svcs {
+		ip := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
+		if subA.Contains(ip) {
+			rangeA++
+		} else if subB.Contains(ip) {
+			rangeB++
+		}
+	}
+	assert.Equal(t, 2, rangeA, "should have 2 IPs from range A")
+	assert.Equal(t, 2, rangeB, "should have 2 IPs from range B")
+}
+
+func TestBalancePoolsDualStack(t *testing.T) {
+	// 2 v4 ranges and 2 v6 ranges
+	p := mustBalancePoolsPool(t,
+		[]purelbv2.AddressPool{
+			{Pool: "10.0.0.1-10.0.0.2", Subnet: "10.0.0.0/24"},
+			{Pool: "10.0.1.1-10.0.1.2", Subnet: "10.0.1.0/24"},
+		},
+		[]purelbv2.AddressPool{
+			{Pool: "fd00:a::1-fd00:a::2", Subnet: "fd00:a::/64"},
+			{Pool: "fd00:b::1-fd00:b::2", Subnet: "fd00:b::/64"},
+		})
+
+	// Dual-stack: 2 services, each gets 1 v4 + 1 v6
+	svcs := make([]v1.Service, 2)
+	for i := range svcs {
+		svcs[i] = service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
+		svcs[i].Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol}
+		assert.NoError(t, p.AssignNext(&svcs[i]))
+		assert.Equal(t, 2, len(svcs[i].Status.LoadBalancer.Ingress), "should get 1 v4 + 1 v6")
+	}
+
+	// Each family should be balancePools: 1 per range
+	v4ranges := map[string]int{}
+	v6ranges := map[string]int{}
+	_, v4sub0, _ := net.ParseCIDR("10.0.0.0/24")
+	_, v4sub1, _ := net.ParseCIDR("10.0.1.0/24")
+	_, v6sub0, _ := net.ParseCIDR("fd00:a::/64")
+	_, v6sub1, _ := net.ParseCIDR("fd00:b::/64")
+
+	for _, svc := range svcs {
+		for _, ing := range svc.Status.LoadBalancer.Ingress {
+			ip := net.ParseIP(ing.IP)
+			switch {
+			case v4sub0.Contains(ip):
+				v4ranges["sub0"]++
+			case v4sub1.Contains(ip):
+				v4ranges["sub1"]++
+			case v6sub0.Contains(ip):
+				v6ranges["sub0"]++
+			case v6sub1.Contains(ip):
+				v6ranges["sub1"]++
+			}
+		}
+	}
+	assert.Equal(t, 1, v4ranges["sub0"], "v4 should have 1 from sub0")
+	assert.Equal(t, 1, v4ranges["sub1"], "v4 should have 1 from sub1")
+	assert.Equal(t, 1, v6ranges["sub0"], "v6 should have 1 from sub0")
+	assert.Equal(t, 1, v6ranges["sub1"], "v6 should have 1 from sub1")
+}
+
+func TestBalancePoolsDisabled(t *testing.T) {
+	// Non-balancePools pool (default) — should exhaust range 0 first
+	p, err := NewLocalPool("seq-test", allocatorTestLogger, nil, nil,
+		[]purelbv2.AddressPool{
+			{Pool: "10.0.0.1-10.0.0.2", Subnet: "10.0.0.0/24"},
+			{Pool: "10.0.1.1-10.0.1.2", Subnet: "10.0.1.0/24"},
+		}, nil, purelbv2.PoolTypeLocal, false, false, false)
+	assert.NoError(t, err)
+	assert.False(t, p.BalancePools())
+
+	// Allocate 2 services — both should come from range 0 (sequential)
+	for i := 0; i < 2; i++ {
+		svc := service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
+		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+		assert.NoError(t, p.AssignNext(&svc))
+		ip := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
+		_, sub0, _ := net.ParseCIDR("10.0.0.0/24")
+		assert.True(t, sub0.Contains(ip), "sequential should exhaust range 0 first, got %s", ip)
+	}
+}
+
+func TestBalancePoolsAfterRelease(t *testing.T) {
+	// 2 ranges with 3 IPs each
+	p := mustBalancePoolsPool(t,
+		[]purelbv2.AddressPool{
+			{Pool: "10.0.0.1-10.0.0.3", Subnet: "10.0.0.0/24"},
+			{Pool: "10.0.1.1-10.0.1.3", Subnet: "10.0.1.0/24"},
+		}, nil)
+
+	// Allocate 4 services (2 per range)
+	svcs := make([]v1.Service, 4)
+	for i := range svcs {
+		svcs[i] = service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
+		svcs[i].Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+		assert.NoError(t, p.AssignNext(&svcs[i]))
+	}
+
+	// Release 2 services from range 0 (svc0 and svc2 should be from range 0 due to alternation)
+	// Find which services are in range 0
+	_, sub0, _ := net.ParseCIDR("10.0.0.0/24")
+	released := 0
+	for i, svc := range svcs {
+		ip := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
+		if sub0.Contains(ip) && released < 2 {
+			assert.NoError(t, p.Release(namespacedName(&svcs[i])))
+			released++
+		}
+	}
+
+	// Next allocation should go to range 0 (now has fewer allocations)
+	newSvc := service("svc-new", ports("tcp/80"), "")
+	newSvc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	assert.NoError(t, p.AssignNext(&newSvc))
+	newIP := net.ParseIP(newSvc.Status.LoadBalancer.Ingress[0].IP)
+	assert.True(t, sub0.Contains(newIP), "after release, should rebalance to range 0, got %s", newIP)
+}
+
+func TestBalancePoolsWithSharingKeyBypass(t *testing.T) {
+	// 2 ranges — range B has fewer allocations
+	p := mustBalancePoolsPool(t,
+		[]purelbv2.AddressPool{
+			{Pool: "10.0.0.1-10.0.0.3", Subnet: "10.0.0.0/24"},
+			{Pool: "10.0.1.1-10.0.1.3", Subnet: "10.0.1.0/24"},
+		}, nil)
+
+	// First, allocate a service with sharing key to range 0 (sequential path)
+	svc1 := service("svc1", ports("tcp/80"), "share-key")
+	svc1.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	assert.NoError(t, p.AssignNext(&svc1))
+	ip1 := net.ParseIP(svc1.Status.LoadBalancer.Ingress[0].IP)
+	_, sub0, _ := net.ParseCIDR("10.0.0.0/24")
+
+	// The sharing key service should get IP from range 0 (sequential, first range)
+	assert.True(t, sub0.Contains(ip1), "sharing key svc should use sequential path")
+
+	// Second service with same sharing key must get same IP (sharing key binding)
+	svc2 := service("svc2", ports("tcp/443"), "share-key")
+	svc2.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	assert.NoError(t, p.AssignNext(&svc2))
+	ip2 := net.ParseIP(svc2.Status.LoadBalancer.Ingress[0].IP)
+	assert.True(t, ip1.Equal(ip2), "sharing key services must share the same IP")
 }

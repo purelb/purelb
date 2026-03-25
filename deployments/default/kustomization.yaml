@@ -8,3 +8,4 @@ resources:
 - ../crds
 - namespace.yaml
 - purelb.yaml
+- lbnodeagent.yaml

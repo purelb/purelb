@@ -148,14 +148,16 @@ serviceGroup:
 #       data:
 #         hello: world
 #     - |
-#       apiVersion: purelb.io/v1
+#       apiVersion: purelb.io/v2
 #       kind: ServiceGroup
 #       metadata:
 #         name: private
 #       spec:
 #         local:
-#           pool: 192.168.0.0-192.168.0.5
-#           subnet: 192.168.0.0/27
+#           v4pool:
+#             pool: 192.168.0.0-192.168.0.5
+#             subnet: 192.168.0.0/27
+#             aggregation: default
 extraObjects: []
 
 # PureLB will act as the default service announcer if this value is
@@ -165,50 +167,44 @@ extraObjects: []
 # Spec.LoadBalancerClass explictly set to "purelb.io/purelb".
 defaultAnnouncer: "PureLB"
 
-# This value is passed into the memberlist package. Quoting from the
-# memberlist docs:
-#
-#   SecretKey is used to initialize the primary encryption key in a
-#   keyring.  The primary encryption key is the only key used to
-#   encrypt messages and the first key used while attempting to
-#   decrypt messages. Providing a value for this primary key will
-#   enable message-level encryption and verification, and
-#   automatically install the key onto the keyring.  The value should
-#   be either 16, 24, or 32 bytes to select AES-128, AES-192, or
-#   AES-256.
-#
-# See PureLB's internal/election package docs for more info on how
-# PureLB uses memberlist.
-#
-# This random default value is fine for most purposes but for extra
-# security you can replace it with your own value.
+# DEPRECATED: memberlistSecretKey is no longer used.
+# PureLB now uses Kubernetes Leases for leader election instead of memberlist.
+# This value is kept for backward compatibility but has no effect.
+# It will be removed in a future release.
 memberlistSecretKey: "8sb7ikA5qHwQQqxc"
 
 # Optional priorityClass to use for both allocator and lbnodeagent pods.
 # https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/
 priorityClassName: ""
 
+# Lease-based leader election configuration.
+# These control how lbnodeagent nodes coordinate to elect winners for
+# announcing service addresses. The defaults work well for most deployments.
+leaseConfig:
+  # How long a lease is valid before it expires
+  leaseDuration: "10s"
+  # How long to retry renewals before giving up
+  renewDeadline: "7s"
+  # Interval between renewal attempts
+  retryPeriod: "2s"
+
 # Configurable values specific to lbnodeagent.
 # See https://purelb.github.io/purelb/install/config/
 lbnodeagent:
-  localint: default
-  extlbint: kube-lb0
-  sendgarp: false
-  # Address configuration to prevent CNI conflicts (e.g., Flannel).
-  # Configure how VIP addresses are added to interfaces.
-  # addressConfig:
-  #   localInterface:
-  #     validLifetime: 300      # seconds, 0 = permanent (default: 300)
-  #     preferredLifetime: 300  # must be <= validLifetime
-  #     noPrefixRoute: true     # prevent kernel prefix route (default: true)
-  #   dummyInterface:
-  #     validLifetime: 0        # permanent for dummy interface (default: 0)
-  #     noPrefixRoute: false    # (default: false)
-  addressConfig: {}
+  localInterface: default
+  dummyInterface: kube-lb0
+  # Optional GARP (Gratuitous ARP) configuration
+  # garpConfig:
+  #   enabled: true
+  #   count: 3
+  #   interval: 500ms
+  #   initialDelay: 100ms
   containerSecurityContext:
     runAsUser: 0
     runAsGroup: 0
     allowPrivilegeEscalation: false
+    appArmorProfile:
+      type: Unconfined
     capabilities:
       add:
       - NET_ADMIN

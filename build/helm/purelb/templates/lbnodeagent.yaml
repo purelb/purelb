@@ -1,5 +1,5 @@
 ---
-apiVersion: purelb.io/v1
+apiVersion: purelb.io/v2
 kind: LBNodeAgent
 metadata:
   name: default
@@ -8,12 +8,9 @@ metadata:
     {{- include "purelb.labels" . | nindent 4 }}
 spec:
   local:
-    localint: {{ .Values.lbnodeagent.localint }}
-    extlbint: {{ .Values.lbnodeagent.extlbint }}
-    sendgarp: {{ .Values.lbnodeagent.sendgarp }}
-    {{- with .Values.lbnodeagent.addressConfig }}
-    {{- if or .localInterface .dummyInterface }}
-    addressConfig:
+    localInterface: {{ .Values.lbnodeagent.localInterface }}
+    dummyInterface: {{ .Values.lbnodeagent.dummyInterface }}
+    {{- with .Values.lbnodeagent.garpConfig }}
+    garpConfig:
       {{- toYaml . | nindent 6 }}
-    {{- end }}
     {{- end }}

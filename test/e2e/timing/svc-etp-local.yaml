@@ -1,0 +1,22 @@
+---
+# ETP Local service using remote pool.
+# Used by timing tests B3, E1, E3.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-etp-local
+  namespace: test
+  labels:
+    test-suite: timing
+  annotations:
+    purelb.io/service-group: remote
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+  - IPv4
+  selector:
+    app: nginx
+  ports:
+  - port: 80
