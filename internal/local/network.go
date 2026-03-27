@@ -104,6 +104,16 @@ func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error)
 	return lbIPNet, intf, nil
 }
 
+// isDefaultRoute returns true if the route is a default route.
+// Handles both netlink v1.1.0 (Dst == nil) and v1.3.1+ (Dst = 0.0.0.0/0 or ::/0).
+func isDefaultRoute(r netlink.Route) bool {
+	if r.Dst == nil {
+		return true
+	}
+	ones, _ := r.Dst.Mask.Size()
+	return ones == 0
+}
+
 // defaultInterface finds the default interface (i.e., the one with
 // the default route) for the given family, which should be either
 // nl.FAMILY_V6 or nl.FAMILY_V4.
@@ -117,13 +127,14 @@ func defaultInterface(family int) (netlink.Link, error) {
 	}
 	for _, r := range rt {
 		// check each route to see if it's the default (i.e., no destination)
-		if r.Dst == nil && defaultifindex == 0 {
+		if isDefaultRoute(r) && defaultifindex == 0 {
 			// this is the first default route we've seen
 			defaultifindex = r.LinkIndex
 			defaultifmetric = r.Priority
-		} else if r.Dst == nil && defaultifindex != 0 && r.Priority < defaultifmetric {
+		} else if isDefaultRoute(r) && defaultifindex != 0 && r.Priority < defaultifmetric {
 			// if there's another default route with a lower metric use it
 			defaultifindex = r.LinkIndex
+			defaultifmetric = r.Priority
 		}
 	}
 

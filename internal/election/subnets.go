@@ -197,6 +197,16 @@ func networkAddress(ipnet *net.IPNet) string {
 	return fmt.Sprintf("%s/%d", network.String(), ones)
 }
 
+// isDefaultRoute returns true if the route is a default route.
+// Handles both netlink v1.1.0 (Dst == nil) and v1.3.1+ (Dst = 0.0.0.0/0 or ::/0).
+func isDefaultRoute(r netlink.Route) bool {
+	if r.Dst == nil {
+		return true
+	}
+	ones, _ := r.Dst.Mask.Size()
+	return ones == 0
+}
+
 // defaultInterface finds the interface with the default route for the
 // given address family (nl.FAMILY_V4 or nl.FAMILY_V6).
 func defaultInterface(family int) (netlink.Link, error) {
@@ -210,8 +220,7 @@ func defaultInterface(family int) (netlink.Link, error) {
 	first := true
 
 	for _, r := range routes {
-		// Default route has nil destination
-		if r.Dst != nil {
+		if !isDefaultRoute(r) {
 			continue
 		}
 		// Take first default route, or one with lower metric
