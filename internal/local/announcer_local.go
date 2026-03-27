@@ -30,6 +30,7 @@ import (
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
 	"purelb.io/internal/logging"
+	"purelb.io/internal/netutil"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 
 	"github.com/go-kit/log"
@@ -210,7 +211,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 
 		} else {
 			// The user wants us to determine the "default" interface
-			announceInt, err := defaultInterface(purelbv2.AddrFamily(lbIP))
+			announceInt, err := netutil.DefaultInterface(purelbv2.AddrFamily(lbIP))
 			if err != nil {
 				logging.Info(l, "event", "announceError", "err", err)
 				retErr = err
