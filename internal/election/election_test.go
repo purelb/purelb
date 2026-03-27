@@ -1116,6 +1116,10 @@ func TestOnLeaseUpdateDetectsMembershipChange(t *testing.T) {
 		},
 	})
 
+	// Reset counter after initial setup — informer sync and rebuildMaps
+	// may have legitimately triggered OnMemberChange during startup
+	memberChangeCount = 0
+
 	// Simulate onLeaseUpdate triggered by another node's renewal or resync.
 	// This should detect that node-b's lease is expired.
 	e.onLeaseUpdate(freshLease, freshLease)
@@ -1194,6 +1198,10 @@ func TestOnLeaseUpdateNoChangeNoCallback(t *testing.T) {
 
 	// Build initial state from cache (both nodes fresh)
 	e.rebuildMaps()
+
+	// Reset counter after initial setup — informer sync and rebuildMaps
+	// may have legitimately triggered OnMemberChange during startup
+	memberChangeCount = 0
 
 	// Simulate onLeaseUpdate (e.g., node-a renewed) - no membership change
 	e.onLeaseUpdate(leaseA, leaseA)
