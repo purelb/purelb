@@ -1,4 +1,4 @@
-// Copyright 2020 Acnodal Inc.
+// Copyright 2020-2026 Acnodal Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 package election
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -25,6 +26,7 @@ import (
 	"github.com/vishvananda/netlink/nl"
 
 	"purelb.io/internal/logging"
+	"purelb.io/internal/netutil"
 )
 
 // SubnetsAnnotation is the annotation key used on leases to store
@@ -37,11 +39,6 @@ const SubnetsAnnotation = "purelb.io/subnets"
 // recreation where an old pod might delete a new pod's lease.
 const InstanceAnnotation = "purelb.io/instance"
 
-// IPv6 address flags that indicate an address should NOT be used:
-// - IFA_F_DADFAILED (0x08): Duplicate address detection failed
-// - IFA_F_DEPRECATED (0x20): Address is deprecated, don't use for new connections
-// - IFA_F_TENTATIVE (0x40): DAD not complete, address not yet usable
-const ipv6BadFlags = 0x08 | 0x20 | 0x40
 
 // GetLocalSubnets returns all subnets from the specified interfaces.
 // If includeDefault is true, the interface with the default route is
@@ -81,7 +78,7 @@ func GetLocalSubnets(interfaces []string, includeDefault bool, logger log.Logger
 	// Include default interface if requested
 	if includeDefault {
 		// Try IPv4 default first
-		if link, err := defaultInterface(nl.FAMILY_V4); err == nil {
+		if link, err := netutil.DefaultInterface(nl.FAMILY_V4); err == nil {
 			ifName := link.Attrs().Name
 			if logger != nil {
 				logging.Debug(logger, "op", "getLocalSubnets", "interface", ifName,
@@ -96,7 +93,7 @@ func GetLocalSubnets(interfaces []string, includeDefault bool, logger log.Logger
 		}
 
 		// Also try IPv6 default (may be different interface)
-		if link, err := defaultInterface(nl.FAMILY_V6); err == nil {
+		if link, err := netutil.DefaultInterface(nl.FAMILY_V6); err == nil {
 			ifName := link.Attrs().Name
 			if logger != nil {
 				logging.Debug(logger, "op", "getLocalSubnets", "interface", ifName,
@@ -134,8 +131,13 @@ func collectSubnetsFromLink(link netlink.Link, subnets map[string]struct{}, logg
 
 	// Collect IPv4 subnets
 	addrsV4, err := netlink.AddrList(link, nl.FAMILY_V4)
-	if err != nil {
+	if err != nil && !errors.Is(err, netlink.ErrDumpInterrupted) {
 		return fmt.Errorf("failed to list IPv4 addresses: %w", err)
+	}
+	if errors.Is(err, netlink.ErrDumpInterrupted) && logger != nil {
+		logging.Info(logger, "op", "collectSubnets", "interface", ifName,
+			"family", "IPv4", "count", len(addrsV4),
+			"msg", "partial results from AddrList (ErrDumpInterrupted)")
 	}
 	for _, addr := range addrsV4 {
 		if addr.IPNet != nil {
@@ -151,12 +153,17 @@ func collectSubnetsFromLink(link netlink.Link, subnets map[string]struct{}, logg
 
 	// Collect IPv6 subnets (filtering out bad addresses)
 	addrsV6, err := netlink.AddrList(link, nl.FAMILY_V6)
-	if err != nil {
+	if err != nil && !errors.Is(err, netlink.ErrDumpInterrupted) {
 		return fmt.Errorf("failed to list IPv6 addresses: %w", err)
+	}
+	if errors.Is(err, netlink.ErrDumpInterrupted) && logger != nil {
+		logging.Info(logger, "op", "collectSubnets", "interface", ifName,
+			"family", "IPv6", "count", len(addrsV6),
+			"msg", "partial results from AddrList (ErrDumpInterrupted)")
 	}
 	for _, addr := range addrsV6 {
 		// Skip addresses with bad flags
-		if (addr.Flags & ipv6BadFlags) != 0 {
+		if (addr.Flags & netutil.IPv6BadFlags) != 0 {
 			if logger != nil {
 				logging.Debug(logger, "op", "collectSubnets", "interface", ifName,
 					"address", addr.IPNet.String(), "flags", fmt.Sprintf("0x%x", addr.Flags),
@@ -197,37 +204,6 @@ func networkAddress(ipnet *net.IPNet) string {
 	return fmt.Sprintf("%s/%d", network.String(), ones)
 }
 
-// defaultInterface finds the interface with the default route for the
-// given address family (nl.FAMILY_V4 or nl.FAMILY_V6).
-func defaultInterface(family int) (netlink.Link, error) {
-	routes, err := netlink.RouteList(nil, family)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list routes: %w", err)
-	}
-
-	var defaultIdx int
-	var defaultMetric int
-	first := true
-
-	for _, r := range routes {
-		// Default route has nil destination
-		if r.Dst != nil {
-			continue
-		}
-		// Take first default route, or one with lower metric
-		if first || r.Priority < defaultMetric {
-			defaultIdx = r.LinkIndex
-			defaultMetric = r.Priority
-			first = false
-		}
-	}
-
-	if first {
-		return nil, fmt.Errorf("no default route found for family %d", family)
-	}
-
-	return netlink.LinkByIndex(defaultIdx)
-}
 
 // FormatSubnetsAnnotation formats a slice of subnets into the annotation
 // value format (comma-separated).

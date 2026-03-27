@@ -1,4 +1,4 @@
-// Copyright 2020 Acnodal Inc.
+// Copyright 2020-2026 Acnodal Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,15 +15,18 @@
 package local
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
+	"syscall"
 
 	"github.com/mdlayher/arp"
 	"github.com/mdlayher/ethernet"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 
+	"purelb.io/internal/netutil"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -68,31 +71,27 @@ func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error)
 	family := purelbv2.AddrFamily(lbIP)
 
 	defaddrs, err := netlink.AddrList(intf, family)
-	if err != nil {
+	if err != nil && !errors.Is(err, netlink.ErrDumpInterrupted) {
 		return lbIPNet, intf, err
 	}
 
 	if family == nl.FAMILY_V4 {
 		for _, addrs := range defaddrs {
-			localnet := addrs.IPNet
-
-			if localnet.Contains(lbIPNet.IP) {
-				lbIPNet.Mask = localnet.Mask
+			if addrs.IPNet == nil {
+				continue
+			}
+			if addrs.IPNet.Contains(lbIPNet.IP) {
+				lbIPNet.Mask = addrs.IPNet.Mask
 			}
 		}
 
 	} else {
-		// IPv6 address flags that indicate an address should NOT be used:
-		// - IFA_F_DADFAILED (0x08): Duplicate address detection failed
-		// - IFA_F_DEPRECATED (0x20): Address is deprecated, don't use for new connections
-		// - IFA_F_TENTATIVE (0x40): DAD not complete, address not yet usable
-		const badFlags = 0x08 | 0x20 | 0x40
-
 		for _, addrs := range defaddrs {
-			localnet := addrs.IPNet
-
-			if localnet.Contains(lbIPNet.IP) && (addrs.Flags&badFlags) == 0 {
-				lbIPNet.Mask = localnet.Mask
+			if addrs.IPNet == nil {
+				continue
+			}
+			if addrs.IPNet.Contains(lbIPNet.IP) && (addrs.Flags&netutil.IPv6BadFlags) == 0 {
+				lbIPNet.Mask = addrs.IPNet.Mask
 			}
 		}
 	}
@@ -102,52 +101,6 @@ func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error)
 	}
 
 	return lbIPNet, intf, nil
-}
-
-// defaultInterface finds the default interface (i.e., the one with
-// the default route) for the given family, which should be either
-// nl.FAMILY_V6 or nl.FAMILY_V4.
-func defaultInterface(family int) (netlink.Link, error) {
-	var defaultifindex int = 0
-	var defaultifmetric int = 0
-
-	rt, err := netlink.RouteList(nil, family)
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range rt {
-		// check each route to see if it's the default (i.e., no destination)
-		if r.Dst == nil && defaultifindex == 0 {
-			// this is the first default route we've seen
-			defaultifindex = r.LinkIndex
-			defaultifmetric = r.Priority
-		} else if r.Dst == nil && defaultifindex != 0 && r.Priority < defaultifmetric {
-			// if there's another default route with a lower metric use it
-			defaultifindex = r.LinkIndex
-		}
-	}
-
-	// If none of our routes matched our criteria then we can't pick an
-	// interface
-	if defaultifindex == 0 {
-		return nil, fmt.Errorf("No default interface for family %d can be determined", family)
-	}
-
-	// there's only one default route
-	defaultint, err := netlink.LinkByIndex(defaultifindex)
-	return defaultint, err
-}
-
-// addNetwork adds lbIPNet to link.
-func addNetwork(lbIPNet net.IPNet, link netlink.Link) error {
-	addr, err := netlink.ParseAddr(lbIPNet.String())
-	if err != nil {
-		return err
-	}
-	if err := netlink.AddrReplace(link, addr); err != nil {
-		return fmt.Errorf("could not add %v: to %v %w", addr, link, err)
-	}
-	return nil
 }
 
 // AddressOptions configures how an address is added to an interface.
@@ -196,18 +149,33 @@ func addDummyInterface(name string) (netlink.Link, error) {
 	// check if there's already an interface with that name
 	link, err := netlink.LinkByName(name)
 	if err != nil {
+		var lnfErr netlink.LinkNotFoundError
+		if !errors.As(err, &lnfErr) {
+			return nil, fmt.Errorf("checking for interface %s: %w", name, err)
+		}
 
 		// the interface doesn't exist, so we can add it
 		dumint := netlink.NewLinkAttrs()
 		dumint.Name = name
 		link = &netlink.Dummy{LinkAttrs: dumint}
 		if err = netlink.LinkAdd(link); err != nil {
-			return nil, fmt.Errorf("failed adding dummy int %s: %w", name, err)
+			// Handle TOCTOU race: another process created the interface
+			// between our LinkByName and LinkAdd
+			if errors.Is(err, syscall.EEXIST) {
+				link, err = netlink.LinkByName(name)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get existing interface %s: %w", name, err)
+				}
+			} else {
+				return nil, fmt.Errorf("failed adding dummy int %s: %w", name, err)
+			}
 		}
 
 	}
 	// Make sure that "dummy" interface is set to up.
-	netlink.LinkSetUp(link)
+	if err := netlink.LinkSetUp(link); err != nil {
+		return nil, fmt.Errorf("failed to set %s up: %w", name, err)
+	}
 	return link, nil
 }
 
