@@ -68,7 +68,7 @@ manifest:  ## Generate deployment manifest (with samples)
 	cd deployments/samples
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
-	$(KUSTOMIZE) edit set image purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
+	$(KUSTOMIZE) edit set image ghcr.io/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} ghcr.io/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
 	$(KUSTOMIZE) build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml

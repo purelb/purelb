@@ -3,4 +3,4 @@ kind: Kustomization
 
 resources:
 - ../default
-- local-lbnodeagent.yaml
+- local-servicegroup.yaml
