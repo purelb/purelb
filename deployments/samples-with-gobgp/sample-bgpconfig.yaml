@@ -1,0 +1,41 @@
+apiVersion: bgp.purelb.io/v1
+kind: BGPConfiguration
+metadata:
+  name: default
+  namespace: purelb-system
+spec:
+  global:
+    # Use a private ASN from range 64512-65534.
+    # All nodes share this ASN (eBGP topology: upstream router uses a different ASN).
+    asn: 65000
+    # Leave empty for auto-detection, OR set explicitly to node's
+    # BGP-facing IP to avoid ambiguity on multi-homed nodes (recommended).
+    routerID: ""
+    listenPort: 179
+    families:
+    - "ipv4-unicast"
+    - "ipv6-unicast"
+
+  # netlinkImport controls which kernel routes are imported into BGP for advertisement.
+  # REQUIRED: without this block, k8gobgp starts but advertises NO routes.
+  # For PureLB, restrict to kube-lb0 — the dummy interface where VIPs are placed.
+  # Importing from other interfaces is a custom configuration, not the default use case.
+  netlinkImport:
+    enabled: true
+    interfaceList:
+    - "kube-lb0"
+
+  neighbors:
+  - config:
+      # REQUIRED: Replace with your upstream BGP router's IP address.
+      neighborAddress: "192.0.2.1"
+      # REQUIRED: Replace with your upstream router's ASN (must differ from 'asn' above for eBGP).
+      peerAsn: 65001
+      description: "Upstream BGP router"
+    # Enable both IPv4 and IPv6 address families.
+    # Remove the ipv6-unicast entry if you only use IPv4 VIPs.
+    afiSafis:
+    - family: "ipv4-unicast"
+      enabled: true
+    - family: "ipv6-unicast"
+      enabled: true

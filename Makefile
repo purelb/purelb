@@ -8,6 +8,9 @@ MANIFEST_SUFFIX ?= ${SUFFIX}
 COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
+GOBGP_IMAGE     ?= ghcr.io/purelb/k8gobgp
+GOBGP_TAG       ?= v0.2.2
+GOBGP_IMAGE_TAG ?= 0.2.2
 CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml
 
 # Tools that we use.
@@ -64,11 +67,11 @@ $(CRDS) &: pkg/apis/purelb/v2/*.go
 .ONESHELL:
 .PHONY: manifest
 manifest: CACHE != mktemp
-manifest:  ## Generate deployment manifest (with samples)
-	cd deployments/samples
+manifest:  ## Generate deployment manifest (with samples and k8gobgp)
+	cd deployments/samples-with-gobgp
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
-	$(KUSTOMIZE) edit set image ghcr.io/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} ghcr.io/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
+	$(KUSTOMIZE) edit set image ghcr.io/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} ghcr.io/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX} ghcr.io/purelb/k8gobgp=${GOBGP_IMAGE}:${GOBGP_IMAGE_TAG}
 	$(KUSTOMIZE) build . > ../${PROJECT}-${MANIFEST_SUFFIX}.yaml
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml
@@ -76,14 +79,44 @@ manifest:  ## Generate deployment manifest (with samples)
 .ONESHELL:
 .PHONY: install-manifest
 install-manifest: CACHE != mktemp
-install-manifest: crd  ## Generate standalone install.yaml manifest
+install-manifest: crd  ## Generate standalone install.yaml manifest (with k8gobgp)
+	cd deployments/with-gobgp
+# cache kustomization.yaml because "kustomize edit" modifies it
+	cp kustomization.yaml ${CACHE}
+	$(KUSTOMIZE) edit set image ghcr.io/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} ghcr.io/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX} ghcr.io/purelb/k8gobgp=${GOBGP_IMAGE}:${GOBGP_IMAGE_TAG}
+	$(KUSTOMIZE) build . > ../install-${MANIFEST_SUFFIX}.yaml
+# restore kustomization.yaml
+	cp ${CACHE} kustomization.yaml
+
+.ONESHELL:
+.PHONY: manifest-nobgp
+manifest-nobgp: CACHE != mktemp
+manifest-nobgp:  ## Generate deployment manifest without k8gobgp (with samples)
+	cd deployments/samples
+# cache kustomization.yaml because "kustomize edit" modifies it
+	cp kustomization.yaml ${CACHE}
+	$(KUSTOMIZE) edit set image ghcr.io/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} ghcr.io/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
+	$(KUSTOMIZE) build . > ../${PROJECT}-nobgp-${MANIFEST_SUFFIX}.yaml
+# restore kustomization.yaml
+	cp ${CACHE} kustomization.yaml
+
+.ONESHELL:
+.PHONY: install-manifest-nobgp
+install-manifest-nobgp: CACHE != mktemp
+install-manifest-nobgp: crd  ## Generate standalone install.yaml without k8gobgp
 	cd deployments/default
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
 	$(KUSTOMIZE) edit set image ghcr.io/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} ghcr.io/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX}
-	$(KUSTOMIZE) build . > ../install-${MANIFEST_SUFFIX}.yaml
+	$(KUSTOMIZE) build . > ../install-nobgp-${MANIFEST_SUFFIX}.yaml
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml
+
+.PHONY: fetch-gobgp-crd
+fetch-gobgp-crd:  ## Fetch BGPConfiguration CRD from k8gobgp ${GOBGP_TAG} release
+	curl -fsSL https://github.com/purelb/k8gobgp/releases/download/${GOBGP_TAG}/install.yaml \
+	  | $(KUSTOMIZE) cfg grep "kind=CustomResourceDefinition" \
+	  > deployments/components/gobgp/gobgp-bgpconfig-crd.yaml
 
 .PHONY: helm
 helm:  ## Package PureLB using Helm
@@ -91,6 +124,7 @@ helm:  ## Package PureLB using Helm
 	mkdir -p build/build
 	cp -r build/helm/purelb build/build/
 	cp deployments/crds/purelb.io_*.yaml build/build/purelb/crds
+	cp deployments/components/gobgp/gobgp-bgpconfig-crd.yaml build/build/purelb/crds/bgp.purelb.io_bgpconfigurations.yaml
 	cp README.md build/build/purelb
 
 	sed \

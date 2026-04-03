@@ -128,6 +128,18 @@ jobs:
           MANIFEST_SUFFIX: ${{ github.ref_name }}
         run: make install-manifest
 
+      - name: Generate manifests (without BGP)
+        env:
+          SUFFIX: ${{ github.ref_name }}
+          MANIFEST_SUFFIX: ${{ github.ref_name }}
+        run: make manifest-nobgp
+
+      - name: Generate install manifest (without BGP)
+        env:
+          SUFFIX: ${{ github.ref_name }}
+          MANIFEST_SUFFIX: ${{ github.ref_name }}
+        run: make install-manifest-nobgp
+
       - name: Package Helm chart
         env:
           SUFFIX: ${{ github.ref_name }}
@@ -141,6 +153,8 @@ jobs:
           sha256sum purelb-${{ github.ref_name }}.tgz > SHA256SUMS
           sha256sum deployments/purelb-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/install-${{ github.ref_name }}.yaml >> SHA256SUMS
+          sha256sum deployments/purelb-nobgp-${{ github.ref_name }}.yaml >> SHA256SUMS
+          sha256sum deployments/install-nobgp-${{ github.ref_name }}.yaml >> SHA256SUMS
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -159,6 +173,8 @@ jobs:
             purelb-${{ github.ref_name }}.tgz
             deployments/purelb-${{ github.ref_name }}.yaml
             deployments/install-${{ github.ref_name }}.yaml
+            deployments/purelb-nobgp-${{ github.ref_name }}.yaml
+            deployments/install-nobgp-${{ github.ref_name }}.yaml
             SHA256SUMS
           generate_release_notes: true
           fail_on_unmatched_files: true

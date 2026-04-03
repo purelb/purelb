@@ -1,0 +1,21 @@
+{{- if and .Values.gobgp.enabled .Values.Prometheus.lbnodeagent.Metrics.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "purelb.fullname" . }}-k8gobgp-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+    app.kubernetes.io/component: k8gobgp
+spec:
+  selector:
+    {{- include "purelb.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: lbnodeagent
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 7473
+    targetPort: 7473
+    protocol: TCP
+{{- end }}
