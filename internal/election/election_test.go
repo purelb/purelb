@@ -963,7 +963,7 @@ func TestRebuildMapsFiltersExpiredLeases(t *testing.T) {
 		},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity:       ptr.To("node-a"),
-			LeaseDurationSeconds: ptr.To(int32(10)),
+			LeaseDurationSeconds: ptr.To(int32(300)), // Long duration so fresh lease doesn't expire during slow CI
 			RenewTime:            &freshRenewTime,
 		},
 	}
@@ -977,7 +977,7 @@ func TestRebuildMapsFiltersExpiredLeases(t *testing.T) {
 		},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity:       ptr.To("node-b"),
-			LeaseDurationSeconds: ptr.To(int32(10)),
+			LeaseDurationSeconds: ptr.To(int32(10)), // Intentionally short — already expired via expiredRenewTime
 			RenewTime:            &expiredRenewTime,
 		},
 	}
@@ -991,7 +991,7 @@ func TestRebuildMapsFiltersExpiredLeases(t *testing.T) {
 		Namespace:     "purelb",
 		NodeName:      "test-node",
 		Client:        client,
-		LeaseDuration: 5 * time.Second,
+		LeaseDuration: 300 * time.Second, // Long duration to prevent test-node lease expiry during slow CI
 		StopCh:        stopCh,
 		GetLocalSubnets: func() ([]string, error) {
 			return []string{"192.168.1.0/24"}, nil
@@ -1049,7 +1049,7 @@ func TestOnLeaseUpdateDetectsMembershipChange(t *testing.T) {
 		},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity:       ptr.To("node-a"),
-			LeaseDurationSeconds: ptr.To(int32(10)),
+			LeaseDurationSeconds: ptr.To(int32(300)), // Long duration so fresh lease doesn't expire during slow CI
 			RenewTime:            &freshRenewTime,
 		},
 	}
@@ -1063,7 +1063,7 @@ func TestOnLeaseUpdateDetectsMembershipChange(t *testing.T) {
 		},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity:       ptr.To("node-b"),
-			LeaseDurationSeconds: ptr.To(int32(10)),
+			LeaseDurationSeconds: ptr.To(int32(10)), // Intentionally short — already expired via expiredRenewTime
 			RenewTime:            &expiredRenewTime,
 		},
 	}
@@ -1078,7 +1078,7 @@ func TestOnLeaseUpdateDetectsMembershipChange(t *testing.T) {
 		Namespace:     "purelb",
 		NodeName:      "test-node",
 		Client:        client,
-		LeaseDuration: 5 * time.Second,
+		LeaseDuration: 300 * time.Second, // Long duration to prevent test-node lease expiry during slow CI
 		StopCh:        stopCh,
 		OnMemberChange: func() {
 			memberChangeCount++
@@ -1156,7 +1156,7 @@ func TestOnLeaseUpdateNoChangeNoCallback(t *testing.T) {
 		},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity:       ptr.To("node-a"),
-			LeaseDurationSeconds: ptr.To(int32(10)),
+			LeaseDurationSeconds: ptr.To(int32(300)),
 			RenewTime:            &freshRenewTime,
 		},
 	}
@@ -1171,7 +1171,7 @@ func TestOnLeaseUpdateNoChangeNoCallback(t *testing.T) {
 		Namespace:     "purelb",
 		NodeName:      "test-node",
 		Client:        client,
-		LeaseDuration: 5 * time.Second,
+		LeaseDuration: 300 * time.Second, // Long duration to prevent expiry during slow CI
 		StopCh:        stopCh,
 		OnMemberChange: func() {
 			memberChangeCount++

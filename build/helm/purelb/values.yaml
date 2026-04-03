@@ -251,3 +251,39 @@ allocator:
     runAsUser: 65534
     seccompProfile:
       type: RuntimeDefault
+
+# k8gobgp sidecar — per-node BGP route announcement for remote VIPs.
+# When enabled, k8gobgp runs as a sidecar in the lbnodeagent DaemonSet pod.
+# It shares hostNetwork:true and announces VIP routes to upstream BGP routers.
+#
+# Prerequisites:
+#   - Port 179 must be free on every node (no other BGP daemon running).
+#   - Firewall must allow TCP 179 between nodes and upstream router.
+#   - Apply a BGPConfiguration CR after install to configure peers/ASNs.
+#   - Upstream router must be configured to peer with each node IP.
+gobgp:
+  enabled: true
+
+  image:
+    repository: ghcr.io/purelb/k8gobgp
+    tag: "0.2.2"
+    pullPolicy: IfNotPresent
+
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      add:
+      - NET_ADMIN
+      - NET_BIND_SERVICE
+      - NET_RAW
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi

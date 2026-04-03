@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+- gobgp-bgpconfig-crd.yaml
+- gobgp-rbac.yaml
+
+patches:
+- path: gobgp-patch.yaml
+  target:
+    kind: DaemonSet
+    name: lbnodeagent

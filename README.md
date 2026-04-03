@@ -10,12 +10,20 @@ https://purelb.io/
 
 ## Quick Start
 
+The default installation includes [k8gobgp](https://github.com/purelb/k8gobgp) as a sidecar for BGP route announcement. After installing, apply a `BGPConfiguration` CR to configure BGP peering (see [sample](deployments/samples-with-gobgp/sample-bgpconfig.yaml)). If you don't need BGP, use the `-nobgp` manifest variants or set `gobgp.enabled=false` in Helm.
+
 ### Option 1: Simple Manifest
 
 Install PureLB with a single command:
 
 ```sh
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.15.0/install-v0.15.0.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.0/install-v0.16.0.yaml
+```
+
+Without BGP support:
+
+```sh
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.0/install-nobgp-v0.16.0.yaml
 ```
 
 ### Option 2: Helm (Recommended for Production)
@@ -31,7 +39,14 @@ Or using OCI registry (Helm 3.8+, `--version` required):
 
 ```sh
 helm install --create-namespace --namespace=purelb-system purelb \
-    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.15.0
+    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.16.0
+```
+
+To install without BGP support:
+
+```sh
+helm install --create-namespace --namespace=purelb-system purelb purelb/purelb \
+    --set gobgp.enabled=false
 ```
 
 For detailed installation and configuration, see https://purelb.github.io/purelb/install/

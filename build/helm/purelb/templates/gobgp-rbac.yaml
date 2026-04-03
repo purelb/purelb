@@ -1,0 +1,40 @@
+{{- if .Values.gobgp.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "purelb.fullname" . }}:k8gobgp
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+rules:
+- apiGroups: ["bgp.purelb.io"]
+  resources: ["configs", "configs/finalizers", "configs/status"]
+  verbs: ["create","delete","get","list","patch","update","watch"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get","list","watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["patch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get","list","watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create","patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "purelb.fullname" . }}:k8gobgp
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "purelb.fullname" . }}:k8gobgp
+subjects:
+- kind: ServiceAccount
+  name: lbnodeagent
+  namespace: {{ .Release.Namespace }}
+{{- end }}
