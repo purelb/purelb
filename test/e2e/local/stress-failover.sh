@@ -450,7 +450,7 @@ run_single_test() {
 
     local LOG_PID=""
     if [ "$GRACE_PERIOD" != "0" ]; then
-        kubectl logs -n $PURELB_NS "$POD" -f --tail=0 >> "$LOGFILE" 2>&1 &
+        kubectl logs -n $PURELB_NS "$POD" -c lbnodeagent -f --tail=0 >> "$LOGFILE" 2>&1 &
         LOG_PID=$!
     fi
 
@@ -798,7 +798,7 @@ run_single_test() {
                 npod=$(get_pod_on_node "$node")
                 if [ -n "$npod" ]; then
                     echo "--- $(node_label $node) ($npod) ---" >> "$LOGFILE"
-                    kubectl logs -n $PURELB_NS "$npod" --tail=50 2>/dev/null >> "$LOGFILE" || true
+                    kubectl logs -n $PURELB_NS "$npod" -c lbnodeagent --tail=50 2>/dev/null >> "$LOGFILE" || true
                 fi
             done
             return 1

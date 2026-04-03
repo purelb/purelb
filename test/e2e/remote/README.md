@@ -125,7 +125,7 @@ Verify kube-proxy configuration. These tests require `--proxy-mode=nftables`.
 Ensure passwordless SSH to all nodes: `ssh <node> hostname`
 
 ### VIP not appearing on kube-lb0
-Check lbnodeagent logs: `kubectl logs -n purelb-system-l app.kubernetes.io/component=lbnodeagent`
+Check lbnodeagent logs: `kubectl logs -n purelb-system -l app.kubernetes.io/component=lbnodeagent -c lbnodeagent`
 
 ### nftables rules missing
 Check kube-proxy logs and verify service has an external IP assigned.
