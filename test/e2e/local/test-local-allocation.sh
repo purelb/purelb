@@ -329,7 +329,7 @@ test_local_pool_no_matching_subnet() {
 
     # Check for noLocalInterface log message
     info "Checking lbnodeagent logs for noLocalInterface message..."
-    if kubectl logs -n purelb-system -l component=lbnodeagent --tail=100 2>/dev/null | grep -q "noLocalInterface"; then
+    if kubectl logs -n purelb-system -l component=lbnodeagent -c lbnodeagent --tail=100 2>/dev/null | grep -q "noLocalInterface"; then
         pass "Found noLocalInterface message in logs (no fallback confirmed)"
     else
         info "noLocalInterface message not found (may have scrolled out)"
@@ -458,7 +458,7 @@ show_election_logs() {
     info "Recent election logs from $node (last $lines):"
     local pod=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null | grep "$node" | awk '{print $1}')
     if [ -n "$pod" ]; then
-        kubectl logs -n purelb-system "$pod" --tail=$lines 2>/dev/null | grep -E "(electionWon|lostElection|leaseAdd|leaseDelete|leaseUpdate|rebuildMaps|withdrawAddress|ForceSync|graceful)" | while read line; do
+        kubectl logs -n purelb-system "$pod" -c lbnodeagent --tail=$lines 2>/dev/null | grep -E "(electionWon|lostElection|leaseAdd|leaseDelete|leaseUpdate|rebuildMaps|withdrawAddress|ForceSync|graceful)" | while read line; do
             detail "$line"
         done
     else
@@ -547,7 +547,7 @@ test_graceful_failover() {
 
     # Start watching pod logs in background to capture shutdown messages
     info "Starting log capture for shutdown..."
-    kubectl logs -n purelb-system "$AGENT_POD" -f --tail=0 > /tmp/shutdown-logs.txt 2>&1 &
+    kubectl logs -n purelb-system "$AGENT_POD" -c lbnodeagent -f --tail=0 > /tmp/shutdown-logs.txt 2>&1 &
     LOG_PID=$!
 
     DELETE_START=$(date +%s.%N)
@@ -1078,7 +1078,7 @@ test_leader_election() {
             pod=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null \
                 | grep "$node" | awk '{print $1}')
             if [ -n "$pod" ]; then
-                if kubectl logs -n purelb-system "$pod" --tail=200 2>/dev/null | grep -qE "(notWinner|lostElection)"; then
+                if kubectl logs -n purelb-system "$pod" -c lbnodeagent --tail=200 2>/dev/null | grep -qE "(notWinner|lostElection)"; then
                     pass "Non-winner $node: logged 'notWinner'/'lostElection'"
                     found_loser_log=true
                     break
@@ -1097,7 +1097,7 @@ test_leader_election() {
     # Verify no panic/fatal errors
     info "Checking for absence of panic/fatal errors..."
     local panic_logs
-    panic_logs=$(kubectl logs -n purelb-system -l component=lbnodeagent --tail=200 2>/dev/null \
+    panic_logs=$(kubectl logs -n purelb-system -l component=lbnodeagent -c lbnodeagent --tail=200 2>/dev/null \
         | grep -iE "(panic|fatal|FATAL)" || true)
     [ -z "$panic_logs" ] || fail "Panic or fatal errors found in lbnodeagent logs"
     pass "No panic or fatal errors in lbnodeagent logs"
@@ -2277,7 +2277,7 @@ test_address_renewal_timer() {
     winner_pod=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null \
         | grep "$WINNER_NODE" | awk '{print $1}')
     if [ -n "$winner_pod" ]; then
-        if kubectl logs -n purelb-system "$winner_pod" --tail=200 2>/dev/null | grep -q "renewAddress"; then
+        if kubectl logs -n purelb-system "$winner_pod" -c lbnodeagent --tail=200 2>/dev/null | grep -q "renewAddress"; then
             pass "LBNodeAgent $WINNER_NODE: logged 'renewAddress' (address lifetime renewed)"
         else
             detail "renewAddress not found in logs (debug-level, may not be visible at info level)"
@@ -4509,7 +4509,7 @@ assert_log_contains() {
         local pods
         pods=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
         for pod in $pods; do
-            if kubectl logs -n purelb-system "$pod" --tail=200 2>/dev/null | grep -q "$pattern"; then
+            if kubectl logs -n purelb-system "$pod" -c lbnodeagent --tail=200 2>/dev/null | grep -q "$pattern"; then
                 return 0
             fi
         done
@@ -4532,7 +4532,7 @@ assert_log_contains_on_node() {
     if [ -z "$pod" ]; then
         fail "No lbnodeagent pod found on node $node"
     fi
-    if kubectl logs -n purelb-system "$pod" --tail=200 2>/dev/null | grep -q "$pattern"; then
+    if kubectl logs -n purelb-system "$pod" -c lbnodeagent --tail=200 2>/dev/null | grep -q "$pattern"; then
         return 0
     fi
     fail "LBNodeAgent logs on $node missing: $description (pattern: $pattern)"

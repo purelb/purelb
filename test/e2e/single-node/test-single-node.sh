@@ -52,7 +52,7 @@ dump_debug_state() {
     echo "--- Allocator logs (last 30 lines) ---"
     kubectl logs -n $PURELB_NS deployment/allocator --tail=30 2>/dev/null || echo "(failed)"
     echo "--- LBNodeAgent logs (last 30 lines) ---"
-    kubectl logs -n $PURELB_NS daemonset/lbnodeagent --tail=30 2>/dev/null || echo "(failed)"
+    kubectl logs -n $PURELB_NS daemonset/lbnodeagent -c lbnodeagent --tail=30 2>/dev/null || echo "(failed)"
     echo "========================="
 }
 

@@ -268,9 +268,13 @@ discover_ipv6() {
         first_node=$(echo "${SUBNET_NODES[$s]}" | awk '{print $1}')
         local iface="${NODE_IFACE[$first_node]}"
 
-        # Get global-scope IPv6 address on the interface
+        # Get global-scope IPv6 address on the interface, preferring /64 over /128
         local v6addr
-        v6addr=$(node_ssh "$first_node" "ip -6 -o addr show $iface scope global 2>/dev/null | head -1 | awk '{print \$4}'" 2>/dev/null)
+        v6addr=$(node_ssh "$first_node" "ip -6 -o addr show $iface scope global 2>/dev/null | awk '{print \$4}' | grep '/64$' | head -1" 2>/dev/null)
+        # Fall back to any global address if no /64 found
+        if [ -z "$v6addr" ]; then
+            v6addr=$(node_ssh "$first_node" "ip -6 -o addr show $iface scope global 2>/dev/null | head -1 | awk '{print \$4}'" 2>/dev/null)
+        fi
 
         if [ -n "$v6addr" ]; then
             # v6addr is like "2001:470:b8f3:250:be24:11ff:fe1b:5642/64"
