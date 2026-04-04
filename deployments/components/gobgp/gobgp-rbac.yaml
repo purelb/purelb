@@ -6,23 +6,17 @@ metadata:
   name: purelb:k8gobgp
 rules:
 - apiGroups:
-  - bgp.purelb.io
+  - ''
   resources:
-  - configs
-  - configs/finalizers
-  - configs/status
+  - events
   verbs:
   - create
-  - delete
-  - get
-  - list
   - patch
-  - update
-  - watch
 - apiGroups:
   - ''
   resources:
   - nodes
+  - secrets
   verbs:
   - get
   - list
@@ -34,20 +28,33 @@ rules:
   verbs:
   - patch
 - apiGroups:
-  - ''
+  - bgp.purelb.io
   resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ''
-  resources:
-  - events
+  - bgpnodestatuses
+  - configs
   verbs:
   - create
+  - delete
+  - get
+  - list
   - patch
+  - update
+  - watch
+- apiGroups:
+  - bgp.purelb.io
+  resources:
+  - bgpnodestatuses/status
+  - configs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - bgp.purelb.io
+  resources:
+  - configs/finalizers
+  verbs:
+  - update
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

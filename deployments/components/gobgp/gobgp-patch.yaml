@@ -9,9 +9,11 @@ spec:
       volumes:
       - name: gobgp-socket
         emptyDir: {}
+      - name: tmp
+        emptyDir: {}
       containers:
       - name: k8gobgp
-        image: ghcr.io/purelb/k8gobgp:0.2.2
+        image: ghcr.io/purelb/k8gobgp:0.2.3
         imagePullPolicy: IfNotPresent
         env:
         - name: NODE_NAME
@@ -26,7 +28,19 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        - name: USE_UNIX_SOCKET
+          value: "true"
+        - name: GOBGP_SOCKET
+          value: "/var/run/gobgp/gobgp.sock"
+        - name: GOBGP_TARGET
+          value: "unix:///var/run/gobgp/gobgp.sock"
+        - name: PATH
+          value: "/usr/local/bin:/usr/bin:/bin:/sbin"
         ports:
+        - containerPort: 179
+          hostPort: 179
+          name: bgp
+          protocol: TCP
         - containerPort: 7473
           name: gobgp-metrics
         - containerPort: 7474
@@ -42,12 +56,17 @@ spec:
           httpGet:
             path: /healthz
             port: 7474
+          initialDelaySeconds: 15
+          periodSeconds: 20
         readinessProbe:
           httpGet:
             path: /readyz
             port: 7474
+          initialDelaySeconds: 5
+          periodSeconds: 10
         securityContext:
           allowPrivilegeEscalation: false
+          runAsNonRoot: false
           capabilities:
             add:
             - NET_ADMIN
@@ -58,11 +77,13 @@ spec:
           readOnlyRootFilesystem: true
         resources:
           requests:
-            cpu: 250m
-            memory: 128Mi
+            cpu: 100m
+            memory: 64Mi
           limits:
-            cpu: 1000m
-            memory: 512Mi
+            cpu: 500m
+            memory: 256Mi
         volumeMounts:
         - name: gobgp-socket
           mountPath: /var/run/gobgp
+        - name: tmp
+          mountPath: /tmp
