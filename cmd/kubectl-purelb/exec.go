@@ -117,9 +117,9 @@ func extractNodeFlag(args []string) (filtered []string, node string) {
 	return
 }
 
-// execInK8GoBGP finds a k8gobgp sidecar pod and execs the given command.
+// execInK8GoBGP runs a command in k8gobgp sidecar(s). If targetNode is empty,
+// runs on all nodes and labels output. If targetNode is set, runs on that node only.
 func execInK8GoBGP(ctx context.Context, c *clients, targetNode string, command []string) error {
-	// Find lbnodeagent pods
 	pods, err := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app=purelb,component=lbnodeagent",
 	})
@@ -127,13 +127,12 @@ func execInK8GoBGP(ctx context.Context, c *clients, targetNode string, command [
 		return fmt.Errorf("listing lbnodeagent pods: %w", err)
 	}
 
-	// Find the right pod
-	var targetPod *v1.Pod
-	for i, pod := range pods.Items {
+	// Collect eligible pods
+	var targets []v1.Pod
+	for _, pod := range pods.Items {
 		if pod.Status.Phase != v1.PodRunning {
 			continue
 		}
-		// Check it has a k8gobgp container
 		hasK8GoBGP := false
 		for _, container := range pod.Spec.Containers {
 			if container.Name == "k8gobgp" {
@@ -144,31 +143,42 @@ func execInK8GoBGP(ctx context.Context, c *clients, targetNode string, command [
 		if !hasK8GoBGP {
 			continue
 		}
-
-		if targetNode != "" {
-			if pod.Spec.NodeName == targetNode {
-				targetPod = &pods.Items[i]
-				break
-			}
-		} else {
-			// Use the first available pod
-			targetPod = &pods.Items[i]
-			break
+		if targetNode != "" && pod.Spec.NodeName != targetNode {
+			continue
 		}
+		targets = append(targets, pod)
 	}
 
-	if targetPod == nil {
+	if len(targets) == 0 {
 		if targetNode != "" {
 			return fmt.Errorf("no k8gobgp sidecar found on node %s", targetNode)
 		}
 		return fmt.Errorf("no running lbnodeagent pod with k8gobgp sidecar found")
 	}
 
-	// Exec into the k8gobgp container
+	multiNode := len(targets) > 1
+
+	for i, pod := range targets {
+		if multiNode {
+			if i > 0 {
+				fmt.Println()
+			}
+			fmt.Printf("=== %s ===\n", pod.Spec.NodeName)
+		}
+
+		if err := execOnePod(ctx, c, &pod, command); err != nil {
+			fmt.Fprintf(os.Stderr, "Error on %s: %v\n", pod.Spec.NodeName, err)
+		}
+	}
+
+	return nil
+}
+
+func execOnePod(ctx context.Context, c *clients, pod *v1.Pod, command []string) error {
 	req := c.core.CoreV1().RESTClient().Post().
 		Resource("pods").
-		Name(targetPod.Name).
-		Namespace(targetPod.Namespace).
+		Name(pod.Name).
+		Namespace(pod.Namespace).
 		SubResource("exec").
 		VersionedParams(&v1.PodExecOptions{
 			Container: "k8gobgp",
