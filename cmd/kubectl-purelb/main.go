@@ -50,6 +50,8 @@ func main() {
 		newInspectCmd(flags),
 		newValidateCmd(flags),
 		newVersionCmd(flags),
+		newGoBGPCmd(flags),
+		newIPCmd(flags),
 	)
 
 	if err := root.Execute(); err != nil {
