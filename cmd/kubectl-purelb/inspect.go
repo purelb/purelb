@@ -412,7 +412,7 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 				if !b.Advertised {
 					advStr = "No"
 				}
-				fmt.Printf("  Route %s/32 in RIB on %s: %s, Advertised: %s\n",
+				fmt.Printf("  Route %s in RIB on %s: %s, Advertised: %s\n",
 					b.IP, b.Node, ribStr, advStr)
 			}
 		}
@@ -642,11 +642,16 @@ func countEndpoints(slices []discoveryv1.EndpointSlice) endpointsInfo {
 	return endpointsInfo{Ready: ready, Nodes: nodes}
 }
 
-// checkRouteInBGPNodeStatus checks if an IP's /32 route is in the BGPNodeStatus RIB.
-func checkRouteInBGPNodeStatus(bgpns *unstructured.Unstructured, ipStr string) bool {
-	prefix32 := ipStr + "/32"
-	prefix128 := ipStr + "/128"
+// prefixMatchesIP returns true if a prefix string (e.g. "10.201.0.0/24") has
+// the same IP portion as ipStr (e.g. "10.201.0.0"), regardless of mask length.
+func prefixMatchesIP(prefix, ipStr string) bool {
+	bareIP := strings.Split(prefix, "/")[0]
+	return bareIP == ipStr
+}
 
+// checkRouteInBGPNodeStatus checks if an IP has a route in the BGPNodeStatus RIB,
+// matching by bare IP regardless of prefix length (supports /32, /24, /128, etc).
+func checkRouteInBGPNodeStatus(bgpns *unstructured.Unstructured, ipStr string) bool {
 	// Check netlinkImport.importedAddresses
 	importedAddrs, _, _ := unstructured.NestedSlice(bgpns.Object, "status", "netlinkImport", "importedAddresses")
 	for _, addrRaw := range importedAddrs {
@@ -656,7 +661,7 @@ func checkRouteInBGPNodeStatus(bgpns *unstructured.Unstructured, ipStr string) b
 		}
 		addrStr, _ := addr["address"].(string)
 		inRIB, _ := addr["inRIB"].(bool)
-		if (addrStr == prefix32 || addrStr == prefix128) && inRIB {
+		if prefixMatchesIP(addrStr, ipStr) && inRIB {
 			return true
 		}
 	}
@@ -669,7 +674,7 @@ func checkRouteInBGPNodeStatus(bgpns *unstructured.Unstructured, ipStr string) b
 			continue
 		}
 		prefix, _ := route["prefix"].(string)
-		if prefix == prefix32 || prefix == prefix128 {
+		if prefixMatchesIP(prefix, ipStr) {
 			return true
 		}
 	}
@@ -677,11 +682,9 @@ func checkRouteInBGPNodeStatus(bgpns *unstructured.Unstructured, ipStr string) b
 	return false
 }
 
-// checkRouteAdvertised checks if a route is being advertised to any peer.
+// checkRouteAdvertised checks if a route for this IP is being advertised to any peer,
+// matching by bare IP regardless of prefix length.
 func checkRouteAdvertised(bgpns *unstructured.Unstructured, ipStr string) bool {
-	prefix32 := ipStr + "/32"
-	prefix128 := ipStr + "/128"
-
 	localRoutes, _, _ := unstructured.NestedSlice(bgpns.Object, "status", "rib", "localRoutes")
 	for _, routeRaw := range localRoutes {
 		route, ok := routeRaw.(map[string]interface{})
@@ -689,7 +692,7 @@ func checkRouteAdvertised(bgpns *unstructured.Unstructured, ipStr string) bool {
 			continue
 		}
 		prefix, _ := route["prefix"].(string)
-		if prefix == prefix32 || prefix == prefix128 {
+		if prefixMatchesIP(prefix, ipStr) {
 			advTo, _, _ := unstructured.NestedStringSlice(route, "advertisedTo")
 			return len(advTo) > 0
 		}
