@@ -45,6 +45,10 @@ image: generate ## Build executables and containers
 	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/allocator
 	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/lbnodeagent
 
+.PHONY: plugin
+plugin: ## Build kubectl-purelb plugin binary
+	CGO_ENABLED=0 go build -ldflags "-X main.version=$(SUFFIX) -X main.commit=$(shell git rev-parse --short HEAD)" -o kubectl-purelb ./cmd/kubectl-purelb
+
 .PHONY: run-%
 run-%:  ## Run PureLB command locally (e.g., 'make run-allocator')
 	go run ./cmd/$(subst run-,,$@)

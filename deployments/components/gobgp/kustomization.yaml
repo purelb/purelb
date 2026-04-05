@@ -3,6 +3,7 @@ kind: Component
 
 resources:
 - gobgp-bgpconfig-crd.yaml
+- gobgp-bgpnodestatus-crd.yaml
 - gobgp-rbac.yaml
 
 patches:
