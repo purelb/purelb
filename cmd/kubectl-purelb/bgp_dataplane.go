@@ -17,7 +17,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"strings"
 
@@ -288,33 +287,34 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 	// === Cross-reference remote pool services ===
 	if !importOnly && !exportOnly {
 		// Build set of addresses on kube-lb0 across all nodes
-		kubeLB0Addrs := map[string]string{} // address -> node
+		// Key is the IP portion (without mask) so we match regardless of aggregation
+		kubeLB0ByIP := map[string]string{}   // bare IP -> node
+		kubeLB0Prefix := map[string]string{} // bare IP -> full prefix (e.g. "10.201.0.0/24")
 		for _, ia := range dp.ImportAddresses {
-			kubeLB0Addrs[ia.Address] = ia.Node
+			bareIP := strings.Split(ia.Address, "/")[0]
+			kubeLB0ByIP[bareIP] = ia.Node
+			kubeLB0Prefix[bareIP] = ia.Address
+		}
+
+		// Build RIB lookup: bare IP -> first matching RIB route
+		ribByIP := map[string]*ribAdvertEntry{}
+		for i, r := range dp.RIBRoutes {
+			bareIP := strings.Split(r.Prefix, "/")[0]
+			if _, exists := ribByIP[bareIP]; !exists {
+				ribByIP[bareIP] = &dp.RIBRoutes[i]
+			}
 		}
 
 		for _, ipStr := range remoteSvcIPs {
 			svcName := svcByIP[ipStr]
-			prefix32 := ipStr + "/32"
-			prefix128 := ipStr + "/128"
-
-			ip := net.ParseIP(ipStr)
-			prefix := prefix32
-			if ip != nil && ip.To4() == nil {
-				prefix = prefix128
-			}
-
 			entry := crossRefEntry{IP: ipStr, Service: svcName}
 
-			if node, ok := kubeLB0Addrs[prefix]; ok {
+			if node, ok := kubeLB0ByIP[ipStr]; ok {
 				// On kube-lb0 — check if advertised
 				advertised := false
-				for _, r := range dp.RIBRoutes {
-					if r.Prefix == prefix && len(r.AdvertisedTo) > 0 {
-						advertised = true
-						entry.Node = r.Node
-						break
-					}
+				if r, ok := ribByIP[ipStr]; ok && len(r.AdvertisedTo) > 0 {
+					advertised = true
+					entry.Node = r.Node
 				}
 				if advertised {
 					entry.Status = "OK"
