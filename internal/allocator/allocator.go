@@ -36,13 +36,19 @@ const (
 // IPs on subnets with no healthy nodes.
 type ActiveSubnetsFunc func(namespace string) ([]string, error)
 
+// ListServicesFunc returns all services from the informer cache.
+// Used to populate pool state from existing allocations.
+type ListServicesFunc func() []v1.Service
+
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
-	client         k8s.ServiceEvent
-	logger         log.Logger
-	pools          map[string]Pool
-	activeSubnets  ActiveSubnetsFunc
+	client          k8s.ServiceEvent
+	logger          log.Logger
+	pools           map[string]Pool
+	activeSubnets   ActiveSubnetsFunc
 	purelbNamespace string
+	listServices    ListServicesFunc
+	populated       bool
 }
 
 // New returns an Allocator managing no pools.
@@ -65,6 +71,12 @@ func (a *Allocator) SetActiveSubnets(fn ActiveSubnetsFunc, namespace string) {
 	a.purelbNamespace = namespace
 }
 
+// SetListServices sets the function used to list services from the
+// informer cache, used by SetPools to populate pool state.
+func (a *Allocator) SetListServices(fn ListServicesFunc) {
+	a.listServices = fn
+}
+
 // SetPools updates the set of address pools that the allocator owns.
 func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 	pools := a.parseGroups(groups)
@@ -82,6 +94,7 @@ func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 	}
 
 	a.pools = pools
+	a.populated = false
 
 	// Refresh or initiate stats
 	for _, p := range a.pools {
@@ -89,6 +102,33 @@ func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 	}
 
 	return nil
+}
+
+// populateFromExisting scans the service cache and registers all
+// existing PureLB-allocated IPs with the appropriate pools. Runs once
+// after the informer cache is warm, then skips subsequent calls since
+// individual services are notified via SetBalancer → NotifyExisting.
+func (a *Allocator) populateFromExisting() {
+	if a.populated || a.listServices == nil {
+		return
+	}
+	count := 0
+	for _, svc := range a.listServices() {
+		if svc.Annotations[purelbv2.BrandAnnotation] != purelbv2.Brand {
+			continue
+		}
+		if len(svc.Status.LoadBalancer.Ingress) == 0 {
+			continue
+		}
+		if err := a.NotifyExisting(&svc); err != nil {
+			logging.Info(a.logger, "op", "populateFromExisting", "error", err,
+				"svc", svc.Namespace+"/"+svc.Name)
+			continue
+		}
+		count++
+	}
+	a.populated = true
+	logging.Info(a.logger, "op", "populateFromExisting", "count", count)
 }
 
 // updateStats unconditionally updates internal state to reflect svc's
@@ -132,6 +172,14 @@ func (a *Allocator) NotifyExisting(svc *v1.Service) error {
 // annotation. If neither is specified then we will attempt to
 // allocate from a pool named "default", if it exists.
 func (a *Allocator) Allocate(svc *v1.Service) error {
+	// Ensure pool state reflects all existing allocations before
+	// assigning a new IP. This is called here (not in SetPools) because
+	// SetPools runs on the CR controller goroutine where the service
+	// cache may not be synced yet. Allocate only runs from SetBalancer
+	// on the main queue thread, after WaitForCacheSync, so the cache
+	// is guaranteed warm.
+	a.populateFromExisting()
+
 	// If the user asked for a specific IP, allocate that.
 	allocated, err := a.allocateSpecificIP(svc)
 	if err != nil {

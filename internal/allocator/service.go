@@ -252,14 +252,17 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 		}
 	}
 
-	// Annotate the service as "ours"
-	svc.Annotations[purelbv2.BrandAnnotation] = purelbv2.Brand
-
 	if err := c.ips.Allocate(svc); err != nil {
 		logging.Info(l, "op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", nsName, err)
 		return k8s.SyncStateSuccess
 	}
+
+	// Mark the service as ours only after successful allocation.
+	// Setting this before Allocate would persist a "half-owned" service
+	// (branded but no IP) on allocation failure, causing duplicate IP
+	// assignments after allocator restart.
+	svc.Annotations[purelbv2.BrandAnnotation] = purelbv2.Brand
 
 	return k8s.SyncStateSuccess
 }
