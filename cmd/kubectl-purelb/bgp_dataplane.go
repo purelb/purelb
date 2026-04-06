@@ -17,12 +17,18 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+// isHostRoute returns true for /32 (IPv4) or /128 (IPv6) prefixes.
+func isHostRoute(prefix string) bool {
+	return strings.HasSuffix(prefix, "/32") || strings.HasSuffix(prefix, "/128")
+}
 
 type importEntry struct {
 	Node      string `json:"node"`
@@ -108,19 +114,12 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 		configImportInterfaces = ifaces
 	}
 
-	// Fetch LBNodeAgent for dummy interface name
-	lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
-	dummyInterface := "kube-lb0"
-	if lbnaList != nil && len(lbnaList.Items) > 0 {
-		di, _, _ := unstructured.NestedString(lbnaList.Items[0].Object, "spec", "local", "dummyInterface")
-		if di != "" {
-			dummyInterface = di
-		}
-	}
+	dummyInterface := dummyInterfaceName(ctx, c)
 
 	// Build service IP -> name map for cross-reference
 	svcList, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{})
-	svcByIP := map[string]string{} // ip -> "namespace/name"
+	svcByIP := map[string]string{}  // ip -> "namespace/name"
+	etpLocalIPs := map[string]bool{} // IPs from ETP Local services
 	var remoteSvcIPs []string
 	if svcList != nil {
 		for _, svc := range svcList.Items {
@@ -134,6 +133,9 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 					svcByIP[ingress.IP] = nsName
 					if ann[annotationPoolType] == poolTypeRemote {
 						remoteSvcIPs = append(remoteSvcIPs, ingress.IP)
+						if string(svc.Spec.ExternalTrafficPolicy) == "Local" {
+							etpLocalIPs[ingress.IP] = true
+						}
 					}
 				}
 			}
@@ -187,7 +189,10 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 				dp.ImportAddresses = append(dp.ImportAddresses, importEntry{
 					Node: nodeName, Interface: iface, Address: addr, InRIB: inRIB,
 				})
-				if !inRIB {
+				if !inRIB && isHostRoute(addr) {
+					// Only flag host routes as import failures. Aggregate addresses
+					// (e.g., 10.255.1.100/24) are covered by the subnet route
+					// (10.255.1.0/24) which IS in the RIB — not an error.
 					problems = append(problems, fmt.Sprintf("%s: %s on %s but not in BGP RIB (import failure)", nodeName, addr, iface))
 				}
 			}
@@ -205,11 +210,22 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 				nextHop, _ := rMap["nextHop"].(string)
 				advTo, _, _ := unstructured.NestedStringSlice(rMap, "advertisedTo")
 
-				// Match to service
+				// Match to service: exact IP match first, then check if any
+				// service VIP falls within this aggregate route's subnet.
 				svcName := ""
 				ipOnly := strings.Split(prefix, "/")[0]
 				if name, ok := svcByIP[ipOnly]; ok {
 					svcName = name
+				} else if !isHostRoute(prefix) {
+					_, ipnet, err := net.ParseCIDR(prefix)
+					if err == nil {
+						for vip, name := range svcByIP {
+							if ipnet.Contains(net.ParseIP(vip)) {
+								svcName = name
+								break
+							}
+						}
+					}
 				}
 
 				dp.RIBRoutes = append(dp.RIBRoutes, ribAdvertEntry{
@@ -310,11 +326,25 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 			entry := crossRefEntry{IP: ipStr, Service: svcName}
 
 			if node, ok := kubeLB0ByIP[ipStr]; ok {
-				// On kube-lb0 — check if advertised
+				// On kube-lb0 — check if advertised (exact match or aggregate)
 				advertised := false
 				if r, ok := ribByIP[ipStr]; ok && len(r.AdvertisedTo) > 0 {
 					advertised = true
 					entry.Node = r.Node
+				} else {
+					// Check if a covering aggregate route is advertised
+					ip := net.ParseIP(ipStr)
+					for _, r := range dp.RIBRoutes {
+						if r.Node != node || isHostRoute(r.Prefix) || len(r.AdvertisedTo) == 0 {
+							continue
+						}
+						_, ipnet, err := net.ParseCIDR(r.Prefix)
+						if err == nil && ipnet.Contains(ip) {
+							advertised = true
+							entry.Node = node
+							break
+						}
+					}
 				}
 				if advertised {
 					entry.Status = "OK"
@@ -324,6 +354,9 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 					entry.Node = node
 					problems = append(problems, fmt.Sprintf("%s (%s): in RIB on %s but not advertised", ipStr, svcName, node))
 				}
+			} else if etpLocalIPs[ipStr] {
+				// ETP Local: VIP is only on endpoint nodes — not a problem
+				entry.Status = "ETP Local (endpoint-only)"
 			} else {
 				entry.Status = "NOT ON kube-lb0"
 				problems = append(problems, fmt.Sprintf("%s (%s): not on any node's %s", ipStr, svcName, dummyInterface))
@@ -373,7 +406,11 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 				ifaceHasAddr[key] = true
 				ribStr := "Yes"
 				if !ia.InRIB {
-					ribStr = "NO  *** IMPORT FAILURE ***"
+					if isHostRoute(ia.Address) {
+						ribStr = "NO  *** IMPORT FAILURE ***"
+					} else {
+						ribStr = "Yes (aggregate)"
+					}
 				}
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", ia.Node, ia.Interface, ia.Address, ribStr)
 			}

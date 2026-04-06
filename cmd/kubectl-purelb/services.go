@@ -138,7 +138,8 @@ func runServices(ctx context.Context, c *clients, format outputFormat, filterPoo
 		poolType := ann[annotationPoolType]
 		sharingKey := ann[annotationSharing]
 
-		// Parse announcing annotations for both families
+		// Parse announcing annotations for both families (local pools only;
+		// remote pools derive the interface from the LBNodeAgent CR).
 		announcers := map[string]announcement{} // ip -> announcement
 		for _, suffix := range []string{"-IPv4", "-IPv6"} {
 			for _, a := range parseAnnouncingAnnotation(ann[annotationAnnouncing+suffix]) {
@@ -184,13 +185,13 @@ func runServices(ctx context.Context, c *clients, format outputFormat, filterPoo
 				if !healthyNodes[a.Node] {
 					status = "ANNOUNCER UNHEALTHY"
 				}
+			} else if poolType == poolTypeRemote {
+				// Remote pools: all nodes announce on the dummy interface.
+				// Derive the name from the LBNodeAgent CR instead of an
+				// annotation to avoid a write storm from multiple agents.
+				announcing = dummyInterfaceName(ctx, c)
 			} else {
-				// Remote pool services may not have announcing annotation
-				if poolType == poolTypeRemote {
-					status = "OK"
-				} else {
-					status = "NO ANNOUNCER"
-				}
+				status = "NO ANNOUNCER"
 			}
 
 			row := svcRow{

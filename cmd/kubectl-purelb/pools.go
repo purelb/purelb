@@ -192,7 +192,10 @@ func runPools(ctx context.Context, c *clients, format outputFormat, filterSG str
 	var usedV4, usedV6 int
 
 	for _, r := range ranges {
-		avail := r.Size - uint64(r.Used)
+		var avail uint64
+		if uint64(r.Used) <= r.Size {
+			avail = r.Size - uint64(r.Used)
+		}
 		pct := float64(0)
 		if r.Size > 0 {
 			pct = float64(r.Used) / float64(r.Size) * 100
@@ -375,7 +378,10 @@ func buildPoolsSummary(ranges []poolRangeInfo, netboxPools []sgSummary) poolsSum
 			sgOrder = append(sgOrder, r.ServiceGroup)
 		}
 
-		avail := r.Size - uint64(r.Used)
+		var avail uint64
+		if uint64(r.Used) <= r.Size {
+			avail = r.Size - uint64(r.Used)
+		}
 		pct := float64(0)
 		if r.Size > 0 {
 			pct = float64(r.Used) / float64(r.Size) * 100

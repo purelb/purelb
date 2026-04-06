@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"math"
@@ -23,6 +24,9 @@ import (
 	"net"
 	"sort"
 	"strings"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // PureLB annotation constants (copied from pkg/apis/purelb/v2/annotations.go
@@ -60,6 +64,19 @@ const (
 	familyV4 = 2
 	familyV6 = 10
 )
+
+// dummyInterfaceName returns the dummy interface name from the LBNodeAgent CR,
+// defaulting to "kube-lb0" if not configured or not found.
+func dummyInterfaceName(ctx context.Context, c *clients) string {
+	lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+	if lbnaList != nil && len(lbnaList.Items) > 0 {
+		di, _, _ := unstructured.NestedString(lbnaList.Items[0].Object, "spec", "local", "dummyInterface")
+		if di != "" {
+			return di
+		}
+	}
+	return "kube-lb0"
+}
 
 // addrFamily returns the address family of an IP address.
 func addrFamily(ip net.IP) int {
@@ -124,11 +141,18 @@ func parseAnnouncingAnnotation(value string) []announcement {
 	var result []announcement
 	for _, entry := range strings.Fields(value) {
 		parts := strings.SplitN(entry, ",", 3)
-		if len(parts) == 3 {
+		switch len(parts) {
+		case 3:
+			// Local format: "node,iface,ip"
 			result = append(result, announcement{
 				Node:      parts[0],
 				Interface: parts[1],
 				IP:        parts[2],
+			})
+		case 1:
+			// Remote format: just the interface name (e.g., "kube-lb0")
+			result = append(result, announcement{
+				Interface: parts[0],
 			})
 		}
 	}

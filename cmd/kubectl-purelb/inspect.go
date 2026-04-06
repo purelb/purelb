@@ -273,6 +273,18 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 					ai.RenewedAgo = formatDuration(now.Sub(t))
 				}
 				result.Announcements = append(result.Announcements, ai)
+			} else if poolType == poolTypeRemote {
+				// Remote pools: annotation is just the interface name (all nodes announce)
+				for _, a := range announcers {
+					if a.Node == "" {
+						result.Announcements = append(result.Announcements, announcementInfo{
+							IP:        ipStr,
+							Interface: a.Interface,
+							Healthy:   true,
+						})
+						break
+					}
+				}
 			}
 
 			// BGP route check (remote pools)

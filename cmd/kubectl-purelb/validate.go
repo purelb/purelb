@@ -104,11 +104,10 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 		}
 	}
 
-	// Get dummy interface name from LBNodeAgent
+	// Get dummy interface name from LBNodeAgent (using already-fetched lbnaList)
 	dummyInterface := "kube-lb0"
-	if lbnaList != nil && len(lbnaList.Items) > 0 {
-		di, _, _ := unstructured.NestedString(lbnaList.Items[0].Object, "spec", "local", "dummyInterface")
-		if di != "" {
+	if len(lbnaList.Items) > 0 {
+		if di, _, _ := unstructured.NestedString(lbnaList.Items[0].Object, "spec", "local", "dummyInterface"); di != "" {
 			dummyInterface = di
 		}
 	}

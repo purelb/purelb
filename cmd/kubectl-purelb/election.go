@@ -175,7 +175,9 @@ func runElection(ctx context.Context, c *clients, format outputFormat, filterNod
 		}
 		for _, suffix := range []string{"-IPv4", "-IPv6"} {
 			for _, a := range parseAnnouncingAnnotation(ann[annotationAnnouncing+suffix]) {
-				announceCount[a.Node]++
+				if a.Node != "" {
+					announceCount[a.Node]++
+				}
 			}
 		}
 		// Local pool services participate in election

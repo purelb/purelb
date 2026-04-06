@@ -122,6 +122,13 @@ func TestParseAnnouncingAnnotation(t *testing.T) {
 	require.Len(t, result, 1)
 	assert.Equal(t, "2001:db8::1", result[0].IP)
 
+	// Remote format: just interface name (1 part)
+	result = parseAnnouncingAnnotation("kube-lb0")
+	require.Len(t, result, 1)
+	assert.Equal(t, "", result[0].Node)
+	assert.Equal(t, "kube-lb0", result[0].Interface)
+	assert.Equal(t, "", result[0].IP)
+
 	// Malformed (only 2 parts) — skipped
 	result = parseAnnouncingAnnotation("node-a,eth0")
 	assert.Nil(t, result)
