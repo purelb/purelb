@@ -97,7 +97,7 @@ type crossRefEntry struct {
 
 func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, filterNode string, checkOnly bool, filterVRF string, importOnly, exportOnly bool) error {
 	// Fetch BGPNodeStatuses
-	bgpnsList, err := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{})
+	bgpnsList, err := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return fmt.Errorf("listing BGPNodeStatuses: %w", err)
 	}
@@ -107,7 +107,7 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 	}
 
 	// Fetch BGPConfiguration for import/export config display
-	bgpConfigList, _ := c.dynamic.Resource(gvrBGPConfigurations).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+	bgpConfigList, _ := c.dynamic.Resource(gvrBGPConfigurations).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	configImportInterfaces := []string{}
 	if bgpConfigList != nil && len(bgpConfigList.Items) > 0 {
 		ifaces, _, _ := unstructured.NestedStringSlice(bgpConfigList.Items[0].Object, "spec", "netlinkImport", "interfaceList")
@@ -117,7 +117,7 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 	dummyInterface := dummyInterfaceName(ctx, c)
 
 	// Build service IP -> name map for cross-reference
-	svcList, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+	svcList, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
 	svcByIP := map[string]string{}  // ip -> "namespace/name"
 	etpLocalIPs := map[string]bool{} // IPs from ETP Local services
 	var remoteSvcIPs []string

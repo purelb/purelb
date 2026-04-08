@@ -121,7 +121,8 @@ func extractNodeFlag(args []string) (filtered []string, node string) {
 // runs on all nodes and labels output. If targetNode is set, runs on that node only.
 func execInK8GoBGP(ctx context.Context, c *clients, targetNode string, command []string) error {
 	pods, err := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app=purelb,component=lbnodeagent",
+		ResourceVersion: "0",
+		LabelSelector:   "app=purelb,component=lbnodeagent",
 	})
 	if err != nil {
 		return fmt.Errorf("listing lbnodeagent pods: %w", err)

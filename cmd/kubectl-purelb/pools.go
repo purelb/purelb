@@ -111,13 +111,13 @@ func newPoolsCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 
 func runPools(ctx context.Context, c *clients, format outputFormat, filterSG string, showServices bool) error {
 	// Fetch all ServiceGroups
-	sgList, err := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+	sgList, err := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return fmt.Errorf("listing ServiceGroups: %w", err)
 	}
 
 	// Fetch all services across all namespaces that PureLB manages
-	svcList, err := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+	svcList, err := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
 	if err != nil {
 		return fmt.Errorf("listing Services: %w", err)
 	}

@@ -102,7 +102,7 @@ func runElection(ctx context.Context, c *clients, format outputFormat, filterNod
 	now := time.Now()
 
 	// Fetch leases
-	leaseList, err := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{})
+	leaseList, err := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return fmt.Errorf("listing leases: %w", err)
 	}
@@ -155,7 +155,7 @@ func runElection(ctx context.Context, c *clients, format outputFormat, filterNod
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 
 	// Count announcing IPs per node from services
-	svcList, err := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+	svcList, err := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
 	if err != nil {
 		return fmt.Errorf("listing services: %w", err)
 	}
@@ -198,7 +198,7 @@ func runElection(ctx context.Context, c *clients, format outputFormat, filterNod
 	}
 
 	// Build subnet coverage: which ServiceGroup pool ranges are covered by which subnets
-	sgList, err := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+	sgList, err := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return fmt.Errorf("listing ServiceGroups: %w", err)
 	}

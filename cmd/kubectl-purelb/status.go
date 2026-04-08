@@ -88,7 +88,7 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 	var warnings []string
 
 	// === Components ===
-	pods, _ := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{})
+	pods, _ := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 
 	allocatorTotal, allocatorReady := 0, 0
 	nodeagentTotal, nodeagentReady := 0, 0
@@ -136,8 +136,8 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 	}
 
 	// === Pools ===
-	sgList, _ := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
-	svcList, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+	sgList, _ := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	svcList, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
 
 	var totalV4, totalV6 uint64
 	var usedV4, usedV6 int
@@ -199,7 +199,7 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 	poolParts = append(poolParts, exhaustedStr)
 
 	// === Election ===
-	leaseList, _ := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{})
+	leaseList, _ := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	now := time.Now()
 	healthyCount, totalNodes := 0, 0
 	subnetSet := map[string]bool{}
@@ -223,7 +223,7 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 	}
 
 	// === BGP ===
-	bgpnsList, _ := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{})
+	bgpnsList, _ := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	bgpEstablished, bgpTotal := 0, 0
 	importFailures := 0
 
