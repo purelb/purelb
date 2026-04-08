@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -121,7 +122,8 @@ func extractNodeFlag(args []string) (filtered []string, node string) {
 // runs on all nodes and labels output. If targetNode is set, runs on that node only.
 func execInK8GoBGP(ctx context.Context, c *clients, targetNode string, command []string) error {
 	pods, err := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app=purelb,component=lbnodeagent",
+		ResourceVersion: "0",
+		LabelSelector:   "app=purelb,component=lbnodeagent",
 	})
 	if err != nil {
 		return fmt.Errorf("listing lbnodeagent pods: %w", err)
@@ -172,6 +174,83 @@ func execInK8GoBGP(ctx context.Context, c *clients, targetNode string, command [
 	}
 
 	return nil
+}
+
+// execInK8GoBGPWithPods is like execInK8GoBGP but uses a pre-fetched pod list
+// (e.g. from a clusterSnapshot) to avoid an extra Pods.List API call.
+// Output is written to the provided writer instead of os.Stdout.
+func execInK8GoBGPWithPods(ctx context.Context, c *clients, pods *v1.PodList, targetNode string, command []string, stdout, stderr io.Writer) error {
+	if pods == nil {
+		return fmt.Errorf("no pod list provided")
+	}
+
+	var targets []v1.Pod
+	for _, pod := range pods.Items {
+		if pod.Status.Phase != v1.PodRunning {
+			continue
+		}
+		hasK8GoBGP := false
+		for _, container := range pod.Spec.Containers {
+			if container.Name == "k8gobgp" {
+				hasK8GoBGP = true
+				break
+			}
+		}
+		if !hasK8GoBGP {
+			continue
+		}
+		if targetNode != "" && pod.Spec.NodeName != targetNode {
+			continue
+		}
+		targets = append(targets, pod)
+	}
+
+	if len(targets) == 0 {
+		if targetNode != "" {
+			return fmt.Errorf("no k8gobgp sidecar found on node %s", targetNode)
+		}
+		return fmt.Errorf("no running lbnodeagent pod with k8gobgp sidecar found")
+	}
+
+	multiNode := len(targets) > 1
+	for i, pod := range targets {
+		if multiNode {
+			if i > 0 {
+				fmt.Fprintln(stdout)
+			}
+			fmt.Fprintf(stdout, "=== %s ===\n", pod.Spec.NodeName)
+		}
+		if err := execOnePodToWriter(ctx, c, &pod, command, stdout, stderr); err != nil {
+			fmt.Fprintf(stderr, "Error on %s: %v\n", pod.Spec.NodeName, err)
+		}
+	}
+	return nil
+}
+
+// execOnePodToWriter executes a command in a pod, writing output to the
+// provided writers instead of os.Stdout/os.Stderr.
+func execOnePodToWriter(ctx context.Context, c *clients, pod *v1.Pod, command []string, stdout, stderr io.Writer) error {
+	req := c.core.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(pod.Name).
+		Namespace(pod.Namespace).
+		SubResource("exec").
+		VersionedParams(&v1.PodExecOptions{
+			Container: "k8gobgp",
+			Command:   command,
+			Stdout:    true,
+			Stderr:    true,
+		}, scheme.ParameterCodec)
+
+	exec, err := remotecommand.NewSPDYExecutor(c.config, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("creating exec: %w", err)
+	}
+
+	return exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: stdout,
+		Stderr: stderr,
+	})
 }
 
 func execOnePod(ctx context.Context, c *clients, pod *v1.Pod, command []string) error {

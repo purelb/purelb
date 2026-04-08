@@ -110,21 +110,28 @@ func newPoolsCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 }
 
 func runPools(ctx context.Context, c *clients, format outputFormat, filterSG string, showServices bool) error {
-	// Fetch all ServiceGroups
-	sgList, err := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+	sgList, err := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return fmt.Errorf("listing ServiceGroups: %w", err)
 	}
-
-	// Fetch all services across all namespaces that PureLB manages
-	svcList, err := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+	svcList, err := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
 	if err != nil {
 		return fmt.Errorf("listing Services: %w", err)
 	}
 
+	snap := &clusterSnapshot{
+		serviceGroups: sgList,
+		services:      svcList,
+	}
+	return renderPools(snap, format, filterSG, showServices)
+}
+
+// renderPools produces the pools output from pre-fetched data.
+// It never takes *clients — all data comes from the snapshot.
+func renderPools(snap *clusterSnapshot, format outputFormat, filterSG string, showServices bool) error {
 	// Build map: pool name -> list of (svcName, ip)
 	poolServices := map[string][]svcIP{}
-	for _, svc := range svcList.Items {
+	for _, svc := range snap.services.Items {
 		ann := svc.Annotations
 		if ann == nil || ann[annotationAllocatedBy] != brandPureLB {
 			continue
@@ -146,7 +153,7 @@ func runPools(ctx context.Context, c *clients, format outputFormat, filterSG str
 	var ranges []poolRangeInfo
 	var netboxPools []sgSummary
 
-	for _, sg := range sgList.Items {
+	for _, sg := range snap.serviceGroups.Items {
 		sgName := sg.GetName()
 		if filterSG != "" && sgName != filterSG {
 			continue
@@ -245,7 +252,7 @@ func runPools(ctx context.Context, c *clients, format outputFormat, filterSG str
 		parts = append(parts, fmt.Sprintf("%d Netbox pool(s): %d allocated (capacity managed externally)", len(netboxPools), totalNB))
 	}
 	fmt.Printf("Totals: %d ServiceGroup(s), %d range(s), %s\n",
-		len(sgList.Items), len(ranges), strings.Join(parts, " | "))
+		len(snap.serviceGroups.Items), len(ranges), strings.Join(parts, " | "))
 
 	return nil
 }

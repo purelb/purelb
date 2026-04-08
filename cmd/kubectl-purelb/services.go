@@ -89,18 +89,29 @@ func newServicesCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 }
 
 func runServices(ctx context.Context, c *clients, format outputFormat, filterPool, filterNode, filterIP string, problemsOnly bool) error {
-	// Fetch services
-	svcList, err := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+	svcList, err := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
 	if err != nil {
 		return fmt.Errorf("listing services: %w", err)
 	}
-
-	// Fetch leases for announcer health check
-	leaseList, err := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{})
+	leaseList, err := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return fmt.Errorf("listing leases: %w", err)
 	}
-	healthyNodes := buildHealthyNodeSet(leaseList.Items)
+	lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+
+	snap := &clusterSnapshot{
+		services:     svcList,
+		leases:       leaseList,
+		lbNodeAgents: lbnaList,
+	}
+	return renderServices(snap, format, filterPool, filterNode, filterIP, problemsOnly)
+}
+
+// renderServices produces the services output from pre-fetched data.
+// It never takes *clients — all data comes from the snapshot.
+func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filterNode, filterIP string, problemsOnly bool) error {
+	healthyNodes := buildHealthyNodeSet(snap.leases.Items)
+	dummyIface := resolveDummyInterface(snap.lbNodeAgents)
 
 	var rows []svcRow
 	// Track sharing: sharingKey -> IP -> []services with ports
@@ -110,7 +121,7 @@ func runServices(ctx context.Context, c *clients, format outputFormat, filterPoo
 	}
 	sharingMap := map[string]map[string][]sharingEntry{} // key -> ip -> entries
 
-	for _, svc := range svcList.Items {
+	for _, svc := range snap.services.Items {
 		ann := svc.Annotations
 		if ann == nil {
 			continue
@@ -189,7 +200,7 @@ func runServices(ctx context.Context, c *clients, format outputFormat, filterPoo
 				// Remote pools: all nodes announce on the dummy interface.
 				// Derive the name from the LBNodeAgent CR instead of an
 				// annotation to avoid a write storm from multiple agents.
-				announcing = dummyInterfaceName(ctx, c)
+				announcing = dummyIface
 			} else {
 				status = "NO ANNOUNCER"
 			}

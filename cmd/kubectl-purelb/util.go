@@ -59,6 +59,10 @@ const (
 // PureLB system namespace default.
 const purelbNamespace = "purelb-system"
 
+// svcFieldSelector limits Services.List to LoadBalancer type, reducing
+// response payload and API server work via server-side filtering.
+const svcFieldSelector = "spec.type=LoadBalancer"
+
 // Address family constants (AF_INET=2, AF_INET6=10, matching netlink/nl).
 const (
 	familyV4 = 2
@@ -68,7 +72,20 @@ const (
 // dummyInterfaceName returns the dummy interface name from the LBNodeAgent CR,
 // defaulting to "kube-lb0" if not configured or not found.
 func dummyInterfaceName(ctx context.Context, c *clients) string {
-	lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+	lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	if lbnaList != nil && len(lbnaList.Items) > 0 {
+		di, _, _ := unstructured.NestedString(lbnaList.Items[0].Object, "spec", "local", "dummyInterface")
+		if di != "" {
+			return di
+		}
+	}
+	return "kube-lb0"
+}
+
+// resolveDummyInterface extracts the dummy interface name from a pre-fetched
+// LBNodeAgent list, defaulting to "kube-lb0". Use this when the list is already
+// available (e.g., from a clusterSnapshot) to avoid an extra API call.
+func resolveDummyInterface(lbnaList *unstructured.UnstructuredList) string {
 	if lbnaList != nil && len(lbnaList.Items) > 0 {
 		di, _, _ := unstructured.NestedString(lbnaList.Items[0].Object, "spec", "local", "dummyInterface")
 		if di != "" {

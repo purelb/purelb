@@ -69,21 +69,21 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 	var checks []checkResult
 
 	// Fetch resources
-	sgList, err := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+	sgList, err := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return fmt.Errorf("listing ServiceGroups: %w", err)
 	}
 
-	lbnaList, err := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+	lbnaList, err := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return fmt.Errorf("listing LBNodeAgents: %w", err)
 	}
 
-	bgpConfigList, _ := c.dynamic.Resource(gvrBGPConfigurations).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+	bgpConfigList, _ := c.dynamic.Resource(gvrBGPConfigurations).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 
-	leaseList, _ := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{})
+	leaseList, _ := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 
-	nodeList, _ := c.core.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	nodeList, _ := c.core.CoreV1().Nodes().List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 
 	// Build node subnets from leases
 	nodeSubnets := map[string][]string{}

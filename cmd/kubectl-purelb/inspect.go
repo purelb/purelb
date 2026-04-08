@@ -173,10 +173,10 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 		sharingKey := ann[annotationSharing]
 
 		// Fetch ServiceGroups for range lookup
-		sgList, _ := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+		sgList, _ := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 
 		// Fetch leases for election
-		leaseList, _ := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{})
+		leaseList, _ := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 		nodeSubnets := map[string][]string{}
 		healthyNodes := map[string]bool{}
 		leaseRenewed := map[string]time.Time{}
@@ -204,7 +204,7 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 		// Fetch BGPNodeStatus for remote pool route checks
 		var bgpStatuses *unstructured.UnstructuredList
 		if poolType == poolTypeRemote {
-			bgpStatuses, _ = c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{})
+			bgpStatuses, _ = c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 		}
 
 		for _, ingress := range ingresses {
@@ -317,7 +317,7 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 		if sharingKey != "" {
 			si := &sharingInfo{Key: sharingKey}
 			// Find other services with the same sharing key
-			allSvcs, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+			allSvcs, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
 			if allSvcs != nil {
 				for _, other := range allSvcs.Items {
 					otherNsName := other.Namespace + "/" + other.Name
@@ -341,7 +341,8 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 
 	// Endpoints
 	epSlices, _ := c.core.DiscoveryV1().EndpointSlices(ns).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("kubernetes.io/service-name=%s", name),
+		ResourceVersion: "0",
+		LabelSelector:   fmt.Sprintf("kubernetes.io/service-name=%s", name),
 	})
 	if epSlices != nil {
 		result.Endpoints = countEndpoints(epSlices.Items)
@@ -533,7 +534,8 @@ func diagnosePending(ctx context.Context, c *clients, svc *v1.Service) *diagnosi
 
 	// Check allocator pod
 	pods, _ := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app=purelb,component=allocator",
+		ResourceVersion: "0",
+		LabelSelector:   "app=purelb,component=allocator",
 	})
 	allocatorRunning := false
 	if pods != nil {
@@ -556,7 +558,7 @@ func diagnosePending(ctx context.Context, c *clients, svc *v1.Service) *diagnosi
 	diag.Details = append(diag.Details, fmt.Sprintf("Requested pool: %q (from annotation %s)", requestedPool, annotationServiceGroup))
 
 	// Check if ServiceGroup exists
-	sgList, _ := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+	sgList, _ := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	var targetSG *unstructured.Unstructured
 	if sgList != nil {
 		for i, sg := range sgList.Items {

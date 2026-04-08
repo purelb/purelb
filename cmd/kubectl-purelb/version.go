@@ -69,7 +69,7 @@ func runVersion(ctx context.Context, c *clients, format outputFormat) error {
 	}
 
 	// Fetch pods
-	pods, _ := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{})
+	pods, _ := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if pods != nil {
 		for _, pod := range pods.Items {
 			if pod.Labels["component"] == "allocator" {

@@ -99,7 +99,7 @@ func runBGPSessions(ctx context.Context, c *clients, format outputFormat, filter
 	now := time.Now()
 
 	// Fetch BGPNodeStatuses
-	bgpnsList, err := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{})
+	bgpnsList, err := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return fmt.Errorf("listing BGPNodeStatuses: %w\nBGPNodeStatus CRD may not be installed — upgrade k8gobgp to 0.2.3+ for BGP visibility", err)
 	}
@@ -110,7 +110,7 @@ func runBGPSessions(ctx context.Context, c *clients, format outputFormat, filter
 	}
 
 	// Fetch BGPConfiguration for global config and nodeSelector info
-	bgpConfigList, _ := c.dynamic.Resource(gvrBGPConfigurations).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
+	bgpConfigList, _ := c.dynamic.Resource(gvrBGPConfigurations).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 
 	globalASN := int64(0)
 	routerIDMode := "auto-detect"
