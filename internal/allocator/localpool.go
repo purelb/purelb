@@ -172,7 +172,8 @@ func (p LocalPool) Notify(service *v1.Service) error {
 			p.logger.Log("localpool", "notify-failure", "svc-name", nsName, "ip", ipstr)
 			continue
 		}
-		p.logger.Log("localpool", "notify-existing", "svc-name", nsName, "ip", ipstr)
+
+		logging.Debug(p.logger, "localpool", "notify-existing", "svc-name", nsName, "ip", ipstr)
 
 		p.sharingKeys[ipstr] = sharingKey
 		if p.addressesInUse[ipstr] == nil {
@@ -321,14 +322,17 @@ func (p LocalPool) assignFamily(family int, service *v1.Service) error {
 		}
 	}
 
-	// Determine final error - prefer bound IP error (e.g., port conflict)
-	finalErr := boundIPErr
-	if finalErr == nil {
+	// Determine final error:
+	// - If the service has a sharing key, prefer the bound IP error (port conflict etc.)
+	// - If no sharing key, every IP was taken by a different service — pool exhausted
+	var finalErr error
+	if boundIPErr != nil {
+		finalErr = boundIPErr
+	} else if sharingKey != "" && lastErr != nil {
 		finalErr = lastErr
-	}
-	if finalErr == nil {
-		finalErr = fmt.Errorf("no available addresses for service %s in family %d",
-			namespacedName(service), family)
+	} else {
+		finalErr = fmt.Errorf("pool %q exhausted: no available addresses for %s",
+			p.name, namespacedName(service))
 	}
 
 	// Categorize the error for metrics

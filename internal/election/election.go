@@ -736,6 +736,9 @@ func (e *Election) rebuildMaps() {
 
 	// Sort for determinism
 	sort.Strings(newState.liveNodes)
+	for subnet := range newState.subnetToNodes {
+		sort.Strings(newState.subnetToNodes[subnet])
+	}
 
 	// Atomic swap
 	e.state.Store(newState)

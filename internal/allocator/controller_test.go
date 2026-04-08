@@ -15,6 +15,7 @@ package allocator
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 
 	"purelb.io/internal/k8s"
@@ -170,8 +171,8 @@ func newMultiPoolController(t *testing.T, v4pools []purelbv2.AddressPool, v6pool
 		logger:    l,
 		ips:       a,
 		client:    k,
-		isDefault: true,
 	}
+	c.isDefault.Store(true)
 
 	cfg := &purelbv2.Config{
 		DefaultAnnouncer: true,
@@ -207,8 +208,8 @@ func newMixedController(t *testing.T) (*controller, *testK8S) {
 		logger:    l,
 		ips:       a,
 		client:    k,
-		isDefault: true,
 	}
+	c.isDefault.Store(true)
 
 	cfg := &purelbv2.Config{
 		DefaultAnnouncer: true,
@@ -591,8 +592,8 @@ func TestMultiPoolConfigReprocess(t *testing.T) {
 		logger:    l,
 		ips:       a,
 		client:    k,
-		isDefault: true,
 	}
+	c.isDefault.Store(true)
 
 	cfg := &purelbv2.Config{
 		DefaultAnnouncer: true,
@@ -646,7 +647,7 @@ func TestMultiPoolExplicitLBClass(t *testing.T) {
 		logger:    l,
 		ips:       a,
 		client:    k,
-		isDefault: false, // NOT default
+		// isDefault defaults to false (not the default announcer)
 	}
 
 	cfg := &purelbv2.Config{
@@ -690,7 +691,7 @@ func TestMultiPoolNotDefaultAnnouncer(t *testing.T) {
 		logger:    l,
 		ips:       a,
 		client:    k,
-		isDefault: false, // NOT the default announcer
+		// isDefault defaults to false (not the default announcer)
 	}
 
 	cfg := &purelbv2.Config{
@@ -841,4 +842,67 @@ func TestReEvaluateAnnotationCleared(t *testing.T) {
 
 	// Service should still get allocated normally
 	assert.NotEmpty(t, svc.Status.LoadBalancer.Ingress, "service should be allocated")
+}
+
+// TestConcurrentSetPoolsAndSetBalancer exercises the race between G1
+// (SetBalancer/DeleteBalancer) and G2 (SetConfig/SetPools) to verify
+// that atomic.Pointer prevents data races. Run with -race to detect.
+func TestConcurrentSetPoolsAndSetBalancer(t *testing.T) {
+	l := log.NewNopLogger()
+	a := New(l)
+	k := &testK8S{t: t}
+	a.SetClient(k)
+
+	c := &controller{
+		logger: l,
+		ips:    a,
+		client: k,
+		synced: true,
+	}
+	c.isDefault.Store(true)
+
+	// Two ServiceGroup configs to alternate between
+	cfg1 := &purelbv2.Config{
+		DefaultAnnouncer: true,
+		Groups: []*purelbv2.ServiceGroup{
+			localServiceGroup("default", "10.0.0.0/28"),
+		},
+	}
+	cfg2 := &purelbv2.Config{
+		DefaultAnnouncer: true,
+		Groups: []*purelbv2.ServiceGroup{
+			localServiceGroup("default", "10.0.1.0/28"),
+		},
+	}
+
+	// Initial config
+	c.SetConfig(cfg1)
+
+	const iterations = 100
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// G2: rapidly swap pool configs
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			if i%2 == 0 {
+				c.SetConfig(cfg2)
+			} else {
+				c.SetConfig(cfg1)
+			}
+		}
+	}()
+
+	// G1: rapidly process services (SetBalancer + DeleteBalancer)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			svc := service(fmt.Sprintf("svc-%d", i), ports("tcp/80"), "")
+			c.SetBalancer(&svc, nil)
+			c.DeleteBalancer(fmt.Sprintf("default/svc-%d", i))
+		}
+	}()
+
+	wg.Wait()
 }
