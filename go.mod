@@ -14,7 +14,7 @@ require (
 	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/sync v0.18.0
 	golang.org/x/term v0.37.0
-	k8s.io/api v0.35.1
+	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
 	k8s.io/cli-runtime v0.35.0
 	k8s.io/client-go v0.35.0
