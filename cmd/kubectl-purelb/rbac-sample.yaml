@@ -1,0 +1,46 @@
+# Sample ClusterRole for kubectl-purelb plugin users.
+# This provides read-only access to all resources the plugin queries.
+# No pod exec required — all BGP data comes from BGPNodeStatus CRDs.
+#
+# Usage:
+#   kubectl apply -f rbac-sample.yaml
+#   kubectl create clusterrolebinding purelb-viewer \
+#     --clusterrole=purelb:plugin-viewer \
+#     --user=<your-user>
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: purelb:plugin-viewer
+  labels:
+    app: purelb
+rules:
+# Core resources
+- apiGroups: [""]
+  resources:
+  - services
+  - pods
+  - nodes
+  - events
+  - endpoints
+  verbs: [get, list, watch]
+- apiGroups: ["discovery.k8s.io"]
+  resources:
+  - endpointslices
+  verbs: [get, list, watch]
+# Leases (election state)
+- apiGroups: ["coordination.k8s.io"]
+  resources:
+  - leases
+  verbs: [get, list, watch]
+# PureLB CRDs
+- apiGroups: ["purelb.io"]
+  resources:
+  - servicegroups
+  - lbnodeagents
+  verbs: [get, list, watch]
+# BGP CRDs
+- apiGroups: ["bgp.purelb.io"]
+  resources:
+  - configs
+  - bgpnodestatuses
+  verbs: [get, list, watch]

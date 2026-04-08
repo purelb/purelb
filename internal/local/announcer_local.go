@@ -393,6 +393,11 @@ func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.Endp
 	RecordAddressAddition()
 	a.scheduleRenewal(nsName, lbIPNet, a.dummyInt, opts)
 
+	// The announcing annotation for remote pools is derived by consumers
+	// from pool-type=remote + the LBNodeAgent CR's dummy interface name.
+	// Writing it here would cause a write storm since all nodes process
+	// the service simultaneously.
+
 	announcing.With(prometheus.Labels{
 		"service": nsName,
 		"node":    a.myNode,

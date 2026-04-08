@@ -407,7 +407,14 @@ test_remote_pool() {
 
     # Cleanup
     info "Cleaning up remote pool test resources..."
-    kubectl delete svc nginx-lb-remote -n $NAMESPACE 2>/dev/null || true
+    local delete_err
+    if ! delete_err=$(kubectl delete svc nginx-lb-remote -n $NAMESPACE 2>&1); then
+        info "Service delete returned error: $delete_err"
+    fi
+    # Verify the service is actually gone
+    if kubectl get svc nginx-lb-remote -n $NAMESPACE --no-headers 2>/dev/null | grep -q nginx-lb-remote; then
+        fail "nginx-lb-remote service still exists after delete"
+    fi
     kubectl delete servicegroup remote-pool -n purelb-system 2>/dev/null || true
 
     pass "Remote pool behavior test completed"

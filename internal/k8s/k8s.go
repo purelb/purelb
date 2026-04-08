@@ -400,6 +400,21 @@ func (c *Client) Clientset() kubernetes.Interface {
 	return c.client
 }
 
+// ListServices returns all services from the informer cache. This is
+// used by the allocator to populate pool state from existing allocations.
+func (c *Client) ListServices() []corev1.Service {
+	var result []corev1.Service
+	if c.svcIndexer == nil {
+		return result
+	}
+	for _, obj := range c.svcIndexer.List() {
+		if svc, ok := obj.(*corev1.Service); ok {
+			result = append(result, *svc)
+		}
+	}
+	return result
+}
+
 // ActiveSubnets returns the set of subnets that have at least one healthy
 // lbnodeagent, determined by listing PureLB leases and checking their
 // renewal timestamps. This is a one-shot API call (not cached) because

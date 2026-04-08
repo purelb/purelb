@@ -1,0 +1,479 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: bgpnodestatuses.bgp.purelb.io
+spec:
+  group: bgp.purelb.io
+  names:
+    kind: BGPNodeStatus
+    listKind: BGPNodeStatusList
+    plural: bgpnodestatuses
+    shortNames:
+    - bgpns
+    singular: bgpnodestatus
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.nodeName
+      name: Node
+      type: string
+    - jsonPath: .status.routerID
+      name: RouterID
+      type: string
+    - jsonPath: .status.healthy
+      name: Healthy
+      type: boolean
+    - jsonPath: .status.neighborCount
+      name: Neighbors
+      type: integer
+    - jsonPath: .status.lastUpdated
+      name: LastUpdated
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: BGPNodeStatusSpec is intentionally empty — BGPNodeStatus
+              is a status-only resource.
+            type: object
+          status:
+            description: BGPNodeStatusData holds the per-node BGP state reported by
+              the k8gobgp agent.
+            properties:
+              asn:
+                description: ASN is the local Autonomous System Number
+                format: int32
+                type: integer
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the node's BGP state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              healthy:
+                description: |-
+                  Healthy is true when all neighbors are Established and no import/export failures exist.
+                  Conditions are authoritative; this is a convenience summary.
+                type: boolean
+              heartbeatSeconds:
+                description: HeartbeatSeconds is the configured heartbeat interval,
+                  echoed so the plugin can calculate staleness
+                format: int32
+                type: integer
+              lastUpdated:
+                description: LastUpdated is the timestamp of the last status write
+                format: date-time
+                type: string
+              neighborCount:
+                description: NeighborCount is the total number of configured neighbors
+                type: integer
+              neighbors:
+                description: Neighbors is the list of BGP neighbor session states
+                items:
+                  description: NeighborStatus reports the state of a single BGP neighbor
+                    session.
+                  properties:
+                    address:
+                      description: Address is the neighbor's IP address
+                      type: string
+                    description:
+                      description: Description is the configured neighbor description
+                      type: string
+                    lastError:
+                      description: LastError is the BGP notification code/subcode
+                        for non-Established neighbors
+                      type: string
+                    localASN:
+                      description: LocalASN is the local AS used for this session
+                      format: int32
+                      type: integer
+                    peerASN:
+                      description: PeerASN is the neighbor's Autonomous System Number
+                      format: int32
+                      type: integer
+                    prefixesReceived:
+                      description: PrefixesReceived is the number of prefixes received
+                        from this neighbor
+                      format: int64
+                      type: integer
+                    prefixesSent:
+                      description: PrefixesSent is the number of prefixes advertised
+                        to this neighbor
+                      format: int64
+                      type: integer
+                    sessionUpSince:
+                      description: SessionUpSince is when the session entered Established
+                        state
+                      format: date-time
+                      type: string
+                    state:
+                      description: 'State is the BGP FSM state: Idle, Connect, Active,
+                        OpenSent, OpenConfirm, Established'
+                      type: string
+                  required:
+                  - address
+                  - localASN
+                  - peerASN
+                  - prefixesReceived
+                  - prefixesSent
+                  - state
+                  type: object
+                type: array
+              netlinkExport:
+                description: NetlinkExport reports the netlink export pipeline state
+                properties:
+                  enabled:
+                    description: Enabled indicates whether netlink export is active
+                    type: boolean
+                  exportedRoutes:
+                    description: ExportedRoutes lists routes exported to the Linux
+                      kernel
+                    items:
+                      description: ExportedRoute reports a single route exported to
+                        the Linux kernel.
+                      properties:
+                        installed:
+                          description: Installed indicates whether this route was
+                            successfully installed in the kernel
+                          type: boolean
+                        metric:
+                          description: Metric is the route metric in the Linux routing
+                            table
+                          format: int32
+                          type: integer
+                        prefix:
+                          description: Prefix is the exported IP prefix
+                          type: string
+                        reason:
+                          description: Reason explains why a route was not installed
+                            (e.g., "nexthop unreachable")
+                          type: string
+                        table:
+                          description: Table is the Linux routing table name (e.g.,
+                            "main")
+                          type: string
+                      required:
+                      - installed
+                      - metric
+                      - prefix
+                      - table
+                      type: object
+                    type: array
+                  protocol:
+                    description: Protocol is the Linux route protocol identifier (e.g.,
+                      186 = RTPROT_BGP)
+                    format: int32
+                    type: integer
+                  rules:
+                    description: Rules lists the configured export rules
+                    items:
+                      description: ExportRuleStatus reports the configuration of a
+                        single export rule.
+                      properties:
+                        metric:
+                          description: Metric is the route metric in the Linux routing
+                            table
+                          format: int32
+                          type: integer
+                        name:
+                          description: Name is the export rule name
+                          type: string
+                        tableID:
+                          description: TableID is the Linux routing table ID
+                          format: int32
+                          type: integer
+                      required:
+                      - metric
+                      - name
+                      - tableID
+                      type: object
+                    type: array
+                  totalExported:
+                    description: TotalExported is the total count of exported routes
+                      (may exceed len(ExportedRoutes) if truncated)
+                    type: integer
+                  truncated:
+                    description: Truncated indicates the exportedRoutes list was capped
+                      at the maximum
+                    type: boolean
+                required:
+                - enabled
+                - protocol
+                - totalExported
+                type: object
+              netlinkImport:
+                description: NetlinkImport reports the netlink import pipeline state
+                properties:
+                  enabled:
+                    description: Enabled indicates whether netlink import is active
+                    type: boolean
+                  importedAddresses:
+                    description: ImportedAddresses lists addresses imported from interfaces
+                    items:
+                      description: ImportedAddress reports a single address imported
+                        from an interface.
+                      properties:
+                        address:
+                          description: Address is the imported IP address with prefix
+                            length (e.g., "10.100.0.1/32")
+                          type: string
+                        inRIB:
+                          description: InRIB indicates whether this address exists
+                            as a route in the BGP RIB
+                          type: boolean
+                        interface:
+                          description: Interface is the source interface name
+                          type: string
+                      required:
+                      - address
+                      - inRIB
+                      - interface
+                      type: object
+                    type: array
+                  interfaces:
+                    description: Interfaces reports the state of each watched import
+                      interface
+                    items:
+                      description: ImportInterfaceStatus reports the state of a single
+                        import interface.
+                      properties:
+                        exists:
+                          description: Exists indicates whether the interface exists
+                            on this node
+                          type: boolean
+                        name:
+                          description: Name is the interface name (e.g., "kube-lb0")
+                          type: string
+                        operState:
+                          description: 'OperState is the operational state: "up" or
+                            "down"'
+                          type: string
+                      required:
+                      - exists
+                      - name
+                      - operState
+                      type: object
+                    type: array
+                  totalImported:
+                    description: TotalImported is the total count of imported addresses
+                      (may exceed len(ImportedAddresses) if truncated)
+                    type: integer
+                  truncated:
+                    description: Truncated indicates the importedAddresses list was
+                      capped at the maximum
+                    type: boolean
+                  vrf:
+                    description: VRF is the VRF that routes are imported into (empty
+                      = global RIB)
+                    type: string
+                required:
+                - enabled
+                - totalImported
+                type: object
+              nodeName:
+                description: NodeName is the Kubernetes node this status belongs to
+                type: string
+              rib:
+                description: RIB reports the BGP RIB summary
+                properties:
+                  localRouteCount:
+                    description: LocalRouteCount is the total count of local routes
+                      (may exceed len(LocalRoutes) if truncated)
+                    type: integer
+                  localRoutes:
+                    description: LocalRoutes lists routes originating from this node
+                    items:
+                      description: RIBRoute reports a single route in the BGP RIB.
+                      properties:
+                        advertisedTo:
+                          description: AdvertisedTo lists neighbor addresses this
+                            route is advertised to (only for local routes)
+                          items:
+                            type: string
+                          type: array
+                        communities:
+                          description: Communities lists BGP communities attached
+                            to this route
+                          items:
+                            type: string
+                          type: array
+                        fromPeer:
+                          description: FromPeer is the peer that advertised this route
+                            (only for received routes)
+                          type: string
+                        nextHop:
+                          description: NextHop is the route's next-hop address
+                          type: string
+                        prefix:
+                          description: Prefix is the IP prefix (e.g., "10.100.0.1/32"
+                            or "2001:db8::/32")
+                          type: string
+                      required:
+                      - nextHop
+                      - prefix
+                      type: object
+                    type: array
+                  receivedRouteCount:
+                    description: ReceivedRouteCount is the total count of received
+                      routes (may exceed len(ReceivedRoutes) if truncated)
+                    type: integer
+                  receivedRoutes:
+                    description: ReceivedRoutes lists routes received from BGP peers
+                    items:
+                      description: RIBRoute reports a single route in the BGP RIB.
+                      properties:
+                        advertisedTo:
+                          description: AdvertisedTo lists neighbor addresses this
+                            route is advertised to (only for local routes)
+                          items:
+                            type: string
+                          type: array
+                        communities:
+                          description: Communities lists BGP communities attached
+                            to this route
+                          items:
+                            type: string
+                          type: array
+                        fromPeer:
+                          description: FromPeer is the peer that advertised this route
+                            (only for received routes)
+                          type: string
+                        nextHop:
+                          description: NextHop is the route's next-hop address
+                          type: string
+                        prefix:
+                          description: Prefix is the IP prefix (e.g., "10.100.0.1/32"
+                            or "2001:db8::/32")
+                          type: string
+                      required:
+                      - nextHop
+                      - prefix
+                      type: object
+                    type: array
+                  truncated:
+                    description: Truncated indicates a route list was capped at the
+                      maximum
+                    type: boolean
+                required:
+                - localRouteCount
+                - receivedRouteCount
+                type: object
+              routerID:
+                description: RouterID is the resolved BGP router identifier
+                type: string
+              routerIDSource:
+                description: |-
+                  RouterIDSource indicates how the router ID was resolved:
+                  "explicit", "template", "node-ipv4", or "hash-from-node-name"
+                type: string
+              vrfs:
+                description: VRFs reports the VRF summary
+                items:
+                  description: VRFStatus reports the summary state of a single VRF.
+                  properties:
+                    exportedRouteCount:
+                      description: ExportedRouteCount is the number of routes exported
+                        to the kernel for this VRF
+                      type: integer
+                    importedRouteCount:
+                      description: ImportedRouteCount is the number of routes in this
+                        VRF's RIB
+                      type: integer
+                    name:
+                      description: Name is the VRF name
+                      type: string
+                    rd:
+                      description: RD is the route distinguisher (e.g., "65000:100")
+                      type: string
+                  required:
+                  - exportedRouteCount
+                  - importedRouteCount
+                  - name
+                  - rd
+                  type: object
+                type: array
+            required:
+            - neighborCount
+            - nodeName
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

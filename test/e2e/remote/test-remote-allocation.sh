@@ -1000,12 +1000,23 @@ test_all_nodes_announce() {
     [ "$COUNT" -eq "$NODE_COUNT" ] || fail "Expected $NODE_COUNT nodes, found $COUNT with IP $IP"
     pass "All $NODE_COUNT nodes are announcing $IP"
 
-    # Verify NO purelb.io/announcing-IPv4 annotation (remote doesn't set this)
-    ANNOUNCING=$(kubectl get svc nginx-remote-ipv4 -n $NAMESPACE -o jsonpath='{.metadata.annotations.purelb\.io/announcing-IPv4}' 2>/dev/null || echo "")
-    if [ -n "$ANNOUNCING" ]; then
-        fail "Remote service should NOT have announcing-IPv4 annotation, but found: $ANNOUNCING"
+    # Verify purelb.io/announcing-IPv4 annotation shows the dummy interface.
+    # Poll briefly: the annotation is written via API server update which may
+    # lag behind the netlink VIP placement, especially with multiple competing nodes.
+    info "Waiting for announcing-IPv4 annotation..."
+    ANNOUNCING=""
+    for attempt in $(seq 1 30); do
+        ANNOUNCING=$(kubectl get svc nginx-remote-ipv4 -n $NAMESPACE -o jsonpath='{.metadata.annotations.purelb\.io/announcing-IPv4}' 2>/dev/null || echo "")
+        [ -n "$ANNOUNCING" ] && break
+        sleep 1
+    done
+    if [ -z "$ANNOUNCING" ]; then
+        fail "Remote service should have announcing-IPv4 annotation"
     fi
-    pass "No announcing annotation (correct for remote mode)"
+    if [ "$ANNOUNCING" != "kube-lb0" ]; then
+        fail "Expected announcing-IPv4 annotation 'kube-lb0', got: $ANNOUNCING"
+    fi
+    pass "Announcing annotation shows interface: $ANNOUNCING"
 
     pass "All-nodes-announce test completed"
 }

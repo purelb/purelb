@@ -69,6 +69,44 @@ The PureLB allocator will allocate one or more addresses and assign them to the
 service. The PureLB node agents then configure the underlying
 operating system to advertise the addresses.
 
+### kubectl-purelb Plugin (optional)
+
+The `kubectl-purelb` plugin provides operational visibility commands
+for PureLB clusters: pool utilization, service status, election state,
+BGP sessions, data plane health, and configuration validation.
+
+Download the binary for your platform from the
+[latest release](https://github.com/purelb/purelb/releases/latest)
+and place it in your PATH:
+
+**Linux (amd64):**
+```shell
+curl -LO https://github.com/purelb/purelb/releases/latest/download/kubectl-purelb-linux-amd64
+chmod +x kubectl-purelb-linux-amd64
+sudo mv kubectl-purelb-linux-amd64 /usr/local/bin/kubectl-purelb
+```
+
+**macOS (Apple Silicon):**
+```shell
+curl -LO https://github.com/purelb/purelb/releases/latest/download/kubectl-purelb-darwin-arm64
+chmod +x kubectl-purelb-darwin-arm64
+sudo mv kubectl-purelb-darwin-arm64 /usr/local/bin/kubectl-purelb
+```
+
+**Build from source:**
+```shell
+make plugin
+sudo mv kubectl-purelb /usr/local/bin/
+```
+
+**Verify and use:**
+```shell
+kubectl purelb version
+kubectl purelb status
+kubectl purelb pools
+kubectl purelb bgp sessions
+```
+
 ## Building
 
 Run `make help` for Makefile documentation.

@@ -17,6 +17,7 @@ package allocator
 
 import (
 	"os"
+	"sync/atomic"
 
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -47,7 +48,7 @@ type controller struct {
 	ips       *Allocator
 	groupURL  *string
 	logger    log.Logger
-	isDefault bool
+	isDefault atomic.Bool
 }
 
 // NewController configures a new controller. If error is non-nil then
@@ -64,6 +65,7 @@ func NewController(l log.Logger, ips *Allocator) (Controller, error) {
 func (c *controller) SetClient(client *k8s.Client) {
 	c.client = client
 	c.ips.SetClient(client)
+	c.ips.SetListServices(client.ListServices)
 
 	data, err := os.ReadFile(namespacePath)
 	if err != nil {
@@ -74,7 +76,8 @@ func (c *controller) SetClient(client *k8s.Client) {
 }
 
 func (c *controller) DeleteBalancer(name string) k8s.SyncState {
-	if err := c.ips.Unassign(name); err != nil {
+	pools := c.ips.Pools()
+	if err := c.ips.Unassign(pools, name); err != nil {
 		logging.Info(c.logger, "op", "deleteBalancer", "error", err)
 		return k8s.SyncStateError
 	}
@@ -98,7 +101,7 @@ func (c *controller) SetConfig(cfg *purelbv2.Config) k8s.SyncState {
 
 	// Cache the config that indicates if we are the default Service
 	// announcer.
-	c.isDefault = cfg.DefaultAnnouncer
+	c.isDefault.Store(cfg.DefaultAnnouncer)
 
 	return k8s.SyncStateReprocessAll
 }

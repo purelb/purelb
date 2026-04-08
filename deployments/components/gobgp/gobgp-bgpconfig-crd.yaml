@@ -1,10 +1,9 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-    config.kubernetes.io/index: '1'
-    internal.config.kubernetes.io/index: '1'
   name: configs.bgp.purelb.io
 spec:
   group: bgp.purelb.io
@@ -111,7 +110,8 @@ spec:
                         type: object
                     type: object
                   asn:
-                    description: ASN is the Autonomous System Number for this BGP speaker
+                    description: ASN is the Autonomous System Number for this BGP
+                      speaker
                     format: int32
                     type: integer
                   bindToDevice:
@@ -159,6 +159,21 @@ spec:
                   listenPort:
                     format: int32
                     type: integer
+                  nodeStatus:
+                    description: NodeStatus configures per-node BGPNodeStatus reporting
+                    properties:
+                      enabled:
+                        description: 'Enabled activates BGPNodeStatus reporting. Default:
+                          true.'
+                        type: boolean
+                      heartbeatSeconds:
+                        description: |-
+                          HeartbeatSeconds is the interval for unconditional status writes even when state is unchanged.
+                          Default: 60. Minimum: 10.
+                        format: int32
+                        minimum: 10
+                        type: integer
+                    type: object
                   routeSelectionOptions:
                     properties:
                       advertiseInactiveRoutes:
@@ -252,7 +267,8 @@ spec:
                         adminDown:
                           type: boolean
                         authPassword:
-                          description: 'AuthPassword is the BGP authentication password (DEPRECATED: use AuthPasswordSecretRef instead)'
+                          description: 'AuthPassword is the BGP authentication password
+                            (DEPRECATED: use AuthPasswordSecretRef instead)'
                           type: string
                         authPasswordSecretRef:
                           description: |-
@@ -260,7 +276,8 @@ spec:
                             The Secret must contain a key matching the neighbor address or a default key "password"
                           properties:
                             key:
-                              description: The key of the secret to select from.  Must be a valid secret key.
+                              description: The key of the secret to select from.  Must
+                                be a valid secret key.
                               type: string
                             name:
                               default: ""
@@ -272,7 +289,8 @@ spec:
                                 More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                               type: string
                             optional:
-                              description: Specify whether the Secret or its key must be defined
+                              description: Specify whether the Secret or its key must
+                                be defined
                               type: boolean
                           required:
                           - key
@@ -297,9 +315,6 @@ spec:
                       required:
                       - peerAsn
                       type: object
-                      x-kubernetes-validations:
-                      - message: either neighborAddress or neighborInterface must be set
-                        rule: self.neighborAddress != '' || self.neighborInterface != ''
                     ebgpMultihop:
                       properties:
                         enabled:
@@ -327,14 +342,16 @@ spec:
                         label selector matches no objects.
                       properties:
                         matchExpressions:
-                          description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
                           items:
                             description: |-
                               A label selector requirement is a selector that contains values, a key, and an operator that
                               relates the key and values.
                             properties:
                               key:
-                                description: key is the label key that the selector applies to.
+                                description: key is the label key that the selector
+                                  applies to.
                                 type: string
                               operator:
                                 description: |-
@@ -411,52 +428,65 @@ spec:
                   type: object
                 type: array
               netlinkExport:
-                description: NetlinkExport configures global netlink export for exporting BGP routes to Linux kernel
+                description: NetlinkExport configures global netlink export for exporting
+                  BGP routes to Linux kernel
                 properties:
                   dampeningInterval:
-                    description: 'DampeningInterval in milliseconds to prevent flapping (default: 100)'
+                    description: 'DampeningInterval in milliseconds to prevent flapping
+                      (default: 100)'
                     format: int32
                     type: integer
                   enabled:
                     description: Enabled activates netlink export functionality
                     type: boolean
                   routeProtocol:
-                    description: 'RouteProtocol is the Linux route protocol identifier (default: 186 = RTPROT_BGP)'
+                    description: 'RouteProtocol is the Linux route protocol identifier
+                      (default: 186 = RTPROT_BGP)'
                     format: int32
                     type: integer
                   rules:
-                    description: Rules defines export rules for matching and exporting routes
+                    description: Rules defines export rules for matching and exporting
+                      routes
                     items:
-                      description: NetlinkExportRule defines a rule for exporting routes to Linux kernel
+                      description: NetlinkExportRule defines a rule for exporting
+                        routes to Linux kernel
                       properties:
                         communityList:
-                          description: 'CommunityList filters routes by standard BGP communities (format: "AS:VALUE" where AS and VALUE are 0-65535)'
+                          description: 'CommunityList filters routes by standard BGP
+                            communities (format: "AS:VALUE" where AS and VALUE are
+                            0-65535)'
                           items:
                             pattern: ^\d{1,5}:\d{1,5}$
                             type: string
                           type: array
                         largeCommunityList:
-                          description: 'LargeCommunityList filters routes by large BGP communities (format: "ASN:LocalData1:LocalData2")'
+                          description: 'LargeCommunityList filters routes by large
+                            BGP communities (format: "ASN:LocalData1:LocalData2")'
                           items:
                             pattern: ^\d+:\d+:\d+$
                             type: string
                           type: array
                         metric:
-                          description: 'Metric is the route metric/priority in Linux routing table (default: 20)'
+                          description: 'Metric is the route metric/priority in Linux
+                            routing table (default: 20)'
                           format: int32
                           type: integer
                         name:
-                          description: Name is a unique identifier for this export rule
+                          description: Name is a unique identifier for this export
+                            rule
                           type: string
                         tableId:
-                          description: TableId is the Linux routing table ID (0 = main table)
+                          description: TableId is the Linux routing table ID (0 =
+                            main table)
                           format: int32
                           type: integer
                         validateNexthop:
-                          description: 'ValidateNexthop enables nexthop reachability validation before exporting (default: true)'
+                          description: 'ValidateNexthop enables nexthop reachability
+                            validation before exporting (default: true)'
                           type: boolean
                         vrf:
-                          description: Vrf is the target VRF name (empty = global routing table)
+                          description: Vrf is the target VRF name (empty = global
+                            routing table)
                           type: string
                       required:
                       - name
@@ -464,18 +494,21 @@ spec:
                     type: array
                 type: object
               netlinkImport:
-                description: NetlinkImport configures global netlink import for importing connected routes
+                description: NetlinkImport configures global netlink import for importing
+                  connected routes
                 properties:
                   enabled:
                     description: Enabled activates netlink import functionality
                     type: boolean
                   interfaceList:
-                    description: InterfaceList specifies interfaces to import routes from (supports glob patterns like "eth*")
+                    description: InterfaceList specifies interfaces to import routes
+                      from (supports glob patterns like "eth*")
                     items:
                       type: string
                     type: array
                   vrf:
-                    description: Vrf specifies the VRF to import routes into (empty = global RIB)
+                    description: Vrf specifies the VRF to import routes into (empty
+                      = global RIB)
                     type: string
                 type: object
               peerGroups:
@@ -540,13 +573,16 @@ spec:
                     config:
                       properties:
                         authPassword:
-                          description: 'AuthPassword is the BGP authentication password (DEPRECATED: use AuthPasswordSecretRef instead)'
+                          description: 'AuthPassword is the BGP authentication password
+                            (DEPRECATED: use AuthPasswordSecretRef instead)'
                           type: string
                         authPasswordSecretRef:
-                          description: AuthPasswordSecretRef references a Secret containing the BGP authentication password
+                          description: AuthPasswordSecretRef references a Secret containing
+                            the BGP authentication password
                           properties:
                             key:
-                              description: The key of the secret to select from.  Must be a valid secret key.
+                              description: The key of the secret to select from.  Must
+                                be a valid secret key.
                               type: string
                             name:
                               default: ""
@@ -558,7 +594,8 @@ spec:
                                 More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                               type: string
                             optional:
-                              description: Specify whether the Secret or its key must be defined
+                              description: Specify whether the Secret or its key must
+                                be defined
                               type: boolean
                           required:
                           - key
@@ -584,14 +621,16 @@ spec:
                         label selector matches no objects.
                       properties:
                         matchExpressions:
-                          description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
                           items:
                             description: |-
                               A label selector requirement is a selector that contains values, a key, and an operator that
                               relates the key and values.
                             properties:
                               key:
-                                description: key is the label key that the selector applies to.
+                                description: key is the label key that the selector
+                                  applies to.
                                 type: string
                               operator:
                                 description: |-
@@ -777,10 +816,13 @@ spec:
                     name:
                       type: string
                     netlinkExport:
-                      description: VrfNetlinkExport configures netlink export for a specific VRF
+                      description: VrfNetlinkExport configures netlink export for
+                        a specific VRF
                       properties:
                         communityList:
-                          description: 'CommunityList filters routes by standard BGP communities (format: "AS:VALUE" where AS and VALUE are 0-65535)'
+                          description: 'CommunityList filters routes by standard BGP
+                            communities (format: "AS:VALUE" where AS and VALUE are
+                            0-65535)'
                           items:
                             pattern: ^\d{1,5}:\d{1,5}$
                             type: string
@@ -789,34 +831,41 @@ spec:
                           description: Enabled activates VRF-to-VRF export
                           type: boolean
                         largeCommunityList:
-                          description: 'LargeCommunityList filters routes by large BGP communities (format: "ASN:LocalData1:LocalData2")'
+                          description: 'LargeCommunityList filters routes by large
+                            BGP communities (format: "ASN:LocalData1:LocalData2")'
                           items:
                             pattern: ^\d+:\d+:\d+$
                             type: string
                           type: array
                         linuxTableId:
-                          description: LinuxTableId is the target Linux routing table ID (auto-lookup from Linux VRF if not specified)
+                          description: LinuxTableId is the target Linux routing table
+                            ID (auto-lookup from Linux VRF if not specified)
                           format: int32
                           type: integer
                         linuxVrf:
-                          description: LinuxVrf is the target Linux VRF name (defaults to GoBGP VRF name)
+                          description: LinuxVrf is the target Linux VRF name (defaults
+                            to GoBGP VRF name)
                           type: string
                         metric:
-                          description: Metric is the route metric/priority in Linux routing table
+                          description: Metric is the route metric/priority in Linux
+                            routing table
                           format: int32
                           type: integer
                         validateNexthop:
-                          description: 'ValidateNexthop enables nexthop reachability validation before exporting (default: true)'
+                          description: 'ValidateNexthop enables nexthop reachability
+                            validation before exporting (default: true)'
                           type: boolean
                       type: object
                     netlinkImport:
-                      description: VrfNetlinkImport configures netlink import for a specific VRF
+                      description: VrfNetlinkImport configures netlink import for
+                        a specific VRF
                       properties:
                         enabled:
                           description: Enabled activates netlink import for this VRF
                           type: boolean
                         interfaceList:
-                          description: InterfaceList specifies interfaces to import routes from (supports glob patterns)
+                          description: InterfaceList specifies interfaces to import
+                            routes from (supports glob patterns)
                           items:
                             type: string
                           type: array
@@ -833,9 +882,11 @@ spec:
           status:
             properties:
               conditions:
-                description: Conditions represent the latest available observations of the BGP configuration state
+                description: Conditions represent the latest available observations
+                  of the BGP configuration state
                 items:
-                  description: Condition contains details for one aspect of the current state of this API Resource.
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
                   properties:
                     lastTransitionTime:
                       description: |-
@@ -889,20 +940,23 @@ spec:
                   type: object
                 type: array
               establishedNeighbors:
-                description: EstablishedNeighbors is the count of neighbors in Established state
+                description: EstablishedNeighbors is the count of neighbors in Established
+                  state
                 type: integer
               lastReconcileTime:
                 description: LastReconcileTime is the timestamp of the last reconciliation
                 format: date-time
                 type: string
               message:
-                description: Message provides additional information about the current state
+                description: Message provides additional information about the current
+                  state
                 type: string
               neighborCount:
                 description: NeighborCount is the number of configured BGP neighbors
                 type: integer
               observedGeneration:
-                description: ObservedGeneration is the most recent generation observed by the controller
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller
                 format: int64
                 type: integer
               routerIDResolutionTime:

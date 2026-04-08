@@ -29,6 +29,10 @@ import (
 	"purelb.io/internal/netutil"
 )
 
+// lastSubnets tracks the previous subnet detection result so we can
+// log at info level on first detection or change, debug on repeats.
+var lastSubnets string
+
 // SubnetsAnnotation is the annotation key used on leases to store
 // the node's local subnets.
 const SubnetsAnnotation = "purelb.io/subnets"
@@ -115,10 +119,17 @@ func GetLocalSubnets(interfaces []string, includeDefault bool, logger log.Logger
 	}
 	sort.Strings(result)
 
-	// Log the final result at info level
+	// Log at info on first detection or change, debug on repeats.
 	if logger != nil {
-		logging.Info(logger, "op", "getLocalSubnets", "subnets", FormatSubnetsAnnotation(result),
-			"count", len(result), "msg", "subnet detection complete")
+		formatted := FormatSubnetsAnnotation(result)
+		if formatted != lastSubnets {
+			lastSubnets = formatted
+			logging.Info(logger, "op", "getLocalSubnets", "subnets", formatted,
+				"count", len(result), "msg", "subnet detection complete")
+		} else {
+			logging.Debug(logger, "op", "getLocalSubnets", "subnets", formatted,
+				"count", len(result), "msg", "subnet detection complete")
+		}
 	}
 
 	return result, nil
