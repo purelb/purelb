@@ -327,3 +327,97 @@ func TestParseOutputFormat(t *testing.T) {
 	_, err = parseOutputFormat("xml")
 	assert.Error(t, err)
 }
+
+// =============================================================================
+// snapshot tests
+// =============================================================================
+
+func TestFetchSnapshot(t *testing.T) {
+	sg := makeSG("pool", "local", "10.0.0.0/28", "10.0.0.0/24")
+	svc := makePureLBService("default", "web", "10.0.0.1", "pool", "local")
+	lease := makeLease("node-a", "10.0.0.0/24", 2)
+
+	lbna := &unstructured.Unstructured{}
+	lbna.SetGroupVersionKind(schema.GroupVersionKind{Group: "purelb.io", Version: "v2", Kind: "LBNodeAgent"})
+	lbna.SetName("default")
+	lbna.SetNamespace("purelb-system")
+
+	c := newFakeClients([]runtime.Object{svc, lease}, sg, lbna)
+	snap, err := fetchSnapshot(context.Background(), c)
+	require.NoError(t, err)
+
+	assert.NotNil(t, snap.pods)
+	assert.NotNil(t, snap.services)
+	assert.NotNil(t, snap.serviceGroups)
+	assert.NotNil(t, snap.leases)
+	assert.NotNil(t, snap.bgpNodeStatuses)
+	assert.NotNil(t, snap.lbNodeAgents)
+	assert.Len(t, snap.serviceGroups.Items, 1)
+	assert.Len(t, snap.lbNodeAgents.Items, 1)
+}
+
+// =============================================================================
+// render function tests
+// =============================================================================
+
+func TestRenderStatus(t *testing.T) {
+	sg := makeSG("pool", "local", "10.0.0.0/28", "10.0.0.0/24")
+	svc := makePureLBService("default", "web", "10.0.0.1", "pool", "local")
+	lease := makeLease("node-a", "10.0.0.0/24", 2)
+
+	c := newFakeClients([]runtime.Object{svc, lease}, sg)
+	snap, err := fetchSnapshot(context.Background(), c)
+	require.NoError(t, err)
+
+	err = renderStatus(snap, outputJSON)
+	assert.NoError(t, err)
+}
+
+func TestRenderServices(t *testing.T) {
+	svc := makePureLBService("test", "web", "10.0.0.1", "pool", "local")
+	svc.Annotations[annotationAnnouncing+"-IPv4"] = "node-a,eth0,10.0.0.1"
+	lease := makeLease("node-a", "10.0.0.0/24", 2)
+
+	lbna := &unstructured.Unstructured{}
+	lbna.SetGroupVersionKind(schema.GroupVersionKind{Group: "purelb.io", Version: "v2", Kind: "LBNodeAgent"})
+	lbna.SetName("default")
+	lbna.SetNamespace("purelb-system")
+
+	c := newFakeClients([]runtime.Object{svc, lease}, lbna)
+	snap, err := fetchSnapshot(context.Background(), c)
+	require.NoError(t, err)
+
+	err = renderServices(snap, outputJSON, "", "", "", false)
+	assert.NoError(t, err)
+}
+
+func TestRenderPools(t *testing.T) {
+	sg := makeSG("pool", "local", "10.0.0.0/28", "10.0.0.0/24")
+	svc1 := makePureLBService("default", "a", "10.0.0.1", "pool", "local")
+	svc2 := makePureLBService("default", "b", "10.0.0.2", "pool", "local")
+
+	c := newFakeClients([]runtime.Object{svc1, svc2}, sg)
+	snap, err := fetchSnapshot(context.Background(), c)
+	require.NoError(t, err)
+
+	err = renderPools(snap, outputJSON, "", false)
+	assert.NoError(t, err)
+}
+
+func TestRenderStatus_EmptyCluster(t *testing.T) {
+	c := newFakeClients(nil)
+	snap, err := fetchSnapshot(context.Background(), c)
+	require.NoError(t, err)
+
+	err = renderStatus(snap, outputJSON)
+	assert.NoError(t, err)
+}
+
+func TestRenderPools_EmptyCluster(t *testing.T) {
+	c := newFakeClients(nil)
+	snap, err := fetchSnapshot(context.Background(), c)
+	require.NoError(t, err)
+
+	err = renderPools(snap, outputJSON, "", false)
+	assert.NoError(t, err)
+}

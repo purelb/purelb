@@ -85,17 +85,34 @@ func newStatusCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 }
 
 func runStatus(ctx context.Context, c *clients, format outputFormat) error {
+	pods, _ := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	sgList, _ := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	svcList, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
+	leaseList, _ := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	bgpnsList, _ := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+
+	snap := &clusterSnapshot{
+		pods:            pods,
+		services:        svcList,
+		serviceGroups:   sgList,
+		leases:          leaseList,
+		bgpNodeStatuses: bgpnsList,
+	}
+	return renderStatus(snap, format)
+}
+
+// renderStatus produces the status output from pre-fetched data.
+// It never takes *clients — all data comes from the snapshot.
+func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 	var warnings []string
 
 	// === Components ===
-	pods, _ := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
-
 	allocatorTotal, allocatorReady := 0, 0
 	nodeagentTotal, nodeagentReady := 0, 0
 	gobgpTotal, gobgpReady := 0, 0
 
-	if pods != nil {
-		for _, pod := range pods.Items {
+	if snap.pods != nil {
+		for _, pod := range snap.pods.Items {
 			labels := pod.Labels
 			if labels["component"] == "allocator" {
 				allocatorTotal++
@@ -105,7 +122,6 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 			}
 			if labels["component"] == "lbnodeagent" {
 				nodeagentTotal++
-				// Count container statuses
 				for _, cs := range pod.Status.ContainerStatuses {
 					if cs.Name == "lbnodeagent" && cs.Ready {
 						nodeagentReady++
@@ -136,16 +152,13 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 	}
 
 	// === Pools ===
-	sgList, _ := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
-	svcList, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
-
 	var totalV4, totalV6 uint64
 	var usedV4, usedV6 int
 	exhausted := 0
 
-	if sgList != nil && svcList != nil {
+	if snap.serviceGroups != nil && snap.services != nil {
 		poolSvcs := map[string][]svcIP{}
-		for _, svc := range svcList.Items {
+		for _, svc := range snap.services.Items {
 			ann := svc.Annotations
 			if ann == nil || ann[annotationAllocatedBy] != brandPureLB {
 				continue
@@ -159,7 +172,7 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 			}
 		}
 
-		for _, sg := range sgList.Items {
+		for _, sg := range snap.serviceGroups.Items {
 			spec, _, _ := unstructured.NestedMap(sg.Object, "spec")
 			if spec == nil {
 				continue
@@ -199,13 +212,12 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 	poolParts = append(poolParts, exhaustedStr)
 
 	// === Election ===
-	leaseList, _ := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	now := time.Now()
 	healthyCount, totalNodes := 0, 0
 	subnetSet := map[string]bool{}
 
-	if leaseList != nil {
-		for _, lease := range leaseList.Items {
+	if snap.leases != nil {
+		for _, lease := range snap.leases.Items {
 			if !strings.HasPrefix(lease.Name, leasePrefix) {
 				continue
 			}
@@ -223,12 +235,11 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 	}
 
 	// === BGP ===
-	bgpnsList, _ := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	bgpEstablished, bgpTotal := 0, 0
 	importFailures := 0
 
-	if bgpnsList != nil {
-		for _, bgpns := range bgpnsList.Items {
+	if snap.bgpNodeStatuses != nil {
+		for _, bgpns := range snap.bgpNodeStatuses.Items {
 			neighbors, _, _ := unstructured.NestedSlice(bgpns.Object, "status", "neighbors")
 			for _, nRaw := range neighbors {
 				n, ok := nRaw.(map[string]interface{})
@@ -241,7 +252,6 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 					bgpEstablished++
 				}
 			}
-			// Check import failures
 			addrs, _, _ := unstructured.NestedSlice(bgpns.Object, "status", "netlinkImport", "importedAddresses")
 			for _, aRaw := range addrs {
 				a, ok := aRaw.(map[string]interface{})
@@ -276,8 +286,8 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 	totalIPs := 0
 	svcProblems := 0
 
-	if svcList != nil {
-		for _, svc := range svcList.Items {
+	if snap.services != nil {
+		for _, svc := range snap.services.Items {
 			ann := svc.Annotations
 			if ann == nil || ann[annotationAllocatedBy] != brandPureLB {
 				continue
@@ -285,8 +295,7 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 			totalSvcs++
 			totalIPs += len(svc.Status.LoadBalancer.Ingress)
 		}
-		// Count pending LB services
-		for _, svc := range svcList.Items {
+		for _, svc := range snap.services.Items {
 			if svc.Spec.Type == v1.ServiceTypeLoadBalancer {
 				ann := svc.Annotations
 				if ann != nil && ann[annotationServiceGroup] != "" && ann[annotationAllocatedBy] != brandPureLB {

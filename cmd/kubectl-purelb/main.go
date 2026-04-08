@@ -52,6 +52,7 @@ func main() {
 		newVersionCmd(flags),
 		newGoBGPCmd(flags),
 		newIPCmd(flags),
+		newDashboardCmd(flags),
 	)
 
 	if err := root.Execute(); err != nil {
