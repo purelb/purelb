@@ -86,7 +86,7 @@ func analyzeIPFamilyTransition(svc *v1.Service) (missingFamilies []v1.IPFamily, 
 
 // isMultiPoolService determines if a service should use multi-pool allocation
 // by checking the service annotation first, then the pool's default.
-func (c *controller) isMultiPoolService(svc *v1.Service) bool {
+func (c *controller) isMultiPoolService(pools map[string]Pool, svc *v1.Service) bool {
 	// Check the annotation first - it overrides everything
 	if ann, ok := svc.Annotations[purelbv2.MultiPoolAnnotation]; ok {
 		return ann == "true"
@@ -97,7 +97,7 @@ func (c *controller) isMultiPoolService(svc *v1.Service) bool {
 	if userPool, has := svc.Annotations[purelbv2.DesiredGroupAnnotation]; has {
 		poolName = userPool
 	}
-	if pool, has := c.ips.pools[poolName]; has {
+	if pool, has := pools[poolName]; has {
 		return pool.MultiPool()
 	}
 	return false
@@ -126,7 +126,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 
 	// If we are not configured to be the default announcer then we
 	// ignore services with no explicit LoadBalancerClass.
-	if !c.isDefault && svc.Spec.LoadBalancerClass == nil {
+	if !c.isDefault.Load() && svc.Spec.LoadBalancerClass == nil {
 		logging.Debug(l, "op", "setBalancer", "msg", "ignoring, no LBClass and not default announcer")
 		return k8s.SyncStateSuccess
 	}
@@ -145,6 +145,11 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 		logging.Info(l, "op", "setBalancer", "msg", "re-evaluate annotation detected, reprocessing")
 	}
 
+	// Load pool snapshot once for this entire processing cycle.
+	// All allocator methods use this same snapshot, ensuring a
+	// consistent view even if G2 swaps pools mid-cycle.
+	pools := c.ips.Pools()
+
 	// If the service isn't a LoadBalancer then we might need to clean
 	// up. It might have been a load balancer before and the user might
 	// have changed it to tell us to release the address
@@ -157,7 +162,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 			if len(svc.Status.LoadBalancer.Ingress) > 0 {
 				logging.Info(l, "op", "unassign", "reason", "type is not LoadBalancer", "ingress", svc.Status.LoadBalancer.Ingress)
 				c.client.Infof(svc, "AddressReleased", fmt.Sprintf("Service is Type %s, not LoadBalancer", svc.Spec.Type))
-				if err := c.ips.Unassign(nsName); err != nil {
+				if err := c.ips.Unassign(pools, nsName); err != nil {
 					logging.Info(l, "op", "unassign", "error", err)
 					return k8s.SyncStateError
 				}
@@ -184,7 +189,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 
 	// Determine if this is a multi-pool service. We need the pool to check,
 	// so look it up from the annotation or default.
-	multiPool := c.isMultiPoolService(svc)
+	multiPool := c.isMultiPoolService(pools, svc)
 
 	// Multi-pool services: if already allocated by us, notify existing IPs
 	// and try incremental allocation from any newly available ranges.
@@ -192,10 +197,10 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 	// so this is a cheap no-op in steady state.
 	if multiPool {
 		if len(svc.Status.LoadBalancer.Ingress) > 0 && svc.Annotations[purelbv2.BrandAnnotation] == purelbv2.Brand {
-			if err := c.ips.NotifyExisting(svc); err != nil {
+			if err := c.ips.NotifyExisting(pools, svc); err != nil {
 				logging.Info(l, "op", "notifyExisting", "error", err, "ingress", svc.Status.LoadBalancer.Ingress)
 			}
-			added, err := c.ips.IncrementalMultiPool(svc)
+			added, err := c.ips.IncrementalMultiPool(pools, svc)
 			if err != nil {
 				logging.Info(l, "op", "incrementalMultiPool", "error", err)
 			}
@@ -217,7 +222,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 			// If it's one of ours, notify the allocator about existing IPs
 			// (for database warmup at startup or after config changes)
 			if svc.Annotations[purelbv2.BrandAnnotation] == purelbv2.Brand {
-				if err := c.ips.NotifyExisting(svc); err != nil {
+				if err := c.ips.NotifyExisting(pools, svc); err != nil {
 					logging.Info(l, "op", "notifyExisting", "error", err, "ingress", svc.Status.LoadBalancer.Ingress)
 				}
 			}
@@ -227,7 +232,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 				logging.Info(l, "op", "ipFamilyTransition", "action", "releaseExcess", "excessIPs", excessIPs)
 
 				// Release the excess IPs from the pool
-				if err := c.ips.ReleaseIPs(nsName, excessIPs); err != nil {
+				if err := c.ips.ReleaseIPs(pools, nsName, excessIPs); err != nil {
 					logging.Info(l, "op", "releaseExcess", "error", err)
 					// Continue anyway - we'll update the ingress to remove them
 				}
@@ -252,7 +257,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 		}
 	}
 
-	if err := c.ips.Allocate(svc); err != nil {
+	if err := c.ips.Allocate(pools, svc); err != nil {
 		logging.Info(l, "op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", nsName, err)
 		return k8s.SyncStateSuccess

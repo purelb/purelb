@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync/atomic"
 
 	"github.com/go-kit/log"
 	v1 "k8s.io/api/core/v1"
@@ -40,23 +41,43 @@ type ActiveSubnetsFunc func(namespace string) ([]string, error)
 // Used to populate pool state from existing allocations.
 type ListServicesFunc func() []v1.Service
 
+// allocatorState holds the pool map that is atomically swapped by SetPools
+// (G2) and loaded per-cycle by SetBalancer/DeleteBalancer (G1). This
+// ensures G1 always sees a consistent pool snapshot within one processing
+// cycle, even if G2 swaps pools mid-cycle.
+type allocatorState struct {
+	pools map[string]Pool
+}
+
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
 	client          k8s.ServiceEvent
 	logger          log.Logger
-	pools           map[string]Pool
+	state           atomic.Pointer[allocatorState]
+	populated       atomic.Bool
 	activeSubnets   ActiveSubnetsFunc
 	purelbNamespace string
 	listServices    ListServicesFunc
-	populated       bool
 }
 
 // New returns an Allocator managing no pools.
 func New(log log.Logger) *Allocator {
-	return &Allocator{
+	a := &Allocator{
 		logger: log,
-		pools:  map[string]Pool{},
 	}
+	a.state.Store(&allocatorState{pools: map[string]Pool{}})
+	return a
+}
+
+// Pools returns the current pool snapshot. Call once per processing
+// cycle and pass the result to all allocator methods within that cycle.
+// Nil-safe for startup before first config arrives.
+func (a *Allocator) Pools() map[string]Pool {
+	s := a.state.Load()
+	if s == nil {
+		return nil
+	}
+	return s.pools
 }
 
 // SetClient sets this Allocator's client field.
@@ -78,6 +99,8 @@ func (a *Allocator) SetListServices(fn ListServicesFunc) {
 }
 
 // SetPools updates the set of address pools that the allocator owns.
+// Called from G2 (CR controller goroutine). The new pools are atomically
+// swapped in so G1 readers always see a consistent snapshot.
 func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 	pools := a.parseGroups(groups)
 
@@ -86,19 +109,25 @@ func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 		return fmt.Errorf("No valid pools found")
 	}
 
-	for n := range a.pools {
-		if pools[n] == nil {
-			poolCapacity.DeleteLabelValues(n)
-			poolActive.DeleteLabelValues(n)
+	// Clean up metrics for removed pools
+	oldState := a.state.Load()
+	if oldState != nil {
+		for n := range oldState.pools {
+			if pools[n] == nil {
+				poolCapacity.DeleteLabelValues(n)
+				poolActive.DeleteLabelValues(n)
+			}
 		}
 	}
 
-	a.pools = pools
-	a.populated = false
+	// Atomic swap — after this, G1's next Pools() call sees the new map
+	a.state.Store(&allocatorState{pools: pools})
+	a.populated.Store(false)
 
-	// Refresh or initiate stats
-	for _, p := range a.pools {
-		a.updateStats(p)
+	// Set capacity for new pools (size is static, safe from G2).
+	// InUse metrics will be set by G1 via ForceSync → updateStats.
+	for _, p := range pools {
+		poolCapacity.WithLabelValues(p.String()).Set(float64(p.Size()))
 	}
 
 	return nil
@@ -108,8 +137,8 @@ func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 // existing PureLB-allocated IPs with the appropriate pools. Runs once
 // after the informer cache is warm, then skips subsequent calls since
 // individual services are notified via SetBalancer → NotifyExisting.
-func (a *Allocator) populateFromExisting() {
-	if a.populated || a.listServices == nil {
+func (a *Allocator) populateFromExisting(pools map[string]Pool) {
+	if a.populated.Load() || a.listServices == nil {
 		return
 	}
 	count := 0
@@ -120,14 +149,14 @@ func (a *Allocator) populateFromExisting() {
 		if len(svc.Status.LoadBalancer.Ingress) == 0 {
 			continue
 		}
-		if err := a.NotifyExisting(&svc); err != nil {
+		if err := a.NotifyExisting(pools, &svc); err != nil {
 			logging.Info(a.logger, "op", "populateFromExisting", "error", err,
 				"svc", svc.Namespace+"/"+svc.Name)
 			continue
 		}
 		count++
 	}
-	a.populated = true
+	a.populated.Store(true)
 	logging.Info(a.logger, "op", "populateFromExisting", "count", count)
 }
 
@@ -140,7 +169,7 @@ func (a *Allocator) updateStats(pool Pool) {
 
 // NotifyExisting notifies the allocator of existing IP assignments,
 // for example, at startup time.
-func (a *Allocator) NotifyExisting(svc *v1.Service) error {
+func (a *Allocator) NotifyExisting(pools map[string]Pool, svc *v1.Service) error {
 	for _, ingress := range svc.Status.LoadBalancer.Ingress {
 		// validate the allocated address
 		lbIP := net.ParseIP(ingress.IP)
@@ -150,7 +179,7 @@ func (a *Allocator) NotifyExisting(svc *v1.Service) error {
 		}
 
 		// Find the pool which contains the address
-		pool := poolFor(a.pools, lbIP)
+		pool := poolFor(pools, lbIP)
 		if pool == nil {
 			logging.Info(a.logger, "op", "setBalancer", "error", "unknown LoadBalancer IP: no pool found", "ip", ingress.IP)
 			continue
@@ -171,17 +200,17 @@ func (a *Allocator) NotifyExisting(svc *v1.Service) error {
 // the pool specified in the purelbv2.DesiredGroupAnnotation
 // annotation. If neither is specified then we will attempt to
 // allocate from a pool named "default", if it exists.
-func (a *Allocator) Allocate(svc *v1.Service) error {
+func (a *Allocator) Allocate(pools map[string]Pool, svc *v1.Service) error {
 	// Ensure pool state reflects all existing allocations before
 	// assigning a new IP. This is called here (not in SetPools) because
 	// SetPools runs on the CR controller goroutine where the service
 	// cache may not be synced yet. Allocate only runs from SetBalancer
 	// on the main queue thread, after WaitForCacheSync, so the cache
 	// is guaranteed warm.
-	a.populateFromExisting()
+	a.populateFromExisting(pools)
 
 	// If the user asked for a specific IP, allocate that.
-	allocated, err := a.allocateSpecificIP(svc)
+	allocated, err := a.allocateSpecificIP(pools, svc)
 	if err != nil {
 		return err
 	}
@@ -197,7 +226,7 @@ func (a *Allocator) Allocate(svc *v1.Service) error {
 			poolName = userPool
 		}
 
-		pool, has := a.pools[poolName]
+		pool, has := pools[poolName]
 		if !has {
 			return fmt.Errorf("unknown pool %q", poolName)
 		}
@@ -209,10 +238,10 @@ func (a *Allocator) Allocate(svc *v1.Service) error {
 
 		// Check if this should be a multi-pool allocation
 		if isMultiPool(svc, pool) {
-			if err = a.allocateMultiPool(svc, pool); err != nil {
+			if err = a.allocateMultiPool(pools, svc, pool); err != nil {
 				return err
 			}
-		} else if err = a.allocateFromPool(svc, pool); err != nil {
+		} else if err = a.allocateFromPool(pools, svc, pool); err != nil {
 			return err
 		}
 	}
@@ -225,8 +254,8 @@ func (a *Allocator) Allocate(svc *v1.Service) error {
 // a specific address then the return values will be ("", nil). If an
 // address was allocated then the string return value will be
 // non-"". If an error happened then the error return will be non-nil.
-func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
-	pools := ""
+func (a *Allocator) allocateSpecificIP(pools map[string]Pool, svc *v1.Service) (bool, error) {
+	poolNames := ""
 	var firstPool Pool // Track first pool for annotations
 
 	// See if the user configured a specific address and return if not.
@@ -246,14 +275,14 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 	}
 
 	// If the service had addresses before, release them.
-	if err := a.Unassign(namespacedName(svc)); err != nil {
+	if err := a.Unassign(pools, namespacedName(svc)); err != nil {
 		return false, err
 	}
 
 	for _, ip := range ips {
 
 		// Check that the address belongs to a pool
-		pool := poolFor(a.pools, ip)
+		pool := poolFor(pools, ip)
 		if pool == nil {
 			return false, fmt.Errorf("%q does not belong to any group", ip)
 		}
@@ -274,14 +303,14 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 
 		// annotate the pool from which the address came
 		a.client.Infof(svc, "AddressAssigned", "Assigned %+v from pool %s", svc.Status.LoadBalancer, pool)
-		if pools == "" {
-			pools = pool.String()
+		if poolNames == "" {
+			poolNames = pool.String()
 		} else {
-			pools = pools + ", " + pool.String()
+			poolNames = poolNames + ", " + pool.String()
 		}
 	}
 
-	svc.Annotations[purelbv2.PoolAnnotation] = pools
+	svc.Annotations[purelbv2.PoolAnnotation] = poolNames
 
 	// Set pool type annotation based on the first pool
 	// (in practice, specific IPs should come from pools of the same type)
@@ -300,13 +329,13 @@ func (a *Allocator) allocateSpecificIP(svc *v1.Service) (bool, error) {
 }
 
 // AllocateFromPool assigns an available IP from pool to service.
-func (a *Allocator) allocateFromPool(svc *v1.Service, pool Pool) error {
+func (a *Allocator) allocateFromPool(pools map[string]Pool, svc *v1.Service, pool Pool) error {
 	// Only release existing IPs if service has no ingress addresses.
 	// If it already has addresses, this might be an IP family transition
 	// (e.g., SingleStack → DualStack) where we want to keep existing IPs
 	// and only allocate missing families.
 	if len(svc.Status.LoadBalancer.Ingress) == 0 {
-		if err := a.Unassign(namespacedName(svc)); err != nil {
+		if err := a.Unassign(pools, namespacedName(svc)); err != nil {
 			return err
 		}
 	}
@@ -347,7 +376,7 @@ func isMultiPool(svc *v1.Service, pool Pool) bool {
 
 // allocateMultiPool performs multi-pool allocation: one IP per range
 // per family from ranges with active nodes.
-func (a *Allocator) allocateMultiPool(svc *v1.Service, pool Pool) error {
+func (a *Allocator) allocateMultiPool(pools map[string]Pool, svc *v1.Service, pool Pool) error {
 	// Multi-pool and IP sharing are mutually exclusive
 	if SharingKey(svc) != "" {
 		return fmt.Errorf("multi-pool allocation cannot be combined with IP sharing (annotation %s)", purelbv2.SharingAnnotation)
@@ -358,7 +387,7 @@ func (a *Allocator) allocateMultiPool(svc *v1.Service, pool Pool) error {
 	}
 
 	// Release any existing allocations for this service
-	if err := a.Unassign(namespacedName(svc)); err != nil {
+	if err := a.Unassign(pools, namespacedName(svc)); err != nil {
 		return err
 	}
 	svc.Status.LoadBalancer.Ingress = nil
@@ -398,12 +427,12 @@ func (a *Allocator) allocateMultiPool(svc *v1.Service, pool Pool) error {
 // available ranges for an existing multi-pool service. It does NOT
 // release existing IPs — AssignNextPerRange skips ranges where the
 // service already has an IP. Returns true if new IPs were added.
-func (a *Allocator) IncrementalMultiPool(svc *v1.Service) (bool, error) {
+func (a *Allocator) IncrementalMultiPool(pools map[string]Pool, svc *v1.Service) (bool, error) {
 	poolName, ok := svc.Annotations[purelbv2.PoolAnnotation]
 	if !ok {
 		return false, fmt.Errorf("service missing %s annotation", purelbv2.PoolAnnotation)
 	}
-	pool, ok := a.pools[poolName]
+	pool, ok := pools[poolName]
 	if !ok {
 		return false, fmt.Errorf("unknown pool %q", poolName)
 	}
@@ -442,15 +471,15 @@ func (a *Allocator) IncrementalMultiPool(svc *v1.Service) (bool, error) {
 }
 
 // Unassign frees the IP associated with service, if any.
-func (a *Allocator) Unassign(svc string) error {
+func (a *Allocator) Unassign(pools map[string]Pool, svc string) error {
 	var err error
 
 	// tell the pools that the address has been released. there might
 	// not be a pool, e.g., in the case of a config change that moves
 	// addresses from one pool to another
-	for _, p := range a.pools {
+	for _, p := range pools {
 		if err = p.Release(svc); err == nil {
-			a.updateStats(p)  // This pool released the address
+			a.updateStats(p) // This pool released the address
 		}
 	}
 
@@ -460,7 +489,7 @@ func (a *Allocator) Unassign(svc string) error {
 // ReleaseIPs releases specific IP addresses for a service. Used during
 // IP family transitions (e.g., DualStack → SingleStack) when only some
 // addresses need to be released.
-func (a *Allocator) ReleaseIPs(svc string, ips []string) error {
+func (a *Allocator) ReleaseIPs(pools map[string]Pool, svc string, ips []string) error {
 	for _, ipStr := range ips {
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
@@ -469,7 +498,7 @@ func (a *Allocator) ReleaseIPs(svc string, ips []string) error {
 		}
 
 		// Find which pool contains this IP and release it
-		pool := poolFor(a.pools, ip)
+		pool := poolFor(pools, ip)
 		if pool == nil {
 			logging.Info(a.logger, "op", "releaseIPs", "warning", "no pool found for IP", "ip", ipStr)
 			continue
