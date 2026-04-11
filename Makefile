@@ -129,6 +129,7 @@ helm:  ## Package PureLB using Helm
 	cp -r build/helm/purelb build/build/
 	cp deployments/crds/purelb.io_*.yaml build/build/purelb/crds
 	cp deployments/components/gobgp/gobgp-bgpconfig-crd.yaml build/build/purelb/crds/bgp.purelb.io_bgpconfigurations.yaml
+	cp deployments/components/gobgp/gobgp-bgpnodestatus-crd.yaml build/build/purelb/crds/bgp.purelb.io_bgpnodestatuses.yaml
 	cp README.md build/build/purelb
 
 	sed \

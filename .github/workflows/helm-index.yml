@@ -1,8 +1,16 @@
 name: Update Helm Repository Index
 
+# Triggers:
+#   - workflow_run on CI completion: fires after a tag-push CI run finishes
+#     successfully. We use workflow_run rather than `release: published`
+#     because release events created via secrets.GITHUB_TOKEN do NOT trigger
+#     downstream workflows (a GitHub Actions safety behavior). workflow_run
+#     events bypass that restriction.
+#   - workflow_dispatch: manual catchup if anything ever falls behind.
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -11,6 +19,13 @@ permissions:
 jobs:
   update-index:
     runs-on: ubuntu-latest
+    # Run for manual dispatch always; for workflow_run, only when CI succeeded
+    # on a tag push. workflow_run.head_branch is the tag name for tag pushes.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -58,6 +73,6 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add website/static/charts/index.yaml
           if ! git diff --staged --quiet; then
-            git commit -m "Update Helm repository index for ${{ github.event.release.tag_name }}"
+            git commit -m "Update Helm repository index"
             git push
           fi
