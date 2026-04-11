@@ -41,7 +41,7 @@ This project uses GitHub Actions for CI/CD:
 
 - **Tests** run on all branches and pull requests
 - **Container images** are built and pushed to `ghcr.io/purelb/purelb` on main branch and tags
-- **Releases** are created automatically when a version tag (e.g., `v0.16.1`) is pushed
+- **Releases** are created automatically when a version tag (e.g., `v0.16.2`) is pushed
 
 ## Local Development
 
