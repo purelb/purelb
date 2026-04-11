@@ -1,14 +1,18 @@
 # PureLB - is a Service Load Balancer for Kubernetes
 
 [PureLB](https://purelb.io) is a load-balancer orchestrator for  [Kubernetes](https://kubernetes.io) clusters. It uses standard
-Linux networking and routing protocols,  and works with the operating
-system to announce service addresses.
+Linux networking, integrates goBGP for routing, and works with the operating
+systems netlink library to add and remove address from interfaces to announce service addresses.
 
 ## Documentation
+
+**This documentation is not for this version of Purelb.  There is an older version of Purelb at GitLab.**
+**The best resource for configuring this version of purelb is the samples until the documentation is updated**
 
 https://purelb.io/
 
 ## Quick Start
+
 
 The default installation includes [k8gobgp](https://github.com/purelb/k8gobgp) as a sidecar for BGP route announcement. After installing, apply a `BGPConfiguration` CR to configure BGP peering (see [sample](deployments/samples-with-gobgp/sample-bgpconfig.yaml)). If you don't need BGP, use the `-nobgp` manifest variants or set `gobgp.enabled=false` in Helm.
 
@@ -17,13 +21,13 @@ The default installation includes [k8gobgp](https://github.com/purelb/k8gobgp) a
 Install PureLB with a single command:
 
 ```sh
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.0/install-v0.16.0.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.1/install-v0.16.1.yaml
 ```
 
 Without BGP support:
 
 ```sh
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.0/install-nobgp-v0.16.0.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.1/install-nobgp-v0.16.1.yaml
 ```
 
 ### Option 2: Helm (Recommended for Production)
@@ -39,7 +43,7 @@ Or using OCI registry (Helm 3.8+, `--version` required):
 
 ```sh
 helm install --create-namespace --namespace=purelb-system purelb \
-    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.16.0
+    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.16.1
 ```
 
 To install without BGP support:
@@ -53,21 +57,81 @@ For detailed installation and configuration, see https://purelb.github.io/purelb
 
 ### Testing Your Installation
 
-Deploy a simple "echo" web application:
+PureLB needs a `ServiceGroup` that tells it which addresses to allocate. The
+`deployments/samples` directory contains a working local-pool example with
+both IPv4 and IPv6 ranges:
+[deployments/samples/local-servicegroup.yaml](deployments/samples/local-servicegroup.yaml).
 
-```shell
-kubectl create deployment echoserver --image=k8s.gcr.io/echoserver:1.10
+The sample subnets (`192.168.254.0/24` and `fd53:9ef0:8683::/120`) will almost
+certainly **not** be routable on your network. Copy the manifest below into
+`servicegroup.yaml`, replace the `subnet` and `pool` values with a range that
+is free on your LAN, and apply it:
+
+```yaml
+---
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: default
+  namespace: purelb-system
+spec:
+  local:
+    v4pools:
+    - subnet: 192.168.254.0/24            # <-- edit: your LAN subnet
+      pool: 192.168.254.230-192.168.254.240  # <-- edit: free range in that subnet
+      aggregation: default
+    v6pools:
+    - subnet: fd53:9ef0:8683::/120        # <-- edit: your IPv6 subnet (omit this block on IPv4-only clusters)
+      pool: fd53:9ef0:8683::-fd53:9ef0:8683::3
+      aggregation: default
 ```
 
-...and then expose the deployment using a LoadBalancer service:
-
 ```shell
-kubectl expose deployment echoserver --name=echoserver-service --port=80 --target-port=8080 --type=LoadBalancer
+kubectl apply -f servicegroup.yaml
 ```
 
-The PureLB allocator will allocate one or more addresses and assign them to the
-service. The PureLB node agents then configure the underlying
-operating system to advertise the addresses.
+Deploy nginx as a test backend — its default image listens on both IPv4 and
+IPv6:
+
+```shell
+kubectl create deployment nginx --image=nginx
+```
+
+Expose it with a dual-stack `LoadBalancer` Service. The sample
+[deployments/samples/sample-nginx-lb.yaml](deployments/samples/sample-nginx-lb.yaml)
+uses `ipFamilyPolicy: PreferDualStack`, so it works unchanged on both
+single-stack and dual-stack clusters:
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/purelb/purelb/main/deployments/samples/sample-nginx-lb.yaml
+```
+
+The PureLB allocator picks one address per enabled family from the pool and
+writes them to the Service status. The PureLB node agents elect a winning
+node per address and configure the local OS to advertise it.
+
+Verify the allocation:
+
+```shell
+kubectl get svc nginx
+```
+
+You should see one or two addresses in the `EXTERNAL-IP` column depending on
+whether your cluster is single- or dual-stack. From a host with a route to
+the pool subnet:
+
+```shell
+curl      http://<EXTERNAL-IPv4>
+curl -6   http://[<EXTERNAL-IPv6>]
+```
+
+For deeper visibility — which node won the election, pool utilization, node
+agent health — install the `kubectl-purelb` plugin described below and run:
+
+```shell
+kubectl purelb status
+kubectl purelb pools
+```
 
 ### kubectl-purelb Plugin (optional)
 
@@ -93,11 +157,7 @@ chmod +x kubectl-purelb-darwin-arm64
 sudo mv kubectl-purelb-darwin-arm64 /usr/local/bin/kubectl-purelb
 ```
 
-**Build from source:**
-```shell
-make plugin
-sudo mv kubectl-purelb /usr/local/bin/
-```
+To build the plugin from source, see [BUILDING.md](BUILDING.md).
 
 **Verify and use:**
 ```shell
@@ -109,56 +169,10 @@ kubectl purelb bgp sessions
 
 ## Building
 
-Run `make help` for Makefile documentation.
-
-### CI/CD
-
-This project uses GitHub Actions for CI/CD:
-- **Tests** run on all branches and pull requests
-- **Container images** are built and pushed to `ghcr.io/purelb/purelb` on main branch and tags
-- **Releases** are created automatically when a version tag (e.g., `v0.14.0`) is pushed
-
-### Local Development
-
-#### Option 1: Build and push to registry
-
-If you have push access to a container registry:
-
-```sh
-export KO_DOCKER_REPO=ghcr.io/purelb/purelb
-export TAG=dev
-ko build --base-import-paths --tags=$TAG ./cmd/allocator
-ko build --base-import-paths --tags=$TAG ./cmd/lbnodeagent
-```
-
-#### Option 2: Build locally without registry access
-
-Build images to tarballs and load directly into your cluster's container runtime:
-
-```sh
-# Build images to tarballs (requires TAG for ldflags in .ko.yaml)
-export KO_DOCKER_REPO=purelb TAG=test-local
-ko build --base-import-paths --tags=test-local --push=false --tarball=/tmp/allocator.tar --platform=linux/amd64 ./cmd/allocator
-ko build --base-import-paths --tags=test-local --push=false --tarball=/tmp/lbnodeagent.tar --platform=linux/amd64 ./cmd/lbnodeagent
-
-# Copy to your node(s) and import into containerd
-scp /tmp/allocator.tar /tmp/lbnodeagent.tar your-node:/tmp/
-ssh your-node "sudo ctr -n k8s.io images import /tmp/allocator.tar /tmp/lbnodeagent.tar"
-
-# Deploy using kustomize (uses imagePullPolicy: Never)
-kubectl apply -k deployments/default/
-```
-
-For multi-node clusters, repeat the image import on each node, or use a local registry.
-
-## Code
-
-* [Commands](cmd) - if you're a "top-down" learner then start here
-* [Internal Code](internal) - if you're a "bottom-up" learner then start here
-* [Docker Packaging](build/package)
-* [Helm Packaging](build/helm)
-* [Sample Configurations](configs)
-* [K8s Deployment Files](deployments)
+PureLB is built with `make` (container images via [ko](https://ko.build/)
+under the hood). See [BUILDING.md](BUILDING.md) for Makefile targets,
+CI/CD, running PureLB locally against a test cluster, and building images
+to your own registry or to a tarball.
 
 ## Credits
 
