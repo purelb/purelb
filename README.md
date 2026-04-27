@@ -18,21 +18,22 @@ The default installation includes [k8gobgp](https://github.com/purelb/k8gobgp) a
 
 ### Option 1: Simple Manifest
 
-Install PureLB with a single command:
+Install CRDs first, then apply the main install manifest:
 
 ```sh
-kubectl apply --server-side -f https://github.com/purelb/purelb/releases/download/v0.16.2/install-v0.16.2.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.3/install-crds-v0.16.3.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.3/install-v0.16.3.yaml
 ```
 
 Without BGP support:
 
 ```sh
-kubectl apply --server-side -f https://github.com/purelb/purelb/releases/download/v0.16.2/install-nobgp-v0.16.2.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.3/install-crds-nobgp-v0.16.3.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.3/install-nobgp-v0.16.3.yaml
 ```
 
-Note: `--server-side` is required because the install manifest contains both
-CRDs and a default `LBNodeAgent` custom resource. Server-side apply handles
-the ordering correctly so the CR is created after its CRD is registered.
+The CRDs must be applied first because the install manifest includes a default
+`LBNodeAgent` custom resource that requires its CRD to be registered.
 
 ### Option 2: Helm (Recommended for Production)
 
@@ -47,7 +48,7 @@ Or using OCI registry (Helm 3.8+, `--version` required):
 
 ```sh
 helm install --create-namespace --namespace=purelb-system purelb \
-    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.16.2
+    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.16.3
 ```
 
 To install without BGP support:

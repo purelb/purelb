@@ -116,6 +116,14 @@ install-manifest-nobgp: crd  ## Generate standalone install.yaml without k8gobgp
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml
 
+.PHONY: install-crds
+install-crds: crd  ## Generate CRDs-only install manifest (with k8gobgp CRDs)
+	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone deployments/crds-all > deployments/install-crds-${MANIFEST_SUFFIX}.yaml
+
+.PHONY: install-crds-nobgp
+install-crds-nobgp: crd  ## Generate CRDs-only install manifest (PureLB CRDs only)
+	$(KUSTOMIZE) build deployments/crds > deployments/install-crds-nobgp-${MANIFEST_SUFFIX}.yaml
+
 .PHONY: fetch-gobgp-crd
 fetch-gobgp-crd:  ## Fetch BGPConfiguration CRD from k8gobgp ${GOBGP_TAG} release
 	curl -fsSL https://github.com/purelb/k8gobgp/releases/download/${GOBGP_TAG}/install.yaml \
