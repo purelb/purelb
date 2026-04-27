@@ -6,10 +6,7 @@ systems netlink library to add and remove address from interfaces to announce se
 
 ## Documentation
 
-**This documentation is not for this version of Purelb.  There is an older version of Purelb at GitLab.**
-**The best resource for configuring this version of purelb is the samples until the documentation is updated**
-
-https://purelb.io/
+https://purelb.github.io/purelb/
 
 ## Quick Start
 
