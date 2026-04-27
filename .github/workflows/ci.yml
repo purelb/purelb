@@ -196,6 +196,18 @@ jobs:
           MANIFEST_SUFFIX: ${{ github.ref_name }}
         run: make install-manifest-nobgp
 
+      - name: Generate CRDs-only install manifest
+        env:
+          SUFFIX: ${{ github.ref_name }}
+          MANIFEST_SUFFIX: ${{ github.ref_name }}
+        run: make install-crds
+
+      - name: Generate CRDs-only install manifest (without BGP)
+        env:
+          SUFFIX: ${{ github.ref_name }}
+          MANIFEST_SUFFIX: ${{ github.ref_name }}
+        run: make install-crds-nobgp
+
       - name: Package Helm chart
         env:
           SUFFIX: ${{ github.ref_name }}
@@ -221,6 +233,8 @@ jobs:
           sha256sum deployments/install-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/purelb-nobgp-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/install-nobgp-${{ github.ref_name }}.yaml >> SHA256SUMS
+          sha256sum deployments/install-crds-${{ github.ref_name }}.yaml >> SHA256SUMS
+          sha256sum deployments/install-crds-nobgp-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum kubectl-purelb-* >> SHA256SUMS
 
       - name: Upload artifacts
@@ -243,6 +257,8 @@ jobs:
             deployments/install-${{ github.ref_name }}.yaml
             deployments/purelb-nobgp-${{ github.ref_name }}.yaml
             deployments/install-nobgp-${{ github.ref_name }}.yaml
+            deployments/install-crds-${{ github.ref_name }}.yaml
+            deployments/install-crds-nobgp-${{ github.ref_name }}.yaml
             kubectl-purelb-linux-amd64
             kubectl-purelb-linux-arm64
             kubectl-purelb-darwin-amd64
