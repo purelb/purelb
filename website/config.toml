@@ -12,6 +12,7 @@ googleAnalytics = "G-K7X5FYG9N9"
   BookSearch = true
   BookSection = "docs"
   BookLogo = "images/purelb.png"
+  BookFavicon = "images/favicon.png"
   BookRepo = "https://github.com/purelb/purelb"
   BookEditPath = "edit/main/website/content/"
 
