@@ -1,61 +1,28 @@
 baseURL = "https://purelb.github.io/purelb/"
 languageCode = "en-us"
 title = "PureLB"
-theme = "docport"
-DefaultContentLanguage = "en"
-pygmentsCodeFences = true
-pygmentsStyle = "monokai"
+theme = "hugo-book"
 
-defaultContentLanguageInSubdir= false
-enableMissingTranslationPlaceholders = false
-
+enableGitInfo = true
 googleAnalytics = "G-K7X5FYG9N9"
 
-# Keep this as is
-[outputs]
-home = [ "HTML", "RSS", "JSON"]
-
-# Site params
 [params]
-ordersectionsby = "weight" # ordersectionsby = "title"
-color_main = "#66b1de"
-#color_second = "#ffffff"
-disableSearch = false # default is false
-disableNavChevron = false # set true to hide next/prev chevron, default is false
-menushortcutsnewtab = false # set true to open shortcuts links to a new tab/window
-
-editURL = "https://github.com/purelb/purelb/edit/main/website/content/"
-enableGitInfo = true
+  BookTheme = "auto"
+  BookToC = true
+  BookSearch = true
+  BookSection = "docs"
+  BookLogo = "images/purelb.png"
+  BookRepo = "https://github.com/purelb/purelb"
+  BookEditPath = "edit/main/website/content/"
 
 [markup.goldmark.renderer]
-unsafe = true
+  unsafe = true
 
-# Code highlight configuration
 [markup.highlight]
-codeFences = true
-guessSyntax = true
-hl_Lines = ""
-lineNoStart = 1
-lineNos = false
-lineNumbersInTable = true
-noClasses = true
-style = "monokai"
-tabWidth = 2
+  codeFences = true
+  guessSyntax = true
+  style = "monokai"
+  tabWidth = 2
 
-#
-# top menu shotcuts
-#
-[[menu.shortcuts]]
-name = "Support"
-url = "/help_contribution"
-weight = 5
-
-[[menu.shortcuts]]
-name = "Code"
-url = "https://github.com/purelb/purelb"
-weight = 10
-
-[[menu.shortcuts]]
-name = "Sponsored By"
-url = "https://www.acnodal.io"
-weight = 30
+[outputs]
+  home = ["HTML", "RSS"]

@@ -1,43 +1,51 @@
 ---
 title: "PureLB"
-description: "PureLB is a lightweight Kubernetes Service LoadBalancer for non-cloud deployments. It provides external access to your application, using Linux networking to add addresses to Network Interface Cards (enabling access from the local network) or to virtual interfaces (so the address can be distributed to routers)."
-weight: 10
-
-hide: [ "toc", "breadcrumb", "nextpage", "footer" ]
+type: docs
 ---
 
-<img align="right" src="images/purelb.png">
+# PureLB
 
-PureLB is a lightweight Kubernetes [Service LoadBalancer](https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer) for non-cloud deployments. It provides external access to your application, using Linux networking to add addresses to network interface cards (enabling access from the local network) or to virtual interfaces (so addresses can be distributed to routers).
+PureLB is a lightweight Kubernetes [Service LoadBalancer](https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer) for non-cloud deployments. It allocates IP addresses from configured pools and uses standard Linux networking to announce them, giving your services external reachability without a cloud provider.
 
-### Features
+**[GitHub](https://github.com/purelb/purelb)** | **[#purelb-users on Kubernetes Slack](https://kubernetes.slack.com/messages/purelb-users)**
 
-* **Easy to Use.**
-Expose applications by allocating addresses to services using [type LoadBalancer](operation/services).
+## Features
 
-* **Leverages Linux Networking.**
-Works with Linux networking for easy [observation](operation/monitoring_kubectl/) and [troubleshooting](operation/troubleshootpure/).
+* **Local and Remote Addresses.**
+[Local addresses]({{< relref "/docs/overview/address-types#local-addresses" >}}) are added to host interfaces for same-subnet access. [Remote addresses]({{< relref "/docs/overview/address-types#remote-addresses" >}}) are added to a dummy interface and advertised via BGP for routed topologies.
 
-* **Local Address Support.**
-[Local addresses](how_it_works/localint/) are added to host interfaces for simple local access.
+* **Multi-Subnet Local Addresses.**
+[Multi-pool allocation]({{< relref "/docs/overview/address-types#multi-subnet-local-addresses" >}}) gives a single service local addresses on every subnet in your cluster, making it reachable from all network segments without routing.
 
-* **Routing.**
-Non-local addresses are added to a [virtual interface](how_it_works/virtint/) for distribution by [routing software](how_it_works/routers/) or CNI, unlocking full routing functionality.
+* **Address Lifetime Control.**
+[Non-permanent address lifetimes]({{< relref "/docs/configuration/lbnodeagent#address-lifetime" >}}) prevent conflicts with Flannel, DHCP, and other systems that inspect address flags to select a node's primary IP.
 
-* **Easy Integration with CNI Routing.**
-Supports CNIs such as [Calico](install/calico/) that implement routing.
+* **Integrated BGP Routing.**
+Ships with [k8gobgp]({{< relref "/docs/configuration/bgp" >}}) as a sidecar, providing BGP route advertisement with no external routing software required.
 
-* **Plays Nicely With Other Load Balancer Controllers.**
-Implements LoadBalancerClass which allows multiple LoadBalancer controllers to be installed in the same cluster.
+* **Dual-Stack IPv4 and IPv6.**
+Full support for IPv4, IPv6, and [dual-stack]({{< relref "/docs/configuration/service-groups#dual-stack" >}}) deployments.
 
 * **CRD-Based Configuration.**
-PureLB is configured using [custom resource definitions](install/config) which simplifies configuration and provides input validation.
+Configured using [Custom Resource Definitions]({{< relref "/docs/configuration" >}}) with schema validation.
 
-* **Dual Stack Support for IPv4 and IPv6.**
-Supports [Dual Stack IPv6](install/config#servicegroup) if your cluster has IPv6.
+* **External IPAM Integration.**
+Integrates with [Netbox]({{< relref "/docs/configuration/netbox" >}}) for enterprise IP address management.
 
-* **Supports GARP for Datacenters using EVPN/VXLAN.**
-[GARP](install/install#garp) can be enabled to support ARP suppression mechanisms used in EVPN/VXLAN.
+* **Prometheus Metrics.**
+Built-in [metrics]({{< relref "/docs/operations/monitoring" >}}) for pool utilization, election health, and node agent activity.
 
-* **Supports External IPAM.**
-Integrates with Enterprise [IP Address Management](how_it_works#ip-address-management) Systems.
+* **kubectl Plugin.**
+The [kubectl-purelb]({{< relref "/docs/operations/kubectl-plugin" >}}) plugin provides operational visibility: pool status, election state, BGP sessions, and troubleshooting.
+
+* **Multiple LoadBalancer Controllers.**
+Implements `LoadBalancerClass` so PureLB can coexist with other load balancer controllers.
+
+* **GARP Support.**
+Configurable [Gratuitous ARP]({{< relref "/docs/configuration/lbnodeagent#garp-configuration" >}}) for EVPN/VXLAN environments.
+
+## Get Started
+
+1. [Prerequisites]({{< relref "/docs/installation/prerequisites" >}})
+2. [Install PureLB]({{< relref "/docs/installation/manifest" >}})
+3. [Create your first LoadBalancer Service]({{< relref "/docs/installation/first-service" >}})
