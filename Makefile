@@ -17,7 +17,9 @@ CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_s
 CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.18.0
 KUSTOMIZE = go run sigs.k8s.io/kustomize/kustomize/v4@v4.5.2
 HELM = go run helm.sh/helm/v3/cmd/helm@v3.11
-HUGO = go run -tags extended github.com/gohugoio/hugo@v0.111.3
+# Hugo Book theme requires Hugo extended (SCSS). Install from
+# https://github.com/gohugoio/hugo/releases -- go run cannot build extended.
+HUGO = hugo
 KO = go run github.com/google/ko@v0.17.1
 
 ##@ Default Goal
