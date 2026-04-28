@@ -9,7 +9,7 @@ Helm provides full configuration control and is recommended for production deplo
 ## Add the Helm Repository
 
 ```sh
-helm repo add purelb https://purelb.github.io/purelb/charts
+helm repo add purelb https://purelb.io/charts
 helm repo update
 ```
 
