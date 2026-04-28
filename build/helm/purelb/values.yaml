@@ -111,7 +111,7 @@ Prometheus:
       rules: []
 
 # You may define a valid spec and set create: true to create a ServiceGroup.
-# See https://purelb.github.io/purelb/install/config/
+# See https://purelb.io/install/config/
 serviceGroup:
   name: "default"
   create: false
@@ -189,7 +189,7 @@ leaseConfig:
   retryPeriod: "2s"
 
 # Configurable values specific to lbnodeagent.
-# See https://purelb.github.io/purelb/install/config/
+# See https://purelb.io/install/config/
 lbnodeagent:
   localInterface: default
   dummyInterface: kube-lb0

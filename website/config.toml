@@ -1,4 +1,4 @@
-baseURL = "https://purelb.github.io/purelb/"
+baseURL = "https://purelb.io/"
 languageCode = "en-us"
 title = "PureLB"
 theme = "hugo-book"

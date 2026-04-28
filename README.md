@@ -6,7 +6,7 @@ systems netlink library to add and remove address from interfaces to announce se
 
 ## Documentation
 
-https://purelb.github.io/purelb/
+https://purelb.io
 
 ## Quick Start
 
@@ -37,7 +37,7 @@ The CRDs must be applied first because the install manifest includes a default
 Install PureLB using Helm for more configuration options:
 
 ```sh
-helm repo add purelb https://purelb.github.io/purelb/charts
+helm repo add purelb https://purelb.io/charts
 helm install --create-namespace --namespace=purelb-system purelb purelb/purelb
 ```
 
@@ -55,7 +55,7 @@ helm install --create-namespace --namespace=purelb-system purelb purelb/purelb \
     --set gobgp.enabled=false
 ```
 
-For detailed installation and configuration, see https://purelb.github.io/purelb/install/
+For detailed installation and configuration, see https://purelb.io/install/
 
 ### Testing Your Installation
 
