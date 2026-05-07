@@ -18,15 +18,15 @@ The default installation includes [k8gobgp](https://github.com/purelb/k8gobgp) a
 Install CRDs first, then apply the main install manifest:
 
 ```sh
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.3/install-crds-v0.16.3.yaml
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.3/install-v0.16.3.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.4/install-crds-v0.16.4.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.4/install-v0.16.4.yaml
 ```
 
 Without BGP support:
 
 ```sh
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.3/install-crds-nobgp-v0.16.3.yaml
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.3/install-nobgp-v0.16.3.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.4/install-crds-nobgp-v0.16.4.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.4/install-nobgp-v0.16.4.yaml
 ```
 
 The CRDs must be applied first because the install manifest includes a default
@@ -45,7 +45,7 @@ Or using OCI registry (Helm 3.8+, `--version` required):
 
 ```sh
 helm install --create-namespace --namespace=purelb-system purelb \
-    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.16.3
+    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.16.4
 ```
 
 To install without BGP support:

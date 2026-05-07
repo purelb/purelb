@@ -13,7 +13,7 @@ spec:
         emptyDir: {}
       containers:
       - name: k8gobgp
-        image: ghcr.io/purelb/k8gobgp:0.2.3
+        image: ghcr.io/purelb/k8gobgp:0.2.4
         imagePullPolicy: IfNotPresent
         env:
         - name: NODE_NAME

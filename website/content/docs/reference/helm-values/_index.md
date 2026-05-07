@@ -67,7 +67,7 @@ Value | Type | Default | Description
 ------|------|---------|------------
 `gobgp.enabled` | bool | `true` | Enable k8gobgp BGP sidecar in the lbnodeagent DaemonSet
 `gobgp.image.repository` | string | `ghcr.io/purelb/k8gobgp` | k8gobgp container image
-`gobgp.image.tag` | string | `"0.2.2"` | k8gobgp image tag
+`gobgp.image.tag` | string | `"0.2.4"` | k8gobgp image tag
 `gobgp.image.pullPolicy` | string | `IfNotPresent` | Image pull policy
 `gobgp.containerSecurityContext` | object | (see below) | Container security context
 `gobgp.resources.requests.cpu` | string | `250m` | CPU request
