@@ -9,8 +9,8 @@ COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
 GOBGP_IMAGE     ?= ghcr.io/purelb/k8gobgp
-GOBGP_TAG       ?= v0.2.2
-GOBGP_IMAGE_TAG ?= 0.2.2
+GOBGP_TAG       ?= v0.2.4
+GOBGP_IMAGE_TAG ?= 0.2.4
 CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml
 
 # Tools that we use.
@@ -38,7 +38,7 @@ help: ## Display help message
 all: check crd image ## Build it all!
 
 .PHONY: check
-check: generate ## Run "short" tests
+check: generate check-deps ## Run "short" tests + bundled-dep consistency check
 	go vet ./...
 	NETBOX_BASE_URL=${NETBOX_BASE_URL} NETBOX_USER_TOKEN=${NETBOX_USER_TOKEN} go test -race -short ./...
 
@@ -127,10 +127,50 @@ install-crds-nobgp: crd  ## Generate CRDs-only install manifest (PureLB CRDs onl
 	$(KUSTOMIZE) build deployments/crds > deployments/install-crds-nobgp-${MANIFEST_SUFFIX}.yaml
 
 .PHONY: fetch-gobgp-crd
-fetch-gobgp-crd:  ## Fetch BGPConfiguration CRD from k8gobgp ${GOBGP_TAG} release
+fetch-gobgp-crd:  ## Fetch CRDs from k8gobgp ${GOBGP_TAG} release (writes 1 file per CRD)
+	@set -e
+	TMP=$$(mktemp -d)
+	trap 'rm -rf $$TMP' EXIT
 	curl -fsSL https://github.com/purelb/k8gobgp/releases/download/${GOBGP_TAG}/install.yaml \
-	  | $(KUSTOMIZE) cfg grep "kind=CustomResourceDefinition" \
+	  | $(KUSTOMIZE) cfg grep "kind=CustomResourceDefinition" > $$TMP/all.yaml
+	# Known CRDs to extract by name. Add a new line here when k8gobgp adds a new CRD.
+	# Note: dots in the value must be escaped (\.) — kustomize cfg grep treats unescaped
+	# dots as path separators. Single-quote the pattern to keep backslashes intact.
+	$(KUSTOMIZE) cfg grep 'metadata.name=configs\.bgp\.purelb\.io' < $$TMP/all.yaml \
 	  > deployments/components/gobgp/gobgp-bgpconfig-crd.yaml
+	$(KUSTOMIZE) cfg grep 'metadata.name=bgpnodestatuses\.bgp\.purelb\.io' < $$TMP/all.yaml \
+	  > deployments/components/gobgp/gobgp-bgpnodestatus-crd.yaml
+	# Validation: count CRDs in input vs total in outputs. If mismatch, fail loudly.
+	IN=$$(grep -cE "^kind: CustomResourceDefinition" $$TMP/all.yaml)
+	OUT=$$(grep -chE "^kind: CustomResourceDefinition" deployments/components/gobgp/gobgp-*-crd.yaml | paste -sd+ - | bc)
+	if [ "$$IN" != "$$OUT" ]; then
+	  echo "ERROR: $$IN CRDs in upstream install.yaml but only $$OUT extracted by name." >&2
+	  echo "       k8gobgp likely added a new CRD. Add a per-name 'kustomize cfg grep' line" >&2
+	  echo "       to fetch-gobgp-crd in the Makefile and re-run." >&2
+	  exit 1
+	fi
+	echo "OK: extracted $$IN CRD(s) from k8gobgp ${GOBGP_TAG}"
+
+.PHONY: check-deps
+check-deps:  ## Verify bundled k8gobgp CRDs match the pinned GOBGP_TAG release
+	@set -e
+	TMP=$$(mktemp -d)
+	trap 'rm -rf $$TMP' EXIT
+	echo "check-deps: fetching k8gobgp ${GOBGP_TAG} install.yaml..."
+	curl -fsSL https://github.com/purelb/k8gobgp/releases/download/${GOBGP_TAG}/install.yaml \
+	  | $(KUSTOMIZE) cfg grep "kind=CustomResourceDefinition" > $$TMP/upstream.yaml
+	UPSTREAM=$$(grep -hE "^[[:space:]]+name:[[:space:]]+[a-zA-Z0-9_-]+\.bgp\.purelb\.io" $$TMP/upstream.yaml | awk '{print $$2}' | sort -u)
+	COMMITTED=$$(grep -hE "^[[:space:]]+name:[[:space:]]+[a-zA-Z0-9_-]+\.bgp\.purelb\.io" deployments/components/gobgp/gobgp-*-crd.yaml | awk '{print $$2}' | sort -u)
+	if [ "$$UPSTREAM" != "$$COMMITTED" ]; then
+	  echo "ERROR: CRDs in deployments/components/gobgp/ do not match k8gobgp ${GOBGP_TAG}." >&2
+	  echo "Upstream produces:" >&2; echo "$$UPSTREAM" | sed 's/^/  /' >&2
+	  echo "Committed:"          >&2; echo "$$COMMITTED" | sed 's/^/  /' >&2
+	  echo "" >&2
+	  echo "If you added kubectl-purelb code that reads a CRD, you must also bump GOBGP_TAG" >&2
+	  echo "to a release that produces it, then run 'make fetch-gobgp-crd' to refresh files." >&2
+	  exit 1
+	fi
+	echo "OK: bundled CRDs match k8gobgp ${GOBGP_TAG}"
 
 .PHONY: helm
 helm:  ## Package PureLB using Helm

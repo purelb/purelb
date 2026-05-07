@@ -1,9 +1,10 @@
----
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
+    config.kubernetes.io/index: '0'
+    internal.config.kubernetes.io/index: '0'
   name: bgpnodestatuses.bgp.purelb.io
 spec:
   group: bgp.purelb.io
@@ -57,23 +58,19 @@ spec:
           metadata:
             type: object
           spec:
-            description: BGPNodeStatusSpec is intentionally empty — BGPNodeStatus
-              is a status-only resource.
+            description: BGPNodeStatusSpec is intentionally empty — BGPNodeStatus is a status-only resource.
             type: object
           status:
-            description: BGPNodeStatusData holds the per-node BGP state reported by
-              the k8gobgp agent.
+            description: BGPNodeStatusData holds the per-node BGP state reported by the k8gobgp agent.
             properties:
               asn:
                 description: ASN is the local Autonomous System Number
                 format: int32
                 type: integer
               conditions:
-                description: Conditions represent the latest available observations
-                  of the node's BGP state
+                description: Conditions represent the latest available observations of the node's BGP state
                 items:
-                  description: Condition contains details for one aspect of the current
-                    state of this API Resource.
+                  description: Condition contains details for one aspect of the current state of this API Resource.
                   properties:
                     lastTransitionTime:
                       description: |-
@@ -132,8 +129,7 @@ spec:
                   Conditions are authoritative; this is a convenience summary.
                 type: boolean
               heartbeatSeconds:
-                description: HeartbeatSeconds is the configured heartbeat interval,
-                  echoed so the plugin can calculate staleness
+                description: HeartbeatSeconds is the configured heartbeat interval, echoed so the plugin can calculate staleness
                 format: int32
                 type: integer
               lastUpdated:
@@ -146,8 +142,7 @@ spec:
               neighbors:
                 description: Neighbors is the list of BGP neighbor session states
                 items:
-                  description: NeighborStatus reports the state of a single BGP neighbor
-                    session.
+                  description: NeighborStatus reports the state of a single BGP neighbor session.
                   properties:
                     address:
                       description: Address is the neighbor's IP address
@@ -156,8 +151,7 @@ spec:
                       description: Description is the configured neighbor description
                       type: string
                     lastError:
-                      description: LastError is the BGP notification code/subcode
-                        for non-Established neighbors
+                      description: LastError is the BGP notification code/subcode for non-Established neighbors
                       type: string
                     localASN:
                       description: LocalASN is the local AS used for this session
@@ -168,23 +162,19 @@ spec:
                       format: int32
                       type: integer
                     prefixesReceived:
-                      description: PrefixesReceived is the number of prefixes received
-                        from this neighbor
+                      description: PrefixesReceived is the number of prefixes received from this neighbor
                       format: int64
                       type: integer
                     prefixesSent:
-                      description: PrefixesSent is the number of prefixes advertised
-                        to this neighbor
+                      description: PrefixesSent is the number of prefixes advertised to this neighbor
                       format: int64
                       type: integer
                     sessionUpSince:
-                      description: SessionUpSince is when the session entered Established
-                        state
+                      description: SessionUpSince is when the session entered Established state
                       format: date-time
                       type: string
                     state:
-                      description: 'State is the BGP FSM state: Idle, Connect, Active,
-                        OpenSent, OpenConfirm, Established'
+                      description: 'State is the BGP FSM state: Idle, Connect, Active, OpenSent, OpenConfirm, Established'
                       type: string
                   required:
                   - address
@@ -202,31 +192,25 @@ spec:
                     description: Enabled indicates whether netlink export is active
                     type: boolean
                   exportedRoutes:
-                    description: ExportedRoutes lists routes exported to the Linux
-                      kernel
+                    description: ExportedRoutes lists routes exported to the Linux kernel
                     items:
-                      description: ExportedRoute reports a single route exported to
-                        the Linux kernel.
+                      description: ExportedRoute reports a single route exported to the Linux kernel.
                       properties:
                         installed:
-                          description: Installed indicates whether this route was
-                            successfully installed in the kernel
+                          description: Installed indicates whether this route was successfully installed in the kernel
                           type: boolean
                         metric:
-                          description: Metric is the route metric in the Linux routing
-                            table
+                          description: Metric is the route metric in the Linux routing table
                           format: int32
                           type: integer
                         prefix:
                           description: Prefix is the exported IP prefix
                           type: string
                         reason:
-                          description: Reason explains why a route was not installed
-                            (e.g., "nexthop unreachable")
+                          description: Reason explains why a route was not installed (e.g., "nexthop unreachable")
                           type: string
                         table:
-                          description: Table is the Linux routing table name (e.g.,
-                            "main")
+                          description: Table is the Linux routing table name (e.g., "main")
                           type: string
                       required:
                       - installed
@@ -236,19 +220,16 @@ spec:
                       type: object
                     type: array
                   protocol:
-                    description: Protocol is the Linux route protocol identifier (e.g.,
-                      186 = RTPROT_BGP)
+                    description: Protocol is the Linux route protocol identifier (e.g., 186 = RTPROT_BGP)
                     format: int32
                     type: integer
                   rules:
                     description: Rules lists the configured export rules
                     items:
-                      description: ExportRuleStatus reports the configuration of a
-                        single export rule.
+                      description: ExportRuleStatus reports the configuration of a single export rule.
                       properties:
                         metric:
-                          description: Metric is the route metric in the Linux routing
-                            table
+                          description: Metric is the route metric in the Linux routing table
                           format: int32
                           type: integer
                         name:
@@ -265,12 +246,10 @@ spec:
                       type: object
                     type: array
                   totalExported:
-                    description: TotalExported is the total count of exported routes
-                      (may exceed len(ExportedRoutes) if truncated)
+                    description: TotalExported is the total count of exported routes (may exceed len(ExportedRoutes) if truncated)
                     type: integer
                   truncated:
-                    description: Truncated indicates the exportedRoutes list was capped
-                      at the maximum
+                    description: Truncated indicates the exportedRoutes list was capped at the maximum
                     type: boolean
                 required:
                 - enabled
@@ -286,16 +265,13 @@ spec:
                   importedAddresses:
                     description: ImportedAddresses lists addresses imported from interfaces
                     items:
-                      description: ImportedAddress reports a single address imported
-                        from an interface.
+                      description: ImportedAddress reports a single address imported from an interface.
                       properties:
                         address:
-                          description: Address is the imported IP address with prefix
-                            length (e.g., "10.100.0.1/32")
+                          description: Address is the imported IP address with prefix length (e.g., "10.100.0.1/32")
                           type: string
                         inRIB:
-                          description: InRIB indicates whether this address exists
-                            as a route in the BGP RIB
+                          description: InRIB indicates whether this address exists as a route in the BGP RIB
                           type: boolean
                         interface:
                           description: Interface is the source interface name
@@ -307,22 +283,18 @@ spec:
                       type: object
                     type: array
                   interfaces:
-                    description: Interfaces reports the state of each watched import
-                      interface
+                    description: Interfaces reports the state of each watched import interface
                     items:
-                      description: ImportInterfaceStatus reports the state of a single
-                        import interface.
+                      description: ImportInterfaceStatus reports the state of a single import interface.
                       properties:
                         exists:
-                          description: Exists indicates whether the interface exists
-                            on this node
+                          description: Exists indicates whether the interface exists on this node
                           type: boolean
                         name:
                           description: Name is the interface name (e.g., "kube-lb0")
                           type: string
                         operState:
-                          description: 'OperState is the operational state: "up" or
-                            "down"'
+                          description: 'OperState is the operational state: "up" or "down"'
                           type: string
                       required:
                       - exists
@@ -331,16 +303,13 @@ spec:
                       type: object
                     type: array
                   totalImported:
-                    description: TotalImported is the total count of imported addresses
-                      (may exceed len(ImportedAddresses) if truncated)
+                    description: TotalImported is the total count of imported addresses (may exceed len(ImportedAddresses) if truncated)
                     type: integer
                   truncated:
-                    description: Truncated indicates the importedAddresses list was
-                      capped at the maximum
+                    description: Truncated indicates the importedAddresses list was capped at the maximum
                     type: boolean
                   vrf:
-                    description: VRF is the VRF that routes are imported into (empty
-                      = global RIB)
+                    description: VRF is the VRF that routes are imported into (empty = global RIB)
                     type: string
                 required:
                 - enabled
@@ -353,8 +322,7 @@ spec:
                 description: RIB reports the BGP RIB summary
                 properties:
                   localRouteCount:
-                    description: LocalRouteCount is the total count of local routes
-                      (may exceed len(LocalRoutes) if truncated)
+                    description: LocalRouteCount is the total count of local routes (may exceed len(LocalRoutes) if truncated)
                     type: integer
                   localRoutes:
                     description: LocalRoutes lists routes originating from this node
@@ -362,27 +330,23 @@ spec:
                       description: RIBRoute reports a single route in the BGP RIB.
                       properties:
                         advertisedTo:
-                          description: AdvertisedTo lists neighbor addresses this
-                            route is advertised to (only for local routes)
+                          description: AdvertisedTo lists neighbor addresses this route is advertised to (only for local routes)
                           items:
                             type: string
                           type: array
                         communities:
-                          description: Communities lists BGP communities attached
-                            to this route
+                          description: Communities lists BGP communities attached to this route
                           items:
                             type: string
                           type: array
                         fromPeer:
-                          description: FromPeer is the peer that advertised this route
-                            (only for received routes)
+                          description: FromPeer is the peer that advertised this route (only for received routes)
                           type: string
                         nextHop:
                           description: NextHop is the route's next-hop address
                           type: string
                         prefix:
-                          description: Prefix is the IP prefix (e.g., "10.100.0.1/32"
-                            or "2001:db8::/32")
+                          description: Prefix is the IP prefix (e.g., "10.100.0.1/32" or "2001:db8::/32")
                           type: string
                       required:
                       - nextHop
@@ -390,8 +354,7 @@ spec:
                       type: object
                     type: array
                   receivedRouteCount:
-                    description: ReceivedRouteCount is the total count of received
-                      routes (may exceed len(ReceivedRoutes) if truncated)
+                    description: ReceivedRouteCount is the total count of received routes (may exceed len(ReceivedRoutes) if truncated)
                     type: integer
                   receivedRoutes:
                     description: ReceivedRoutes lists routes received from BGP peers
@@ -399,27 +362,23 @@ spec:
                       description: RIBRoute reports a single route in the BGP RIB.
                       properties:
                         advertisedTo:
-                          description: AdvertisedTo lists neighbor addresses this
-                            route is advertised to (only for local routes)
+                          description: AdvertisedTo lists neighbor addresses this route is advertised to (only for local routes)
                           items:
                             type: string
                           type: array
                         communities:
-                          description: Communities lists BGP communities attached
-                            to this route
+                          description: Communities lists BGP communities attached to this route
                           items:
                             type: string
                           type: array
                         fromPeer:
-                          description: FromPeer is the peer that advertised this route
-                            (only for received routes)
+                          description: FromPeer is the peer that advertised this route (only for received routes)
                           type: string
                         nextHop:
                           description: NextHop is the route's next-hop address
                           type: string
                         prefix:
-                          description: Prefix is the IP prefix (e.g., "10.100.0.1/32"
-                            or "2001:db8::/32")
+                          description: Prefix is the IP prefix (e.g., "10.100.0.1/32" or "2001:db8::/32")
                           type: string
                       required:
                       - nextHop
@@ -427,8 +386,7 @@ spec:
                       type: object
                     type: array
                   truncated:
-                    description: Truncated indicates a route list was capped at the
-                      maximum
+                    description: Truncated indicates a route list was capped at the maximum
                     type: boolean
                 required:
                 - localRouteCount
@@ -448,12 +406,10 @@ spec:
                   description: VRFStatus reports the summary state of a single VRF.
                   properties:
                     exportedRouteCount:
-                      description: ExportedRouteCount is the number of routes exported
-                        to the kernel for this VRF
+                      description: ExportedRouteCount is the number of routes exported to the kernel for this VRF
                       type: integer
                     importedRouteCount:
-                      description: ImportedRouteCount is the number of routes in this
-                        VRF's RIB
+                      description: ImportedRouteCount is the number of routes in this VRF's RIB
                       type: integer
                     name:
                       description: Name is the VRF name

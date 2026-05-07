@@ -30,7 +30,7 @@ helm install --create-namespace --namespace=purelb-system purelb purelb/purelb \
 
 ```sh
 helm install --create-namespace --namespace=purelb-system purelb \
-    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.16.3
+    oci://ghcr.io/purelb/purelb/charts/purelb --version v0.16.4
 ```
 
 ## Key Configuration Values
