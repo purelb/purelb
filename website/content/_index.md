@@ -5,7 +5,7 @@ type: docs
 
 # PureLB
 
-PureLB is a lightweight Kubernetes [Service LoadBalancer](https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer) for non-cloud deployments. It allocates IP addresses from configured pools and uses standard Linux networking to announce them, giving your services external reachability without a cloud provider.
+PureLB is a Kubernetes [Service LoadBalancer](https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer) for bare metal deployments. It allocates IP addresses from configured pools, uses standard Linux networking and optionally BGP to announce them, giving your services external reachability.
 
 **[GitHub](https://github.com/purelb/purelb)** | **[#purelb-users on Kubernetes Slack](https://kubernetes.slack.com/messages/purelb-users)**
 
