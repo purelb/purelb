@@ -30,6 +30,10 @@ make plugin         # Build kubectl-purelb binary
 - **Slack:** [#purelb-users](https://kubernetes.slack.com/messages/purelb-users) in the Kubernetes workspace
 - **Issues:** [GitHub Issues](https://github.com/purelb/purelb/issues)
 
+## Sponsor PureLB
+
+If your organization uses PureLB, please consider sponsoring ongoing development via [GitHub Sponsors](https://github.com/sponsors/purelb).
+
 ## Credits
 
 PureLB was forked from MetalLB in 2020. We believed a better solution was to use Linux networking functionality instead of working around it. We would like to acknowledge the original developer, [Dave Anderson](https://www.dave.tf/).

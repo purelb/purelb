@@ -1,5 +1,10 @@
 # PureLB - is a Service Load Balancer for Kubernetes
 
+[![Tests](https://github.com/purelb/purelb/actions/workflows/ci.yml/badge.svg)](https://github.com/purelb/purelb/actions/workflows/ci.yml)
+[![Releases](https://img.shields.io/github/release/purelb/purelb/all.svg?style=flat-square)](https://github.com/purelb/purelb/releases)
+[![LICENSE](https://img.shields.io/github/license/purelb/purelb.svg?style=flat-square)](https://github.com/purelb/purelb/blob/main/LICENSE)
+[![Sponsor](https://img.shields.io/badge/Sponsor-PureLB-ea4aaa?logo=github)](https://github.com/sponsors/purelb)
+
 [PureLB](https://purelb.io) is a load-balancer orchestrator for  [Kubernetes](https://kubernetes.io) clusters. It uses standard
 Linux networking, integrates goBGP for routing, and works with the operating
 systems netlink library to add and remove address from interfaces to announce service addresses.
@@ -179,3 +184,8 @@ to your own registry or to a tarball.
 ## Credits
 
 PureLB was forked from MetalLB in 2020.  We believed a better solution was to use Linux networking functionality instead of working around it but the maintainers at the time had no interest in making any changes.  We would like to acknowledge the original developer, [Dave Anderson](https://www.dave.tf/) we hope you would be pleased with our work!!
+
+## Support PureLB
+
+PureLB is open source. If your organization relies on it, please consider
+sponsoring development: [github.com/sponsors/purelb](https://github.com/sponsors/purelb).
