@@ -9,8 +9,8 @@ The quickest way to install PureLB is with kubectl. Installation is a two-step p
 ## With BGP Support (Default)
 
 ```sh
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.5/install-crds-v0.16.5.yaml
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.5/install-v0.16.5.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.6/install-crds-v0.16.6.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.6/install-v0.16.6.yaml
 ```
 
 This installs PureLB with the k8gobgp sidecar for BGP route advertisement. After installing, create a [BGPConfiguration]({{< relref "/docs/configuration/bgp" >}}) CR to configure BGP peering.
@@ -18,8 +18,8 @@ This installs PureLB with the k8gobgp sidecar for BGP route advertisement. After
 ## Without BGP Support
 
 ```sh
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.5/install-crds-nobgp-v0.16.5.yaml
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.5/install-nobgp-v0.16.5.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.6/install-crds-nobgp-v0.16.6.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.6/install-nobgp-v0.16.6.yaml
 ```
 
 Use this variant if you only need local addresses (same subnet as your nodes) and do not need BGP routing.
@@ -62,8 +62,8 @@ The manifest creates:
 To upgrade, apply the new version's manifests:
 
 ```sh
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.5/install-crds-v0.16.5.yaml
-kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.5/install-v0.16.5.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.6/install-crds-v0.16.6.yaml
+kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.6/install-v0.16.6.yaml
 ```
 
 Existing services retain their allocated addresses during the upgrade.
