@@ -7,21 +7,10 @@ metadata:
   labels:
     {{- include "purelb.labels" . | nindent 4 }}
 rules:
-- apiGroups: ["bgp.purelb.io"]
-  resources: ["configs", "configs/finalizers", "configs/status"]
-  verbs: ["create","delete","get","list","patch","update","watch"]
-- apiGroups: [""]
-  resources: ["nodes"]
-  verbs: ["get","list","watch"]
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["patch"]
-- apiGroups: [""]
-  resources: ["secrets"]
-  verbs: ["get","list","watch"]
-- apiGroups: [""]
-  resources: ["events"]
-  verbs: ["create","patch"]
+# Rules below are injected from deployments/components/gobgp/gobgp-rbac.yaml
+# at `make helm` time — that file is the single source of truth. Direct
+# edits here fail `make check-helm-rbac-source`.
+# @@INJECT_RBAC_RULES@@
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
