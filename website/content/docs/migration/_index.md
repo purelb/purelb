@@ -168,7 +168,7 @@ Previous versions required users to install and configure standalone routing sof
 
 3. **Install the v2 CRDs** (they replace the v1 CRDs):
    ```sh
-   kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.4/install-crds-v0.16.4.yaml
+   kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.5/install-crds-v0.16.5.yaml
    ```
 
 4. **Apply converted CRs:**
@@ -179,7 +179,7 @@ Previous versions required users to install and configure standalone routing sof
 
 5. **Upgrade PureLB:**
    ```sh
-   kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.4/install-v0.16.4.yaml
+   kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.5/install-v0.16.5.yaml
    ```
 
 6. **Verify:** Existing services should retain their allocated addresses. Check with:

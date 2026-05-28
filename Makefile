@@ -38,7 +38,7 @@ help: ## Display help message
 all: check crd image ## Build it all!
 
 .PHONY: check
-check: generate check-deps ## Run "short" tests + bundled-dep consistency check
+check: generate check-deps check-helm-rbac-source ## Run "short" tests + bundled-dep consistency check
 	go vet ./...
 	NETBOX_BASE_URL=${NETBOX_BASE_URL} NETBOX_USER_TOKEN=${NETBOX_USER_TOKEN} go test -race -short ./...
 
@@ -151,6 +151,25 @@ fetch-gobgp-crd:  ## Fetch CRDs from k8gobgp ${GOBGP_TAG} release (writes 1 file
 	fi
 	echo "OK: extracted $$IN CRD(s) from k8gobgp ${GOBGP_TAG}"
 
+.PHONY: check-helm-rbac-source
+check-helm-rbac-source:  ## Verify Helm RBAC template injects rules from kustomize source
+	@set -e
+	HELM_TPL=build/helm/purelb/templates/gobgp-rbac.yaml
+	if ! grep -q '@@INJECT_RBAC_RULES@@' $$HELM_TPL; then
+	  echo "ERROR: @@INJECT_RBAC_RULES@@ marker missing from $$HELM_TPL." >&2
+	  echo "       The marker is required so 'make helm' can inject rules from" >&2
+	  echo "       deployments/components/gobgp/gobgp-rbac.yaml (the single source of truth)." >&2
+	  exit 1
+	fi
+	INLINE=$$(awk '/^rules:$$/{f=1; next} /^---$$/{f=0} f' $$HELM_TPL | grep -c '^- apiGroups:' || true)
+	if [ "$$INLINE" != "0" ]; then
+	  echo "ERROR: $$INLINE inline rule(s) found in $$HELM_TPL." >&2
+	  echo "       Rules must live ONLY in deployments/components/gobgp/gobgp-rbac.yaml." >&2
+	  echo "       Edit there; 'make helm' will inject them at chart-package time." >&2
+	  exit 1
+	fi
+	echo "OK: Helm RBAC template uses kustomize source"
+
 .PHONY: check-deps
 check-deps:  ## Verify bundled k8gobgp CRDs match the pinned GOBGP_TAG release
 	@set -e
@@ -173,6 +192,7 @@ check-deps:  ## Verify bundled k8gobgp CRDs match the pinned GOBGP_TAG release
 	echo "OK: bundled CRDs match k8gobgp ${GOBGP_TAG}"
 
 .PHONY: helm
+helm: CACHE_RULES != mktemp
 helm:  ## Package PureLB using Helm
 	rm -rf build/build
 	mkdir -p build/build
@@ -181,6 +201,17 @@ helm:  ## Package PureLB using Helm
 	cp deployments/components/gobgp/gobgp-bgpconfig-crd.yaml build/build/purelb/crds/bgp.purelb.io_bgpconfigurations.yaml
 	cp deployments/components/gobgp/gobgp-bgpnodestatus-crd.yaml build/build/purelb/crds/bgp.purelb.io_bgpnodestatuses.yaml
 	cp README.md build/build/purelb
+
+# Inject ClusterRole rules from the kustomize source into the Helm template.
+# Single source of truth: deployments/components/gobgp/gobgp-rbac.yaml.
+# awk extracts lines between "rules:" and the next "---" (exclusive on both).
+# sed replaces the @@INJECT_RBAC_RULES@@ marker line with those rules.
+	awk '/^rules:$$/{f=1; next} /^---$$/{f=0} f' \
+	  deployments/components/gobgp/gobgp-rbac.yaml > ${CACHE_RULES}
+	sed -i "/@@INJECT_RBAC_RULES@@/r ${CACHE_RULES}" \
+	  build/build/purelb/templates/gobgp-rbac.yaml
+	sed -i "/@@INJECT_RBAC_RULES@@/d" \
+	  build/build/purelb/templates/gobgp-rbac.yaml
 
 	sed \
 	--expression="s~DEFAULT_REPO~${REGISTRY_IMAGE}~" \
