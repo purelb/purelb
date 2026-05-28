@@ -68,39 +68,43 @@ func runVersion(ctx context.Context, c *clients, format outputFormat) error {
 		Plugin: fmt.Sprintf("%s (commit %s)", version, commit),
 	}
 
-	// Fetch pods
+	// Fetch and categorize pods by container composition (install-method-agnostic).
 	pods, _ := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
-	if pods != nil {
-		for _, pod := range pods.Items {
-			if pod.Labels["component"] == "allocator" {
-				for _, container := range pod.Spec.Containers {
-					if container.Name == "allocator" {
-						info.Allocator.Image = container.Image
-					}
-				}
-				info.Allocator.Pods++
-				if pod.Status.Phase == v1.PodRunning {
-					info.Allocator.Running++
-				}
+	cat := categorizePureLBPods(pods)
+
+	for _, pod := range cat.allocator {
+		for _, container := range pod.Spec.Containers {
+			if container.Name == "allocator" {
+				info.Allocator.Image = container.Image
 			}
-			if pod.Labels["component"] == "lbnodeagent" {
-				for _, container := range pod.Spec.Containers {
-					if container.Name == "lbnodeagent" {
-						info.LBNodeAgent.Image = container.Image
-						info.LBNodeAgent.Pods++
-						if isPodContainerRunning(pod, "lbnodeagent") {
-							info.LBNodeAgent.Running++
-						}
-					}
-					if container.Name == "k8gobgp" {
-						info.K8GoBGP.Image = container.Image
-						info.K8GoBGP.Pods++
-						if isPodContainerRunning(pod, "k8gobgp") {
-							info.K8GoBGP.Running++
-						}
-					}
-				}
+		}
+		info.Allocator.Pods++
+		if pod.Status.Phase == v1.PodRunning {
+			info.Allocator.Running++
+		}
+	}
+
+	for _, pod := range cat.lbnodeagent {
+		for _, container := range pod.Spec.Containers {
+			if container.Name == "lbnodeagent" {
+				info.LBNodeAgent.Image = container.Image
 			}
+		}
+		info.LBNodeAgent.Pods++
+		if isPodContainerRunning(pod, "lbnodeagent") {
+			info.LBNodeAgent.Running++
+		}
+	}
+
+	for _, pod := range cat.withK8GoBGP {
+		for _, container := range pod.Spec.Containers {
+			if container.Name == "k8gobgp" {
+				info.K8GoBGP.Image = container.Image
+			}
+		}
+		info.K8GoBGP.Pods++
+		if isPodContainerRunning(pod, "k8gobgp") {
+			info.K8GoBGP.Running++
 		}
 	}
 

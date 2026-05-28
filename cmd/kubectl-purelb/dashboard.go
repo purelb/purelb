@@ -130,7 +130,15 @@ func renderDashboard(snap *clusterSnapshot, format outputFormat, isTTY bool, gob
 	if gobgpOutput != "" {
 		fmt.Print(gobgpOutput)
 	} else {
-		fmt.Println("(no k8gobgp sidecars found)")
+		// No output — show the canonical BGP state sentence so the user
+		// understands why (not enabled / not configured).
+		info := detectBGPState(snap.bgpNodeStatuses, categorizePureLBPods(snap.pods))
+		if msg := info.sentence(); msg != "" {
+			fmt.Println(msg)
+		} else {
+			// Active state but no output (rare — likely an exec error).
+			fmt.Println("(no output from k8gobgp)")
+		}
 	}
 }
 
@@ -139,7 +147,9 @@ func renderDashboard(snap *clusterSnapshot, format outputFormat, isTTY bool, gob
 // or an empty string on error.
 func fetchGoBGPOutput(ctx context.Context, c *clients, snap *clusterSnapshot) string {
 	var buf bytes.Buffer
-	gobgpCmd := []string{"gobgp", "-u", "/var/run/gobgp/gobgp.sock", "global", "rib"}
+	// gobgp 4.x (bundled in k8gobgp 0.2.4+) replaced `-u <path>` with
+	// `--target unix://<path>`.
+	gobgpCmd := []string{"gobgp", "--target", "unix:///var/run/gobgp/gobgp.sock", "global", "rib"}
 	if err := execInK8GoBGPWithPods(ctx, c, snap.pods, "", gobgpCmd, &buf, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "gobgp: %v\n", err)
 		return ""

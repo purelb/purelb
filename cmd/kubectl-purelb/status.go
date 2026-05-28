@@ -107,33 +107,31 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 	var warnings []string
 
 	// === Components ===
-	allocatorTotal, allocatorReady := 0, 0
-	nodeagentTotal, nodeagentReady := 0, 0
-	gobgpTotal, gobgpReady := 0, 0
+	// Identify pods by container composition (install-method-agnostic) instead
+	// of by the historical "component=*" label, which the Helm chart doesn't set.
+	pods := categorizePureLBPods(snap.pods)
 
-	if snap.pods != nil {
-		for _, pod := range snap.pods.Items {
-			labels := pod.Labels
-			if labels["component"] == "allocator" {
-				allocatorTotal++
-				if pod.Status.Phase == v1.PodRunning {
-					allocatorReady++
-				}
-			}
-			if labels["component"] == "lbnodeagent" {
-				nodeagentTotal++
-				for _, cs := range pod.Status.ContainerStatuses {
-					if cs.Name == "lbnodeagent" && cs.Ready {
-						nodeagentReady++
-					}
-					if cs.Name == "k8gobgp" {
-						gobgpTotal++
-						if cs.Ready {
-							gobgpReady++
-						}
-					}
-				}
-			}
+	allocatorTotal := len(pods.allocator)
+	allocatorReady := 0
+	for _, p := range pods.allocator {
+		if p.Status.Phase == v1.PodRunning {
+			allocatorReady++
+		}
+	}
+
+	nodeagentTotal := len(pods.lbnodeagent)
+	nodeagentReady := 0
+	for _, p := range pods.lbnodeagent {
+		if isPodContainerRunning(p, "lbnodeagent") {
+			nodeagentReady++
+		}
+	}
+
+	gobgpTotal := len(pods.withK8GoBGP)
+	gobgpReady := 0
+	for _, p := range pods.withK8GoBGP {
+		if isPodContainerRunning(p, "k8gobgp") {
+			gobgpReady++
 		}
 	}
 
@@ -235,49 +233,14 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 	}
 
 	// === BGP ===
-	bgpEstablished, bgpTotal := 0, 0
-	importFailures := 0
-
-	if snap.bgpNodeStatuses != nil {
-		for _, bgpns := range snap.bgpNodeStatuses.Items {
-			neighbors, _, _ := unstructured.NestedSlice(bgpns.Object, "status", "neighbors")
-			for _, nRaw := range neighbors {
-				n, ok := nRaw.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				bgpTotal++
-				state, _ := n["state"].(string)
-				if state == "Established" {
-					bgpEstablished++
-				}
-			}
-			addrs, _, _ := unstructured.NestedSlice(bgpns.Object, "status", "netlinkImport", "importedAddresses")
-			for _, aRaw := range addrs {
-				a, ok := aRaw.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				inRIB, _ := a["inRIB"].(bool)
-				if !inRIB {
-					importFailures++
-				}
-			}
+	bgp := detectBGPState(snap.bgpNodeStatuses, pods)
+	bgpSummary := bgp.statusSummary()
+	if bgp.state == bgpStateActive {
+		if bgp.importFailures > 0 {
+			warnings = append(warnings, fmt.Sprintf("%d netlinkImport failure(s)", bgp.importFailures))
 		}
-	}
-
-	bgpSummary := "not deployed"
-	if bgpTotal > 0 {
-		bgpParts := []string{fmt.Sprintf("%d/%d sessions established", bgpEstablished, bgpTotal)}
-		if importFailures > 0 {
-			bgpParts = append(bgpParts, fmt.Sprintf("%d import failure(s)", importFailures))
-			warnings = append(warnings, fmt.Sprintf("%d netlinkImport failure(s)", importFailures))
-		} else {
-			bgpParts = append(bgpParts, "netlinkImport OK")
-		}
-		bgpSummary = strings.Join(bgpParts, " | ")
-		if bgpEstablished < bgpTotal {
-			warnings = append(warnings, fmt.Sprintf("%d BGP session(s) down", bgpTotal-bgpEstablished))
+		if bgp.peersEstablished < bgp.peersTotal {
+			warnings = append(warnings, fmt.Sprintf("%d BGP peer(s) down", bgp.peersTotal-bgp.peersEstablished))
 		}
 	}
 

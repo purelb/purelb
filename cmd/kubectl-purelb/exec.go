@@ -56,7 +56,19 @@ func newGoBGPCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 				return err
 			}
 
-			execCmd := append([]string{"gobgp", "-u", "/var/run/gobgp/gobgp.sock"}, filteredArgs...)
+			// gobgp needs the gobgp daemon (started by k8gobgp once a
+			// BGPConfiguration is applied) — both NotEnabled and
+			// NotConfigured short-circuit with a clear message rather than
+			// letting the exec fail with "connection refused" on the unix
+			// socket.
+			if !preCheckBGP(cmd.Context(), c, true /* requireConfigured */) {
+				return nil
+			}
+
+			// gobgp 4.x (bundled in k8gobgp 0.2.4+) replaced the old `-u <path>` flag
+			// with `--target unix://<path>`. Old syntax silently fails with
+			// "name resolver error: produced zero addresses".
+			execCmd := append([]string{"gobgp", "--target", "unix:///var/run/gobgp/gobgp.sock"}, filteredArgs...)
 			return execInK8GoBGP(cmd.Context(), c, targetNode, execCmd)
 		},
 	}
@@ -94,6 +106,13 @@ func newIPCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 				return err
 			}
 
+			// ip queries the host's network namespace through the k8gobgp
+			// container, so it works whenever the container exists — NotEnabled
+			// short-circuits, but NotConfigured does not.
+			if !preCheckBGP(cmd.Context(), c, false /* container present is enough */) {
+				return nil
+			}
+
 			execCmd := append([]string{"ip"}, filteredArgs...)
 			return execInK8GoBGP(cmd.Context(), c, targetNode, execCmd)
 		},
@@ -102,6 +121,29 @@ func newIPCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 	_ = node
 
 	return cmd
+}
+
+// preCheckBGP returns true when the caller should proceed with an exec into
+// the k8gobgp container. When it returns false, it has already printed the
+// canonical BGP-state sentence to stdout for the user. requireConfigured
+// controls whether NotConfigured is also a hard stop: true for `gobgp` (the
+// daemon socket only exists when a BGPConfiguration has been applied), false
+// for `ip` (the host netns is queryable regardless of BGP state).
+func preCheckBGP(ctx context.Context, c *clients, requireConfigured bool) bool {
+	bgpns, _ := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	cat, _ := listAndCategorizePureLBPods(ctx, c)
+	info := detectBGPState(bgpns, cat)
+	switch info.state {
+	case bgpStateNotEnabled:
+		fmt.Println(info.sentence())
+		return false
+	case bgpStateNotConfigured:
+		if requireConfigured {
+			fmt.Println(info.sentence())
+			return false
+		}
+	}
+	return true
 }
 
 // extractNodeFlag pulls --node <name> from args since DisableFlagParsing
@@ -121,28 +163,16 @@ func extractNodeFlag(args []string) (filtered []string, node string) {
 // execInK8GoBGP runs a command in k8gobgp sidecar(s). If targetNode is empty,
 // runs on all nodes and labels output. If targetNode is set, runs on that node only.
 func execInK8GoBGP(ctx context.Context, c *clients, targetNode string, command []string) error {
-	pods, err := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{
-		ResourceVersion: "0",
-		LabelSelector:   "app=purelb,component=lbnodeagent",
-	})
+	cat, err := listAndCategorizePureLBPods(ctx, c)
 	if err != nil {
-		return fmt.Errorf("listing lbnodeagent pods: %w", err)
+		return err
 	}
 
-	// Collect eligible pods
+	// withK8GoBGP already filters to lbnodeagent pods that have the k8gobgp
+	// sidecar container — install-method-agnostic.
 	var targets []v1.Pod
-	for _, pod := range pods.Items {
+	for _, pod := range cat.withK8GoBGP {
 		if pod.Status.Phase != v1.PodRunning {
-			continue
-		}
-		hasK8GoBGP := false
-		for _, container := range pod.Spec.Containers {
-			if container.Name == "k8gobgp" {
-				hasK8GoBGP = true
-				break
-			}
-		}
-		if !hasK8GoBGP {
 			continue
 		}
 		if targetNode != "" && pod.Spec.NodeName != targetNode {
@@ -183,20 +213,11 @@ func execInK8GoBGPWithPods(ctx context.Context, c *clients, pods *v1.PodList, ta
 	if pods == nil {
 		return fmt.Errorf("no pod list provided")
 	}
+	cat := categorizePureLBPods(pods)
 
 	var targets []v1.Pod
-	for _, pod := range pods.Items {
+	for _, pod := range cat.withK8GoBGP {
 		if pod.Status.Phase != v1.PodRunning {
-			continue
-		}
-		hasK8GoBGP := false
-		for _, container := range pod.Spec.Containers {
-			if container.Name == "k8gobgp" {
-				hasK8GoBGP = true
-				break
-			}
-		}
-		if !hasK8GoBGP {
 			continue
 		}
 		if targetNode != "" && pod.Spec.NodeName != targetNode {

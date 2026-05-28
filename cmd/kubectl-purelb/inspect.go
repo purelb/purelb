@@ -42,6 +42,7 @@ type inspectResult struct {
 	Sharing      *sharingInfo       `json:"sharing,omitempty"`
 	Endpoints    endpointsInfo      `json:"endpoints"`
 	BGP          []bgpRouteCheck    `json:"bgp,omitempty"`
+	BGPNote      string             `json:"bgpNote,omitempty"` // canonical sentence when BGP state is NotEnabled / NotConfigured
 	Diagnosis    *diagnosisInfo     `json:"diagnosis,omitempty"`
 }
 
@@ -201,10 +202,18 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 			}
 		}
 
-		// Fetch BGPNodeStatus for remote pool route checks
+		// Fetch BGPNodeStatus for remote pool route checks. Also classify the
+		// BGP state up front so we can show a clear "BGP not enabled" /
+		// "BGP not configured" sentence instead of misleading per-route
+		// "Route X in RIB on (none): No" rows when there's no BGP to check.
 		var bgpStatuses *unstructured.UnstructuredList
 		if poolType == poolTypeRemote {
 			bgpStatuses, _ = c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+			bgpPods, _ := listAndCategorizePureLBPods(ctx, c)
+			bs := detectBGPState(bgpStatuses, bgpPods)
+			if bs.state != bgpStateActive {
+				result.BGPNote = bs.sentence()
+			}
 		}
 
 		for _, ingress := range ingresses {
@@ -287,8 +296,10 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 				}
 			}
 
-			// BGP route check (remote pools)
-			if poolType == poolTypeRemote && bgpStatuses != nil {
+			// BGP route check (remote pools). Skip when BGP isn't Active —
+			// result.BGPNote already carries the canonical "not enabled" /
+			// "not configured" sentence in that case.
+			if poolType == poolTypeRemote && bgpStatuses != nil && result.BGPNote == "" {
 				for _, bgpns := range bgpStatuses.Items {
 					nodeName, _, _ := unstructured.NestedString(bgpns.Object, "status", "nodeName")
 					inRIB := checkRouteInBGPNodeStatus(&bgpns, ipStr)
@@ -302,7 +313,8 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 						})
 					}
 				}
-				// If no BGP entries found, add a "not found" entry
+				// Route absent from RIB on all known nodes: not necessarily an
+				// error, but worth flagging for the user.
 				if len(result.BGP) == 0 {
 					result.BGP = append(result.BGP, bgpRouteCheck{
 						IP:    ipStr,
@@ -413,7 +425,11 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 		}
 
 		// BGP
-		if len(result.BGP) > 0 {
+		if result.BGPNote != "" {
+			fmt.Println()
+			fmt.Println("BGP (remote pool):")
+			fmt.Println("  " + result.BGPNote)
+		} else if len(result.BGP) > 0 {
 			fmt.Println()
 			fmt.Println("BGP (remote pool):")
 			for _, b := range result.BGP {
@@ -532,18 +548,13 @@ func diagnosePending(ctx context.Context, c *clients, svc *v1.Service) *diagnosi
 	requestedPool := ann[annotationServiceGroup]
 	requestedIP := ann[annotationAddresses]
 
-	// Check allocator pod
-	pods, _ := c.core.CoreV1().Pods(purelbNamespace).List(ctx, metav1.ListOptions{
-		ResourceVersion: "0",
-		LabelSelector:   "app=purelb,component=allocator",
-	})
+	// Check allocator pod (identified by container name — install-method-agnostic).
+	cat, _ := listAndCategorizePureLBPods(ctx, c)
 	allocatorRunning := false
-	if pods != nil {
-		for _, p := range pods.Items {
-			if p.Status.Phase == v1.PodRunning {
-				allocatorRunning = true
-				break
-			}
+	for _, p := range cat.allocator {
+		if p.Status.Phase == v1.PodRunning {
+			allocatorRunning = true
+			break
 		}
 	}
 	if !allocatorRunning {
