@@ -96,13 +96,14 @@ type crossRefEntry struct {
 }
 
 func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, filterNode string, checkOnly bool, filterVRF string, importOnly, exportOnly bool) error {
-	// Fetch BGPNodeStatuses
-	bgpnsList, err := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
-	if err != nil {
-		return fmt.Errorf("listing BGPNodeStatuses: %w", err)
-	}
-	if len(bgpnsList.Items) == 0 {
-		fmt.Println("No BGPNodeStatus resources found.")
+	// Fetch BGPNodeStatuses. List errors typically mean the BGP CRDs aren't
+	// installed (a supported "BGP not enabled" configuration); detectBGPState
+	// disambiguates from pod presence.
+	bgpnsList, _ := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	pods, _ := listAndCategorizePureLBPods(ctx, c)
+	info := detectBGPState(bgpnsList, pods)
+	if info.state != bgpStateActive {
+		fmt.Println(info.sentence())
 		return nil
 	}
 

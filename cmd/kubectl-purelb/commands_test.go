@@ -421,3 +421,253 @@ func TestRenderPools_EmptyCluster(t *testing.T) {
 	err = renderPools(snap, outputJSON, "", false)
 	assert.NoError(t, err)
 }
+
+// =============================================================================
+// pod categorization tests (install-method-agnostic)
+// =============================================================================
+
+func makePodWithContainers(name string, containerNames ...string) v1.Pod {
+	containers := make([]v1.Container, 0, len(containerNames))
+	for _, n := range containerNames {
+		containers = append(containers, v1.Container{Name: n})
+	}
+	return v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "purelb-system"},
+		Spec:       v1.PodSpec{Containers: containers},
+	}
+}
+
+func TestCategorizePureLBPods(t *testing.T) {
+	tests := []struct {
+		name        string
+		podList     *v1.PodList // nil exercises the nil-input path
+		wantAlloc   int
+		wantLBNA    int
+		wantK8GoBGP int
+	}{
+		{
+			name:    "nil PodList",
+			podList: nil,
+		},
+		{
+			name:    "empty Items",
+			podList: &v1.PodList{},
+		},
+		{
+			name: "allocator pod only",
+			podList: &v1.PodList{Items: []v1.Pod{
+				makePodWithContainers("alloc", "allocator"),
+			}},
+			wantAlloc: 1,
+		},
+		{
+			name: "lbnodeagent with k8gobgp sidecar",
+			podList: &v1.PodList{Items: []v1.Pod{
+				makePodWithContainers("lbna", "lbnodeagent", "k8gobgp"),
+			}},
+			wantLBNA:    1,
+			wantK8GoBGP: 1,
+		},
+		{
+			name: "lbnodeagent without sidecar (no-bgp install)",
+			podList: &v1.PodList{Items: []v1.Pod{
+				makePodWithContainers("lbna", "lbnodeagent"),
+			}},
+			wantLBNA: 1,
+		},
+		{
+			name: "full multi-node install with BGP",
+			podList: &v1.PodList{Items: []v1.Pod{
+				makePodWithContainers("alloc", "allocator"),
+				makePodWithContainers("lbna1", "lbnodeagent", "k8gobgp"),
+				makePodWithContainers("lbna2", "lbnodeagent", "k8gobgp"),
+			}},
+			wantAlloc:   1,
+			wantLBNA:    2,
+			wantK8GoBGP: 2,
+		},
+		{
+			name: "full install without BGP (gobgp.enabled=false / no-bgp manifest)",
+			podList: &v1.PodList{Items: []v1.Pod{
+				makePodWithContainers("alloc", "allocator"),
+				makePodWithContainers("lbna1", "lbnodeagent"),
+				makePodWithContainers("lbna2", "lbnodeagent"),
+			}},
+			wantAlloc: 1,
+			wantLBNA:  2,
+		},
+		{
+			name: "unrelated pod in namespace is ignored",
+			podList: &v1.PodList{Items: []v1.Pod{
+				makePodWithContainers("alloc", "allocator"),
+				makePodWithContainers("other", "nginx"),
+			}},
+			wantAlloc: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cat := categorizePureLBPods(tt.podList)
+			assert.Equal(t, tt.wantAlloc, len(cat.allocator), "allocator pod count")
+			assert.Equal(t, tt.wantLBNA, len(cat.lbnodeagent), "lbnodeagent pod count")
+			assert.Equal(t, tt.wantK8GoBGP, len(cat.withK8GoBGP), "withK8GoBGP pod count")
+		})
+	}
+}
+
+// =============================================================================
+// BGP state detection + formatting tests
+// =============================================================================
+
+// makeBGPNodeStatus builds an unstructured BGPNodeStatus CR with the given
+// neighbor states and a count of failed (inRIB=false) imported addresses.
+// neighborStates may be nil to model a freshly-started sidecar with no
+// BGPConfiguration applied yet.
+func makeBGPNodeStatus(nodeName string, neighborStates []string, importFailures int) *unstructured.Unstructured {
+	bgpns := &unstructured.Unstructured{}
+	bgpns.SetGroupVersionKind(schema.GroupVersionKind{Group: "bgp.purelb.io", Version: "v1", Kind: "BGPNodeStatus"})
+	bgpns.SetName(nodeName)
+
+	neighbors := make([]interface{}, 0, len(neighborStates))
+	for i, state := range neighborStates {
+		neighbors = append(neighbors, map[string]interface{}{
+			"address": "192.0.2." + string(rune('1'+i)),
+			"state":   state,
+		})
+	}
+
+	importedAddrs := make([]interface{}, 0, importFailures)
+	for i := 0; i < importFailures; i++ {
+		importedAddrs = append(importedAddrs, map[string]interface{}{
+			"address": "198.51.100." + string(rune('1'+i)),
+			"inRIB":   false,
+		})
+	}
+
+	bgpns.Object["status"] = map[string]interface{}{
+		"nodeName":  nodeName,
+		"neighbors": neighbors,
+		"netlinkImport": map[string]interface{}{
+			"importedAddresses": importedAddrs,
+		},
+	}
+	return bgpns
+}
+
+func TestDetectBGPState(t *testing.T) {
+	tests := []struct {
+		name                 string
+		bgpns                []*unstructured.Unstructured // nil → list is nil; empty slice → list with 0 items
+		nilList              bool                         // explicit nil list (overrides bgpns)
+		podsWithK8GoBGP      int                          // pods to put in purelbPods.withK8GoBGP
+		wantState            bgpState
+		wantPeersTotal       int
+		wantPeersEstablished int
+		wantImportFailures   int
+		wantSummary          string
+		wantSentence         string
+	}{
+		{
+			name:         "nil list, no k8gobgp pods → NotEnabled",
+			nilList:      true,
+			wantState:    bgpStateNotEnabled,
+			wantSummary:  "not enabled",
+			wantSentence: "BGP not enabled.",
+		},
+		{
+			name:            "nil list, k8gobgp pods present → NotConfigured (startup race)",
+			nilList:         true,
+			podsWithK8GoBGP: 1,
+			wantState:       bgpStateNotConfigured,
+			wantSummary:     "not configured",
+			wantSentence:    "BGP not configured.",
+		},
+		{
+			name:         "empty list, no pods → NotEnabled",
+			bgpns:        []*unstructured.Unstructured{},
+			wantState:    bgpStateNotEnabled,
+			wantSummary:  "not enabled",
+			wantSentence: "BGP not enabled.",
+		},
+		{
+			name:            "empty list, sidecar present → NotConfigured",
+			bgpns:           []*unstructured.Unstructured{},
+			podsWithK8GoBGP: 2,
+			wantState:       bgpStateNotConfigured,
+			wantSummary:     "not configured",
+			wantSentence:    "BGP not configured.",
+		},
+		{
+			name:         "BGPNodeStatus row with no neighbors → NotConfigured",
+			bgpns:        []*unstructured.Unstructured{makeBGPNodeStatus("node-a", nil, 0)},
+			wantState:    bgpStateNotConfigured,
+			wantSummary:  "not configured",
+			wantSentence: "BGP not configured.",
+		},
+		{
+			name:                 "all peers Established, no import failures → Active OK",
+			bgpns:                []*unstructured.Unstructured{makeBGPNodeStatus("node-a", []string{"Established", "Established"}, 0)},
+			wantState:            bgpStateActive,
+			wantPeersTotal:       2,
+			wantPeersEstablished: 2,
+			wantSummary:          "2/2 peers established | netlinkImport OK",
+			wantSentence:         "",
+		},
+		{
+			name:                 "some peers down → Active with mixed count",
+			bgpns:                []*unstructured.Unstructured{makeBGPNodeStatus("node-a", []string{"Established", "Idle", "Active"}, 0)},
+			wantState:            bgpStateActive,
+			wantPeersTotal:       3,
+			wantPeersEstablished: 1,
+			wantSummary:          "1/3 peers established | netlinkImport OK",
+		},
+		{
+			name:                 "import failures → Active with failure count",
+			bgpns:                []*unstructured.Unstructured{makeBGPNodeStatus("node-a", []string{"Established"}, 2)},
+			wantState:            bgpStateActive,
+			wantPeersTotal:       1,
+			wantPeersEstablished: 1,
+			wantImportFailures:   2,
+			wantSummary:          "1/1 peers established | 2 import failure(s)",
+		},
+		{
+			name: "multi-node aggregates correctly",
+			bgpns: []*unstructured.Unstructured{
+				makeBGPNodeStatus("node-a", []string{"Established"}, 0),
+				makeBGPNodeStatus("node-b", []string{"Established", "Idle"}, 1),
+			},
+			wantState:            bgpStateActive,
+			wantPeersTotal:       3,
+			wantPeersEstablished: 2,
+			wantImportFailures:   1,
+			wantSummary:          "2/3 peers established | 1 import failure(s)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var list *unstructured.UnstructuredList
+			if !tt.nilList {
+				list = &unstructured.UnstructuredList{}
+				for _, item := range tt.bgpns {
+					list.Items = append(list.Items, *item)
+				}
+			}
+
+			pods := purelbPods{}
+			for i := 0; i < tt.podsWithK8GoBGP; i++ {
+				pods.withK8GoBGP = append(pods.withK8GoBGP, v1.Pod{})
+			}
+
+			info := detectBGPState(list, pods)
+			assert.Equal(t, tt.wantState, info.state, "state")
+			assert.Equal(t, tt.wantPeersTotal, info.peersTotal, "peersTotal")
+			assert.Equal(t, tt.wantPeersEstablished, info.peersEstablished, "peersEstablished")
+			assert.Equal(t, tt.wantImportFailures, info.importFailures, "importFailures")
+			if tt.wantSummary != "" {
+				assert.Equal(t, tt.wantSummary, info.statusSummary(), "statusSummary")
+			}
+			assert.Equal(t, tt.wantSentence, info.sentence(), "sentence")
+		})
+	}
+}

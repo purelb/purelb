@@ -98,14 +98,14 @@ func newBGPSessionsCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 func runBGPSessions(ctx context.Context, c *clients, format outputFormat, filterNode string, checkOnly bool) error {
 	now := time.Now()
 
-	// Fetch BGPNodeStatuses
-	bgpnsList, err := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
-	if err != nil {
-		return fmt.Errorf("listing BGPNodeStatuses: %w\nBGPNodeStatus CRD may not be installed — upgrade k8gobgp to 0.2.3+ for BGP visibility", err)
-	}
-	if len(bgpnsList.Items) == 0 {
-		fmt.Println("No BGPNodeStatus resources found.")
-		fmt.Println("Either k8gobgp is not deployed, nodeStatus.enabled is false, or k8gobgp version < 0.2.3")
+	// Fetch BGPNodeStatuses. List errors are not fatal — they usually mean
+	// the BGP CRDs aren't installed, which is a supported "BGP not enabled"
+	// state; detectBGPState figures it out from pod presence.
+	bgpnsList, _ := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	pods, _ := listAndCategorizePureLBPods(ctx, c)
+	info := detectBGPState(bgpnsList, pods)
+	if info.state != bgpStateActive {
+		fmt.Println(info.sentence())
 		return nil
 	}
 
