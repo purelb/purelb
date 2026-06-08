@@ -30,6 +30,11 @@ import (
 type IPRange struct {
 	from net.IP
 	to   net.IP
+	// raw is the original spec string (CIDR like "192.168.1.0/24" or
+	// from-to like "192.168.1.0 - 192.168.1.255"). Preserved so kubectl
+	// status display can echo the user's input rather than the parsed
+	// "(from - to)" form.
+	raw string
 }
 
 // NewIPRange parses a string representation of an IP address range
@@ -39,13 +44,30 @@ type IPRange struct {
 // 192.168.1.255". The error return value will be non-nil if the
 // representation couldn't be parsed.
 func NewIPRange(raw string) (IPRange, error) {
+	var (
+		iprange IPRange
+		err     error
+	)
 	if strings.Contains(raw, "-") {
 		// "from-to" notation
-		return parseFromTo(raw)
+		iprange, err = parseFromTo(raw)
+	} else {
+		// CIDR notation
+		iprange, err = parseCIDR(raw)
 	}
+	if err != nil {
+		return iprange, err
+	}
+	iprange.raw = raw
+	return iprange, nil
+}
 
-	// CIDR notation
-	return parseCIDR(raw)
+// Raw returns the original spec string this IPRange was parsed from
+// (e.g., "192.168.1.0/24" or "192.168.1.0-192.168.1.255"). Used by
+// status display to show the user's input verbatim rather than the
+// parsed "(from - to)" form.
+func (r IPRange) Raw() string {
+	return r.raw
 }
 
 var IPRangeComparer = cmp.Comparer(func(x, y IPRange) bool {

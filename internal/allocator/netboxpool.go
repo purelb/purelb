@@ -16,6 +16,7 @@
 package allocator
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -76,7 +77,7 @@ func NewNetboxPool(name string, log log.Logger, spec purelbv2.ServiceGroupNetbox
 	}, nil
 }
 
-func (p NetboxPool) Notify(service *v1.Service) error {
+func (p NetboxPool) Notify(_ context.Context, service *v1.Service) error {
 	nsName := namespacedName(service)
 
 	for _, ingress := range service.Status.LoadBalancer.Ingress {
@@ -97,7 +98,7 @@ func (p NetboxPool) Notify(service *v1.Service) error {
 }
 
 // AssignNext assigns a service to the next available IP.
-func (p NetboxPool) AssignNext(service *v1.Service) error {
+func (p NetboxPool) AssignNext(ctx context.Context, service *v1.Service) error {
 	// fetch from netbox
 	cidr, err := p.netbox.Fetch()
 	if err != nil {
@@ -107,7 +108,7 @@ func (p NetboxPool) AssignNext(service *v1.Service) error {
 	if err != nil {
 		return fmt.Errorf("error parsing CIDR %s", cidr)
 	}
-	if err := p.Assign(ip, service); err != nil {
+	if err := p.Assign(ctx, ip, service); err != nil {
 		return err
 	}
 
@@ -115,16 +116,16 @@ func (p NetboxPool) AssignNext(service *v1.Service) error {
 }
 
 // Assign assigns a service to an IP.
-func (p NetboxPool) Assign(ip net.IP, service *v1.Service) error {
+func (p NetboxPool) Assign(ctx context.Context, ip net.IP, service *v1.Service) error {
 	// we have an IP selected somehow, so program the data plane
 	addIngress(p.logger, service, ip)
 
 	// Update our internal allocation data structures
-	return p.Notify(service)
+	return p.Notify(ctx, service)
 }
 
 // Release releases an IP so it can be assigned again.
-func (p NetboxPool) Release(service string) error {
+func (p NetboxPool) Release(_ context.Context, service string) error {
 	ip, haveIp := p.services[service]
 	if !haveIp {
 		return fmt.Errorf("trying to release an IP from unknown service %s", service)
@@ -140,7 +141,7 @@ func (p NetboxPool) Release(service string) error {
 
 // ReleaseIP releases a specific IP address for a service. Used during
 // IP family transitions (e.g., DualStack → SingleStack).
-func (p NetboxPool) ReleaseIP(service string, ip net.IP) error {
+func (p NetboxPool) ReleaseIP(_ context.Context, service string, ip net.IP) error {
 	ipstr := ip.String()
 
 	// Check if this IP is tracked in our pool
@@ -233,6 +234,58 @@ func (p NetboxPool) BalancePools() bool {
 }
 
 // AssignNextPerRange is not supported for Netbox pools.
-func (p NetboxPool) AssignNextPerRange(svc *v1.Service, activeSubnets []string) error {
+func (p NetboxPool) AssignNextPerRange(_ context.Context, svc *v1.Service, activeSubnets []string) error {
 	return fmt.Errorf("multi-pool allocation is not supported for Netbox pools")
 }
+
+// IPAMSource returns "Netbox" — addresses come from an external Netbox
+// IPAM system.
+func (p NetboxPool) IPAMSource() string {
+	return "Netbox"
+}
+
+// InUseV4 returns the number of IPv4 addresses currently allocated.
+func (p NetboxPool) InUseV4() int {
+	n := 0
+	for ipStr := range p.addressesInUse {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// InUseV6 returns the number of IPv6 addresses currently allocated.
+func (p NetboxPool) InUseV6() int {
+	n := 0
+	for ipStr := range p.addressesInUse {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if ip.To4() == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// SizeV4 returns 0 — Netbox pool capacity is managed externally and not
+// knowable locally without an additional Netbox API call.
+func (p NetboxPool) SizeV4() uint64 { return 0 }
+
+// SizeV6 returns 0 — see SizeV4.
+func (p NetboxPool) SizeV6() uint64 { return 0 }
+
+// HasKnownCapacity returns false — Netbox owns the address space and
+// PureLB doesn't track total capacity.
+func (p NetboxPool) HasKnownCapacity() bool { return false }
+
+// DisplayAddresses returns nil — Netbox is deprecated (will be removed
+// in Part B of this PR series) and we don't invest in pretty status
+// formatting for unsupported code.
+func (p NetboxPool) DisplayAddresses() []string { return nil }

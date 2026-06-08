@@ -14,6 +14,7 @@
 package allocator
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sort"
@@ -42,7 +43,7 @@ func TestEmptyPool(t *testing.T) {
 	assert.Equal(t, uint64(0), p.Size(), "incorrect pool size")
 	assert.Error(t, p.assignFamily(nl.FAMILY_V6, &svc))
 	assert.Error(t, p.assignFamily(nl.FAMILY_V4, &svc))
-	assert.Error(t, p.AssignNext(&svc))
+	assert.Error(t, p.AssignNext(context.Background(), &svc))
 }
 
 func TestNewLocalPool(t *testing.T) {
@@ -58,14 +59,14 @@ func TestNewLocalPool(t *testing.T) {
 	p, err := NewLocalPool("testpool", localPoolTestLogger, v4Pool, nil, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
-	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
+	assert.NoError(t, p.AssignNext(context.Background(), &svc), "Address allocation failed")
 	assert.Equal(t, ip4, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
 	// Test IPV4 config with V4Pool
 	p, err = NewLocalPool("v4pool", localPoolTestLogger, v4Pool, nil, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
-	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
+	assert.NoError(t, p.AssignNext(context.Background(), &svc), "Address allocation failed")
 	// We specified the top-level Pool and the V4Pool so the V4Pool
 	// should take precedence
 	assert.Equal(t, ip4, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
@@ -78,14 +79,14 @@ func TestNewLocalPool(t *testing.T) {
 	p, err = NewLocalPool("v6pool", localPoolTestLogger, nil, v6Pool, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
-	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
+	assert.NoError(t, p.AssignNext(context.Background(), &svc), "Address allocation failed")
 	assert.Equal(t, ip6, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
 	// Test both pools config
 	p, err = NewLocalPool("bothpools", localPoolTestLogger, v4Pool, v6Pool, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
 	assert.NoError(t, err, "Pool instantiation failed")
 	svc = v1.Service{}
-	assert.NoError(t, p.AssignNext(&svc), "Address allocation failed")
+	assert.NoError(t, p.AssignNext(context.Background(), &svc), "Address allocation failed")
 	// We specified both pools so the V6Pool should take precedence
 	assert.Equal(t, ip6, svc.Status.LoadBalancer.Ingress[0].IP, "AssignNext failed")
 
@@ -145,7 +146,7 @@ func TestRemotePoolMultiPoolSkipsActiveSubnetFilter(t *testing.T) {
 
 	// activeSubnets has NEITHER of the remote pool subnets —
 	// but remote pools should ignore the filter
-	err = p.AssignNextPerRange(&svc, []string{"192.168.1.0/24"})
+	err = p.AssignNextPerRange(context.Background(), &svc, []string{"192.168.1.0/24"})
 	assert.NoError(t, err, "remote pool multi-pool should succeed even without matching active subnets")
 	assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "should get IPs from both remote ranges")
 }
@@ -164,7 +165,7 @@ func TestLocalPoolMultiPoolRespectsActiveSubnetFilter(t *testing.T) {
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
 
 	// Only subnet 1 active — should get 1 IP, not 2
-	err = p.AssignNextPerRange(&svc, []string{"192.168.1.0/24"})
+	err = p.AssignNextPerRange(context.Background(), &svc, []string{"192.168.1.0/24"})
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress), "should only get IP from active subnet")
 }
@@ -203,11 +204,11 @@ func TestNotify(t *testing.T) {
 
 	// Tell the pool that ip1 is in use
 	addIngress(localPoolTestLogger, &svc1, ip1)
-	assert.NoError(t, p.Notify(&svc1), "Notify failed")
+	assert.NoError(t, p.Notify(context.Background(), &svc1), "Notify failed")
 
 	// Allocate an address to svc2 - it should get ip2 since ip1 is in
 	// use by svc1
-	assert.NoError(t, p.AssignNext(&svc2), "Assigning an address failed")
+	assert.NoError(t, p.AssignNext(context.Background(), &svc2), "Assigning an address failed")
 	assert.Equal(t, ip2.String(), svc2.Status.LoadBalancer.Ingress[0].IP, "svc2 was assigned the wrong address")
 }
 
@@ -219,17 +220,17 @@ func TestInUse(t *testing.T) {
 	svc2 := service("svc2", ports("tcp/80"), "sharing2")
 	svc3 := service("svc3", ports("tcp/25"), "sharing2")
 
-	p.Assign(ip2, &svc1)
+	p.Assign(context.Background(), ip2, &svc1)
 	assert.Equal(t, 1, p.InUse())
-	p.Assign(ip, &svc2)
+	p.Assign(context.Background(), ip, &svc2)
 	assert.Equal(t, 2, p.InUse())
-	p.Assign(ip, &svc3)
+	p.Assign(context.Background(), ip, &svc3)
 	assert.Equal(t, 2, p.InUse()) // allocating the same address doesn't change the count
-	p.Release(namespacedName(&svc2))
+	p.Release(context.Background(), namespacedName(&svc2))
 	assert.Equal(t, 2, p.InUse()) // the address isn't fully released yet
-	p.Release(namespacedName(&svc3))
+	p.Release(context.Background(), namespacedName(&svc3))
 	assert.Equal(t, 1, p.InUse()) // the address isn't fully released yet
-	p.Release(namespacedName(&svc1))
+	p.Release(context.Background(), namespacedName(&svc1))
 	assert.Equal(t, 0, p.InUse()) // all addresses are released
 }
 
@@ -239,11 +240,11 @@ func TestServicesOn(t *testing.T) {
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
 	svc2 := service("svc2", ports("tcp/25"), "sharing1")
 
-	p.Assign(ip2, &svc1)
+	p.Assign(context.Background(), ip2, &svc1)
 	assert.Equal(t, []string{namespacedName(&svc1)}, p.servicesOnIP(ip2))
-	p.Assign(ip2, &svc2)
+	p.Assign(context.Background(), ip2, &svc2)
 	sameStrings(t, []string{namespacedName(&svc1), namespacedName(&svc2)}, p.servicesOnIP(ip2))
-	p.Release(namespacedName(&svc1))
+	p.Release(context.Background(), namespacedName(&svc1))
 	assert.Equal(t, []string{namespacedName(&svc2)}, p.servicesOnIP(ip2))
 }
 
@@ -257,25 +258,25 @@ func TestSharing(t *testing.T) {
 	svc3 := service("svc3", ports("tcp/81"), key1.Sharing)
 	svc3.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol, v1.IPv4Protocol}
 
-	p.Release(namespacedName(&svc3)) // releasing a not-assigned service should be OK
+	p.Release(context.Background(), namespacedName(&svc3)) // releasing a not-assigned service should be OK
 
 	// Allocate addresses to svc1 and svc2 and verify that they both
 	// have the same ones
-	assert.NoError(t, p.AssignNext(&svc1))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc1))
 	assert.Equal(t, 2, len(svc1.Status.LoadBalancer.Ingress))
 	assert.Equal(t, key1, *p.sharingKeys[svc1.Status.LoadBalancer.Ingress[0].IP])
 	assert.Equal(t, key1, *p.sharingKeys[svc1.Status.LoadBalancer.Ingress[1].IP])
-	assert.NoError(t, p.AssignNext(&svc2))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc2))
 	assert.EqualValues(t, svc1.Status.LoadBalancer.Ingress, svc2.Status.LoadBalancer.Ingress, "svc1 and svc2 have different addresses")
 
-	p.Release(namespacedName(&svc1))
+	p.Release(context.Background(), namespacedName(&svc1))
 	// svc2 is still using the IPs
 	assert.Equal(t, key1, *p.sharingKeys[svc2.Status.LoadBalancer.Ingress[1].IP])
-	assert.Error(t, p.Assign(ip4, &svc3)) // svc3 is blocked by svc2 (same port)
-	p.Release(namespacedName(&svc2))
+	assert.Error(t, p.Assign(context.Background(), ip4, &svc3)) // svc3 is blocked by svc2 (same port)
+	p.Release(context.Background(), namespacedName(&svc2))
 	// the IP is unused
 	assert.Nil(t, p.SharingKey(ip4))
-	assert.NoError(t, p.Assign(ip4, &svc3)) // svc2 is out of the picture so svc3 can use the address
+	assert.NoError(t, p.Assign(context.Background(), ip4, &svc3)) // svc2 is out of the picture so svc3 can use the address
 }
 
 func TestAvailable(t *testing.T) {
@@ -286,7 +287,7 @@ func TestAvailable(t *testing.T) {
 	// no assignment, should be available
 	assert.NoError(t, p.available(ip, &svc1))
 
-	p.Assign(ip, &svc1)
+	p.Assign(context.Background(), ip, &svc1)
 
 	// same service can "share" with or without the key
 	assert.NoError(t, p.available(ip, &svc1))
@@ -311,17 +312,17 @@ func TestAssignNext(t *testing.T) {
 	svc3 := service("svc3", ports("tcp/80"), "sharing2")
 
 	// The pool has two addresses; allocate both of them
-	assert.NoError(t, p.AssignNext(&svc1))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc1))
 	assert.Equal(t, "192.168.1.0", svc1.Status.LoadBalancer.Ingress[0].IP, "svc1 was assigned the wrong address")
-	assert.NoError(t, p.AssignNext(&svc2))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc2))
 	assert.Equal(t, "192.168.1.1", svc2.Status.LoadBalancer.Ingress[0].IP, "svc2 was assigned the wrong address")
 
 	// Same port: should fail
-	assert.Error(t, p.AssignNext(&svc3))
+	assert.Error(t, p.AssignNext(context.Background(), &svc3))
 
 	// Shared key, different ports: should succeed
 	svc3.Spec.Ports = ports("tcp/25")
-	assert.NoError(t, p.AssignNext(&svc3))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc3))
 }
 
 func TestPoolSize(t *testing.T) {
@@ -430,15 +431,15 @@ func TestSharingKeyPortConflict(t *testing.T) {
 	svc3 := service("svc3", ports("tcp/80"), "webservers")  // same port, same key - should FAIL
 
 	// svc1 gets first IP
-	assert.NoError(t, p.AssignNext(&svc1))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc1))
 	assert.Equal(t, "192.168.1.0", svc1.Status.LoadBalancer.Ingress[0].IP)
 
 	// svc2 shares the IP (different port)
-	assert.NoError(t, p.AssignNext(&svc2))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc2))
 	assert.Equal(t, "192.168.1.0", svc2.Status.LoadBalancer.Ingress[0].IP)
 
 	// svc3 should FAIL - same sharing key, same port
-	err := p.AssignNext(&svc3)
+	err := p.AssignNext(context.Background(), &svc3)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "port TCP/80")
 	assert.Contains(t, err.Error(), "already in use")
@@ -454,14 +455,14 @@ func TestSharingKeyReleaseCleanup(t *testing.T) {
 	ip := net.ParseIP("192.168.1.0")
 
 	svc1 := service("svc1", ports("tcp/80"), "webservers")
-	assert.NoError(t, p.Assign(ip, &svc1))
+	assert.NoError(t, p.Assign(context.Background(), ip, &svc1))
 
 	// Verify sharing key is tracked
 	assert.NotNil(t, p.ipForSharingKey("webservers", nl.FAMILY_V4))
 	assert.Equal(t, "192.168.1.0", p.ipForSharingKey("webservers", nl.FAMILY_V4).String())
 
 	// Release the service
-	p.Release(namespacedName(&svc1))
+	p.Release(context.Background(), namespacedName(&svc1))
 
 	// Verify sharing key mapping is cleaned up
 	assert.Nil(t, p.ipForSharingKey("webservers", nl.FAMILY_V4))
@@ -476,12 +477,12 @@ func TestSharingKeyBindingPreventsOtherIPs(t *testing.T) {
 	svc2 := service("svc2", ports("tcp/80"), "webservers") // same port, same key
 
 	// svc1 gets first IP, binding "webservers" to 192.168.1.0
-	assert.NoError(t, p.AssignNext(&svc1))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc1))
 	assert.Equal(t, "192.168.1.0", svc1.Status.LoadBalancer.Ingress[0].IP)
 
 	// svc2 cannot get 192.168.1.1 because "webservers" is bound to .0
 	// and it cannot share .0 because of port conflict
-	err := p.AssignNext(&svc2)
+	err := p.AssignNext(context.Background(), &svc2)
 	assert.Error(t, err)
 
 	// The error should mention the port conflict (from the bound IP),
@@ -497,11 +498,11 @@ func TestDifferentSharingKeysGetDifferentIPs(t *testing.T) {
 	svc1 := service("svc1", ports("tcp/80"), "webservers")
 	svc2 := service("svc2", ports("tcp/80"), "databases") // same port, different key
 
-	assert.NoError(t, p.AssignNext(&svc1))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc1))
 	assert.Equal(t, "192.168.1.0", svc1.Status.LoadBalancer.Ingress[0].IP)
 
 	// svc2 should get a different IP because it has a different sharing key
-	assert.NoError(t, p.AssignNext(&svc2))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc2))
 	assert.Equal(t, "192.168.1.1", svc2.Status.LoadBalancer.Ingress[0].IP)
 }
 
@@ -542,7 +543,7 @@ func TestAssignNextPerRange(t *testing.T) {
 		svc := service("svc1", ports("tcp/80"), "")
 		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
 
-		err := p.AssignNextPerRange(&svc, []string{"192.168.1.0/24", "192.168.2.0/24"})
+		err := p.AssignNextPerRange(context.Background(), &svc, []string{"192.168.1.0/24", "192.168.2.0/24"})
 		assert.NoError(t, err)
 		assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "should get 2 IPs")
 
@@ -566,7 +567,7 @@ func TestAssignNextPerRange(t *testing.T) {
 		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
 
 		// Only subnet 1 is active
-		err := p.AssignNextPerRange(&svc, []string{"192.168.1.0/24"})
+		err := p.AssignNextPerRange(context.Background(), &svc, []string{"192.168.1.0/24"})
 		assert.NoError(t, err)
 		assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress), "should get 1 IP")
 		ip := svc.Status.LoadBalancer.Ingress[0].IP
@@ -582,7 +583,7 @@ func TestAssignNextPerRange(t *testing.T) {
 		svc := service("svc1", ports("tcp/80"), "")
 		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
 
-		err := p.AssignNextPerRange(&svc, []string{})
+		err := p.AssignNextPerRange(context.Background(), &svc, []string{})
 		assert.Error(t, err, "should fail with no active subnets")
 		assert.Equal(t, 0, len(svc.Status.LoadBalancer.Ingress))
 	})
@@ -597,14 +598,14 @@ func TestAssignNextPerRange(t *testing.T) {
 		// Exhaust range 1
 		svc0 := service("svc0", ports("tcp/80"), "")
 		svc0.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-		err := p.AssignNextPerRange(&svc0, []string{"192.168.1.0/24", "192.168.2.0/24"})
+		err := p.AssignNextPerRange(context.Background(), &svc0, []string{"192.168.1.0/24", "192.168.2.0/24"})
 		assert.NoError(t, err)
 		assert.Equal(t, 2, len(svc0.Status.LoadBalancer.Ingress))
 
 		// Now range 1 is exhausted, svc1 should still get an IP from range 2
 		svc1 := service("svc1", ports("tcp/80"), "")
 		svc1.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-		err = p.AssignNextPerRange(&svc1, []string{"192.168.1.0/24", "192.168.2.0/24"})
+		err = p.AssignNextPerRange(context.Background(), &svc1, []string{"192.168.1.0/24", "192.168.2.0/24"})
 		assert.NoError(t, err)
 		assert.Equal(t, 1, len(svc1.Status.LoadBalancer.Ingress), "should get partial allocation")
 		assert.Equal(t, "192.168.2.1", svc1.Status.LoadBalancer.Ingress[0].IP)
@@ -624,7 +625,7 @@ func TestAssignNextPerRange(t *testing.T) {
 		svc := service("svc1", ports("tcp/80"), "")
 		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol}
 
-		err := p.AssignNextPerRange(&svc, []string{
+		err := p.AssignNextPerRange(context.Background(), &svc, []string{
 			"192.168.1.0/24", "192.168.2.0/24",
 			"fd00:1::/64", "fd00:2::/64",
 		})
@@ -649,9 +650,9 @@ func TestAssignNextPerRange(t *testing.T) {
 			{IP: "192.168.1.0", IPMode: &ipModeVIP},
 		}
 		// Notify the pool about the existing IP
-		assert.NoError(t, p.Notify(&svc))
+		assert.NoError(t, p.Notify(context.Background(), &svc))
 
-		err := p.AssignNextPerRange(&svc, []string{"192.168.1.0/24", "192.168.2.0/24"})
+		err := p.AssignNextPerRange(context.Background(), &svc, []string{"192.168.1.0/24", "192.168.2.0/24"})
 		assert.NoError(t, err)
 		// Should get 2 total: the existing one + 1 new from range 2
 		assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "should have 2 IPs total")
@@ -686,7 +687,7 @@ func TestBalancePoolsBasic(t *testing.T) {
 	for i := range svcs {
 		svcs[i] = service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
 		svcs[i].Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-		assert.NoError(t, p.AssignNext(&svcs[i]))
+		assert.NoError(t, p.AssignNext(context.Background(), &svcs[i]))
 		assert.Equal(t, 1, len(svcs[i].Status.LoadBalancer.Ingress))
 	}
 
@@ -720,13 +721,13 @@ func TestBalancePoolsExhaustion(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		svc := service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
 		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-		assert.NoError(t, p.AssignNext(&svc), "allocation %d should succeed", i)
+		assert.NoError(t, p.AssignNext(context.Background(), &svc), "allocation %d should succeed", i)
 	}
 
 	// 7th should fail — all exhausted
 	svc := service("svc-overflow", ports("tcp/80"), "")
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	assert.Error(t, p.AssignNext(&svc), "should fail when all ranges exhausted")
+	assert.Error(t, p.AssignNext(context.Background(), &svc), "should fail when all ranges exhausted")
 }
 
 func TestBalancePoolsIPv6(t *testing.T) {
@@ -741,7 +742,7 @@ func TestBalancePoolsIPv6(t *testing.T) {
 	for i := range svcs {
 		svcs[i] = service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
 		svcs[i].Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol}
-		assert.NoError(t, p.AssignNext(&svcs[i]))
+		assert.NoError(t, p.AssignNext(context.Background(), &svcs[i]))
 	}
 
 	// Count per range
@@ -777,7 +778,7 @@ func TestBalancePoolsDualStack(t *testing.T) {
 	for i := range svcs {
 		svcs[i] = service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
 		svcs[i].Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol}
-		assert.NoError(t, p.AssignNext(&svcs[i]))
+		assert.NoError(t, p.AssignNext(context.Background(), &svcs[i]))
 		assert.Equal(t, 2, len(svcs[i].Status.LoadBalancer.Ingress), "should get 1 v4 + 1 v6")
 	}
 
@@ -824,7 +825,7 @@ func TestBalancePoolsDisabled(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		svc := service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
 		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-		assert.NoError(t, p.AssignNext(&svc))
+		assert.NoError(t, p.AssignNext(context.Background(), &svc))
 		ip := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
 		_, sub0, _ := net.ParseCIDR("10.0.0.0/24")
 		assert.True(t, sub0.Contains(ip), "sequential should exhaust range 0 first, got %s", ip)
@@ -844,7 +845,7 @@ func TestBalancePoolsAfterRelease(t *testing.T) {
 	for i := range svcs {
 		svcs[i] = service(fmt.Sprintf("svc%d", i), ports("tcp/80"), "")
 		svcs[i].Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-		assert.NoError(t, p.AssignNext(&svcs[i]))
+		assert.NoError(t, p.AssignNext(context.Background(), &svcs[i]))
 	}
 
 	// Release 2 services from range 0 (svc0 and svc2 should be from range 0 due to alternation)
@@ -854,7 +855,7 @@ func TestBalancePoolsAfterRelease(t *testing.T) {
 	for i, svc := range svcs {
 		ip := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
 		if sub0.Contains(ip) && released < 2 {
-			assert.NoError(t, p.Release(namespacedName(&svcs[i])))
+			assert.NoError(t, p.Release(context.Background(), namespacedName(&svcs[i])))
 			released++
 		}
 	}
@@ -862,7 +863,7 @@ func TestBalancePoolsAfterRelease(t *testing.T) {
 	// Next allocation should go to range 0 (now has fewer allocations)
 	newSvc := service("svc-new", ports("tcp/80"), "")
 	newSvc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	assert.NoError(t, p.AssignNext(&newSvc))
+	assert.NoError(t, p.AssignNext(context.Background(), &newSvc))
 	newIP := net.ParseIP(newSvc.Status.LoadBalancer.Ingress[0].IP)
 	assert.True(t, sub0.Contains(newIP), "after release, should rebalance to range 0, got %s", newIP)
 }
@@ -878,7 +879,7 @@ func TestBalancePoolsWithSharingKeyBypass(t *testing.T) {
 	// First, allocate a service with sharing key to range 0 (sequential path)
 	svc1 := service("svc1", ports("tcp/80"), "share-key")
 	svc1.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	assert.NoError(t, p.AssignNext(&svc1))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc1))
 	ip1 := net.ParseIP(svc1.Status.LoadBalancer.Ingress[0].IP)
 	_, sub0, _ := net.ParseCIDR("10.0.0.0/24")
 
@@ -888,7 +889,7 @@ func TestBalancePoolsWithSharingKeyBypass(t *testing.T) {
 	// Second service with same sharing key must get same IP (sharing key binding)
 	svc2 := service("svc2", ports("tcp/443"), "share-key")
 	svc2.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	assert.NoError(t, p.AssignNext(&svc2))
+	assert.NoError(t, p.AssignNext(context.Background(), &svc2))
 	ip2 := net.ParseIP(svc2.Status.LoadBalancer.Ingress[0].IP)
 	assert.True(t, ip1.Equal(ip2), "sharing key services must share the same IP")
 }

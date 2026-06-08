@@ -15,13 +15,16 @@
 package allocator
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/go-kit/log"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
@@ -41,23 +44,38 @@ type ActiveSubnetsFunc func(namespace string) ([]string, error)
 // Used to populate pool state from existing allocations.
 type ListServicesFunc func() []v1.Service
 
-// allocatorState holds the pool map that is atomically swapped by SetPools
-// (G2) and loaded per-cycle by SetBalancer/DeleteBalancer (G1). This
-// ensures G1 always sees a consistent pool snapshot within one processing
-// cycle, even if G2 swaps pools mid-cycle.
+// allocatorState holds the pool + ServiceGroup maps that are atomically
+// swapped by SetPools (G2) and loaded per-cycle by SetBalancer/DeleteBalancer
+// (G1). This ensures G1 always sees a consistent pool snapshot within one
+// processing cycle, even if G2 swaps mid-cycle.
+//
+// sgByName is parallel to pools (same keys, same lifetime) and holds
+// DeepCopies of the ServiceGroup objects from the informer cache.
+// DeepCopying is mandatory — informer-cache objects must never be mutated
+// per k8s client-go contract, and the status writer needs a stable SG
+// pointer to construct UpdateStatus requests from.
 type allocatorState struct {
-	pools map[string]Pool
+	pools    map[string]Pool
+	sgByName map[string]*purelbv2.ServiceGroup
 }
 
 // An Allocator tracks IP address pools and allocates addresses from them.
 type Allocator struct {
 	client          k8s.ServiceEvent
+	sgStatusClient  k8s.ServiceGroupStatusWriter // for status subresource writes
 	logger          log.Logger
 	state           atomic.Pointer[allocatorState]
 	populated       atomic.Bool
 	activeSubnets   ActiveSubnetsFunc
 	purelbNamespace string
 	listServices    ListServicesFunc
+
+	// lastWritten caches the most recently successfully-written status per
+	// ServiceGroup name. Used by maybeUpdateSGStatus to elide no-op API
+	// writes when the computed status equals what was last sent. Owned by
+	// G1 (queue worker) — sync.Map is safe for the rare concurrent reads
+	// from any future helper goroutines.
+	lastWritten sync.Map // map[svcGroupName]purelbv2.ServiceGroupStatus
 }
 
 // New returns an Allocator managing no pools.
@@ -65,8 +83,18 @@ func New(log log.Logger) *Allocator {
 	a := &Allocator{
 		logger: log,
 	}
-	a.state.Store(&allocatorState{pools: map[string]Pool{}})
+	a.state.Store(&allocatorState{
+		pools:    map[string]Pool{},
+		sgByName: map[string]*purelbv2.ServiceGroup{},
+	})
 	return a
+}
+
+// SetServiceGroupStatusWriter wires the ServiceGroup status-subresource
+// client used by maybeUpdateSGStatus. If unset, status writes are skipped
+// silently (allocator still runs; SG status fields stay empty).
+func (a *Allocator) SetServiceGroupStatusWriter(w k8s.ServiceGroupStatusWriter) {
+	a.sgStatusClient = w
 }
 
 // Pools returns the current pool snapshot. Call once per processing
@@ -109,19 +137,31 @@ func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 		return fmt.Errorf("No valid pools found")
 	}
 
-	// Clean up metrics for removed pools
+	// Build sgByName parallel to pools. DeepCopy each SG — informer-cache
+	// objects must never be mutated (client-go contract), and the status
+	// writer holds onto these pointers across the atomic swap.
+	sgByName := make(map[string]*purelbv2.ServiceGroup, len(pools))
+	for _, g := range groups {
+		if _, kept := pools[g.Name]; !kept {
+			continue // group failed parse; not in pools map
+		}
+		sgByName[g.Name] = g.DeepCopy()
+	}
+
+	// Clean up metrics + lastWritten cache for removed pools
 	oldState := a.state.Load()
 	if oldState != nil {
 		for n := range oldState.pools {
 			if pools[n] == nil {
 				poolCapacity.DeleteLabelValues(n)
 				poolActive.DeleteLabelValues(n)
+				a.lastWritten.Delete(n)
 			}
 		}
 	}
 
 	// Atomic swap — after this, G1's next Pools() call sees the new map
-	a.state.Store(&allocatorState{pools: pools})
+	a.state.Store(&allocatorState{pools: pools, sgByName: sgByName})
 	a.populated.Store(false)
 
 	// Set capacity for new pools (size is static, safe from G2).
@@ -165,6 +205,142 @@ func (a *Allocator) populateFromExisting(pools map[string]Pool) {
 func (a *Allocator) updateStats(pool Pool) {
 	poolCapacity.WithLabelValues(pool.String()).Set(float64(pool.Size()))
 	poolActive.WithLabelValues(pool.String()).Set(float64(pool.InUse()))
+	a.maybeUpdateSGStatus(pool)
+}
+
+// maybeUpdateSGStatus writes the ServiceGroup's .status to reflect the
+// pool's current state. Synchronous (runs from G1, the allocation
+// hot-path). The lastWritten cache elides API calls when the computed
+// status is unchanged — at steady state most updateStats invocations
+// are no-ops. Errors are logged + counted, never block allocation.
+//
+// Skipped silently if no sgStatusClient is wired (e.g., in unit tests).
+func (a *Allocator) maybeUpdateSGStatus(pool Pool) {
+	if a.sgStatusClient == nil {
+		return
+	}
+	s := a.state.Load()
+	if s == nil {
+		return
+	}
+	sg, ok := s.sgByName[pool.String()]
+	if !ok || sg == nil {
+		return
+	}
+
+	newStatus := buildStatus(pool)
+	if prev, loaded := a.lastWritten.Load(sg.Name); loaded {
+		if statusEqual(prev.(purelbv2.ServiceGroupStatus), newStatus) {
+			return // no-op
+		}
+	}
+
+	sgCopy := sg.DeepCopy()
+	sgCopy.Status = newStatus
+	updated, err := a.sgStatusClient.UpdateServiceGroupStatus(sgCopy)
+	if err != nil {
+		sgStatusWritesTotal.WithLabelValues(classifyStatusErr(err)).Inc()
+		if !a.sgStatusClient.IsShutdownError(err) {
+			logging.Info(a.logger, "op", "updateSGStatus", "error", err, "sg", sg.Name)
+		}
+		// Do NOT update lastWritten — next call retries.
+		return
+	}
+	sgStatusWritesTotal.WithLabelValues("success").Inc()
+	a.lastWritten.Store(sg.Name, newStatus)
+	// Refresh the cached SG's ResourceVersion so the next UpdateStatus
+	// call uses the latest server version and doesn't hit "object has
+	// been modified" conflicts. Safe to mutate in-place: sgByName is
+	// G1-single-writer (this code path); the SG pointer is exclusive
+	// to the allocator (DeepCopy was taken in SetPools).
+	if updated != nil {
+		sg.ResourceVersion = updated.ResourceVersion
+	}
+}
+
+// buildStatus computes the ServiceGroupStatus payload for a pool. Pure
+// reads from the Pool interface; no I/O. For SidecarPool (Part C),
+// callers must refresh the Stats cache before calling buildStatus.
+func buildStatus(pool Pool) purelbv2.ServiceGroupStatus {
+	s := purelbv2.ServiceGroupStatus{
+		Announce:      capitalize(pool.PoolType()),
+		IPAM:          pool.IPAMSource(),
+		Addresses:     pool.DisplayAddresses(),
+		AllocatedIPv4: int64(pool.InUseV4()),
+		AllocatedIPv6: int64(pool.InUseV6()),
+	}
+	if pool.HasKnownCapacity() {
+		availV4 := int64(pool.SizeV4()) - s.AllocatedIPv4
+		availV6 := int64(pool.SizeV6()) - s.AllocatedIPv6
+		s.AvailableIPv4, s.AvailableIPv6 = &availV4, &availV6
+	}
+	return s
+}
+
+// capitalize returns s with the first byte upper-cased. Pool.PoolType()
+// returns "local" / "remote" by convention; status display wants
+// "Local" / "Remote" to match user-facing capitalization.
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	if s[0] >= 'a' && s[0] <= 'z' {
+		return string(s[0]-32) + s[1:]
+	}
+	return s
+}
+
+// statusEqual reports whether two ServiceGroupStatus values are
+// semantically equal. Hand-written instead of reflect.DeepEqual so
+// *int64 fields are compared by dereferenced value, not by pointer
+// identity (two separate &int64 allocations holding the same value
+// must compare equal so the lastWritten cache elides redundant writes).
+func statusEqual(a, b purelbv2.ServiceGroupStatus) bool {
+	if a.Announce != b.Announce ||
+		a.IPAM != b.IPAM ||
+		a.AllocatedIPv4 != b.AllocatedIPv4 ||
+		a.AllocatedIPv6 != b.AllocatedIPv6 {
+		return false
+	}
+	if !int64PtrEqual(a.AvailableIPv4, b.AvailableIPv4) ||
+		!int64PtrEqual(a.AvailableIPv6, b.AvailableIPv6) {
+		return false
+	}
+	if len(a.Addresses) != len(b.Addresses) {
+		return false
+	}
+	for i := range a.Addresses {
+		if a.Addresses[i] != b.Addresses[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// int64PtrEqual returns true when a and b point to equal values or are
+// both nil. Distinct from `a == b` which compares pointer identity.
+func int64PtrEqual(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// classifyStatusErr categorises a status-write error for the
+// sgStatusWritesTotal counter. Conservative: anything we don't
+// recognise lands in "other".
+func classifyStatusErr(err error) string {
+	if err == nil {
+		return "success"
+	}
+	switch {
+	case apierrors.IsConflict(err):
+		return "conflict"
+	case apierrors.IsForbidden(err):
+		return "forbidden"
+	default:
+		return "other"
+	}
 }
 
 // NotifyExisting notifies the allocator of existing IP assignments,
@@ -186,7 +362,7 @@ func (a *Allocator) NotifyExisting(pools map[string]Pool, svc *v1.Service) error
 		}
 
 		// Tell the pool about the assignment
-		if err := pool.Notify(svc); err != nil {
+		if err := pool.Notify(context.Background(), svc); err != nil {
 			return err
 		}
 		a.updateStats(pool)
@@ -295,7 +471,7 @@ func (a *Allocator) allocateSpecificIP(pools map[string]Pool, svc *v1.Service) (
 		// Does the IP already have allocs? If so, needs to be the same
 		// sharing key, and have non-overlapping ports. If not, the proposed
 		// IP needs to be allowed by configuration.
-		if err := pool.Assign(ip, svc); err != nil {
+		if err := pool.Assign(context.Background(), ip, svc); err != nil {
 			return false, err
 		}
 
@@ -340,7 +516,7 @@ func (a *Allocator) allocateFromPool(pools map[string]Pool, svc *v1.Service, poo
 		}
 	}
 
-	if err := pool.AssignNext(svc); err != nil {
+	if err := pool.AssignNext(context.Background(), svc); err != nil {
 		// Woops, no IPs :( Fail.
 		return err
 	}
@@ -401,7 +577,7 @@ func (a *Allocator) allocateMultiPool(pools map[string]Pool, svc *v1.Service, po
 	logging.Info(a.logger, "op", "allocateMultiPool", "activeSubnets", strings.Join(activeSubnets, ","),
 		"svc", namespacedName(svc))
 
-	if err := pool.AssignNextPerRange(svc, activeSubnets); err != nil {
+	if err := pool.AssignNextPerRange(context.Background(), svc, activeSubnets); err != nil {
 		return err
 	}
 
@@ -447,7 +623,7 @@ func (a *Allocator) IncrementalMultiPool(pools map[string]Pool, svc *v1.Service)
 
 	existingCount := len(svc.Status.LoadBalancer.Ingress)
 
-	if err := pool.AssignNextPerRange(svc, activeSubnets); err != nil {
+	if err := pool.AssignNextPerRange(context.Background(), svc, activeSubnets); err != nil {
 		return false, err
 	}
 
@@ -478,7 +654,7 @@ func (a *Allocator) Unassign(pools map[string]Pool, svc string) error {
 	// not be a pool, e.g., in the case of a config change that moves
 	// addresses from one pool to another
 	for _, p := range pools {
-		if err = p.Release(svc); err == nil {
+		if err = p.Release(context.Background(), svc); err == nil {
 			a.updateStats(p) // This pool released the address
 		}
 	}
@@ -504,7 +680,7 @@ func (a *Allocator) ReleaseIPs(pools map[string]Pool, svc string, ips []string) 
 			continue
 		}
 
-		if err := pool.ReleaseIP(svc, ip); err != nil {
+		if err := pool.ReleaseIP(context.Background(), svc, ip); err != nil {
 			logging.Info(a.logger, "op", "releaseIPs", "error", err, "ip", ipStr)
 			// Continue releasing other IPs even if one fails
 		}

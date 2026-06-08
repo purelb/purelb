@@ -13,6 +13,7 @@
 package allocator
 
 import (
+	"context"
 	"net"
 	"testing"
 
@@ -37,13 +38,13 @@ func TestNetboxContains(t *testing.T) {
 	}
 	nbp.netbox = fake.NewNetbox("base", "tenant", "token") // patch the pool with a fake Netbox client
 
-	err = nbp.AssignNext(&svc1)
+	err = nbp.AssignNext(context.Background(), &svc1)
 	assert.Nil(t, err, "Netbox pool AssignNext() failed")
 
 	assigned := net.ParseIP(svc1.Status.LoadBalancer.Ingress[0].IP)
 	assert.NotNil(t, assigned, "service was assigned an unparseable IP")
 	assert.True(t, nbp.Contains(assigned), "address should have been contained in pool but wasn't")
 
-	nbp.Release(nsName)
+	nbp.Release(context.Background(), nsName)
 	assert.False(t, nbp.Contains(assigned), "address should not have been contained in pool but was")
 }

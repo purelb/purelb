@@ -110,6 +110,17 @@ func NewCRController(
 			controller.enqueueResource("sg", added)
 		},
 		UpdateFunc: func(old, new interface{}) {
+			// Skip status-only updates. The allocator itself writes SG
+			// .status via the status subresource (Part A display work);
+			// those writes don't bump .metadata.generation, but the watch
+			// event still fires. Without this filter, every status write
+			// triggers a full SetConfig → SetPools → forceSync cycle over
+			// all services. O(N) per status write, catastrophic at scale.
+			oldSG, _ := old.(*purelbv2.ServiceGroup)
+			newSG, _ := new.(*purelbv2.ServiceGroup)
+			if oldSG != nil && newSG != nil && oldSG.Generation == newSG.Generation {
+				return
+			}
 			controller.enqueueResource("sg", new)
 		},
 		DeleteFunc: func(deleted interface{}) {

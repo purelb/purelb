@@ -16,6 +16,7 @@
 package allocator
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sort"
@@ -160,7 +161,7 @@ func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6P
 	return pool, nil
 }
 
-func (p LocalPool) Notify(service *v1.Service) error {
+func (p LocalPool) Notify(_ context.Context, service *v1.Service) error {
 	nsName := namespacedName(service)
 	sharingKey := &Key{Sharing: SharingKey(service)}
 	ports := Ports(service)
@@ -250,7 +251,7 @@ func (p LocalPool) available(ip net.IP, service *v1.Service) error {
 }
 
 // AssignNext assigns the next available IP to service.
-func (p LocalPool) AssignNext(service *v1.Service) error {
+func (p LocalPool) AssignNext(_ context.Context, service *v1.Service) error {
 	families, err := p.whichFamilies(service)
 	if err != nil {
 		return err
@@ -309,7 +310,7 @@ func (p LocalPool) assignFamily(family int, service *v1.Service) error {
 	boundIP := p.ipForSharingKey(sharingKey, family)
 
 	for pos := p.first(family); pos != nil; pos = p.next(pos) {
-		if err := p.Assign(pos, service); err == nil {
+		if err := p.Assign(context.Background(), pos, service); err == nil {
 			// we found an available address
 			return nil
 		} else {
@@ -358,7 +359,7 @@ func (p LocalPool) assignFamily(family int, service *v1.Service) error {
 }
 
 // Assign assigns a service to an IP.
-func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
+func (p LocalPool) Assign(ctx context.Context, ip net.IP, service *v1.Service) error {
 	if err := p.available(ip, service); err != nil {
 		return err
 	}
@@ -367,11 +368,11 @@ func (p LocalPool) Assign(ip net.IP, service *v1.Service) error {
 	addIngress(p.logger, service, ip)
 
 	// Update our internal allocation data structures
-	return p.Notify(service)
+	return p.Notify(ctx, service)
 }
 
 // Release releases an IP so it can be assigned again.
-func (p LocalPool) Release(service string) error {
+func (p LocalPool) Release(_ context.Context, service string) error {
 	for ipstr, allocs := range p.addressesInUse {
 		delete(allocs, service)
 		if len(allocs) == 0 {
@@ -400,7 +401,7 @@ func (p LocalPool) Release(service string) error {
 
 // ReleaseIP releases a specific IP address for a service. Used during
 // IP family transitions (e.g., DualStack → SingleStack).
-func (p LocalPool) ReleaseIP(service string, ip net.IP) error {
+func (p LocalPool) ReleaseIP(_ context.Context, service string, ip net.IP) error {
 	ipstr := ip.String()
 
 	// Check if this IP is in our pool
@@ -654,6 +655,79 @@ func (p LocalPool) BalancePools() bool {
 	return p.balancePools
 }
 
+// IPAMSource returns "Cluster" — LocalPool is authoritative for its own
+// address space; PureLB's allocator does the IPAM directly.
+func (p LocalPool) IPAMSource() string {
+	return "Cluster"
+}
+
+// InUseV4 returns the number of IPv4 addresses currently allocated.
+func (p LocalPool) InUseV4() int {
+	n := 0
+	for ipStr := range p.addressesInUse {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// InUseV6 returns the number of IPv6 addresses currently allocated.
+func (p LocalPool) InUseV6() int {
+	n := 0
+	for ipStr := range p.addressesInUse {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if ip.To4() == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// SizeV4 returns the total IPv4 capacity of this pool.
+func (p LocalPool) SizeV4() (size uint64) {
+	for _, v4 := range p.v4Ranges {
+		size += v4.Size()
+	}
+	return
+}
+
+// SizeV6 returns the total IPv6 capacity of this pool.
+func (p LocalPool) SizeV6() (size uint64) {
+	for _, v6 := range p.v6Ranges {
+		size += v6.Size()
+	}
+	return
+}
+
+// HasKnownCapacity returns true — LocalPool's capacity is sum of its
+// configured ranges and is always known.
+func (p LocalPool) HasKnownCapacity() bool {
+	return true
+}
+
+// DisplayAddresses returns the original spec strings of the configured
+// ranges (CIDRs and/or from-to forms), in v4-then-v6 order. Surfaced as
+// .status.addresses so kubectl shows what the user wrote rather than the
+// parsed "(from - to)" form.
+func (p LocalPool) DisplayAddresses() []string {
+	out := make([]string, 0, len(p.v4Ranges)+len(p.v6Ranges))
+	for _, r := range p.v4Ranges {
+		out = append(out, r.Raw())
+	}
+	for _, r := range p.v6Ranges {
+		out = append(out, r.Raw())
+	}
+	return out
+}
+
 // countAllocationsPerRange counts how many IPs are currently allocated
 // in each range. Used by balanced allocation to pick the least-used range.
 func (p LocalPool) countAllocationsPerRange(ranges []*purelbv2.IPRange) []int {
@@ -722,7 +796,7 @@ func (p LocalPool) assignFamilyBalancePools(family int, service *v1.Service) err
 func (p LocalPool) assignFromRange(ipRange *purelbv2.IPRange, service *v1.Service) error {
 	var lastErr error
 	for ip := ipRange.First(); ip != nil; ip = ipRange.Next(ip) {
-		if err := p.Assign(ip, service); err == nil {
+		if err := p.Assign(context.Background(), ip, service); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -737,7 +811,7 @@ func (p LocalPool) assignFromRange(ipRange *purelbv2.IPRange, service *v1.Servic
 // AssignNextPerRange allocates one IP per address range (per family) that
 // has an active subnet. activeSubnets is the set of subnets (in CIDR notation)
 // with healthy lbnodeagents. Returns error only if NO IPs could be allocated.
-func (p LocalPool) AssignNextPerRange(svc *v1.Service, activeSubnets []string) error {
+func (p LocalPool) AssignNextPerRange(ctx context.Context, svc *v1.Service, activeSubnets []string) error {
 	activeSet := make(map[string]bool, len(activeSubnets))
 	for _, s := range activeSubnets {
 		activeSet[s] = true

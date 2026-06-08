@@ -66,6 +66,18 @@ var (
 		Name:      "balance_pools_allocations_total",
 		Help:      "Total balancePools allocations performed",
 	}, labelNames)
+
+	// sgStatusWritesTotal tracks ServiceGroup .status subresource write
+	// outcomes. Defends against the v0.16.4-class silent-RBAC-failure
+	// pattern: if servicegroups/status RBAC isn't granted, the
+	// "forbidden" series will tick non-zero and operators can alert on
+	// it via `rate(sg_status_writes_total{outcome!="success"}[5m]) > 0`.
+	sgStatusWritesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: "allocator",
+		Name:      "sg_status_writes_total",
+		Help:      "ServiceGroup status subresource write outcomes (success|conflict|forbidden|other).",
+	}, []string{"outcome"})
 )
 
 func init() {
@@ -75,4 +87,5 @@ func init() {
 	prometheus.MustRegister(multipoolAllocations)
 	prometheus.MustRegister(multipoolPartial)
 	prometheus.MustRegister(balancePoolsAllocations)
+	prometheus.MustRegister(sgStatusWritesTotal)
 }
