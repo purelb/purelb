@@ -15,6 +15,8 @@
 package allocator
 
 import (
+	"context"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -25,7 +27,9 @@ import (
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
@@ -1331,4 +1335,378 @@ func TestIncrementalMultiPoolNoOp(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, added, "all ranges covered, should be no-op")
 	assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress))
+}
+
+// =================================================================
+// Part A: ServiceGroup display (.status subresource) tests
+// =================================================================
+
+// fakeStatusPool implements just enough of Pool for buildStatus tests.
+// Each field is set per-case to exercise a specific buildStatus branch.
+type fakeStatusPool struct {
+	name              string
+	poolType          string
+	ipamSource        string
+	displayAddresses  []string
+	inUseV4           int
+	inUseV6           int
+	sizeV4            uint64
+	sizeV6            uint64
+	hasKnownCapacity  bool
+}
+
+func (f *fakeStatusPool) String() string                                  { return f.name }
+func (f *fakeStatusPool) PoolType() string                                { return f.poolType }
+func (f *fakeStatusPool) IPAMSource() string                              { return f.ipamSource }
+func (f *fakeStatusPool) DisplayAddresses() []string                      { return f.displayAddresses }
+func (f *fakeStatusPool) InUseV4() int                                    { return f.inUseV4 }
+func (f *fakeStatusPool) InUseV6() int                                    { return f.inUseV6 }
+func (f *fakeStatusPool) SizeV4() uint64                                  { return f.sizeV4 }
+func (f *fakeStatusPool) SizeV6() uint64                                  { return f.sizeV6 }
+func (f *fakeStatusPool) HasKnownCapacity() bool                          { return f.hasKnownCapacity }
+func (f *fakeStatusPool) InUse() int                                      { return f.inUseV4 + f.inUseV6 }
+func (f *fakeStatusPool) Size() uint64                                    { return f.sizeV4 + f.sizeV6 }
+func (f *fakeStatusPool) Notify(context.Context, *v1.Service) error       { return nil }
+func (f *fakeStatusPool) Assign(context.Context, net.IP, *v1.Service) error { return nil }
+func (f *fakeStatusPool) AssignNext(context.Context, *v1.Service) error   { return nil }
+func (f *fakeStatusPool) Release(context.Context, string) error           { return nil }
+func (f *fakeStatusPool) ReleaseIP(context.Context, string, net.IP) error { return nil }
+func (f *fakeStatusPool) AssignNextPerRange(context.Context, *v1.Service, []string) error {
+	return nil
+}
+func (f *fakeStatusPool) Overlaps(Pool) bool { return false }
+func (f *fakeStatusPool) Contains(net.IP) bool { return false }
+func (f *fakeStatusPool) SkipIPv6DAD() bool   { return false }
+func (f *fakeStatusPool) MultiPool() bool     { return false }
+func (f *fakeStatusPool) BalancePools() bool  { return false }
+
+// ptrI64 returns a pointer to v. Used for inline expected-value
+// construction in table-driven tests.
+func ptrI64(v int64) *int64 { return &v }
+
+func TestBuildStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		pool *fakeStatusPool
+		want purelbv2.ServiceGroupStatus
+	}{
+		{
+			name: "cluster-IPAM local pool, partial allocation",
+			pool: &fakeStatusPool{
+				poolType:         "local",
+				ipamSource:       "Cluster",
+				displayAddresses: []string{"192.168.1.0/24"},
+				inUseV4:          3,
+				sizeV4:           254,
+				hasKnownCapacity: true,
+			},
+			want: purelbv2.ServiceGroupStatus{
+				Announce:      "Local",
+				IPAM:          "Cluster",
+				Addresses:     []string{"192.168.1.0/24"},
+				AllocatedIPv4: 3,
+				AllocatedIPv6: 0,
+				AvailableIPv4: ptrI64(251),
+				AvailableIPv6: ptrI64(0),
+			},
+		},
+		{
+			name: "cluster-IPAM remote pool, dual-stack",
+			pool: &fakeStatusPool{
+				poolType:         "remote",
+				ipamSource:       "Cluster",
+				displayAddresses: []string{"172.16.0.0/24", "2001:db8::/120"},
+				inUseV4:          5,
+				inUseV6:          2,
+				sizeV4:           254,
+				sizeV6:           65535,
+				hasKnownCapacity: true,
+			},
+			want: purelbv2.ServiceGroupStatus{
+				Announce:      "Remote",
+				IPAM:          "Cluster",
+				Addresses:     []string{"172.16.0.0/24", "2001:db8::/120"},
+				AllocatedIPv4: 5,
+				AllocatedIPv6: 2,
+				AvailableIPv4: ptrI64(249),
+				AvailableIPv6: ptrI64(65533),
+			},
+		},
+		{
+			name: "external-IPAM (no known capacity): Available fields nil",
+			pool: &fakeStatusPool{
+				poolType:         "remote",
+				ipamSource:       "Netbox",
+				displayAddresses: nil,
+				inUseV4:          12,
+				inUseV6:          0,
+				hasKnownCapacity: false,
+			},
+			want: purelbv2.ServiceGroupStatus{
+				Announce:      "Remote",
+				IPAM:          "Netbox",
+				Addresses:     nil,
+				AllocatedIPv4: 12,
+				AllocatedIPv6: 0,
+				// AvailableIPv4 + AvailableIPv6 left nil
+			},
+		},
+		{
+			name: "empty local pool: Allocated=0, Available=full capacity",
+			pool: &fakeStatusPool{
+				poolType:         "local",
+				ipamSource:       "Cluster",
+				displayAddresses: []string{"10.0.0.0/30"},
+				sizeV4:           4,
+				hasKnownCapacity: true,
+			},
+			want: purelbv2.ServiceGroupStatus{
+				Announce:      "Local",
+				IPAM:          "Cluster",
+				Addresses:     []string{"10.0.0.0/30"},
+				AllocatedIPv4: 0,
+				AllocatedIPv6: 0,
+				AvailableIPv4: ptrI64(4),
+				AvailableIPv6: ptrI64(0),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildStatus(tc.pool)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("buildStatus mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestStatusEqual(t *testing.T) {
+	base := purelbv2.ServiceGroupStatus{
+		Announce: "Local", IPAM: "Cluster",
+		Addresses:     []string{"192.168.1.0/24"},
+		AllocatedIPv4: 3, AllocatedIPv6: 0,
+		AvailableIPv4: ptrI64(251), AvailableIPv6: ptrI64(0),
+	}
+
+	cases := []struct {
+		name string
+		a, b purelbv2.ServiceGroupStatus
+		want bool
+	}{
+		{name: "identical", a: base, b: base, want: true},
+		{
+			name: "Announce differs",
+			a:    base,
+			b:    func() purelbv2.ServiceGroupStatus { c := base; c.Announce = "Remote"; return c }(),
+			want: false,
+		},
+		{
+			name: "IPAM differs",
+			a:    base,
+			b:    func() purelbv2.ServiceGroupStatus { c := base; c.IPAM = "Netbox"; return c }(),
+			want: false,
+		},
+		{
+			name: "AllocatedIPv4 differs",
+			a:    base,
+			b:    func() purelbv2.ServiceGroupStatus { c := base; c.AllocatedIPv4 = 4; return c }(),
+			want: false,
+		},
+		{
+			name: "Available* nil vs ptr-to-equal-value differ",
+			a:    base,
+			b:    func() purelbv2.ServiceGroupStatus { c := base; c.AvailableIPv4 = nil; return c }(),
+			want: false,
+		},
+		{
+			name: "Available* both nil match",
+			a:    func() purelbv2.ServiceGroupStatus { c := base; c.AvailableIPv4 = nil; c.AvailableIPv6 = nil; return c }(),
+			b:    func() purelbv2.ServiceGroupStatus { c := base; c.AvailableIPv4 = nil; c.AvailableIPv6 = nil; return c }(),
+			want: true,
+		},
+		{
+			name: "Available* separate-allocation-same-value match (this is the key cache-elision case)",
+			a:    base,
+			b:    func() purelbv2.ServiceGroupStatus { c := base; v4, v6 := int64(251), int64(0); c.AvailableIPv4 = &v4; c.AvailableIPv6 = &v6; return c }(),
+			want: true,
+		},
+		{
+			name: "Addresses length differs",
+			a:    base,
+			b:    func() purelbv2.ServiceGroupStatus { c := base; c.Addresses = []string{"192.168.1.0/24", "extra"}; return c }(),
+			want: false,
+		},
+		{
+			name: "Addresses content differs",
+			a:    base,
+			b:    func() purelbv2.ServiceGroupStatus { c := base; c.Addresses = []string{"10.0.0.0/24"}; return c }(),
+			want: false,
+		},
+		{
+			name: "Addresses both empty match",
+			a:    func() purelbv2.ServiceGroupStatus { c := base; c.Addresses = nil; return c }(),
+			b:    func() purelbv2.ServiceGroupStatus { c := base; c.Addresses = nil; return c }(),
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := statusEqual(tc.a, tc.b)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestInt64PtrEqual(t *testing.T) {
+	a, b := int64(5), int64(5)
+	c := int64(7)
+	assert.True(t, int64PtrEqual(nil, nil), "both nil should be equal")
+	assert.False(t, int64PtrEqual(&a, nil), "ptr vs nil should differ")
+	assert.False(t, int64PtrEqual(nil, &a), "nil vs ptr should differ")
+	assert.True(t, int64PtrEqual(&a, &b), "separate alloc same value should be equal")
+	assert.False(t, int64PtrEqual(&a, &c), "different values should differ")
+	assert.True(t, int64PtrEqual(&a, &a), "same pointer should be equal")
+}
+
+func TestClassifyStatusErr(t *testing.T) {
+	assert.Equal(t, "success", classifyStatusErr(nil))
+	assert.Equal(t, "conflict", classifyStatusErr(apierrors.NewConflict(
+		schema.GroupResource{Group: "purelb.io", Resource: "servicegroups"},
+		"test", nil)))
+	assert.Equal(t, "forbidden", classifyStatusErr(apierrors.NewForbidden(
+		schema.GroupResource{Group: "purelb.io", Resource: "servicegroups/status"},
+		"test", nil)))
+	// Any error not matching IsConflict / IsForbidden → "other"
+	assert.Equal(t, "other", classifyStatusErr(fmt.Errorf("some random error")))
+}
+
+func TestCapitalize(t *testing.T) {
+	assert.Equal(t, "", capitalize(""))
+	assert.Equal(t, "Local", capitalize("local"))
+	assert.Equal(t, "Remote", capitalize("remote"))
+	assert.Equal(t, "Already", capitalize("Already"), "already-capitalized should be unchanged")
+	assert.Equal(t, "A", capitalize("a"))
+}
+
+// fakeStatusWriter captures ServiceGroupStatusWriter calls for tests of
+// maybeUpdateSGStatus. The next write returns nextErr when non-nil.
+type fakeStatusWriter struct {
+	updates       []*purelbv2.ServiceGroup
+	nextErr       error
+	apiCtxCalls   int
+	shutdownCalls int
+}
+
+func (f *fakeStatusWriter) UpdateServiceGroupStatus(sg *purelbv2.ServiceGroup) (*purelbv2.ServiceGroup, error) {
+	f.updates = append(f.updates, sg.DeepCopy())
+	if f.nextErr != nil {
+		err := f.nextErr
+		f.nextErr = nil
+		return nil, err
+	}
+	// Simulate API server: bump ResourceVersion to demonstrate the fake
+	// behaves like the real one. Tests that care about ResourceVersion
+	// propagation can assert on this.
+	updated := sg.DeepCopy()
+	updated.ResourceVersion = sg.ResourceVersion + "-bumped"
+	return updated, nil
+}
+func (f *fakeStatusWriter) APIContext() (context.Context, context.CancelFunc) {
+	f.apiCtxCalls++
+	return context.Background(), func() {}
+}
+func (f *fakeStatusWriter) IsShutdownError(err error) bool {
+	f.shutdownCalls++
+	return false
+}
+
+func TestMaybeUpdateSGStatus_NoopCacheElision(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	fakeWriter := &fakeStatusWriter{}
+	alloc.SetServiceGroupStatusWriter(fakeWriter)
+
+	sg := &purelbv2.ServiceGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-sg", Namespace: "purelb-system"},
+	}
+	pool := &fakeStatusPool{
+		name:             "test-sg",
+		poolType:         "local",
+		ipamSource:       "Cluster",
+		displayAddresses: []string{"192.168.1.0/24"},
+		inUseV4:          3,
+		sizeV4:           254,
+		hasKnownCapacity: true,
+	}
+	alloc.state.Store(&allocatorState{
+		pools:    map[string]Pool{"test-sg": pool},
+		sgByName: map[string]*purelbv2.ServiceGroup{"test-sg": sg},
+	})
+
+	// First call: writes status.
+	alloc.maybeUpdateSGStatus(pool)
+	assert.Equal(t, 1, len(fakeWriter.updates), "first call should write")
+
+	// Second call with unchanged pool state: cache-elision → no write.
+	alloc.maybeUpdateSGStatus(pool)
+	assert.Equal(t, 1, len(fakeWriter.updates), "no-op second call should NOT write")
+
+	// State change → write fires again.
+	pool.inUseV4 = 4
+	alloc.maybeUpdateSGStatus(pool)
+	assert.Equal(t, 2, len(fakeWriter.updates), "changed state should write")
+}
+
+func TestMaybeUpdateSGStatus_ErrorPath(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	fakeWriter := &fakeStatusWriter{
+		nextErr: apierrors.NewConflict(
+			schema.GroupResource{Group: "purelb.io", Resource: "servicegroups"},
+			"test", nil),
+	}
+	alloc.SetServiceGroupStatusWriter(fakeWriter)
+
+	sg := &purelbv2.ServiceGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-sg", Namespace: "purelb-system"},
+	}
+	pool := &fakeStatusPool{
+		name: "test-sg", poolType: "local", ipamSource: "Cluster",
+		inUseV4: 1, sizeV4: 4, hasKnownCapacity: true,
+	}
+	alloc.state.Store(&allocatorState{
+		pools:    map[string]Pool{"test-sg": pool},
+		sgByName: map[string]*purelbv2.ServiceGroup{"test-sg": sg},
+	})
+
+	// First call fails with conflict; should NOT update lastWritten cache.
+	alloc.maybeUpdateSGStatus(pool)
+	assert.Equal(t, 1, len(fakeWriter.updates), "first call attempts the write")
+	// Second call (no state change) retries because cache wasn't updated.
+	alloc.maybeUpdateSGStatus(pool)
+	assert.Equal(t, 2, len(fakeWriter.updates), "after error, next call should retry (cache not updated)")
+}
+
+func TestMaybeUpdateSGStatus_NilClient(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	// sgStatusClient NOT set — should silently skip.
+	pool := &fakeStatusPool{name: "test-sg", poolType: "local"}
+	alloc.state.Store(&allocatorState{
+		pools:    map[string]Pool{"test-sg": pool},
+		sgByName: map[string]*purelbv2.ServiceGroup{"test-sg": {ObjectMeta: metav1.ObjectMeta{Name: "test-sg"}}},
+	})
+	// No-op; just verify no panic.
+	alloc.maybeUpdateSGStatus(pool)
+}
+
+func TestMaybeUpdateSGStatus_UnknownPool(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.SetServiceGroupStatusWriter(&fakeStatusWriter{})
+	// Pool whose name isn't in sgByName — should silently skip.
+	pool := &fakeStatusPool{name: "unknown-sg", poolType: "local"}
+	alloc.state.Store(&allocatorState{
+		pools:    map[string]Pool{},
+		sgByName: map[string]*purelbv2.ServiceGroup{},
+	})
+	// No-op; no panic.
+	alloc.maybeUpdateSGStatus(pool)
 }

@@ -33,6 +33,13 @@ rules:
   - watch
   - update
 - apiGroups:
+  - purelb.io
+  resources:
+  - servicegroups/status
+  verbs:
+  - update
+  - patch
+- apiGroups:
   - ''
   resources:
   - services

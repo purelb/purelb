@@ -16,6 +16,7 @@
 package allocator
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -42,17 +43,20 @@ type Key struct {
 }
 
 // Pool describes the interface to code that manages pools of
-// addresses.
+// addresses. Mutating methods take a context so that pool
+// implementations backed by network I/O (e.g. external IPAM sidecars)
+// can honor the allocator's shutdown semantics; in-memory
+// implementations may safely ignore it.
 type Pool interface {
 	// Notify notifies the pool of an existing address assignment, for
 	// example, at startup time.
-	Notify(*v1.Service) error
-	AssignNext(*v1.Service) error
-	Assign(net.IP, *v1.Service) error
-	Release(string) error
+	Notify(ctx context.Context, svc *v1.Service) error
+	AssignNext(ctx context.Context, svc *v1.Service) error
+	Assign(ctx context.Context, ip net.IP, svc *v1.Service) error
+	Release(ctx context.Context, service string) error
 	// ReleaseIP releases a specific IP address for a service. Used during
 	// IP family transitions (e.g., DualStack → SingleStack).
-	ReleaseIP(service string, ip net.IP) error
+	ReleaseIP(ctx context.Context, service string, ip net.IP) error
 	InUse() int
 	Overlaps(Pool) bool
 	Contains(net.IP) bool // FIXME: I'm not sure that we need this. It might be the case that we can always rely on the service's pool annotation to find to which pool an address belongs
@@ -64,6 +68,12 @@ type Pool interface {
 	// or "remote" for addresses that should be announced on the dummy interface
 	// (different subnet, typically for BGP/routing scenarios or external IPAM).
 	PoolType() string
+
+	// IPAMSource identifies the source of address management. Returns
+	// "Cluster" when PureLB's allocator is authoritative for the address
+	// space, or the name of an external IPAM system (e.g. a sidecar
+	// plugin's provider name) when allocation is delegated.
+	IPAMSource() string
 
 	// SkipIPv6DAD returns whether IPv6 Duplicate Address Detection should
 	// be skipped for addresses from this pool. This can speed up address
@@ -82,7 +92,36 @@ type Pool interface {
 	// AssignNextPerRange allocates one IP per address range (per family)
 	// that has an active subnet. activeSubnets is the set of subnets with
 	// healthy lbnodeagents. Returns error only if NO IPs could be allocated.
-	AssignNextPerRange(svc *v1.Service, activeSubnets []string) error
+	AssignNextPerRange(ctx context.Context, svc *v1.Service, activeSubnets []string) error
+
+	// InUseV4 returns the number of IPv4 addresses currently allocated.
+	// Must be a pure in-memory read; implementations that wrap remote
+	// state (e.g. sidecar IPAM) MUST cache and never fire RPCs from this
+	// accessor.
+	InUseV4() int
+
+	// InUseV6 returns the number of IPv6 addresses currently allocated.
+	// Same purity contract as InUseV4.
+	InUseV6() int
+
+	// SizeV4 returns the IPv4 capacity of the pool. May return 0 when
+	// capacity is not knowable locally (use HasKnownCapacity to
+	// disambiguate "0 capacity" from "unknown").
+	SizeV4() uint64
+
+	// SizeV6 returns the IPv6 capacity of the pool. Same semantics as SizeV4.
+	SizeV6() uint64
+
+	// HasKnownCapacity reports whether SizeV4/SizeV6 reflect true capacity.
+	// False for pools backed by external systems whose total size is not
+	// visible to the allocator (e.g. sidecar IPAM without a Stats reply).
+	HasKnownCapacity() bool
+
+	// DisplayAddresses returns a human-readable summary of the pool's
+	// address scope, surfaced as .status.addresses. Pool implementations
+	// choose their own format (CIDR list for local pools; external-system
+	// descriptor for sidecar-IPAM pools).
+	DisplayAddresses() []string
 }
 
 func sharingOK(existing, new *Key) error {

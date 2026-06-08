@@ -33,6 +33,15 @@ import (
 // group spec and status.
 // +kubebuilder:resource:shortName=sg;sgs
 // +kubebuilder:storageversion
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Announce",type=string,JSONPath=`.status.announce`
+// +kubebuilder:printcolumn:name="IPAM",type=string,JSONPath=`.status.ipam`
+// +kubebuilder:printcolumn:name="Addresses",type=string,JSONPath=`.status.addresses`
+// +kubebuilder:printcolumn:name="Allocated-V4",type=integer,JSONPath=`.status.allocatedIPv4`,priority=1
+// +kubebuilder:printcolumn:name="Allocated-V6",type=integer,JSONPath=`.status.allocatedIPv6`,priority=1
+// +kubebuilder:printcolumn:name="Available-V4",type=integer,JSONPath=`.status.availableIPv4`,priority=1
+// +kubebuilder:printcolumn:name="Available-V6",type=integer,JSONPath=`.status.availableIPv6`,priority=1
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type ServiceGroup struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -260,11 +269,52 @@ type AddressPool struct {
 	Aggregation string `json:"aggregation,omitempty"`
 }
 
-// ServiceGroupStatus contains runtime information about the ServiceGroup.
+// ServiceGroupStatus reports runtime information about the ServiceGroup,
+// populated by the allocator as services are assigned and released.
+// Values may briefly lag the spec after a config change.
 type ServiceGroupStatus struct {
-	// AllocatedCount is the number of IP addresses currently allocated from this pool.
+	// Announce is the announcement mechanism: "Local" (IP added to the
+	// node's primary interface, for directly-attached subnets) or
+	// "Remote" (IP added to the kubelb0 dummy interface and advertised
+	// via BGP for non-local subnets). Derived from Pool.PoolType().
 	// +optional
-	AllocatedCount int `json:"allocatedCount,omitempty"`
+	Announce string `json:"announce,omitempty"`
+
+	// IPAM identifies the address-management source: "Cluster" when
+	// PureLB's allocator is authoritative for the address space, or the
+	// name of an external IPAM system (e.g. a sidecar plugin's provider
+	// name) when allocation is delegated. Derived from Pool.IPAMSource().
+	// +optional
+	IPAM string `json:"ipam,omitempty"`
+
+	// Addresses is a human-readable summary of the pool's address scope,
+	// produced by the Pool implementation. For cluster-IPAM pools this
+	// is the configured CIDRs and ranges; for external-IPAM pools it is
+	// whatever descriptor the source chooses (may be empty when the
+	// source does not expose address scope locally).
+	// +optional
+	Addresses []string `json:"addresses,omitempty"`
+
+	// AllocatedIPv4 is the number of IPv4 addresses currently assigned.
+	// +kubebuilder:validation:Minimum=0
+	AllocatedIPv4 int64 `json:"allocatedIPv4"`
+
+	// AllocatedIPv6 is the number of IPv6 addresses currently assigned.
+	// +kubebuilder:validation:Minimum=0
+	AllocatedIPv6 int64 `json:"allocatedIPv6"`
+
+	// AvailableIPv4 is the number of free IPv4 addresses. Absent when
+	// pool capacity is not knowable locally (external IPAM).
+	// Distinct from the value 0, which means the pool is full.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	AvailableIPv4 *int64 `json:"availableIPv4,omitempty"`
+
+	// AvailableIPv6 is the number of free IPv6 addresses. Absent when
+	// pool capacity is not knowable locally (external IPAM).
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	AvailableIPv6 *int64 `json:"availableIPv6,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

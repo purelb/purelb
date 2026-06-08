@@ -55,9 +55,10 @@ const serviceNameIndexName = "serviceName"
 type Client struct {
 	logger log.Logger
 
-	client *kubernetes.Clientset
-	events record.EventRecorder
-	queue  workqueue.TypedRateLimitingInterface[queueItem]
+	client   *kubernetes.Clientset
+	crClient versioned.Interface
+	events   record.EventRecorder
+	queue    workqueue.TypedRateLimitingInterface[queueItem]
 
 	// shuttingDown is set to true when stopCh closes, signaling that
 	// API calls should use shorter timeouts to allow graceful shutdown.
@@ -85,6 +86,65 @@ type ServiceEvent interface {
 	Infof(obj runtime.Object, desc, msg string, args ...interface{})
 	Errorf(obj runtime.Object, desc, msg string, args ...interface{})
 	ForceSync()
+}
+
+// ServiceGroupStatusWriter is the surface the allocator needs from
+// *Client to write ServiceGroup .status: the write itself, a
+// timeout-bounded cancellable context, and a way to classify shutdown
+// errors as expected (silent). Kept narrow and separate from
+// ServiceEvent — different semantic concern (CRD status writes vs
+// k8s Event emission). *Client satisfies both interfaces.
+//
+// APIContext lives here, not just as a renamed public method on
+// *Client, because the allocator only holds the narrow ServiceEvent
+// interface today and has no path to *Client.apiContext(). Putting
+// APIContext on the new interface lets the allocator construct
+// cancellable contexts without needing a *Client reference.
+type ServiceGroupStatusWriter interface {
+	// UpdateServiceGroupStatus writes sg.Status via the status subresource.
+	// Returns the updated ServiceGroup (with bumped ResourceVersion) on
+	// success — callers should use this to refresh their cached SG so
+	// subsequent UpdateStatus calls don't hit "object has been modified"
+	// conflicts. nil + error on failure.
+	UpdateServiceGroupStatus(sg *purelbv2.ServiceGroup) (*purelbv2.ServiceGroup, error)
+	APIContext() (context.Context, context.CancelFunc)
+	IsShutdownError(err error) bool
+}
+
+// APIContext is the public wrapper over the unexported apiContext.
+// Returns a context.Context with the standard PureLB API timeout
+// (10s normally, 500ms during shutdown). Callers MUST invoke the
+// returned CancelFunc.
+func (c *Client) APIContext() (context.Context, context.CancelFunc) {
+	return c.apiContext()
+}
+
+// IsShutdownError is the public wrapper over isShutdownError.
+// Returns true when err is a context.DeadlineExceeded or
+// context.Canceled originating from the shutdown-mode short timeout.
+func (c *Client) IsShutdownError(err error) bool {
+	return c.isShutdownError(err)
+}
+
+// UpdateServiceGroupStatus writes sg's .status subresource. Mirrors
+// maybeUpdateService's pattern: uses apiContext() for timeout-bounded
+// cancellable I/O; sets FieldManager so SSA users see PureLB's owner
+// identity correctly; classifies shutdown errors as benign.
+func (c *Client) UpdateServiceGroupStatus(sg *purelbv2.ServiceGroup) (*purelbv2.ServiceGroup, error) {
+	ctx, cancel := c.apiContext()
+	defer cancel()
+	updated, err := c.crClient.PurelbV2().ServiceGroups(sg.Namespace).UpdateStatus(ctx, sg, metav1.UpdateOptions{
+		FieldManager: "purelb-allocator",
+	})
+	if err != nil {
+		if c.isShutdownError(err) {
+			c.logger.Log("op", "updateSGStatus", "msg", "skipping update during shutdown")
+			return nil, nil
+		}
+		// Caller is responsible for logging + classifying for metrics.
+		return nil, err
+	}
+	return updated, nil
 }
 
 // SyncState is the result of calling synchronization callbacks.
@@ -162,10 +222,11 @@ func New(cfg *Config) (*Client, error) {
 	queue := workqueue.NewTypedRateLimitingQueue[queueItem](workqueue.DefaultTypedControllerRateLimiter[queueItem]())
 
 	c := &Client{
-		logger: cfg.Logger,
-		client: clientset,
-		events: recorder,
-		queue:  queue,
+		logger:   cfg.Logger,
+		client:   clientset,
+		crClient: crClient,
+		events:   recorder,
+		queue:    queue,
 	}
 
 	// Custom Resource Watcher
