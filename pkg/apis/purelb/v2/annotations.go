@@ -51,6 +51,23 @@ const (
 	// processing. Useful when subnets change without a config change.
 	ReEvaluateAnnotation string = "purelb.io/re-evaluate"
 
+	// NodeAffinityAnnotation, when set on a Service whose VIP comes from a
+	// Local pool, biases election toward nodes that host a Ready or Serving
+	// endpoint of this Service. The only supported value is
+	// "service-endpoints" (NodeAffinityServiceEndpoints); any other value
+	// is ignored. Has no effect on Remote-pool services (which already get
+	// affinity via BGP-from-endpoint-nodes when ETP=Local). Has no effect
+	// on services that share an IP via SharingAnnotation. When no preferred
+	// node is eligible, election falls back silently to standard hash
+	// selection (tracked via purelb_election_affinity_fallback_total).
+	NodeAffinityAnnotation string = "purelb.io/node-affinity"
+
+	// NodeAffinityServiceEndpoints is the only currently-supported value
+	// for NodeAffinityAnnotation. String-valued (not boolean) so future
+	// modes (e.g. topology-zone) can extend without inventing a second
+	// annotation.
+	NodeAffinityServiceEndpoints string = "service-endpoints"
+
 	// ============================================================================
 	// PureLB-set annotations (informational)
 	// ============================================================================

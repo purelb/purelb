@@ -180,6 +180,13 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 	// add the address to our announcement database
 	a.svcIngresses[nsName] = svc.Status.LoadBalancer.Ingress
 
+	// Compute preferred-node set once per SetBalancer cycle (not per IP).
+	// For dual-stack services the inner loop iterates twice — without
+	// hoisting, the annotation check + endpoint iteration would run
+	// twice for identical input. Returns nil for opt-out services, in
+	// which case WinnerWithPreference behaves identically to Winner.
+	preferred := buildPreferredNodes(svc, epSlices)
+
 	for _, ingress := range svc.Status.LoadBalancer.Ingress {
 		// validate the allocated address
 		lbIP := net.ParseIP(ingress.IP)
@@ -194,7 +201,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			lbIPNet, localif, err := findLocal(a.localNameRegex, lbIP)
 			if err == nil {
 				// We found a local interface, announce the address on it
-				if err := a.announceLocal(svc, localif, lbIP, lbIPNet); err != nil {
+				if err := a.announceLocal(svc, preferred, localif, lbIP, lbIPNet); err != nil {
 					retErr = err
 				}
 			} else if a.isRemotePool(lbIP) {
@@ -220,7 +227,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			if lbIPNet, defaultif, err := checkLocal(announceInt, lbIP); err == nil {
 				// The default interface is a local interface, announce the
 				// address on it
-				if err := a.announceLocal(svc, defaultif, lbIP, lbIPNet); err != nil {
+				if err := a.announceLocal(svc, preferred, defaultif, lbIP, lbIPNet); err != nil {
 					retErr = err
 				}
 			} else if a.isRemotePool(lbIP) {
@@ -241,7 +248,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 	return retErr
 }
 
-func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbIP net.IP, lbIPNet net.IPNet) error {
+func (a *announcer) announceLocal(svc *v1.Service, preferred []string, announceInt netlink.Link, lbIP net.IP, lbIPNet net.IPNet) error {
 	l := log.With(a.logger, "service", svc.Name)
 	nsName := svc.Namespace + "/" + svc.Name
 
@@ -268,8 +275,11 @@ func (a *announcer) announceLocal(svc *v1.Service, announceInt netlink.Link, lbI
 		}
 	}
 
-	// See if we won the announcement election
-	winner := a.election.Winner(lbIP.String())
+	// See if we won the announcement election. preferred is the set of
+	// nodes hosting Ready/Serving endpoints for this service when the
+	// caller has opted in via NodeAffinityAnnotation; nil otherwise (in
+	// which case WinnerWithPreference behaves identically to Winner).
+	winner := a.election.WinnerWithPreference(lbIP.String(), preferred)
 	if winner == "" {
 		// No nodes have a subnet containing this IP - withdraw any announcement
 		// This happens when subnet-aware election finds no eligible candidates
@@ -501,6 +511,52 @@ func (a *announcer) WithdrawAll() {
 
 func (a *announcer) SetElection(election *election.Election) {
 	a.election = election
+}
+
+// buildPreferredNodes returns the unique node names that host a Ready
+// or Serving endpoint of the given service IF the service has opted in
+// to election affinity via NodeAffinityAnnotation. Returns nil when:
+//   - the annotation is absent or has a value other than "service-endpoints"
+//   - the service is part of a shared-IP family (per-service preferred
+//     sets are incompatible with sharing semantics; aggregation across
+//     sharing services is a future enhancement)
+//
+// A nil return tells WinnerWithPreference to behave exactly like Winner
+// (no affinity biasing, no fallback metric).
+//
+// Readiness rule (Ready OR Serving) mirrors nodeHasHealthyEndpoint
+// below — terminating pods (Ready=false, Serving=true) stay in the
+// preferred set so the VIP doesn't migrate away mid-drain.
+func buildPreferredNodes(svc *v1.Service, epSlices []*discoveryv1.EndpointSlice) []string {
+	if svc.Annotations[purelbv2.NodeAffinityAnnotation] != purelbv2.NodeAffinityServiceEndpoints {
+		return nil
+	}
+	if _, shared := svc.Annotations[purelbv2.SharingAnnotation]; shared {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var preferred []string
+	for _, slice := range epSlices {
+		if slice == nil {
+			continue
+		}
+		for _, ep := range slice.Endpoints {
+			if ep.NodeName == nil {
+				continue
+			}
+			ready := ep.Conditions.Ready != nil && *ep.Conditions.Ready
+			serving := ep.Conditions.Serving != nil && *ep.Conditions.Serving
+			if !ready && !serving {
+				continue
+			}
+			if _, dup := seen[*ep.NodeName]; dup {
+				continue
+			}
+			seen[*ep.NodeName] = struct{}{}
+			preferred = append(preferred, *ep.NodeName)
+		}
+	}
+	return preferred
 }
 
 // nodeHasHealthyEndpoint returns true if node has at least one

@@ -22,6 +22,8 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
+	v1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
@@ -565,4 +567,116 @@ func TestSkipDADFromServiceAnnotation(t *testing.T) {
 			assert.Equal(t, tt.wantSkipDAD, opts.SkipDAD)
 		})
 	}
+}
+
+// =================================================================
+// v0.17.0: opt-in app-affinity election (buildPreferredNodes)
+// =================================================================
+
+// ptrBool returns &b. Required because EndpointConditions fields are pointers.
+func ptrBool(b bool) *bool { return &b }
+func ptrStr(s string) *string { return &s }
+
+// makeSlice builds a single-slice EndpointSlice list for tests. Each
+// entry is (nodeName, ready, serving). nil nodeName encodes "no
+// NodeName" — the helper must skip those.
+func makeSlice(entries ...struct {
+	nodeName *string
+	ready    bool
+	serving  bool
+}) []*discoveryv1.EndpointSlice {
+	eps := make([]discoveryv1.Endpoint, 0, len(entries))
+	for _, e := range entries {
+		eps = append(eps, discoveryv1.Endpoint{
+			NodeName: e.nodeName,
+			Conditions: discoveryv1.EndpointConditions{
+				Ready:   ptrBool(e.ready),
+				Serving: ptrBool(e.serving),
+			},
+		})
+	}
+	return []*discoveryv1.EndpointSlice{{Endpoints: eps}}
+}
+
+func TestBuildPreferredNodes(t *testing.T) {
+	withAnnot := func(annot, sharingKey string) *v1.Service {
+		s := &v1.Service{}
+		s.Annotations = map[string]string{}
+		if annot != "" {
+			s.Annotations[purelbv2.NodeAffinityAnnotation] = annot
+		}
+		if sharingKey != "" {
+			s.Annotations[purelbv2.SharingAnnotation] = sharingKey
+		}
+		return s
+	}
+
+	type entry = struct {
+		nodeName *string
+		ready    bool
+		serving  bool
+	}
+
+	t.Run("no annotation → returns nil", func(t *testing.T) {
+		got := buildPreferredNodes(withAnnot("", ""), makeSlice(entry{ptrStr("a"), true, true}))
+		assert.Nil(t, got)
+	})
+
+	t.Run("unknown annotation value → returns nil", func(t *testing.T) {
+		got := buildPreferredNodes(withAnnot("topology-zone", ""), makeSlice(entry{ptrStr("a"), true, true}))
+		assert.Nil(t, got, "future-mode annotation values must opt out (treat as not-set)")
+	})
+
+	t.Run("annotation + shared-IP → returns nil (sharing exclusion)", func(t *testing.T) {
+		got := buildPreferredNodes(withAnnot(purelbv2.NodeAffinityServiceEndpoints, "shared-1"),
+			makeSlice(entry{ptrStr("a"), true, true}))
+		assert.Nil(t, got, "sharing exclusion must fire even with valid annotation")
+	})
+
+	t.Run("annotation set, two Ready endpoints on different nodes → both included", func(t *testing.T) {
+		got := buildPreferredNodes(withAnnot(purelbv2.NodeAffinityServiceEndpoints, ""),
+			makeSlice(entry{ptrStr("a"), true, true}, entry{ptrStr("b"), true, true}))
+		assert.ElementsMatch(t, []string{"a", "b"}, got)
+	})
+
+	t.Run("nil NodeName endpoint → skipped", func(t *testing.T) {
+		got := buildPreferredNodes(withAnnot(purelbv2.NodeAffinityServiceEndpoints, ""),
+			makeSlice(entry{nil, true, true}, entry{ptrStr("b"), true, true}))
+		assert.Equal(t, []string{"b"}, got)
+	})
+
+	t.Run("Ready=false, Serving=true → INCLUDED (graceful drain)", func(t *testing.T) {
+		got := buildPreferredNodes(withAnnot(purelbv2.NodeAffinityServiceEndpoints, ""),
+			makeSlice(entry{ptrStr("draining"), false, true}))
+		assert.Equal(t, []string{"draining"}, got,
+			"Serving=true endpoints (terminating but draining) must stay preferred")
+	})
+
+	t.Run("Ready=false, Serving=false → skipped", func(t *testing.T) {
+		got := buildPreferredNodes(withAnnot(purelbv2.NodeAffinityServiceEndpoints, ""),
+			makeSlice(entry{ptrStr("dead"), false, false}))
+		assert.Empty(t, got)
+	})
+
+	t.Run("duplicate node across endpoints → deduplicated", func(t *testing.T) {
+		got := buildPreferredNodes(withAnnot(purelbv2.NodeAffinityServiceEndpoints, ""),
+			makeSlice(entry{ptrStr("a"), true, true}, entry{ptrStr("a"), true, true}))
+		assert.Equal(t, []string{"a"}, got)
+	})
+
+	t.Run("nil slice in input list → tolerated (no panic, skipped)", func(t *testing.T) {
+		got := buildPreferredNodes(withAnnot(purelbv2.NodeAffinityServiceEndpoints, ""),
+			[]*discoveryv1.EndpointSlice{nil, makeSlice(entry{ptrStr("a"), true, true})[0]})
+		assert.Equal(t, []string{"a"}, got)
+	})
+
+	t.Run("empty endpoint slice list → empty preferred (NOT nil)", func(t *testing.T) {
+		got := buildPreferredNodes(withAnnot(purelbv2.NodeAffinityServiceEndpoints, ""),
+			[]*discoveryv1.EndpointSlice{})
+		// Returns nil from append-loop never running; this is treated as
+		// "opted-in but no endpoints exist" — WinnerWithPreference handles
+		// it via the !len(preferred)>0 branch, falling through to standard
+		// election (no fallback metric since len(preferred)==0).
+		assert.Empty(t, got)
+	})
 }
