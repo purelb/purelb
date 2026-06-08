@@ -67,7 +67,7 @@ jobs:
           HUGO_ENVIRONMENT: production
         run: hugo --source website --minify
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: ./website/public
 
