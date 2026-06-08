@@ -80,6 +80,19 @@ var (
 		Name:      "local_subnet_count",
 		Help:      "Number of subnets on this node",
 	})
+
+	// affinityFallbacks counts cases where a service had its
+	// NodeAffinityAnnotation set but no preferred candidate was
+	// eligible for the election (subnet mismatch, lease loss, etc.),
+	// triggering silent fallback to standard hash election. Sustained
+	// non-zero rate indicates a misconfiguration (pods on subnet-less
+	// nodes, all preferred nodes down, etc.).
+	affinityFallbacks = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "affinity_fallback_total",
+		Help:      "Times an opted-in service had no preferred candidate eligible and fell back to standard hash election.",
+	}, []string{"service"})
 )
 
 func init() {
@@ -90,6 +103,7 @@ func init() {
 	prometheus.MustRegister(memberCount)
 	prometheus.MustRegister(subnetCount)
 	prometheus.MustRegister(localSubnetCount)
+	prometheus.MustRegister(affinityFallbacks)
 }
 
 // RecordLeaseHealthy sets the lease health metric.
@@ -129,4 +143,13 @@ func RecordSubnetCount(count int) {
 // RecordLocalSubnetCount sets the local subnet count.
 func RecordLocalSubnetCount(count int) {
 	localSubnetCount.Set(float64(count))
+}
+
+// RecordAffinityFallback increments the per-service affinity-fallback
+// counter. Called by WinnerWithPreference when an opt-in service has
+// no preferred candidate eligible (subnet mismatch, lease loss, etc.).
+// service is the election key (typically the IP address string passed
+// to WinnerWithPreference).
+func RecordAffinityFallback(service string) {
+	affinityFallbacks.WithLabelValues(service).Inc()
 }

@@ -371,6 +371,71 @@ func (e *Election) Winner(key string) string {
 	return winner
 }
 
+// WinnerWithPreference is like Winner but biases the election toward
+// candidates in the preferred set. If any preferred candidate is also a
+// valid election candidate (has the IP's subnet + healthy lease), the
+// election runs ONLY among those preferred candidates. Otherwise — or
+// when preferred is empty/nil — election runs over all candidates as
+// usual, and RecordAffinityFallback is invoked so operators can alert
+// on degraded affinity.
+//
+// Pass nil (or an empty slice) for preferred to behave identically to
+// Winner; no fallback is recorded in that case (it's opt-out, not a
+// degraded state).
+func (e *Election) WinnerWithPreference(key string, preferred []string) string {
+	// Same self-health + informer-sync + parse-IP preamble as Winner.
+	if !e.leaseHealthy.Load() {
+		return ""
+	}
+	if e.leaseInformer != nil && !e.leaseInformer.HasSynced() {
+		return ""
+	}
+	state := e.state.Load()
+	if state == nil || len(state.liveNodes) == 0 {
+		return ""
+	}
+	ip := net.ParseIP(key)
+	if ip == nil {
+		// Non-IP keys: behave like Winner — full live-nodes set, no
+		// affinity biasing (the subnet-based filtering doesn't apply).
+		candidates := make([]string, len(state.liveNodes))
+		copy(candidates, state.liveNodes)
+		return election(key, candidates)[0]
+	}
+
+	candidates := e.findCandidatesForIP(state, ip)
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	// Bias toward preferred candidates when set.
+	if len(preferred) > 0 {
+		prefSet := make(map[string]struct{}, len(preferred))
+		for _, n := range preferred {
+			prefSet[n] = struct{}{}
+		}
+		var prefCandidates []string
+		for _, c := range candidates {
+			if _, ok := prefSet[c]; ok {
+				prefCandidates = append(prefCandidates, c)
+			}
+		}
+		if len(prefCandidates) > 0 {
+			winner := election(key, prefCandidates)[0]
+			logging.Debug(e.config.Logger, "op", "election", "action", "winnerWithPreference",
+				"key", key, "preferred", len(preferred), "preferredCandidates", len(prefCandidates), "winner", winner)
+			return winner
+		}
+		// Preferred is non-empty but none intersect with candidates —
+		// silent fallback to standard election; tracked for observability.
+		RecordAffinityFallback(key)
+		logging.Debug(e.config.Logger, "op", "election", "action", "winnerWithPreference",
+			"key", key, "result", "fallback", "reason", "no preferred candidate eligible")
+	}
+
+	return election(key, candidates)[0]
+}
+
 // findCandidatesForIP returns all nodes that have a subnet containing the given IP.
 // The returned slice is deduplicated and sorted for deterministic results.
 func (e *Election) findCandidatesForIP(state *electionState, ip net.IP) []string {

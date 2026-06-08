@@ -1209,3 +1209,109 @@ func TestOnLeaseUpdateNoChangeNoCallback(t *testing.T) {
 	// OnMemberChange should NOT have been called
 	assert.Equal(t, 0, memberChangeCount, "OnMemberChange should not fire when membership is unchanged")
 }
+
+// =================================================================
+// v0.17.0: opt-in app-affinity election (WinnerWithPreference)
+// =================================================================
+
+// TestWinnerWithPreference covers the affinity election method. Uses
+// IP-shaped keys so findCandidatesForIP can subnet-match — election's
+// non-IP-key code path is exercised separately at line 348.
+func TestWinnerWithPreference(t *testing.T) {
+	const ip = "192.168.1.100"
+
+	setup := func(t *testing.T, liveNodes []string, subnet string, subnetNodes []string) *Election {
+		t.Helper()
+		client := fake.NewSimpleClientset()
+		stopCh := make(chan struct{})
+		t.Cleanup(func() { close(stopCh) })
+
+		e, err := New(Config{
+			Namespace: "purelb",
+			NodeName:  "test-node",
+			Client:    client,
+			StopCh:    stopCh,
+		})
+		require.NoError(t, err)
+		e.leaseHealthy.Store(true)
+		e.state.Store(&electionState{
+			liveNodes:     liveNodes,
+			subnetToNodes: map[string][]string{subnet: subnetNodes},
+			nodeToSubnets: make(map[string][]string),
+		})
+		return e
+	}
+
+	t.Run("preferred=nil → behaves like Winner (no fallback metric)", func(t *testing.T) {
+		e := setup(t, []string{"a", "b", "c"}, "192.168.1.0/24", []string{"a", "b", "c"})
+		winnerStd := e.Winner(ip)
+		winnerPref := e.WinnerWithPreference(ip, nil)
+		assert.Equal(t, winnerStd, winnerPref, "nil preferred should match Winner exactly")
+	})
+
+	t.Run("preferred=[] → behaves like Winner (no fallback metric)", func(t *testing.T) {
+		e := setup(t, []string{"a", "b", "c"}, "192.168.1.0/24", []string{"a", "b", "c"})
+		winnerStd := e.Winner(ip)
+		winnerPref := e.WinnerWithPreference(ip, []string{})
+		assert.Equal(t, winnerStd, winnerPref, "empty preferred should match Winner exactly")
+	})
+
+	t.Run("preferred all in candidates → winner ∈ preferred", func(t *testing.T) {
+		e := setup(t, []string{"a", "b", "c"}, "192.168.1.0/24", []string{"a", "b", "c"})
+		winner := e.WinnerWithPreference(ip, []string{"a", "b"})
+		assert.Contains(t, []string{"a", "b"}, winner, "winner must be in preferred set")
+	})
+
+	t.Run("preferred determinism: same inputs → same winner", func(t *testing.T) {
+		e := setup(t, []string{"a", "b", "c"}, "192.168.1.0/24", []string{"a", "b", "c"})
+		w1 := e.WinnerWithPreference(ip, []string{"a", "b"})
+		w2 := e.WinnerWithPreference(ip, []string{"a", "b"})
+		assert.Equal(t, w1, w2, "deterministic for identical inputs")
+	})
+
+	t.Run("preferred subset of one → winner is that one", func(t *testing.T) {
+		e := setup(t, []string{"a", "b", "c"}, "192.168.1.0/24", []string{"a", "b", "c"})
+		winner := e.WinnerWithPreference(ip, []string{"a"})
+		assert.Equal(t, "a", winner)
+	})
+
+	t.Run("preferred contains node not in liveNodes → silently skipped", func(t *testing.T) {
+		e := setup(t, []string{"a", "b", "c"}, "192.168.1.0/24", []string{"a", "b", "c"})
+		// "z" doesn't exist; "a" does. Winner must be "a".
+		winner := e.WinnerWithPreference(ip, []string{"z", "a"})
+		assert.Equal(t, "a", winner)
+	})
+
+	t.Run("preferred non-empty but NONE intersect candidates → fallback", func(t *testing.T) {
+		e := setup(t, []string{"a", "b", "c"}, "192.168.1.0/24", []string{"a", "b", "c"})
+		winnerStd := e.Winner(ip)
+		// "z" and "y" aren't in candidates → fallback to standard election.
+		winner := e.WinnerWithPreference(ip, []string{"z", "y"})
+		assert.Equal(t, winnerStd, winner, "fallback should match Winner's pick")
+	})
+
+	t.Run("IPv6 key works same as IPv4", func(t *testing.T) {
+		e := setup(t, []string{"a", "b", "c"}, "2001:db8::/120", []string{"a", "b", "c"})
+		const ipv6 = "2001:db8::5"
+		winnerStd := e.Winner(ipv6)
+		winnerPref := e.WinnerWithPreference(ipv6, nil)
+		assert.Equal(t, winnerStd, winnerPref, "IPv6 nil preferred should match Winner")
+
+		preferredWinner := e.WinnerWithPreference(ipv6, []string{"a"})
+		assert.Equal(t, "a", preferredWinner, "IPv6 single-preferred picks it")
+	})
+
+	t.Run("lease unhealthy → returns empty regardless of preferred", func(t *testing.T) {
+		e := setup(t, []string{"a", "b", "c"}, "192.168.1.0/24", []string{"a", "b", "c"})
+		e.leaseHealthy.Store(false)
+		assert.Equal(t, "", e.WinnerWithPreference(ip, []string{"a"}),
+			"unhealthy lease must return '' (matches Winner contract)")
+	})
+
+	t.Run("no candidates (no node has matching subnet) → returns empty", func(t *testing.T) {
+		// Live nodes exist but none have a subnet matching the IP.
+		e := setup(t, []string{"a"}, "10.0.0.0/24", []string{"a"})
+		assert.Equal(t, "", e.WinnerWithPreference(ip, []string{"a"}),
+			"no subnet match → empty (matches Winner contract)")
+	})
+}
