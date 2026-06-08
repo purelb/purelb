@@ -249,7 +249,7 @@ jobs:
           retention-days: 30
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             purelb-${{ github.ref_name }}.tgz
