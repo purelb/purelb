@@ -4,7 +4,7 @@ description: "Configure IP address pools for PureLB using ServiceGroup CRDs."
 weight: 10
 ---
 
-A ServiceGroup defines a pool of IP addresses that PureLB can allocate to LoadBalancer Services. Each ServiceGroup specifies exactly one pool type: `local`, `remote`, or `netbox`.
+A ServiceGroup defines a pool of IP addresses that PureLB can allocate to LoadBalancer Services. Each ServiceGroup specifies exactly one pool type: `local`, `remote`, or `external`.
 
 ## The Default ServiceGroup
 
@@ -56,9 +56,10 @@ spec:
       aggregation: /128
 ```
 
-## Netbox Pools
+## External Pools
 
-Use `spec.netbox` to allocate addresses from an external Netbox IPAM system. See [Netbox IPAM Integration]({{< relref "/docs/configuration/netbox" >}}) for details.
+Use `spec.external` to allocate addresses from an external IPAM system via a
+sidecar process. See [External IPAM (Sidecar)]({{< relref "/docs/configuration/external-ipam" >}}) for details.
 
 ```yaml
 apiVersion: purelb.io/v2
@@ -67,9 +68,10 @@ metadata:
   name: enterprise
   namespace: purelb-system
 spec:
-  netbox:
-    url: https://netbox.example.com/api
-    tenant: kubernetes-cluster
+  external:
+    provider: my-ipam       # cosmetic; surfaced in .status.ipam
+    socket: /var/run/purelb/ipam.sock
+    announce: remote        # "local" or "remote"
 ```
 
 ## Address Pool Fields

@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/go-kit/log"
 	v1 "k8s.io/api/core/v1"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -137,22 +136,33 @@ func sharingOK(existing, new *Key) error {
 	return nil
 }
 
-func parsePool(log log.Logger, name string, group purelbv2.ServiceGroupSpec) (Pool, error) {
+// parsePool builds a Pool from a ServiceGroupSpec. It's a method on
+// Allocator because the External branch needs the shared sidecar
+// connection pool (getOrDialSidecar).
+func (a *Allocator) parsePool(name string, group purelbv2.ServiceGroupSpec) (Pool, error) {
 	if group.Local != nil {
-		return NewLocalPool(name, log,
+		return NewLocalPool(name, a.logger,
 			group.Local.V4Pool, group.Local.V6Pool,
 			group.Local.V4Pools, group.Local.V6Pools,
 			purelbv2.PoolTypeLocal, group.Local.SkipIPv6DAD,
 			group.Local.MultiPool, group.Local.BalancePools)
 	} else if group.Remote != nil {
-		return NewLocalPool(name, log,
+		return NewLocalPool(name, a.logger,
 			group.Remote.V4Pool, group.Remote.V6Pool,
 			group.Remote.V4Pools, group.Remote.V6Pools,
 			purelbv2.PoolTypeRemote, false,
 			group.Remote.MultiPool, group.Remote.BalancePools)
-	} else if group.Netbox != nil {
-		return NewNetboxPool(name, log, *group.Netbox)
+	} else if group.External != nil {
+		socket := group.External.Socket
+		if socket == "" {
+			socket = defaultSidecarSocket
+		}
+		conn, err := a.getOrDialSidecar(socket)
+		if err != nil {
+			return nil, fmt.Errorf("dial sidecar at %s: %w", socket, err)
+		}
+		return NewSidecarPool(name, a.logger, *group.External, conn), nil
 	}
 
-	return nil, fmt.Errorf("Pool must specify local, remote, or netbox")
+	return nil, fmt.Errorf("Pool must specify local, remote, or external")
 }

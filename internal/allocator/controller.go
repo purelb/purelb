@@ -114,4 +114,5 @@ func (c *controller) MarkSynced() {
 
 func (c *controller) Shutdown() {
 	logging.Info(c.logger, "op", "shutdown")
+	c.ips.closeAllSidecarConns()
 }

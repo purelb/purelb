@@ -1,0 +1,95 @@
+syntax = "proto3";
+package purelb.ipam.v1;
+
+option go_package = "purelb.io/api/ipam/v1;ipamv1";
+
+// PureLB sidecar IPAM contract — v0.17.0.
+//
+// An external IPAM is integrated by running a sidecar process in the
+// allocator pod that implements this service over a Unix domain socket.
+// PureLB dials the socket; the sidecar owns its own configuration and
+// persistence.
+//
+// Errors are returned via gRPC status codes (no error fields in messages).
+// Recommended status code mapping for sidecar implementations:
+//   - OK: success
+//   - AlreadyExists: idempotent allocate result (same service requested)
+//   - ResourceExhausted: pool full
+//   - InvalidArgument: malformed input
+//   - Unavailable: transient; allocator surfaces as a Service event
+//
+// Sidecar implementation contract (see the operator docs for the
+// authoritative version):
+//   - Allocate MUST be idempotent on (pool, service)
+//   - Release MUST be idempotent
+//   - Sidecars persist their own state; the allocator does NOT recover state
+//   - Sidecars self-configure (env vars / mounted files / ConfigMaps)
+//   - Sidecars clean up a stale socket before binding
+//   - One sidecar process handles multiple pools (keyed by AllocateRequest.pool)
+//   - Sidecars handle concurrent RPCs
+//
+// Compatibility policy: additive fields are non-breaking; never reuse
+// field numbers; new RPCs added in future versions MUST be gated by a
+// capability field in a future GetInfo response. RPC number 4 in the
+// service is reserved for adding GetInfo later.
+
+service IPAM {
+  rpc Allocate(AllocateRequest) returns (AllocateResponse);
+  rpc Release(ReleaseRequest) returns (ReleaseResponse);
+  rpc Stats(StatsRequest) returns (StatsResponse);
+  // RPC slot 4 reserved for a future GetInfo RPC.
+}
+
+message AllocateRequest {
+  string pool = 1;        // ServiceGroup name
+  string service = 2;     // namespace/name (sidecar uses for idempotency)
+  string sharing_key = 3; // purelb.io/allow-shared-ip value (may be empty)
+  oneof selector {
+    ExplicitIPs explicit = 4;  // user-requested specific IPs
+    FamilyRequest families = 5; // auto-pick by family
+  }
+}
+
+message ExplicitIPs {
+  repeated string ips = 1;
+}
+
+message FamilyRequest {
+  bool want_ipv4 = 1;
+  bool want_ipv6 = 2;
+}
+
+message AllocateResponse {
+  repeated AllocatedIP ips = 1;
+}
+
+message AllocatedIP {
+  string ip = 1;
+  // Reserved for future per-IP metadata (e.g. lease TTL).
+}
+
+// ReleaseRequest uses oneof to prevent the "empty string releases all"
+// footgun.
+message ReleaseRequest {
+  string pool = 1;
+  string service = 2;
+  oneof target {
+    string ip = 3; // release a specific IP
+    bool all = 4;  // release all of the service's IPs
+  }
+}
+
+message ReleaseResponse {}
+
+message StatsRequest {
+  string pool = 1;
+}
+
+message StatsResponse {
+  uint64 in_use_v4 = 1;
+  uint64 in_use_v6 = 2;
+  uint64 size_v4 = 3;
+  uint64 size_v6 = 4;
+  bool has_known_capacity = 5;
+  repeated string display_addresses = 6;
+}

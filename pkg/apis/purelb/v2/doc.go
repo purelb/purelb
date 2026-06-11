@@ -18,7 +18,7 @@
 // Package v2 is the v2 version of the PureLB API.
 //
 // Key changes from v1:
-//   - ServiceGroup: Local/Remote/Netbox are now mutually exclusive fields
+//   - ServiceGroup: Local/Remote/External are now mutually exclusive fields
 //   - LBNodeAgent: Renamed fields for clarity, integrated GARPConfig
 //   - Added skipIPv6DAD option for ServiceGroup local pools
 package v2 // import "purelb.io/pkg/apis/purelb/v2"
