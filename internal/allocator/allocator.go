@@ -23,6 +23,8 @@ import (
 	"sync/atomic"
 
 	"github.com/go-kit/log"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -76,6 +78,12 @@ type Allocator struct {
 	// G1 (queue worker) — sync.Map is safe for the rare concurrent reads
 	// from any future helper goroutines.
 	lastWritten sync.Map // map[svcGroupName]purelbv2.ServiceGroupStatus
+
+	// sidecarConns holds one shared *grpc.ClientConn per external-IPAM
+	// sidecar socket. Multiple ServiceGroups pointing at the same socket
+	// share a connection. Connections live until allocator shutdown
+	// (closeAllSidecarConns); gRPC handles reconnection transparently.
+	sidecarConns sync.Map // map[socket string]*grpc.ClientConn
 }
 
 // New returns an Allocator managing no pools.
@@ -226,6 +234,18 @@ func (a *Allocator) maybeUpdateSGStatus(pool Pool) {
 	sg, ok := s.sgByName[pool.String()]
 	if !ok || sg == nil {
 		return
+	}
+
+	// For sidecar pools, refresh the cached Stats before building status.
+	// Pure display accessors read that cache; this is the only place an
+	// RPC fires for status. Best-effort — on failure we proceed with the
+	// last-good cache (the interceptor records the RPC error metric).
+	if sp, isSidecar := pool.(*SidecarPool); isSidecar {
+		ctx, cancel := a.sgStatusClient.APIContext()
+		if err := sp.refreshStats(ctx); err != nil {
+			logging.Info(a.logger, "op", "refreshSidecarStats", "error", err, "sg", sg.Name)
+		}
+		cancel()
 	}
 
 	newStatus := buildStatus(pool)
@@ -734,6 +754,41 @@ func (a *Allocator) serviceAddresses(svc *v1.Service) ([]net.IP, error) {
 	return ips, nil
 }
 
+// getOrDialSidecar returns a shared gRPC connection to the sidecar at
+// socket, dialing one if it doesn't exist yet. Connections are cached by
+// socket path so multiple ServiceGroups pointing at the same socket
+// share a connection. grpc.NewClient is lazy — it does not block on a
+// reachable sidecar, so a dial "succeeds" even if the sidecar isn't up
+// yet; the first RPC surfaces an Unavailable error in that case.
+func (a *Allocator) getOrDialSidecar(socket string) (*grpc.ClientConn, error) {
+	if v, ok := a.sidecarConns.Load(socket); ok {
+		return v.(*grpc.ClientConn), nil
+	}
+	conn, err := grpc.NewClient(
+		"unix://"+socket,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(newSidecarInstrumentation(socket)),
+	)
+	if err != nil {
+		return nil, err
+	}
+	if existing, loaded := a.sidecarConns.LoadOrStore(socket, conn); loaded {
+		// Another goroutine dialed concurrently; keep theirs, close ours.
+		conn.Close()
+		return existing.(*grpc.ClientConn), nil
+	}
+	return conn, nil
+}
+
+// closeAllSidecarConns closes every sidecar connection. Called on
+// allocator shutdown.
+func (a *Allocator) closeAllSidecarConns() {
+	a.sidecarConns.Range(func(_, v interface{}) bool {
+		v.(*grpc.ClientConn).Close()
+		return true
+	})
+}
+
 // parseGroups parses a slice of ServiceGroups and returns a map of
 // the pools specified by those groups. We try to return any good
 // pools so if a pool fails our validation it won't be in the output,
@@ -744,7 +799,7 @@ func (a *Allocator) parseGroups(groups []*purelbv2.ServiceGroup) map[string]Pool
 
 Group:
 	for _, group := range groups {
-		pool, err := parsePool(a.logger, group.Name, group.Spec)
+		pool, err := a.parsePool(group.Name, group.Spec)
 		if err != nil {
 			a.client.Errorf(group, "ParseFailed", "Failed to parse: %s", err)
 			logging.Info(a.logger, "op", "parseGroups", "error", "parsing ServiceGroup", "group", group.Name, "msg", err)

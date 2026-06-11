@@ -40,7 +40,7 @@ all: check crd image ## Build it all!
 .PHONY: check
 check: generate check-deps check-helm-rbac-source ## Run "short" tests + bundled-dep consistency check
 	go vet ./...
-	NETBOX_BASE_URL=${NETBOX_BASE_URL} NETBOX_USER_TOKEN=${NETBOX_USER_TOKEN} go test -race -short ./...
+	go test -race -short ./...
 
 .PHONY: image
 image: generate ## Build executables and containers
@@ -65,6 +65,24 @@ clean-gen:  ## Delete generated files
 generate:  ## Generate client-side stubs for our custom resources
 	go mod download
 	hack/update-codegen.sh
+
+# proto regenerates the sidecar IPAM gRPC stubs from api/ipam/v1/ipam.proto.
+# Intentionally NOT a dependency of `generate`/`check`: those run in CI,
+# which doesn't have protoc installed. The generated stubs are committed
+# and reviewed; run `make proto` manually when ipam.proto changes.
+# Requires protoc on PATH plus pinned plugins (installed below via go run
+# is not possible since protoc needs executable plugins on PATH, so we pin
+# the versions here for documentation and install them on demand).
+PROTOC_GEN_GO_VERSION := v1.36.11
+PROTOC_GEN_GO_GRPC_VERSION := v1.6.0
+.PHONY: proto
+proto:  ## Regenerate sidecar IPAM gRPC stubs (needs protoc on PATH)
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
+	PATH="$(shell go env GOPATH)/bin:$$PATH" protoc \
+	  --go_out=. --go_opt=module=purelb.io \
+	  --go-grpc_out=. --go-grpc_opt=module=purelb.io \
+	  api/ipam/v1/ipam.proto
 
 crd: $(CRDS) ## Generate CRDs from golang api structs
 $(CRDS) &: pkg/apis/purelb/v2/*.go

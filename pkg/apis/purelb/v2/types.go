@@ -52,13 +52,13 @@ type ServiceGroup struct {
 }
 
 // ServiceGroupSpec configures the allocator. Exactly one of Local, Remote,
-// or Netbox must be specified.
+// or External must be specified.
 //
 // - Local: IP pool managed locally, addresses announced on the node's local interface
 // - Remote: IP pool managed locally, addresses announced on the dummy interface (for BGP/routing)
-// - Netbox: IP addresses managed by an external Netbox IPAM system
+// - External: IP addresses managed by an external IPAM system reached via a sidecar process
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.local) ? 1 : 0) + (has(self.remote) ? 1 : 0) + (has(self.netbox) ? 1 : 0) == 1",message="exactly one of local, remote, or netbox must be specified"
+// +kubebuilder:validation:XValidation:rule="(has(self.local) ? 1 : 0) + (has(self.remote) ? 1 : 0) + (has(self.external) ? 1 : 0) == 1",message="exactly one of local, remote, or external must be specified"
 type ServiceGroupSpec struct {
 	// Local configures a pool of IP addresses that will be announced
 	// on the node's local interface (the interface with the default route).
@@ -72,10 +72,12 @@ type ServiceGroupSpec struct {
 	// +optional
 	Remote *ServiceGroupRemoteSpec `json:"remote,omitempty"`
 
-	// Netbox configures PureLB to request addresses from an external
-	// Netbox IPAM system instead of managing pools locally.
+	// External configures PureLB to request addresses from an external
+	// IPAM system reached via a sidecar process running in the allocator
+	// pod. The sidecar owns its configuration; PureLB only needs to know
+	// where to dial.
 	// +optional
-	Netbox *ServiceGroupNetboxSpec `json:"netbox,omitempty"`
+	External *ServiceGroupExternalSpec `json:"external,omitempty"`
 }
 
 // ServiceGroupLocalSpec configures a local IP address pool.
@@ -230,22 +232,28 @@ func (s *ServiceGroupRemoteSpec) PoolForAddress(address net.IP) (*AddressPool, e
 	return nil, fmt.Errorf("unable to find pool for address %+v", address)
 }
 
-// ServiceGroupNetboxSpec configures PureLB to request addresses from
-// a Netbox IPAM system.
-type ServiceGroupNetboxSpec struct {
-	// URL is the base URL of the Netbox API.
-	// +kubebuilder:validation:Required
-	URL string `json:"url"`
+// ServiceGroupExternalSpec configures a pool whose addresses come from
+// an external IPAM system reached via a sidecar process running in the
+// allocator pod. The sidecar owns its configuration; PureLB only needs
+// to know where to dial.
+type ServiceGroupExternalSpec struct {
+	// Provider is the IPAM provider name. Cosmetic display value only
+	// (surfaced in .status.ipam). PureLB does NOT verify this against
+	// the sidecar's identity.
+	// +kubebuilder:validation:MinLength=1
+	Provider string `json:"provider"`
 
-	// Tenant is the Netbox tenant name for IP allocation.
-	// +kubebuilder:validation:Required
-	Tenant string `json:"tenant"`
-
-	// Aggregation changes the address mask of the allocated address
-	// from the subnet mask to the specified mask. It can be "default"
-	// or an integer in the range 8-128.
+	// Socket is the absolute path to the sidecar's Unix domain socket
+	// inside the allocator pod (typically a shared emptyDir volume).
+	// +kubebuilder:default="/var/run/purelb/ipam.sock"
 	// +optional
-	Aggregation string `json:"aggregation,omitempty"`
+	Socket string `json:"socket,omitempty"`
+
+	// Announce specifies which mechanism announces addresses from this
+	// pool: "local" (primary interface) or "remote" (kubelb0 dummy
+	// interface, for BGP/routing).
+	// +kubebuilder:validation:Enum=local;remote
+	Announce string `json:"announce"`
 }
 
 // AddressPool specifies a pool of IP addresses with routing configuration.

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 PureLB is a Kubernetes service load balancer orchestrator that allocates IP addresses from configured pools and configures Linux networking to announce them. It consists of two main components:
 
-- **Allocator** (`cmd/allocator`): Single cluster-wide pod that watches Services and ServiceGroups, manages IP allocation from pools (local or Netbox IPAM)
+- **Allocator** (`cmd/allocator`): Single cluster-wide pod that watches Services and ServiceGroups, manages IP allocation from pools (local, or external IPAM via a gRPC sidecar)
 - **LBNodeAgent** (`cmd/lbnodeagent`): DaemonSet running on each node, configures local OS networking via netlink to announce allocated IPs
 
 ## Importance of IPv6
@@ -32,8 +32,6 @@ Run a single test:
 ```bash
 go test -race -run TestName ./internal/allocator/...
 ```
-
-For tests requiring Netbox integration, set `NETBOX_BASE_URL` and `NETBOX_USER_TOKEN` environment variables.
 
 ## Building and Deploying to Test Cluster
 
@@ -103,7 +101,7 @@ kubectl rollout status deployment/allocator -n purelb-system
 
 ## Key Internal Packages
 
-- `internal/allocator/` - IP pool management and service allocation logic. Supports LocalPool (in-memory) and NetboxPool (external IPAM)
+- `internal/allocator/` - IP pool management and service allocation logic. Supports LocalPool (in-memory) and SidecarPool (external IPAM via a gRPC sidecar; see `api/ipam/v1/ipam.proto`)
 - `internal/local/` - Linux networking via netlink (interfaces, routes, ARP/NDP). Contains `LocalAnnouncer` implementation
 - `internal/k8s/` - Kubernetes client integration using informers and work queues. The `Client` struct watches Services/Endpoints and invokes callbacks on changes
 - `internal/election/` - Lease-based subnet-aware leader election for node agents. Each node maintains a Kubernetes Lease with its subnets annotated; uses SHA256 hash of (node name + service key) to deterministically elect a winner from nodes that have the IP's subnet
@@ -112,7 +110,7 @@ kubectl rollout status deployment/allocator -n purelb-system
 
 Defined in `pkg/apis/purelb/v1/`:
 
-- **ServiceGroup**: Defines IP pools (local CIDR ranges or Netbox references), supports dual-stack IPv4/IPv6
+- **ServiceGroup**: Defines IP pools (local CIDR ranges, or an external sidecar IPAM via `spec.external`), supports dual-stack IPv4/IPv6
 - **LBNodeAgent**: Node-specific announcement configuration (interface selection, gratuitous ARP)
 
 Key annotations in `pkg/apis/purelb/v1/annotations.go`:
@@ -133,7 +131,7 @@ Generated code uses k8s.io/code-generator and controller-tools.
 
 ## Key Interfaces
 
-- **Pool interface** (`internal/allocator/pool.go`): Both LocalPool and NetboxPool implement `Notify`, `Assign`, `AssignNext`, `Release`, `Contains`, `Overlaps`
+- **Pool interface** (`internal/allocator/pool.go`): Both LocalPool and SidecarPool implement `Notify`, `Assign`, `AssignNext`, `Release`, `Contains`, `Overlaps` (plus per-family display accessors). Mutating methods take a `context.Context`.
 - **Announcer interface** (`internal/lbnodeagent/announcer.go`): Abstract announcement strategy with `SetBalancer`, `DeleteBalancer`, `Shutdown`. Currently implemented by `LocalAnnouncer` in `internal/local/`
 
 ## Data Flow
@@ -151,7 +149,9 @@ Tests use testify assertions. Run with `make check` or directly:
 go test -race -short ./...
 ```
 
-Mock implementations exist in `internal/netbox/fake/` for Netbox testing.
+For sidecar IPAM tests, `internal/allocator/sidecarpool_test.go` runs an
+in-process fake IPAM gRPC server (bufconn); `cmd/test-sidecar` is a
+standalone in-memory sidecar image for cluster E2E tests.
 
 
 ## Design Principle: Avoid Locks and Mutexes
