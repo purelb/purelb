@@ -199,6 +199,22 @@ func TestSidecarPool_StatsPureRead(t *testing.T) {
 	assert.Equal(t, 1, fake.statsCalls, "accessors after refresh must not call Stats again")
 }
 
+func TestSidecarPool_NotifyNoopAndPerRange(t *testing.T) {
+	fake := &fakeIPAM{}
+	p := newSidecarPoolForTest(t, fake)
+
+	// Notify is a no-op for sidecar pools and must NOT call the sidecar.
+	require.NoError(t, p.Notify(context.Background(), extSvc("svc1", v1.IPv4Protocol)))
+	assert.Equal(t, 0, fake.allocateCalls, "Notify must not allocate")
+
+	// AssignNextPerRange delegates to AssignNext (the sidecar decides how
+	// to satisfy the request; there is no per-range concept).
+	svc := extSvc("svc2", v1.IPv4Protocol)
+	require.NoError(t, p.AssignNextPerRange(context.Background(), svc, []string{"10.0.0.0/24"}))
+	assert.Equal(t, 1, fake.allocateCalls, "AssignNextPerRange must allocate once")
+	require.Len(t, svc.Status.LoadBalancer.Ingress, 1)
+}
+
 func TestParsePool_External(t *testing.T) {
 	a := New(log.NewNopLogger())
 

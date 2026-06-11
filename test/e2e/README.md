@@ -8,6 +8,7 @@ End-to-end functional tests for PureLB.
 |-----------|-------------|
 | [local/](local/) | Tests for local IP allocation mode (addresses on physical NIC) |
 | [remote/](remote/) | Tests for remote IP allocation mode (addresses on kube-lb0) |
+| [ipam-external/](ipam-external/) | Tests for external (sidecar) IPAM — also the acceptance test when adding a new sidecar IPAM implementation |
 | [timing/](timing/) | Tests for ETP Local timing behavior and latency characterization |
 | [address-lifetime/](address-lifetime/) | Tests for address lifetime/flags to prevent CNI conflicts (Flannel) |
 

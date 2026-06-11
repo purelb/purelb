@@ -1436,7 +1436,7 @@ func TestBuildStatus(t *testing.T) {
 			name: "external-IPAM (no known capacity): Available fields nil",
 			pool: &fakeStatusPool{
 				poolType:         "remote",
-				ipamSource:       "Netbox",
+				ipamSource:       "external-ipam",
 				displayAddresses: nil,
 				inUseV4:          12,
 				inUseV6:          0,
@@ -1444,7 +1444,7 @@ func TestBuildStatus(t *testing.T) {
 			},
 			want: purelbv2.ServiceGroupStatus{
 				Announce:      "Remote",
-				IPAM:          "Netbox",
+				IPAM:          "external-ipam",
 				Addresses:     nil,
 				AllocatedIPv4: 12,
 				AllocatedIPv6: 0,
@@ -1504,7 +1504,7 @@ func TestStatusEqual(t *testing.T) {
 		{
 			name: "IPAM differs",
 			a:    base,
-			b:    func() purelbv2.ServiceGroupStatus { c := base; c.IPAM = "Netbox"; return c }(),
+			b:    func() purelbv2.ServiceGroupStatus { c := base; c.IPAM = "external-ipam"; return c }(),
 			want: false,
 		},
 		{
