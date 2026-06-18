@@ -59,6 +59,11 @@ The manifest creates:
 
 ## Upgrading
 
+> **Note:** These instructions are for upgrading between `purelb.io/v2` releases.
+> If you are upgrading from the GitLab **v0.13** release (or any pre-v2 version),
+> the CRD API version and namespace changed — follow the
+> [Migration guide]({{< relref "/docs/migration" >}}) instead.
+
 To upgrade, apply the new version's manifests:
 
 ```sh
