@@ -62,6 +62,17 @@ type announcer struct {
 	// addressRenewals tracks addresses that need periodic renewal.
 	// Key format: "namespace/servicename:ip" to support shared IPs.
 	addressRenewals sync.Map // map[string]*addressRenewal
+
+	// announced tracks the addresses that this node has actually added to
+	// an interface. Key format matches addressRenewals (see renewalKey).
+	//
+	// This is the reference count that decides whether a shared address may
+	// be withdrawn. It deliberately does not use svcIngresses, which holds
+	// every LoadBalancer Service this node has seen whether or not this node
+	// won the election for it: two services sharing an IP would each find
+	// the other there and both decline to withdraw, stranding the address on
+	// a node that lost.
+	announced sync.Map // map[string]struct{}
 }
 
 // addressRenewal holds the state needed to periodically refresh an address
@@ -318,6 +329,7 @@ func (a *announcer) announceLocal(svc *v1.Service, preferred []string, announceI
 		return err
 	}
 	RecordAddressAddition()
+	a.announced.Store(renewalKey(nsName, lbIP.String()), struct{}{})
 	a.scheduleRenewal(nsName, lbIPNet, announceInt, opts)
 
 	if svc.Annotations == nil {
@@ -401,6 +413,7 @@ func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.Endp
 		return err
 	}
 	RecordAddressAddition()
+	a.announced.Store(renewalKey(nsName, lbIP.String()), struct{}{})
 	a.scheduleRenewal(nsName, lbIPNet, a.dummyInt, opts)
 
 	// The announcing annotation for remote pools is derived by consumers
@@ -462,19 +475,30 @@ func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 		"ip":      svcAddr.String(),
 	})
 
-	// if any other service is still using that address then we don't
-	// want to withdraw it
-	for otherSvc, announcedAddrs := range a.svcIngresses {
-		for _, announcedAddr := range announcedAddrs {
-			if announcedAddr.IP == svcAddr.String() && otherSvc != nsName {
-				logging.Debug(a.logger, "event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by other service", "other", otherSvc)
-				return nil
-			}
-		}
+	// This service is no longer announcing the address on this node.
+	a.announced.Delete(renewalKey(nsName, svcAddr.String()))
+
+	// If some *other* service is still announcing that address from this
+	// node (a shared IP) then the address has to stay. Only entries in
+	// announced count: a service that this node never won does not hold a
+	// reference, so it cannot block the withdrawal.
+	if other, inUse := a.otherAnnouncerOf(svcAddr); inUse {
+		logging.Debug(a.logger, "event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by other service", "other", other)
+		return nil
 	}
 
-	logging.Info(a.logger, "event", "withdrawAddress", "ip", svcAddr, "service", nsName, "reason", reason)
-	deleteAddr(svcAddr)
+	removed, err := deleteAddr(svcAddr)
+	if err != nil {
+		logging.Info(a.logger, "event", "withdrawAddressFailed", "ip", svcAddr, "service", nsName,
+			"reason", reason, "removed", removed, "error", err)
+		return err
+	}
+	logging.Info(a.logger, "event", "withdrawAddress", "ip", svcAddr, "service", nsName,
+		"reason", reason, "removed", removed)
+	if removed == 0 {
+		logging.Info(a.logger, "event", "withdrawAddressNotPresent", "ip", svcAddr, "service", nsName,
+			"reason", reason, "msg", "address was not on any interface at withdraw time")
+	}
 	RecordAddressWithdrawal()
 
 	return nil
@@ -660,6 +684,31 @@ func (a *announcer) isRemotePool(lbIP net.IP) bool {
 // Format: "namespace/servicename:ip" to support shared IPs across services.
 func renewalKey(svcName, ip string) string {
 	return svcName + ":" + ip
+}
+
+// otherAnnouncerOf reports whether any service other than the ones already
+// removed from a.announced is still announcing addr from this node, i.e.
+// whether addr is a shared IP that must not be withdrawn yet. It returns the
+// name of one such service for logging.
+//
+// Keys are "namespace/servicename:ip". A service name never contains a colon
+// but an IPv6 address does, so the split is on the *first* colon.
+func (a *announcer) otherAnnouncerOf(addr net.IP) (string, bool) {
+	want := addr.String()
+	other := ""
+	a.announced.Range(func(k, _ any) bool {
+		key, ok := k.(string)
+		if !ok {
+			return true
+		}
+		i := strings.Index(key, ":")
+		if i < 0 || key[i+1:] != want {
+			return true
+		}
+		other = key[:i]
+		return false // found one, stop
+	})
+	return other, other != ""
 }
 
 // scheduleRenewal sets up a timer to periodically refresh an address before

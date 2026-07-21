@@ -71,6 +71,106 @@ func TestRenewalKey(t *testing.T) {
 	}
 }
 
+// TestOtherAnnouncerOf covers the reference count that decides whether a
+// shared IP may be withdrawn. The bug this replaces counted entries in
+// svcIngresses, which holds every LoadBalancer Service the node has seen
+// whether or not it won the election, so two services sharing an IP each
+// found the other and both declined to withdraw -- leaving the address on a
+// node that had lost the election while the winner also announced it.
+func TestOtherAnnouncerOf(t *testing.T) {
+	const shared = "192.168.1.100"
+
+	tests := []struct {
+		name      string
+		announced []string // keys already in a.announced
+		addr      string
+		wantOther string
+		wantInUse bool
+	}{
+		{
+			name:      "nothing announced",
+			announced: nil,
+			addr:      shared,
+			wantInUse: false,
+		},
+		{
+			name:      "only this service announced it, and it was already removed",
+			announced: []string{},
+			addr:      shared,
+			wantInUse: false,
+		},
+		{
+			name:      "another service on this node still announces it",
+			announced: []string{"ns/other:" + shared},
+			addr:      shared,
+			wantOther: "ns/other",
+			wantInUse: true,
+		},
+		{
+			name:      "other service announces a different address",
+			announced: []string{"ns/other:192.168.1.101"},
+			addr:      shared,
+			wantInUse: false,
+		},
+		{
+			name:      "ipv6 shared address splits on the first colon",
+			announced: []string{"ns/other:2001:db8::1"},
+			addr:      "2001:db8::1",
+			wantOther: "ns/other",
+			wantInUse: true,
+		},
+		{
+			name:      "ipv6 near-miss is not a match",
+			announced: []string{"ns/other:2001:db8::11"},
+			addr:      "2001:db8::1",
+			wantInUse: false,
+		},
+		{
+			name:      "address that is a suffix of another is not a match",
+			announced: []string{"ns/other:110.0.0.1"},
+			addr:      "10.0.0.1",
+			wantInUse: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := &announcer{}
+			for _, k := range tt.announced {
+				a.announced.Store(k, struct{}{})
+			}
+
+			other, inUse := a.otherAnnouncerOf(net.ParseIP(tt.addr))
+
+			assert.Equal(t, tt.wantInUse, inUse)
+			if tt.wantInUse {
+				assert.Equal(t, tt.wantOther, other)
+			}
+		})
+	}
+}
+
+// A Service this node knows about but never announced must not block
+// withdrawal. This is the exact shape of the reproduced bug: both services
+// sharing the IP are present in svcIngresses, but only the election winner
+// holds an entry in announced.
+func TestOtherAnnouncerOf_IgnoresUnannouncedServices(t *testing.T) {
+	const shared = "192.168.1.100"
+
+	a := &announcer{
+		// Both services are known to this node...
+		svcIngresses: map[string][]v1.LoadBalancerIngress{
+			"ns/svc-a": {{IP: shared}},
+			"ns/svc-b": {{IP: shared}},
+		},
+	}
+	// ...but this node announced neither (it lost the election for both).
+
+	other, inUse := a.otherAnnouncerOf(net.ParseIP(shared))
+	assert.False(t, inUse, "a service this node never announced must not hold a reference")
+	assert.Empty(t, other)
+}
+
 func TestGetLocalAddressOptions_Defaults(t *testing.T) {
 	a := &announcer{
 		logger: log.NewNopLogger(),
