@@ -18,10 +18,66 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
+
+// TestSync_DoesNotMutateCachedService verifies that sync hands the callback a
+// copy of the Service, not the shared informer cache object. The announcer
+// mutates the Service it is given (annotations, ExternalTrafficPolicy); if that
+// reached the cache object it would violate client-go's prohibition on mutating
+// cache objects and, worse, poison the baseline used to detect changes on an
+// Update-conflict retry. The callback returns SyncStateError here so the
+// client-coupled write path (maybeUpdateService) is skipped -- cache isolation
+// is independent of whether the write happens.
+func TestSync_DoesNotMutateCachedService(t *testing.T) {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	cached := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   "ns",
+			Name:        "svc",
+			Annotations: map[string]string{"purelb.io/announcing-IPv4": "original"},
+		},
+	}
+	require.NoError(t, indexer.Add(cached))
+
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[queueItem](),
+	)
+	defer queue.ShutDown()
+	queue.Add(svcKey("ns/svc")) // so Done() has something to mark complete
+
+	var handed *corev1.Service
+	c := &Client{
+		logger:     log.NewNopLogger(),
+		queue:      queue,
+		svcIndexer: indexer,
+		serviceChanged: func(s *corev1.Service, _ []*discoveryv1.EndpointSlice) SyncState {
+			handed = s
+			// Mutate the way the announcer does.
+			s.Annotations["purelb.io/announcing-IPv4"] = "mutated"
+			// Skip maybeUpdateService, which needs a real client.
+			return SyncStateError
+		},
+	}
+
+	c.sync(svcKey("ns/svc"))
+
+	require.NotNil(t, handed, "serviceChanged was not called")
+	assert.NotSame(t, cached, handed, "callback was handed the shared cache object, not a copy")
+
+	stored, exists, err := indexer.GetByKey("ns/svc")
+	require.NoError(t, err)
+	require.True(t, exists)
+	assert.Equal(t, "original", stored.(*corev1.Service).Annotations["purelb.io/announcing-IPv4"],
+		"the cached Service was mutated by the callback")
+}
 
 // TestForceSync_UsesImmediateAdd verifies that ForceSync uses Add() instead
 // of AddRateLimited(). This is important because ForceSync is called on

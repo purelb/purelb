@@ -50,6 +50,12 @@ import (
 // EndpointSlices to their parent Service name.
 const serviceNameIndexName = "serviceName"
 
+// svcResyncPeriod is the informer resync interval for Services. It bounds how
+// long a dropped write can leave the cluster out of sync; see the comment at
+// the Service informer for why this is a correctness floor rather than a
+// polling loop.
+const svcResyncPeriod = 10 * time.Minute
+
 // Client watches a Kubernetes cluster and translates events into
 // Controller method calls.
 type Client struct {
@@ -257,7 +263,12 @@ func New(cfg *Config) (*Client, error) {
 		},
 	}
 	svcWatcher := cache.NewListWatchFromClient(c.client.CoreV1().RESTClient(), "services", corev1.NamespaceAll, fields.Everything())
-	c.svcIndexer, c.svcInformer = cache.NewIndexerInformer(svcWatcher, &corev1.Service{}, 0, svcHandlers, cache.Indexers{})
+	// A non-zero resync period re-delivers every Service periodically. It is a
+	// self-healing floor: if a write is ever dropped (e.g. an Update conflict
+	// whose retry is lost) the next resync reconciles it. In steady state the
+	// recomputed object is identical, so maybeUpdateService's diff short-
+	// circuits and resync produces no API writes.
+	c.svcIndexer, c.svcInformer = cache.NewIndexerInformer(svcWatcher, &corev1.Service{}, svcResyncPeriod, svcHandlers, cache.Indexers{})
 
 	c.serviceChanged = cfg.ServiceChanged
 	c.serviceDeleted = cfg.ServiceDeleted
@@ -612,7 +623,13 @@ func (c *Client) sync(key queueItem) SyncState {
 			// l.Log("op", "getService", "msg", "doesn't exist")
 			return c.serviceDeleted(svcName)
 		}
-		svc := svcMaybe.(*corev1.Service)
+		// DeepCopy: svcIndexer returns the shared informer cache object.
+		// The announcer mutates the Service it is handed (annotations, and
+		// ExternalTrafficPolicy), so we must not let it write into the cache
+		// -- both because mutating cache objects is a client-go prohibition
+		// and because, on an Update conflict, the requeued sync must re-read
+		// the pristine server state rather than our own failed mutation.
+		svc := svcMaybe.(*corev1.Service).DeepCopy()
 
 		// Fetch all EndpointSlices for this service using our custom indexer
 		var epSlices []*discoveryv1.EndpointSlice
