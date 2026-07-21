@@ -309,6 +309,9 @@ func sendGARP(ifName string, ip net.IP) error {
 	if err != nil {
 		return fmt.Errorf("creating ARP responder for %s: %w", ifName, err)
 	}
+	// arp.Dial opens an AF_PACKET socket; without this every GARP send would
+	// leak a file descriptor.
+	defer client.Close()
 
 	for _, op := range []arp.Operation{arp.OperationRequest, arp.OperationReply} {
 		pkt, err := arp.NewPacket(op, ifi.HardwareAddr, ip, ethernet.Broadcast, ip)
