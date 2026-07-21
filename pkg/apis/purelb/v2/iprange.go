@@ -24,7 +24,16 @@ import (
 
 	go_cidr "github.com/apparentlymart/go-cidr/cidr"
 	"github.com/google/go-cmp/cmp"
-	"github.com/vishvananda/netlink/nl"
+)
+
+// Address family values. These match the AF_INET / AF_INET6 constants used by
+// the netlink library (nl.FAMILY_V4 / nl.FAMILY_V6) on Linux, so callers may
+// compare AddrFamily's result against either these or netlink's values without
+// conversion. They are declared here so this package -- which is imported by
+// the netlink-free kubectl-purelb plugin -- does not itself depend on netlink.
+const (
+	FamilyV4 = 2  // unix.AF_INET
+	FamilyV6 = 10 // unix.AF_INET6 (Linux)
 )
 
 type IPRange struct {
@@ -223,11 +232,11 @@ func dup(ip net.IP) net.IP {
 // determined.
 func AddrFamily(lbIP net.IP) (lbIPFamily int) {
 	if nil != lbIP.To16() {
-		lbIPFamily = nl.FAMILY_V6
+		lbIPFamily = FamilyV6
 	}
 
 	if nil != lbIP.To4() {
-		lbIPFamily = nl.FAMILY_V4
+		lbIPFamily = FamilyV4
 	}
 
 	return
