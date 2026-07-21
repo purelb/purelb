@@ -101,7 +101,7 @@ Deep-dive diagnosis of a single service.
 kubectl purelb inspect <namespace>/<service>
 ```
 
-Shows: allocation source, pool type, announcing node/interface, election state, endpoint health, and any detected problems.
+Shows: allocation source, pool type, announcing node/interface, election state, endpoint health, and any detected problems. The announcing node is cross-checked against node leases, so an entry left behind by a departed node is flagged as unhealthy rather than reported as the current announcer.
 
 ## validate
 

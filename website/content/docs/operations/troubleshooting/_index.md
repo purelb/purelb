@@ -31,8 +31,13 @@ The Service has an external IP but clients cannot reach it.
 
 **Check which node is announcing:**
 ```sh
-kubectl describe svc <name> | grep announcing
+kubectl purelb services
 ```
+This cross-checks node leases, so it shows the current announcer and flags a
+stale one. Reading the `purelb.io/announcing-*` annotation directly with
+`kubectl describe` can be misleading: the annotation is advisory and may retain
+an entry for a node that has left the cluster (see the [annotations
+reference]({{< relref "/docs/reference/annotations" >}})).
 
 **Verify the address is on the node's interface:**
 ```sh
