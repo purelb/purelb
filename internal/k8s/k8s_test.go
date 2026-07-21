@@ -28,6 +28,100 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
+func TestAnnouncingOnlyUpdate(t *testing.T) {
+	base := func() *corev1.Service {
+		return &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "ns", Name: "svc",
+				Annotations: map[string]string{
+					"purelb.io/allocated-from":  "default",
+					"purelb.io/announcing-IPv4": "node-a,eth0,10.0.0.1",
+				},
+			},
+			Spec:   corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
+			Status: corev1.ServiceStatus{},
+		}
+	}
+	withAnn := func(s *corev1.Service, k, v string) *corev1.Service {
+		s.Annotations[k] = v
+		return s
+	}
+
+	tests := []struct {
+		name     string
+		old, new *corev1.Service
+		wantSkip bool
+	}{
+		{
+			name: "identical (resync) is not skipped",
+			old:  base(), new: base(),
+			wantSkip: false,
+		},
+		{
+			name: "announcing-IPv4 changed -> skip",
+			old:  base(),
+			new:  withAnn(base(), "purelb.io/announcing-IPv4", "node-b,eth0,10.0.0.1"),
+			wantSkip: true,
+		},
+		{
+			name: "announcing added where absent -> skip",
+			old: func() *corev1.Service {
+				s := base()
+				delete(s.Annotations, "purelb.io/announcing-IPv4")
+				return s
+			}(),
+			new:      base(),
+			wantSkip: true,
+		},
+		{
+			name: "announcing-IPv6 added alongside existing v4 -> skip",
+			old:  base(),
+			new:  withAnn(base(), "purelb.io/announcing-IPv6", "node-a,eth0,2001:db8::1"),
+			wantSkip: true,
+		},
+		{
+			name:     "non-announcing annotation changed -> enqueue",
+			old:      base(),
+			new:      withAnn(base(), "purelb.io/allocated-from", "other-pool"),
+			wantSkip: false,
+		},
+		{
+			name: "announcing AND allocated-from both changed -> enqueue",
+			old:  base(),
+			new: withAnn(
+				withAnn(base(), "purelb.io/announcing-IPv4", "node-b,eth0,10.0.0.1"),
+				"purelb.io/allocated-from", "other-pool"),
+			wantSkip: false,
+		},
+		{
+			name: "status changed -> enqueue",
+			old:  base(),
+			new: func() *corev1.Service {
+				s := base()
+				s.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "10.0.0.1"}}
+				return s
+			}(),
+			wantSkip: false,
+		},
+		{
+			name: "spec changed -> enqueue",
+			old:  base(),
+			new: func() *corev1.Service {
+				s := base()
+				s.Spec.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyLocal
+				return s
+			}(),
+			wantSkip: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wantSkip, announcingOnlyUpdate(tt.old, tt.new))
+		})
+	}
+}
+
 // TestSync_DoesNotMutateCachedService verifies that sync hands the callback a
 // copy of the Service, not the shared informer cache object. The announcer
 // mutates the Service it is given (annotations, ExternalTrafficPolicy); if that
