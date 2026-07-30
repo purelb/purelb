@@ -1,0 +1,68 @@
+# Deployment + dual-stack LoadBalancer Service for the echo test container.
+# The server code is fed in via a ConfigMap generated from server.py -- see
+# README.md for the two-command deploy.
+#
+# Namespace `echo-test` and ConfigMap `echo-server` are expected to exist.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: echo-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: echo }
+  template:
+    metadata:
+      labels: { app: echo }
+    spec:
+      # This pod is intentionally NOT pinned. Pin it to a node (and move it) with:
+      #   kubectl -n echo-test patch deployment echo --type=merge \
+      #     -p '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/hostname":"<node>"}}}}}'
+      # Short grace + SIGTERM handling in server.py = the old pod dies in ~1s on a
+      # move, so its endpoint stops "serving" fast and the VIP follows quickly.
+      terminationGracePeriodSeconds: 3
+      containers:
+      - name: echo
+        image: python:3.12-alpine
+        command: ["python3", "/app/server.py"]
+        ports:
+        - { containerPort: 8080 }
+        env:
+        - name: POD_NAME
+          valueFrom: { fieldRef: { fieldPath: metadata.name } }
+        - name: NODE_NAME
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        - name: HOST_IP
+          valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+        - name: POD_IP
+          valueFrom: { fieldRef: { fieldPath: status.podIP } }
+        volumeMounts:
+        - { name: app, mountPath: /app }
+        readinessProbe:
+          httpGet: { path: /healthz, port: 8080 }
+          periodSeconds: 3
+      volumes:
+      - name: app
+        configMap: { name: echo-server }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: echo-test
+  annotations:
+    # Must name a LOCAL ServiceGroup on your cluster (announced on the node's
+    # primary interface). Affinity only works for local pools.
+    purelb.io/service-group: default
+    # Biases the announcing-node election toward the node running a Ready/Serving
+    # endpoint, so the VIP follows the pod.
+    purelb.io/node-affinity: service-endpoints
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Cluster        # Local is not supported for local pools
+  ipFamilyPolicy: RequireDualStack      # use SingleStack + one family for v4- or v6-only
+  ipFamilies: [ IPv4, IPv6 ]
+  selector: { app: echo }
+  ports:
+  - { name: http, port: 80, targetPort: 8080 }
