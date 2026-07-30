@@ -21,9 +21,11 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
@@ -69,6 +71,194 @@ func TestRenewalKey(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// nopServiceEvent is a k8s.ServiceEvent that discards events, for tests that
+// exercise code paths which emit Kubernetes events.
+type nopServiceEvent struct{}
+
+func (nopServiceEvent) Infof(runtime.Object, string, string, ...interface{})  {}
+func (nopServiceEvent) Errorf(runtime.Object, string, string, ...interface{}) {}
+func (nopServiceEvent) ForceSync()                                            {}
+
+func lbSvc(ips ...string) *v1.Service {
+	svc := &v1.Service{}
+	for _, ip := range ips {
+		svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress,
+			v1.LoadBalancerIngress{IP: ip})
+	}
+	return svc
+}
+
+func TestClaimAnnounceSlot(t *testing.T) {
+	const key = "purelb.io/announcing-IPv4"
+
+	t.Run("nil annotations does not panic and creates the slot", func(t *testing.T) {
+		a := &announcer{myNode: "node-a", client: nopServiceEvent{}}
+		svc := lbSvc("192.0.2.10")
+		a.claimAnnounceSlot(svc, "eth0", net.ParseIP("192.0.2.10"))
+		assert.Equal(t, "node-a,eth0,192.0.2.10", svc.Annotations[key])
+	})
+
+	t.Run("taking the slot from another node replaces it and counts a steal", func(t *testing.T) {
+		before := ptu.ToFloat64(announceSlotSteals.WithLabelValues("node-b", "node-a"))
+		a := &announcer{myNode: "node-a", client: nopServiceEvent{}}
+		svc := lbSvc("192.0.2.10")
+		svc.Annotations = map[string]string{key: "node-b,eth0,192.0.2.10"}
+		a.claimAnnounceSlot(svc, "eth0", net.ParseIP("192.0.2.10"))
+		assert.Equal(t, "node-a,eth0,192.0.2.10", svc.Annotations[key])
+		assert.Equal(t, before+1, ptu.ToFloat64(announceSlotSteals.WithLabelValues("node-b", "node-a")))
+	})
+
+	t.Run("multi-pool keeps another node's slot for a different live IP", func(t *testing.T) {
+		a := &announcer{myNode: "node-a", client: nopServiceEvent{}}
+		svc := lbSvc("192.0.2.10", "192.0.2.11")
+		svc.Annotations = map[string]string{key: "node-b,eth0,192.0.2.11"}
+		a.claimAnnounceSlot(svc, "eth0", net.ParseIP("192.0.2.10"))
+		assert.Equal(t, "node-a,eth0,192.0.2.10 node-b,eth0,192.0.2.11", svc.Annotations[key])
+	})
+
+	t.Run("re-claiming an owned slot makes no change (idempotent)", func(t *testing.T) {
+		a := &announcer{myNode: "node-a", client: nopServiceEvent{}}
+		svc := lbSvc("192.0.2.10")
+		svc.Annotations = map[string]string{key: "node-a,eth0,192.0.2.10"}
+		a.claimAnnounceSlot(svc, "eth0", net.ParseIP("192.0.2.10"))
+		assert.Equal(t, "node-a,eth0,192.0.2.10", svc.Annotations[key])
+	})
+}
+
+func TestClearOwnAnnounceSlot(t *testing.T) {
+	const key = "purelb.io/announcing-IPv4"
+
+	t.Run("removes only this node's slot", func(t *testing.T) {
+		a := &announcer{myNode: "node-a"}
+		svc := lbSvc("192.0.2.10", "192.0.2.11")
+		svc.Annotations = map[string]string{key: "node-a,eth0,192.0.2.10 node-b,eth0,192.0.2.11"}
+		a.clearOwnAnnounceSlot(svc, net.ParseIP("192.0.2.10"))
+		assert.Equal(t, "node-b,eth0,192.0.2.11", svc.Annotations[key])
+	})
+
+	t.Run("deletes the key when our slot was the only one", func(t *testing.T) {
+		a := &announcer{myNode: "node-a"}
+		svc := lbSvc("192.0.2.10")
+		svc.Annotations = map[string]string{key: "node-a,eth0,192.0.2.10"}
+		a.clearOwnAnnounceSlot(svc, net.ParseIP("192.0.2.10"))
+		_, present := svc.Annotations[key]
+		assert.False(t, present, "empty annotation key should be deleted, not left blank")
+	})
+
+	t.Run("no slot for us is a no-op", func(t *testing.T) {
+		a := &announcer{myNode: "node-a"}
+		svc := lbSvc("192.0.2.10")
+		svc.Annotations = map[string]string{key: "node-b,eth0,192.0.2.10"}
+		a.clearOwnAnnounceSlot(svc, net.ParseIP("192.0.2.10"))
+		assert.Equal(t, "node-b,eth0,192.0.2.10", svc.Annotations[key])
+	})
+
+	t.Run("nil annotations does not panic", func(t *testing.T) {
+		a := &announcer{myNode: "node-a"}
+		a.clearOwnAnnounceSlot(lbSvc("192.0.2.10"), net.ParseIP("192.0.2.10"))
+	})
+}
+
+// TestOtherAnnouncerOf covers the reference count that decides whether a
+// shared IP may be withdrawn. The bug this replaces counted entries in
+// svcIngresses, which holds every LoadBalancer Service the node has seen
+// whether or not it won the election, so two services sharing an IP each
+// found the other and both declined to withdraw -- leaving the address on a
+// node that had lost the election while the winner also announced it.
+func TestOtherAnnouncerOf(t *testing.T) {
+	const shared = "192.168.1.100"
+
+	tests := []struct {
+		name      string
+		announced []string // keys already in a.announced
+		addr      string
+		wantOther string
+		wantInUse bool
+	}{
+		{
+			name:      "nothing announced",
+			announced: nil,
+			addr:      shared,
+			wantInUse: false,
+		},
+		{
+			name:      "only this service announced it, and it was already removed",
+			announced: []string{},
+			addr:      shared,
+			wantInUse: false,
+		},
+		{
+			name:      "another service on this node still announces it",
+			announced: []string{"ns/other:" + shared},
+			addr:      shared,
+			wantOther: "ns/other",
+			wantInUse: true,
+		},
+		{
+			name:      "other service announces a different address",
+			announced: []string{"ns/other:192.168.1.101"},
+			addr:      shared,
+			wantInUse: false,
+		},
+		{
+			name:      "ipv6 shared address splits on the first colon",
+			announced: []string{"ns/other:2001:db8::1"},
+			addr:      "2001:db8::1",
+			wantOther: "ns/other",
+			wantInUse: true,
+		},
+		{
+			name:      "ipv6 near-miss is not a match",
+			announced: []string{"ns/other:2001:db8::11"},
+			addr:      "2001:db8::1",
+			wantInUse: false,
+		},
+		{
+			name:      "address that is a suffix of another is not a match",
+			announced: []string{"ns/other:110.0.0.1"},
+			addr:      "10.0.0.1",
+			wantInUse: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := &announcer{}
+			for _, k := range tt.announced {
+				a.announced.Store(k, struct{}{})
+			}
+
+			other, inUse := a.otherAnnouncerOf(net.ParseIP(tt.addr))
+
+			assert.Equal(t, tt.wantInUse, inUse)
+			if tt.wantInUse {
+				assert.Equal(t, tt.wantOther, other)
+			}
+		})
+	}
+}
+
+// A Service this node knows about but never announced must not block
+// withdrawal. This is the exact shape of the reproduced bug: both services
+// sharing the IP are present in svcIngresses, but only the election winner
+// holds an entry in announced.
+func TestOtherAnnouncerOf_IgnoresUnannouncedServices(t *testing.T) {
+	const shared = "192.168.1.100"
+
+	a := &announcer{
+		// Both services are known to this node...
+		svcIngresses: map[string][]v1.LoadBalancerIngress{
+			"ns/svc-a": {{IP: shared}},
+			"ns/svc-b": {{IP: shared}},
+		},
+	}
+	// ...but this node announced neither (it lost the election for both).
+
+	other, inUse := a.otherAnnouncerOf(net.ParseIP(shared))
+	assert.False(t, inUse, "a service this node never announced must not hold a reference")
+	assert.Empty(t, other)
 }
 
 func TestGetLocalAddressOptions_Defaults(t *testing.T) {

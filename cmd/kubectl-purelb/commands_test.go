@@ -150,6 +150,63 @@ func makeSharedService(ns, name, ip, pool, poolType, sharingKey string, port int
 	return svc
 }
 
+func TestCountHealthyAnnouncers(t *testing.T) {
+	withAnnouncing := func(svc *v1.Service, v4, v6 string) *v1.Service {
+		if v4 != "" {
+			svc.Annotations[annotationAnnouncing+"-IPv4"] = v4
+		}
+		if v6 != "" {
+			svc.Annotations[annotationAnnouncing+"-IPv6"] = v6
+		}
+		return svc
+	}
+
+	healthy := map[string]bool{"node-a": true, "node-b": true}
+
+	t.Run("counts a healthy announcer", func(t *testing.T) {
+		svcs := []v1.Service{
+			*withAnnouncing(makePureLBService("ns", "s1", "10.0.0.1", "p", "local"),
+				"node-a,eth0,10.0.0.1", ""),
+		}
+		assert.Equal(t, map[string]int{"node-a": 1}, countHealthyAnnouncers(svcs, healthy))
+	})
+
+	t.Run("a stale slot for a node without a lease is not counted", func(t *testing.T) {
+		// node-c has no healthy lease: it died without clearing its slot.
+		svcs := []v1.Service{
+			*withAnnouncing(makePureLBService("ns", "s1", "10.0.0.1", "p", "local"),
+				"node-c,eth0,10.0.0.1", ""),
+		}
+		assert.Empty(t, countHealthyAnnouncers(svcs, healthy))
+	})
+
+	t.Run("non-PureLB service is ignored", func(t *testing.T) {
+		svc := withAnnouncing(makePureLBService("ns", "s1", "10.0.0.1", "p", "local"),
+			"node-a,eth0,10.0.0.1", "")
+		delete(svc.Annotations, annotationAllocatedBy)
+		assert.Empty(t, countHealthyAnnouncers([]v1.Service{*svc}, healthy))
+	})
+
+	t.Run("dual-stack counts each family", func(t *testing.T) {
+		svcs := []v1.Service{
+			*withAnnouncing(makePureLBService("ns", "s1", "10.0.0.1", "p", "local"),
+				"node-a,eth0,10.0.0.1", "node-a,eth0,2001:db8::1"),
+		}
+		assert.Equal(t, map[string]int{"node-a": 2}, countHealthyAnnouncers(svcs, healthy))
+	})
+
+	t.Run("mixed healthy and stale across services", func(t *testing.T) {
+		svcs := []v1.Service{
+			*withAnnouncing(makePureLBService("ns", "s1", "10.0.0.1", "p", "local"),
+				"node-a,eth0,10.0.0.1", ""),
+			*withAnnouncing(makePureLBService("ns", "s2", "10.0.0.2", "p", "local"),
+				"node-b,eth0,10.0.0.2 node-c,eth0,10.0.0.2", ""),
+		}
+		// node-c is stale (no lease) and must not be counted for s2.
+		assert.Equal(t, map[string]int{"node-a": 1, "node-b": 1}, countHealthyAnnouncers(svcs, healthy))
+	})
+}
+
 // =============================================================================
 // pools command tests
 // =============================================================================

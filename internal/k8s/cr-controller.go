@@ -110,18 +110,9 @@ func NewCRController(
 			controller.enqueueResource("sg", added)
 		},
 		UpdateFunc: func(old, new interface{}) {
-			// Skip status-only updates. The allocator itself writes SG
-			// .status via the status subresource (Part A display work);
-			// those writes don't bump .metadata.generation, but the watch
-			// event still fires. Without this filter, every status write
-			// triggers a full SetConfig → SetPools → forceSync cycle over
-			// all services. O(N) per status write, catastrophic at scale.
-			oldSG, _ := old.(*purelbv2.ServiceGroup)
-			newSG, _ := new.(*purelbv2.ServiceGroup)
-			if oldSG != nil && newSG != nil && oldSG.Generation == newSG.Generation {
-				return
+			if sgUpdateNeedsReconcile(old, new) {
+				controller.enqueueResource("sg", new)
 			}
-			controller.enqueueResource("sg", new)
 		},
 		DeleteFunc: func(deleted interface{}) {
 			controller.enqueueResource("sg", deleted)
@@ -259,4 +250,24 @@ func (c *Controller) enqueueResource(thing string, obj interface{}) {
 		return
 	}
 	c.workqueue.Add(thing + "/" + key)
+}
+
+// sgUpdateNeedsReconcile reports whether a ServiceGroup update event
+// should trigger reconciliation. It skips status-only updates: the
+// allocator writes SG .status via the status subresource, and those
+// writes don't bump .metadata.generation but still fire a watch event.
+// Without this filter every status write would trigger a full
+// SetConfig → SetPools → forceSync cycle over all services — O(N) per
+// status write, catastrophic at scale.
+//
+// Unknown / non-ServiceGroup payloads default to reconcile (fail safe).
+func sgUpdateNeedsReconcile(old, new interface{}) bool {
+	oldSG, okOld := old.(*purelbv2.ServiceGroup)
+	newSG, okNew := new.(*purelbv2.ServiceGroup)
+	if !okOld || !okNew {
+		return true
+	}
+	// Generation bumps only on spec changes (status subresource is
+	// enabled), so equal generations means a status-only update.
+	return oldSG.Generation != newSG.Generation
 }

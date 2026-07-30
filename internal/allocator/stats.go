@@ -78,6 +78,24 @@ var (
 		Name:      "sg_status_writes_total",
 		Help:      "ServiceGroup status subresource write outcomes (success|conflict|forbidden|other).",
 	}, []string{"outcome"})
+
+	// sidecarRPCTotal counts external-IPAM sidecar RPCs by socket,
+	// method, and gRPC status code. The connectivity signal for sidecar
+	// pools: alert on `code!="OK"` rate (no separate connected gauge).
+	sidecarRPCTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: "allocator",
+		Name:      "sidecar_rpc_total",
+		Help:      "External-IPAM sidecar RPCs by socket, method, and gRPC status code.",
+	}, []string{"socket", "method", "code"})
+
+	// sidecarRPCDuration is the latency histogram for sidecar RPCs.
+	sidecarRPCDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: "allocator",
+		Name:      "sidecar_rpc_duration_seconds",
+		Help:      "External-IPAM sidecar RPC latency by socket and method.",
+	}, []string{"socket", "method"})
 )
 
 func init() {
@@ -88,4 +106,6 @@ func init() {
 	prometheus.MustRegister(multipoolPartial)
 	prometheus.MustRegister(balancePoolsAllocations)
 	prometheus.MustRegister(sgStatusWritesTotal)
+	prometheus.MustRegister(sidecarRPCTotal)
+	prometheus.MustRegister(sidecarRPCDuration)
 }

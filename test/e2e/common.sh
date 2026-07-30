@@ -628,6 +628,48 @@ get_v6_vip_holder() {
     echo "NONE"
 }
 
+# Read a Service's purelb.io/announcing-<family> annotation value.
+# Usage: get_announcing <namespace> <service> <IPv4|IPv6>
+get_announcing() {
+    local ns=$1 svc=$2 family=$3
+    kubectl get svc "$svc" -n "$ns" \
+        -o jsonpath="{.metadata.annotations.purelb\\.io/announcing-$family}" 2>/dev/null
+}
+
+# Does an announcing annotation value have an entry announced by <node>?
+# Entry-wise (matches the node field exactly), so "purelb2-1" does not match
+# a "purelb2-10" entry the way a substring test would.
+# Usage: announcing_has_node "<annotation value>" <node>
+announcing_has_node() {
+    local value=$1 node=$2 entry
+    for entry in $value; do
+        [ "${entry%%,*}" = "$node" ] && return 0
+    done
+    return 1
+}
+
+# Poll until <node> appears as an announcer of the Service (entry-wise).
+# Usage: wait_for_announcer <namespace> <service> <family> <node> [timeout]
+wait_for_announcer() {
+    local ns=$1 svc=$2 family=$3 node=$4 TIMEOUT=${5:-30} ELAPSED=0
+    while [ $ELAPSED -lt $TIMEOUT ]; do
+        announcing_has_node "$(get_announcing "$ns" "$svc" "$family")" "$node" && return 0
+        sleep 2; ELAPSED=$((ELAPSED + 2))
+    done
+    return 1
+}
+
+# Poll until <node> is no longer an announcer of the Service (entry-wise).
+# Usage: wait_for_not_announcer <namespace> <service> <family> <node> [timeout]
+wait_for_not_announcer() {
+    local ns=$1 svc=$2 family=$3 node=$4 TIMEOUT=${5:-30} ELAPSED=0
+    while [ $ELAPSED -lt $TIMEOUT ]; do
+        announcing_has_node "$(get_announcing "$ns" "$svc" "$family")" "$node" || return 0
+        sleep 2; ELAPSED=$((ELAPSED + 2))
+    done
+    return 1
+}
+
 # Check if any node OTHER than the excluded one has the VIP
 vip_on_other_node() {
     local IP=$1

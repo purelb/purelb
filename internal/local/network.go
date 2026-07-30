@@ -189,42 +189,46 @@ func removeInterface(link netlink.Link) error {
 	return nil
 }
 
-// deleteAddr deletes lbIP from whichever interface has it.
-func deleteAddr(lbIP net.IP) error {
+// deleteAddr deletes lbIP from whichever interface has it. It returns the
+// number of addresses actually removed so callers can distinguish "the
+// address was not present" from "the address was removed" from an error.
+func deleteAddr(lbIP net.IP) (int, error) {
+	removed := 0
 	hostints, err := net.Interfaces()
 	if err != nil {
-		return err
+		return removed, err
 	}
 	for _, hostint := range hostints {
 		addrs, err := hostint.Addrs()
 		if err != nil {
-			return err
+			return removed, err
 		}
 		for _, ipnet := range addrs {
 
 			ipaddr, _, err := net.ParseCIDR(ipnet.String())
 			if err != nil {
-				return err
+				return removed, err
 			}
 
 			if lbIP.Equal(ipaddr) {
 				ifindex, err := netlink.LinkByIndex(hostint.Index)
 				if err != nil {
-					return err
+					return removed, err
 				}
 				deladdr, err := netlink.ParseAddr(ipnet.String())
 				if err != nil {
-					return err
+					return removed, err
 				}
 				err = netlink.AddrDel(ifindex, deladdr)
 				if err != nil {
-					return fmt.Errorf("could not remove %v from %v: %w", deladdr, ifindex, err)
+					return removed, fmt.Errorf("could not remove %v from %v: %w", deladdr, ifindex, err)
 				}
+				removed++
 			}
 		}
 	}
 
-	return nil
+	return removed, nil
 }
 
 func addVirtualInt(lbIP net.IP, link netlink.Link, subnet, aggregation string, opts AddressOptions) (net.IPNet, error) {
@@ -305,6 +309,9 @@ func sendGARP(ifName string, ip net.IP) error {
 	if err != nil {
 		return fmt.Errorf("creating ARP responder for %s: %w", ifName, err)
 	}
+	// arp.Dial opens an AF_PACKET socket; without this every GARP send would
+	// leak a file descriptor.
+	defer client.Close()
 
 	for _, op := range []arp.Operation{arp.OperationRequest, arp.OperationReply} {
 		pkt, err := arp.NewPacket(op, ifi.HardwareAddr, ip, ethernet.Broadcast, ip)

@@ -164,7 +164,7 @@ kubectl describe svc my-app
 Annotations:  purelb.io/allocated-by: PureLB
               purelb.io/allocated-from: default
               purelb.io/pool-type: local
-              purelb.io/announcing-IPv4: node1,enp1s0
+              purelb.io/announcing-IPv4: node1,enp1s0,192.0.2.10
               purelb.io/service-group: default
 ```
 
@@ -173,8 +173,8 @@ Annotation | Description
 `purelb.io/allocated-by` | Set to `PureLB` on services PureLB manages
 `purelb.io/allocated-from` | ServiceGroup that provided the address
 `purelb.io/pool-type` | `local` or `remote`
-`purelb.io/announcing-IPv4` | Node and interface announcing the IPv4 address
-`purelb.io/announcing-IPv6` | Node and interface announcing the IPv6 address
+`purelb.io/announcing-IPv4` | Space-separated `node,interface,ip` entries, one per announced IPv4 address (advisory; see the [annotations reference]({{< relref "/docs/reference/annotations" >}}))
+`purelb.io/announcing-IPv6` | Space-separated `node,interface,ip` entries, one per announced IPv6 address
 
 For detailed inspection, use the [kubectl plugin]({{< relref "/docs/operations/kubectl-plugin" >}}):
 

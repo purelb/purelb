@@ -71,6 +71,13 @@ migrate these.
   sidecar — see [Installing without the BGP sidecar](#installing-without-the-bgp-sidecar).
   Otherwise, create a [BGPConfiguration]({{< relref "/docs/configuration/bgp" >}})
   after upgrading to use the sidecar.
+- **`purelb.io/announcing-*` annotation**: the value is now a space-separated
+  list of `node,interface,ip` entries (one per announced address), each owned by
+  the node currently announcing that IP, and it converges instead of
+  accumulating stale entries. If you have tooling that parses this annotation,
+  read it as the documented `node,interface,ip` format and treat it as advisory
+  — prefer `kubectl-purelb services` or the `purelb_lbnodeagent_announced` metric
+  for the authoritative announcer. No action is required for normal upgrades.
 
 ## Step 1 — Confirm the cluster and how PureLB was installed
 

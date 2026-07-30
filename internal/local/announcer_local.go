@@ -17,6 +17,7 @@ package local
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"strings"
 	"sync"
@@ -62,6 +63,17 @@ type announcer struct {
 	// addressRenewals tracks addresses that need periodic renewal.
 	// Key format: "namespace/servicename:ip" to support shared IPs.
 	addressRenewals sync.Map // map[string]*addressRenewal
+
+	// announced tracks the addresses that this node has actually added to
+	// an interface. Key format matches addressRenewals (see renewalKey).
+	//
+	// This is the reference count that decides whether a shared address may
+	// be withdrawn. It deliberately does not use svcIngresses, which holds
+	// every LoadBalancer Service this node has seen whether or not this node
+	// won the election for it: two services sharing an IP would each find
+	// the other there and both decline to withdraw, stranding the address on
+	// a node that lost.
+	announced sync.Map // map[string]struct{}
 }
 
 // addressRenewal holds the state needed to periodically refresh an address
@@ -174,6 +186,13 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 	// if we haven't been configured then we won't announce
 	if a.config == nil {
 		logging.Info(l, "event", "noConfig")
+		// We are not announcing anything, so drop any slot that still names
+		// us (e.g. the local config was removed after we had won).
+		for _, ingress := range svc.Status.LoadBalancer.Ingress {
+			if lbIP := net.ParseIP(ingress.IP); lbIP != nil {
+				a.clearOwnAnnounceSlot(svc, lbIP)
+			}
+		}
 		return nil
 	}
 
@@ -212,6 +231,9 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			} else {
 				// lbIP is from a local pool but no local interface matches.
 				// Do NOT announce - subnet-aware election will handle this.
+				// This node is healthy (its lease is valid) but not
+				// announcing, so nothing else will clear a stale slot for us.
+				a.clearOwnAnnounceSlot(svc, lbIP)
 				logging.Info(l, "event", "noLocalInterface", "ip", lbIP,
 					"msg", "local pool IP has no matching local interface, not announcing")
 			}
@@ -238,6 +260,9 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			} else {
 				// lbIP is from a local pool but doesn't match the default interface.
 				// Do NOT announce - subnet-aware election will handle this.
+				// This node is healthy but not announcing, so nothing else
+				// will clear a stale slot for us.
+				a.clearOwnAnnounceSlot(svc, lbIP)
 				logging.Info(l, "event", "noLocalInterface", "ip", lbIP,
 					"msg", "local pool IP has no matching local interface, not announcing")
 			}
@@ -315,34 +340,33 @@ func (a *announcer) announceLocal(svc *v1.Service, preferred []string, announceI
 		opts.SkipDAD = true
 	}
 	if err := addNetworkWithOptions(lbIPNet, announceInt, opts); err != nil {
+		// We won but could not configure the address, so we are not
+		// announcing it: drop any slot that still names us.
+		a.clearOwnAnnounceSlot(svc, lbIP)
 		return err
 	}
 	RecordAddressAddition()
+	a.announced.Store(renewalKey(nsName, lbIP.String()), struct{}{})
 	a.scheduleRenewal(nsName, lbIPNet, announceInt, opts)
 
-	if svc.Annotations == nil {
-		svc.Annotations = map[string]string{}
-	}
-	// Update the announcing annotation only if our entry isn't already present.
-	// This prevents unnecessary service updates that would trigger reprocessing loops.
-	// Format: "node,iface,ip[ node2,iface2,ip2]" — space-separated entries.
-	announceKey := purelbv2.AnnounceAnnotation + addrFamilyName(lbIP)
-	entry := a.myNode + "," + announceInt.Attrs().Name + "," + lbIP.String()
-	if existing := svc.Annotations[announceKey]; !strings.Contains(existing, entry) {
-		if existing != "" {
-			svc.Annotations[announceKey] = existing + " " + entry
-		} else {
-			svc.Annotations[announceKey] = entry
-		}
-	}
+	// Claim this IP's slot in the announcing-<family> annotation. The IP is
+	// the slot key: whichever node wins the election for it owns the entry,
+	// so we overwrite any prior holder rather than appending.
+	a.claimAnnounceSlot(svc, announceInt.Attrs().Name, lbIP)
+
 	announcing.With(prometheus.Labels{
 		"service": nsName,
 		"node":    a.myNode,
 		"ip":      lbIP.String(),
 	}).Set(1)
 
-	// Send GARP if configured
-	a.sendGARPSequence(lbIP, announceInt.Attrs().Name)
+	// Send GARP if configured. IPv4 only: gratuitous ARP has no IPv6
+	// equivalent (arp.NewPacket rejects non-4-byte addresses), so an IPv6
+	// address would only spin up the sequence goroutine to fail on every
+	// packet. IPv6 neighbours learn the new location from the kernel.
+	if lbIP.To4() != nil {
+		a.sendGARPSequence(lbIP, announceInt.Attrs().Name)
+	}
 
 	return nil
 }
@@ -401,6 +425,7 @@ func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.Endp
 		return err
 	}
 	RecordAddressAddition()
+	a.announced.Store(renewalKey(nsName, lbIP.String()), struct{}{})
 	a.scheduleRenewal(nsName, lbIPNet, a.dummyInt, opts)
 
 	// The announcing annotation for remote pools is derived by consumers
@@ -462,19 +487,30 @@ func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 		"ip":      svcAddr.String(),
 	})
 
-	// if any other service is still using that address then we don't
-	// want to withdraw it
-	for otherSvc, announcedAddrs := range a.svcIngresses {
-		for _, announcedAddr := range announcedAddrs {
-			if announcedAddr.IP == svcAddr.String() && otherSvc != nsName {
-				logging.Debug(a.logger, "event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by other service", "other", otherSvc)
-				return nil
-			}
-		}
+	// This service is no longer announcing the address on this node.
+	a.announced.Delete(renewalKey(nsName, svcAddr.String()))
+
+	// If some *other* service is still announcing that address from this
+	// node (a shared IP) then the address has to stay. Only entries in
+	// announced count: a service that this node never won does not hold a
+	// reference, so it cannot block the withdrawal.
+	if other, inUse := a.otherAnnouncerOf(svcAddr); inUse {
+		logging.Debug(a.logger, "event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by other service", "other", other)
+		return nil
 	}
 
-	logging.Info(a.logger, "event", "withdrawAddress", "ip", svcAddr, "service", nsName, "reason", reason)
-	deleteAddr(svcAddr)
+	removed, err := deleteAddr(svcAddr)
+	if err != nil {
+		logging.Info(a.logger, "event", "withdrawAddressFailed", "ip", svcAddr, "service", nsName,
+			"reason", reason, "removed", removed, "error", err)
+		return err
+	}
+	logging.Info(a.logger, "event", "withdrawAddress", "ip", svcAddr, "service", nsName,
+		"reason", reason, "removed", removed)
+	if removed == 0 {
+		logging.Info(a.logger, "event", "withdrawAddressNotPresent", "ip", svcAddr, "service", nsName,
+			"reason", reason, "msg", "address was not on any interface at withdraw time")
+	}
 	RecordAddressWithdrawal()
 
 	return nil
@@ -660,6 +696,137 @@ func (a *announcer) isRemotePool(lbIP net.IP) bool {
 // Format: "namespace/servicename:ip" to support shared IPs across services.
 func renewalKey(svcName, ip string) string {
 	return svcName + ":" + ip
+}
+
+// otherAnnouncerOf reports whether any service other than the ones already
+// removed from a.announced is still announcing addr from this node, i.e.
+// whether addr is a shared IP that must not be withdrawn yet. It returns the
+// name of one such service for logging.
+//
+// Keys are "namespace/servicename:ip". A service name never contains a colon
+// but an IPv6 address does, so the split is on the *first* colon.
+func (a *announcer) otherAnnouncerOf(addr net.IP) (string, bool) {
+	want := addr.String()
+	other := ""
+	a.announced.Range(func(k, _ any) bool {
+		key, ok := k.(string)
+		if !ok {
+			return true
+		}
+		i := strings.Index(key, ":")
+		if i < 0 || key[i+1:] != want {
+			return true
+		}
+		other = key[:i]
+		return false // found one, stop
+	})
+	return other, other != ""
+}
+
+// netipOf converts a net.IP to a canonical (unmapped) netip.Addr. The second
+// return is false if the address is not valid.
+func netipOf(ip net.IP) (netip.Addr, bool) {
+	a, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return a.Unmap(), true
+}
+
+// announceKeepIPs returns the Service's current ingress addresses that share
+// lbIP's family -- the set of IPs that legitimately belong in lbIP's
+// announcing-<family> annotation key. It is the sweep set for Reconcile: a
+// slot whose IP is not among these is for an address the Service no longer
+// has, and is dropped.
+func announceKeepIPs(svc *v1.Service, lbIP net.IP) []netip.Addr {
+	wantV4 := lbIP.To4() != nil
+	var keep []netip.Addr
+	for _, ing := range svc.Status.LoadBalancer.Ingress {
+		a, err := netip.ParseAddr(ing.IP)
+		if err != nil {
+			continue
+		}
+		a = a.Unmap()
+		if a.Is4() == wantV4 {
+			keep = append(keep, a)
+		}
+	}
+	return keep
+}
+
+// claimAnnounceSlot records this node as the announcer of lbIP in the
+// annotation, taking the slot from any previous holder and sweeping slots for
+// IPs the Service no longer has. Called only on the win path.
+func (a *announcer) claimAnnounceSlot(svc *v1.Service, iface string, lbIP net.IP) {
+	addr, ok := netipOf(lbIP)
+	if !ok {
+		return
+	}
+	key := purelbv2.AnnounceAnnotation + addrFamilyName(lbIP)
+	existing := purelbv2.ParseAnnouncements(svc.Annotations[key])
+
+	// If another node currently holds this IP's slot we are taking it from
+	// them -- surface that, since two nodes announcing one IP is split-brain
+	// the IP-keyed annotation would otherwise render as a clean handover.
+	for _, e := range existing {
+		if e.IP == addr && e.Node != a.myNode {
+			RecordAnnounceSlotSteal(e.Node, a.myNode)
+			a.client.Infof(svc, "AnnounceSlotSteal",
+				"Node %s took announcement of %s from node %s", a.myNode, lbIP, e.Node)
+			break
+		}
+	}
+
+	mine := purelbv2.Announcement{Node: a.myNode, Interface: iface, IP: addr}
+	a.setAnnounceAnnotation(svc, key, existing.Reconcile(mine, announceKeepIPs(svc, lbIP)))
+}
+
+// clearOwnAnnounceSlot removes this node's slot for lbIP from the annotation,
+// if present. Used where this node knows it is not announcing lbIP for a
+// stable reason (no matching local interface, no config) and so no other node
+// will necessarily overwrite the slot. It only ever removes this node's own
+// entry, so it cannot race another node's claim.
+func (a *announcer) clearOwnAnnounceSlot(svc *v1.Service, lbIP net.IP) {
+	if svc.Annotations == nil {
+		return
+	}
+	key := purelbv2.AnnounceAnnotation + addrFamilyName(lbIP)
+	if svc.Annotations[key] == "" {
+		return
+	}
+	addr, ok := netipOf(lbIP)
+	if !ok {
+		return
+	}
+	existing := purelbv2.ParseAnnouncements(svc.Annotations[key])
+	kept := make(purelbv2.Announcements, 0, len(existing))
+	changed := false
+	for _, e := range existing {
+		if e.IP == addr && e.Node == a.myNode {
+			changed = true
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if !changed {
+		return
+	}
+	a.setAnnounceAnnotation(svc, key, kept)
+}
+
+// setAnnounceAnnotation writes the encoded annotation value, deleting the key
+// when the value is empty so an empty string is never stored (an empty-valued
+// key would defeat the change detection in maybeUpdateService).
+func (a *announcer) setAnnounceAnnotation(svc *v1.Service, key string, anns purelbv2.Announcements) {
+	encoded := anns.Encode()
+	if encoded == "" {
+		delete(svc.Annotations, key)
+		return
+	}
+	if svc.Annotations == nil {
+		svc.Annotations = map[string]string{}
+	}
+	svc.Annotations[key] = encoded
 }
 
 // scheduleRenewal sets up a timer to periodically refresh an address before

@@ -50,6 +50,12 @@ import (
 // EndpointSlices to their parent Service name.
 const serviceNameIndexName = "serviceName"
 
+// svcResyncPeriod is the informer resync interval for Services. It bounds how
+// long a dropped write can leave the cluster out of sync; see the comment at
+// the Service informer for why this is a correctness floor rather than a
+// polling loop.
+const svcResyncPeriod = 10 * time.Minute
+
 // Client watches a Kubernetes cluster and translates events into
 // Controller method calls.
 type Client struct {
@@ -244,6 +250,18 @@ func New(cfg *Config) (*Client, error) {
 			}
 		},
 		UpdateFunc: func(old interface{}, new interface{}) {
+			// A node writing a purelb.io/announcing-* annotation generates a
+			// Service update that every node's informer receives. Nothing in
+			// the reconcile path reads that annotation -- it is display-only --
+			// so re-enqueuing on it wakes every node for another node's write,
+			// an O(N^2) storm that is at its worst during the VIP migration the
+			// annotation exists to record. Skip the re-enqueue when a peer's
+			// announcing write is the only thing that changed.
+			oldSvc, oldOK := old.(*corev1.Service)
+			newSvc, newOK := new.(*corev1.Service)
+			if oldOK && newOK && announcingOnlyUpdate(oldSvc, newSvc) {
+				return
+			}
 			key, err := cache.MetaNamespaceKeyFunc(new)
 			if err == nil {
 				c.queue.Add(svcKey(key))
@@ -257,7 +275,12 @@ func New(cfg *Config) (*Client, error) {
 		},
 	}
 	svcWatcher := cache.NewListWatchFromClient(c.client.CoreV1().RESTClient(), "services", corev1.NamespaceAll, fields.Everything())
-	c.svcIndexer, c.svcInformer = cache.NewIndexerInformer(svcWatcher, &corev1.Service{}, 0, svcHandlers, cache.Indexers{})
+	// A non-zero resync period re-delivers every Service periodically. It is a
+	// self-healing floor: if a write is ever dropped (e.g. an Update conflict
+	// whose retry is lost) the next resync reconciles it. In steady state the
+	// recomputed object is identical, so maybeUpdateService's diff short-
+	// circuits and resync produces no API writes.
+	c.svcIndexer, c.svcInformer = cache.NewIndexerInformer(svcWatcher, &corev1.Service{}, svcResyncPeriod, svcHandlers, cache.Indexers{})
 
 	c.serviceChanged = cfg.ServiceChanged
 	c.serviceDeleted = cfg.ServiceDeleted
@@ -576,6 +599,56 @@ func (c *Client) Errorf(obj runtime.Object, kind, msg string, args ...interface{
 	c.events.Eventf(obj, corev1.EventTypeWarning, kind, msg, args...)
 }
 
+// announcingOnlyUpdate reports whether the sole difference between two versions
+// of a Service is one or more purelb.io/announcing-* annotations. When true the
+// update can be dropped: nothing in the reconcile path reads that annotation.
+//
+// It is deliberately conservative. It skips only when Spec and Status are
+// unchanged and the annotation maps differ purely in announcing-* keys. An
+// identical redelivery (informer resync) has equal annotation maps and is NOT
+// skipped, so the resync self-healing floor keeps working; any change to Spec,
+// Status, or a non-announcing annotation falls through to a normal enqueue.
+func announcingOnlyUpdate(old, new *corev1.Service) bool {
+	if !reflect.DeepEqual(old.Spec, new.Spec) {
+		return false
+	}
+	if !reflect.DeepEqual(old.Status, new.Status) {
+		return false
+	}
+	if reflect.DeepEqual(old.Annotations, new.Annotations) {
+		// No annotation change (resync, or some other field churned). Let it
+		// through rather than guess whether the other change matters.
+		return false
+	}
+	return annotationsEqualIgnoringAnnouncing(old.Annotations, new.Annotations)
+}
+
+// annotationsEqualIgnoringAnnouncing compares two annotation maps while
+// ignoring every purelb.io/announcing-* key.
+func annotationsEqualIgnoringAnnouncing(a, b map[string]string) bool {
+	countNonAnnouncing := func(m map[string]string) int {
+		n := 0
+		for k := range m {
+			if !strings.HasPrefix(k, purelbv2.AnnounceAnnotation) {
+				n++
+			}
+		}
+		return n
+	}
+	if countNonAnnouncing(a) != countNonAnnouncing(b) {
+		return false
+	}
+	for k, av := range a {
+		if strings.HasPrefix(k, purelbv2.AnnounceAnnotation) {
+			continue
+		}
+		if bv, ok := b[k]; !ok || bv != av {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Client) sync(key queueItem) SyncState {
 	defer c.queue.Done(key)
 
@@ -612,7 +685,13 @@ func (c *Client) sync(key queueItem) SyncState {
 			// l.Log("op", "getService", "msg", "doesn't exist")
 			return c.serviceDeleted(svcName)
 		}
-		svc := svcMaybe.(*corev1.Service)
+		// DeepCopy: svcIndexer returns the shared informer cache object.
+		// The announcer mutates the Service it is handed (annotations, and
+		// ExternalTrafficPolicy), so we must not let it write into the cache
+		// -- both because mutating cache objects is a client-go prohibition
+		// and because, on an Update conflict, the requeued sync must re-read
+		// the pristine server state rather than our own failed mutation.
+		svc := svcMaybe.(*corev1.Service).DeepCopy()
 
 		// Fetch all EndpointSlices for this service using our custom indexer
 		var epSlices []*discoveryv1.EndpointSlice

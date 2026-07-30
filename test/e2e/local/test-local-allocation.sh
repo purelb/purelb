@@ -650,6 +650,20 @@ test_graceful_failover() {
         pass "Graceful failover winner $NEW_WINNER is on correct subnet for $IPV4"
     fi
 
+    # Annotation convergence: the IP-keyed announcing slot must follow the VIP.
+    # After a real move the new winner overwrites the slot, so the old winner's
+    # entry disappears; a same-node recovery keeps the original winner. Poll,
+    # because convergence is eventual (re-election after lease expiry).
+    if [ -n "$NEW_WINNER" ]; then
+        wait_for_announcer "$NAMESPACE" nginx-lb-ipv4 IPv4 "$NEW_WINNER" 30 \
+            || fail "announcing-IPv4 never converged to new winner $NEW_WINNER: $(get_announcing "$NAMESPACE" nginx-lb-ipv4 IPv4)"
+        if [ "$NEW_WINNER" != "$ORIGINAL_WINNER" ]; then
+            wait_for_not_announcer "$NAMESPACE" nginx-lb-ipv4 IPv4 "$ORIGINAL_WINNER" 30 \
+                || fail "announcing-IPv4 still lists old winner $ORIGINAL_WINNER: $(get_announcing "$NAMESPACE" nginx-lb-ipv4 IPv4)"
+        fi
+        pass "announcing-IPv4 converged to $NEW_WINNER (no stale entry for $ORIGINAL_WINNER)"
+    fi
+
     # Show post-failover state
     echo ""
     info "=== POST-FAILOVER STATE ==="
@@ -1033,10 +1047,16 @@ test_leader_election() {
 
     # Verify purelb.io/announcing-IPv4 annotation matches winner
     info "Verifying announcing annotation..."
-    ANNOUNCING=$(kubectl get svc nginx-lb-ipv4 -n $NAMESPACE -o jsonpath='{.metadata.annotations.purelb\.io/announcing-IPv4}')
+    ANNOUNCING=$(get_announcing "$NAMESPACE" nginx-lb-ipv4 IPv4)
     info "Announcing annotation: $ANNOUNCING"
     [ -n "$ANNOUNCING" ] || fail "Missing purelb.io/announcing-IPv4 annotation"
-    [[ "$ANNOUNCING" == *"$WINNER"* ]] || fail "Announcing annotation '$ANNOUNCING' doesn't match winner '$WINNER'"
+    # Entry-wise: the winner must be present, and for this single-IP service no
+    # other node may appear (the old substring check passed on a superset).
+    announcing_has_node "$ANNOUNCING" "$WINNER" || fail "Announcing annotation '$ANNOUNCING' has no entry for winner '$WINNER'"
+    for entry in $ANNOUNCING; do
+        node="${entry%%,*}"
+        [ "$node" = "$WINNER" ] || fail "Announcing annotation lists non-winner '$node': $ANNOUNCING"
+    done
     pass "Announcing annotation correctly set to $ANNOUNCING"
 
     # --- Metrics verification: Election-specific metrics ---
@@ -1689,6 +1709,15 @@ test_node_failover() {
     RESPONSE=$(curl -s --connect-timeout 10 "http://$IPV4/" || true)
     echo "$RESPONSE" | grep -q "Pod:" || { kubectl taint node "$ORIGINAL_WINNER" purelb-test- 2>/dev/null || true; fail "Service not reachable after failover"; }
     pass "Service still reachable after failover"
+
+    # Annotation convergence while the old winner is still down: its agent
+    # cannot clear its own slot, so the new winner must overwrite the IP-keyed
+    # slot. This is the append-only bug's exact failure shape.
+    wait_for_announcer "$NAMESPACE" nginx-lb-ipv4 IPv4 "$NEW_WINNER" 30 \
+        || { kubectl taint node "$ORIGINAL_WINNER" purelb-test- 2>/dev/null || true; fail "announcing-IPv4 never converged to $NEW_WINNER: $(get_announcing "$NAMESPACE" nginx-lb-ipv4 IPv4)"; }
+    wait_for_not_announcer "$NAMESPACE" nginx-lb-ipv4 IPv4 "$ORIGINAL_WINNER" 30 \
+        || { kubectl taint node "$ORIGINAL_WINNER" purelb-test- 2>/dev/null || true; fail "announcing-IPv4 still lists downed node $ORIGINAL_WINNER: $(get_announcing "$NAMESPACE" nginx-lb-ipv4 IPv4)"; }
+    pass "announcing-IPv4 converged to $NEW_WINNER while $ORIGINAL_WINNER down (overwrite, not append)"
 
     # Remove taint to allow DaemonSet to restore
     info "Removing taint from $ORIGINAL_WINNER..."
@@ -3209,13 +3238,28 @@ EOF
         info "announcing-IPv4: $ann_v4"
         info "announcing-IPv6: $ann_v6"
 
-        # Each announcing annotation should have entries for each subnet
-        local ann_v4_count
+        # Exactly one slot per allocated IP: entry count == distinct-IP count
+        # (no accumulated duplicate-IP entries) and == the number of allocated
+        # IPs of that family. This asserts the IP-keyed slot behaviour; the old
+        # check tolerated accumulation with a non-fatal ">=" warning.
+        local ds_ips
+        ds_ips=$(kubectl get svc nginx-mp-sg-ds -n $NAMESPACE \
+            -o jsonpath='{.status.loadBalancer.ingress[*].ip}')
+        local v4_ip_count v6_ip_count
+        v4_ip_count=$(echo "$ds_ips" | tr ' ' '\n' | grep -c '\.' || true)
+        v6_ip_count=$(echo "$ds_ips" | tr ' ' '\n' | grep -c ':' || true)
+
+        local ann_v4_count ann_v4_distinct ann_v6_count ann_v6_distinct
         ann_v4_count=$(echo "$ann_v4" | tr ' ' '\n' | grep -c '.' || true)
-        local ann_v6_count
+        ann_v4_distinct=$(echo "$ann_v4" | tr ' ' '\n' | sed 's/.*,//' | grep '.' | sort -u | wc -l)
         ann_v6_count=$(echo "$ann_v6" | tr ' ' '\n' | grep -c '.' || true)
-        [ "$ann_v4_count" -ge "$v4_subnet_count" ] || info "Warning: announcing-IPv4 has $ann_v4_count entries, expected $v4_subnet_count"
-        [ "$ann_v6_count" -ge "$v6_subnet_count" ] || info "Warning: announcing-IPv6 has $ann_v6_count entries, expected $v6_subnet_count"
+        ann_v6_distinct=$(echo "$ann_v6" | tr ' ' '\n' | sed 's/.*,//' | grep '.' | sort -u | wc -l)
+
+        [ "$ann_v4_count" -eq "$ann_v4_distinct" ] || fail "announcing-IPv4 has duplicate-IP entries: $ann_v4"
+        [ "$ann_v6_count" -eq "$ann_v6_distinct" ] || fail "announcing-IPv6 has duplicate-IP entries: $ann_v6"
+        [ "$ann_v4_count" -eq "$v4_ip_count" ] || fail "announcing-IPv4 has $ann_v4_count slots, expected $v4_ip_count (one per allocated IP)"
+        [ "$ann_v6_count" -eq "$v6_ip_count" ] || fail "announcing-IPv6 has $ann_v6_count slots, expected $v6_ip_count (one per allocated IP)"
+        pass "announcing annotations have exactly one slot per allocated IP (v4=$ann_v4_count, v6=$ann_v6_count)"
 
         # Connectivity check for all dual-stack IPs
         local ds_ips

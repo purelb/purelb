@@ -86,6 +86,17 @@ var (
 		Name:      "election_losses_total",
 		Help:      "Total number of election losses on this node",
 	})
+
+	// announceSlotSteals counts how often this node took over an
+	// announcing-* slot that named a different node. A sustained non-zero
+	// rate means two nodes are contending to announce the same IP
+	// (split-brain), which the IP-keyed annotation would otherwise hide.
+	announceSlotSteals = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "announce_slot_steal_total",
+		Help:      "Times this node took an announcing-* slot from another node",
+	}, []string{"from", "to"})
 )
 
 func init() {
@@ -97,6 +108,7 @@ func init() {
 	prometheus.MustRegister(addressWithdrawals)
 	prometheus.MustRegister(electionWins)
 	prometheus.MustRegister(electionLosses)
+	prometheus.MustRegister(announceSlotSteals)
 }
 
 // RecordGARPSent increments the GARP sent counter.
@@ -137,4 +149,10 @@ func RecordElectionWin() {
 // RecordElectionLoss increments the election loss counter.
 func RecordElectionLoss() {
 	electionLosses.Inc()
+}
+
+// RecordAnnounceSlotSteal records that this node (to) took an announcing-*
+// slot previously held by another node (from).
+func RecordAnnounceSlotSteal(from, to string) {
+	announceSlotSteals.WithLabelValues(from, to).Inc()
 }

@@ -11,3 +11,8 @@ website/hugo_stats.json
 .hugo_build.lock
 pkg/generated
 pkg/apis/purelb/*/zz_generated.deepcopy.go
+
+# build / test / local artifacts
+kubectl-purelb
+test/e2e/timing/timing-results-*.csv
+.claude/

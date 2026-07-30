@@ -26,6 +26,24 @@ Annotation | Value | Description
 `purelb.io/allocated-by` | `"PureLB"` | Marks services managed by PureLB.
 `purelb.io/allocated-from` | ServiceGroup name | The ServiceGroup from which addresses were allocated.
 `purelb.io/pool-type` | `"local"` or `"remote"` | The type of pool the address came from.
-`purelb.io/announcing-IPv4` | `"node,interface"` | Which node and interface is announcing the IPv4 address.
-`purelb.io/announcing-IPv6` | `"node,interface"` | Which node and interface is announcing the IPv6 address.
+`purelb.io/announcing-IPv4` | `"node,interface,ip"` (see below) | Which node and interface is announcing each IPv4 address.
+`purelb.io/announcing-IPv6` | `"node,interface,ip"` (see below) | Which node and interface is announcing each IPv6 address.
 `purelb.io/skip-ipv6-dad` | `"true"` | Set when the ServiceGroup has `skipIPv6DAD` enabled.
+
+The `purelb.io/announcing-*` value is a space-separated list of
+`node,interface,ip` entries, one per announced address of that family (a
+dual-stack or multi-pool Service has several):
+
+```plaintext
+purelb.io/announcing-IPv4: node1,enp1s0,192.0.2.10 node2,enp1s0,192.0.2.11
+```
+
+Each IP's entry is owned by the node that currently announces it. The
+annotation is advisory and eventually consistent: it is set by the announcing
+node and, if a node leaves the cluster abruptly, its entry can persist until
+another node takes the address or the Service is recreated. For the
+authoritative view of who is announcing an address, use `kubectl-purelb
+services` (which cross-checks node leases) or the
+`purelb_lbnodeagent_announced` metric, rather than reading the annotation
+directly. Remote-pool Services carry no announcing annotation; all nodes
+announce those addresses on the dummy interface.

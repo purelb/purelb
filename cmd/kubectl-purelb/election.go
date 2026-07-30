@@ -25,6 +25,7 @@ import (
 
 	"github.com/spf13/cobra"
 	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -98,6 +99,28 @@ func newElectionCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 	return cmd
 }
 
+// countHealthyAnnouncers counts, per node, the announcing-* slots that PureLB
+// set and whose node currently holds a healthy lease. Slots for a node that is
+// absent from healthyNodes -- a node that died without clearing its slots --
+// are ignored so a departed node does not inflate the count.
+func countHealthyAnnouncers(svcs []corev1.Service, healthyNodes map[string]bool) map[string]int {
+	count := map[string]int{}
+	for _, svc := range svcs {
+		ann := svc.Annotations
+		if ann == nil || ann[annotationAllocatedBy] != brandPureLB {
+			continue
+		}
+		for _, suffix := range []string{"-IPv4", "-IPv6"} {
+			for _, a := range parseAnnouncingAnnotation(ann[annotationAnnouncing+suffix]) {
+				if a.Node != "" && healthyNodes[a.Node] {
+					count[a.Node]++
+				}
+			}
+		}
+	}
+	return count
+}
+
 func runElection(ctx context.Context, c *clients, format outputFormat, filterNode string, checkOnly bool, drainNode string) error {
 	now := time.Now()
 
@@ -160,7 +183,15 @@ func runElection(ctx context.Context, c *clients, format outputFormat, filterNod
 		return fmt.Errorf("listing services: %w", err)
 	}
 
-	announceCount := map[string]int{}
+	// A node only counts as announcing if it currently holds a healthy
+	// lease. The announcing-* annotation is owned per-IP by the election
+	// winner and is not cleared when a node dies abruptly, so a departed
+	// node can leave stale slots behind; without this gate its count would
+	// be inflated. Build the healthy set from the full lease list, before
+	// any --node filtering, so a filter does not distort it.
+	healthyNodes := buildHealthyNodeSet(leaseList.Items)
+	announceCount := countHealthyAnnouncers(svcList.Items, healthyNodes)
+
 	// Also collect service IPs for drain simulation (only local pool services participate in election)
 	type svcIPInfo struct {
 		nsName string
@@ -172,13 +203,6 @@ func runElection(ctx context.Context, c *clients, format outputFormat, filterNod
 		ann := svc.Annotations
 		if ann == nil || ann[annotationAllocatedBy] != brandPureLB {
 			continue
-		}
-		for _, suffix := range []string{"-IPv4", "-IPv6"} {
-			for _, a := range parseAnnouncingAnnotation(ann[annotationAnnouncing+suffix]) {
-				if a.Node != "" {
-					announceCount[a.Node]++
-				}
-			}
 		}
 		// Local pool services participate in election
 		if ann[annotationPoolType] == poolTypeLocal {
