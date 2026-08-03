@@ -59,7 +59,14 @@ type electionInfo struct {
 	Candidates []string `json:"candidates"`
 	Subnet     string   `json:"subnet"`
 	Winner     string   `json:"winner"`
-	Matches    bool     `json:"matchesAnnouncer"`
+	// Method explains how the winner was reached: a plain hash over the
+	// candidates, or one biased by node affinity (or a documented fallback
+	// when no endpoint node can serve the address).
+	Method string `json:"method"`
+	// Preferred is the endpoint-node set affinity biases toward, empty when
+	// the service does not use node affinity.
+	Preferred []string `json:"preferredNodes,omitempty"`
+	Matches   bool     `json:"matchesAnnouncer"`
 }
 
 type announcementInfo struct {
@@ -159,6 +166,20 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 		}
 	}
 
+	// Endpoints are fetched up front because the election below needs them:
+	// with the node-affinity annotation the announcer elects among the nodes
+	// hosting Ready/Serving endpoints, not among all candidates.
+	epSlices, _ := c.core.DiscoveryV1().EndpointSlices(ns).List(ctx, metav1.ListOptions{
+		ResourceVersion: "0",
+		LabelSelector:   fmt.Sprintf("kubernetes.io/service-name=%s", name),
+	})
+	var epItems []discoveryv1.EndpointSlice
+	if epSlices != nil {
+		epItems = epSlices.Items
+		result.Endpoints = countEndpoints(epItems)
+	}
+	preferred := preferredNodesForService(ann, epItems)
+
 	// Check if allocated
 	ingresses := svc.Status.LoadBalancer.Ingress
 	isAllocated := ann[annotationAllocatedBy] == brandPureLB && len(ingresses) > 0
@@ -195,12 +216,7 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 		}
 
 		// Parse announcing annotations
-		announcers := map[string]announcement{}
-		for _, suffix := range []string{"-IPv4", "-IPv6"} {
-			for _, a := range parseAnnouncingAnnotation(ann[annotationAnnouncing+suffix]) {
-				announcers[a.IP] = a
-			}
-		}
+		announcers := serviceAnnouncers(ann)
 
 		// Fetch BGPNodeStatus for remote pool route checks. Also classify the
 		// BGP state up front so we can show a clear "BGP not enabled" /
@@ -255,10 +271,18 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 					}
 				}
 
-				winner := electionWinner(ipStr, candidates)
+				winner, affinityApplied, affinityFellBack := predictWinner(ipStr, candidates, preferred)
 				actualAnnouncer := ""
 				if a, ok := announcers[ipStr]; ok {
 					actualAnnouncer = a.Node
+				}
+
+				method := "SHA256 hash"
+				switch {
+				case affinityApplied:
+					method = "SHA256 hash, affinity-biased to endpoint nodes"
+				case affinityFellBack:
+					method = "SHA256 hash, affinity fell back (no endpoint node has this subnet)"
 				}
 
 				result.Elections = append(result.Elections, electionInfo{
@@ -266,6 +290,8 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 					Candidates: candidates,
 					Subnet:     matchedSubnet,
 					Winner:     winner,
+					Method:     method,
+					Preferred:  preferred,
 					Matches:    winner == actualAnnouncer || (winner != "" && actualAnnouncer == ""),
 				})
 			}
@@ -351,15 +377,6 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 		}
 	}
 
-	// Endpoints
-	epSlices, _ := c.core.DiscoveryV1().EndpointSlices(ns).List(ctx, metav1.ListOptions{
-		ResourceVersion: "0",
-		LabelSelector:   fmt.Sprintf("kubernetes.io/service-name=%s", name),
-	})
-	if epSlices != nil {
-		result.Endpoints = countEndpoints(epSlices.Items)
-	}
-
 	if format != outputTable {
 		return printStructured(format, result)
 	}
@@ -406,7 +423,10 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 				}
 				fmt.Printf("Election (%s):\n", e.IP)
 				fmt.Printf("  Candidates: %s (subnet %s)\n", strings.Join(e.Candidates, ", "), e.Subnet)
-				fmt.Printf("  Winner: %s (SHA256 hash)  [%s]\n", e.Winner, match)
+				if len(e.Preferred) > 0 {
+					fmt.Printf("  Affinity prefers: %s (nodes with Ready/Serving endpoints)\n", strings.Join(e.Preferred, ", "))
+				}
+				fmt.Printf("  Winner: %s (%s)  [%s]\n", e.Winner, e.Method, match)
 			}
 		}
 

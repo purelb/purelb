@@ -16,6 +16,8 @@ package main
 
 import (
 	"context"
+	"io"
+	"os"
 	"testing"
 	"time"
 
@@ -727,4 +729,249 @@ func TestDetectBGPState(t *testing.T) {
 			assert.Equal(t, tt.wantSentence, info.sentence(), "sentence")
 		})
 	}
+}
+
+// =============================================================================
+// nodeSelector / announcement-visibility tests (v0.17.0)
+// =============================================================================
+
+// captureOutput redirects stdout while fn runs so tests can assert on what the
+// command actually prints, not merely that it returned nil.
+func captureOutput(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	old := os.Stdout
+	r, w, pipeErr := os.Pipe()
+	require.NoError(t, pipeErr)
+	os.Stdout = w
+
+	runErr := fn()
+
+	require.NoError(t, w.Close())
+	os.Stdout = old
+	out, readErr := io.ReadAll(r)
+	require.NoError(t, readErr)
+	return string(out), runErr
+}
+
+func makeNode(name string, labels map[string]string) *v1.Node {
+	return &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels}}
+}
+
+func makeLBNodeAgent(name string, spec map[string]interface{}) *unstructured.Unstructured {
+	lbna := &unstructured.Unstructured{}
+	lbna.SetGroupVersionKind(schema.GroupVersionKind{Group: "purelb.io", Version: "v2", Kind: "LBNodeAgent"})
+	lbna.SetName(name)
+	lbna.SetNamespace("purelb-system")
+	lbna.Object["spec"] = spec
+	return lbna
+}
+
+// TestRenderStatus_CountsUnannouncedIPs covers the bug where `status` reported
+// "Overall: OK" while every allocated address had lost its announcer, because
+// it only counted services awaiting allocation. `services` flagged the same
+// addresses as NO ANNOUNCER at that moment.
+func TestRenderStatus_CountsUnannouncedIPs(t *testing.T) {
+	sg := makeSG("pool", "local", "10.0.0.0/28", "10.0.0.0/24")
+	// Allocated, but no announcing-* annotation: nothing is answering for it.
+	svc := makePureLBService("default", "web", "10.0.0.1", "pool", "local")
+	lease := makeLease("node-a", "10.0.0.0/24", 2)
+
+	c := newFakeClients([]runtime.Object{svc, lease}, sg)
+	snap, err := fetchSnapshot(context.Background(), c)
+	require.NoError(t, err)
+
+	out, err := captureOutput(t, func() error { return renderStatus(snap, outputJSON) })
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "1 IP(s) not announced")
+	assert.Contains(t, out, "WARNING")
+	assert.NotContains(t, out, `"overall": "OK"`)
+}
+
+// The same service WITH a healthy announcer must stay clean, so the check
+// cannot be satisfied by simply always warning.
+func TestRenderStatus_AnnouncedIPIsNotAProblem(t *testing.T) {
+	sg := makeSG("pool", "local", "10.0.0.0/28", "10.0.0.0/24")
+	svc := makePureLBService("default", "web", "10.0.0.1", "pool", "local")
+	svc.Annotations[annotationAnnouncing+"-IPv4"] = "node-a,eth0,10.0.0.1"
+	lease := makeLease("node-a", "10.0.0.0/24", 2)
+
+	c := newFakeClients([]runtime.Object{svc, lease}, sg)
+	snap, err := fetchSnapshot(context.Background(), c)
+	require.NoError(t, err)
+
+	out, err := captureOutput(t, func() error { return renderStatus(snap, outputJSON) })
+	require.NoError(t, err)
+	assert.NotContains(t, out, "not announced")
+}
+
+// A node with a perfectly healthy lease that no LBNodeAgent selects announces
+// nothing; lease health alone cannot express that.
+func TestRenderStatus_DeselectedNodeIsVisible(t *testing.T) {
+	lease := makeLease("node-a", "", 2)
+	node := makeNode("node-a", map[string]string{"role": "worker"})
+	lbna := makeLBNodeAgent("edge-only", map[string]interface{}{
+		"nodeSelector": map[string]interface{}{
+			"matchLabels": map[string]interface{}{"role": "edge"},
+		},
+		"local": map[string]interface{}{"localInterface": "default"},
+	})
+
+	c := newFakeClients([]runtime.Object{lease, node}, lbna)
+	snap, err := fetchSnapshot(context.Background(), c)
+	require.NoError(t, err)
+
+	out, err := captureOutput(t, func() error { return renderStatus(snap, outputJSON) })
+	require.NoError(t, err)
+	assert.Contains(t, out, "selected by no LBNodeAgent")
+	assert.Contains(t, out, "announcing nothing")
+}
+
+// TestRunElection_ConfigColumn checks the per-node config state that tells a
+// deliberately-excluded node apart from a broken one.
+func TestRunElection_ConfigColumn(t *testing.T) {
+	leaseEdge := makeLease("node-edge", "10.0.0.0/24", 2)
+	leaseWorker := makeLease("node-worker", "", 2)
+	nodeEdge := makeNode("node-edge", map[string]string{"role": "edge"})
+	nodeWorker := makeNode("node-worker", map[string]string{"role": "worker"})
+	lbna := makeLBNodeAgent("edge-only", map[string]interface{}{
+		"nodeSelector": map[string]interface{}{
+			"matchLabels": map[string]interface{}{"role": "edge"},
+		},
+		"local": map[string]interface{}{"localInterface": "default"},
+	})
+
+	c := newFakeClients([]runtime.Object{leaseEdge, leaseWorker, nodeEdge, nodeWorker}, lbna)
+
+	out, err := captureOutput(t, func() error {
+		return runElection(context.Background(), c, outputTable, "", false, "")
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "CONFIG")
+	assert.Contains(t, out, configStateConfigured)
+	assert.Contains(t, out, configStateDeselected)
+	assert.Contains(t, out, "node-worker is selected by no LBNodeAgent")
+}
+
+// TestRunValidate_NodeSelectorChecks covers the LBNodeAgent nodeSelector
+// checks: a resource that selects nothing, and nodes selected by nothing.
+func TestRunValidate_NodeSelectorChecks(t *testing.T) {
+	node := makeNode("node-a", map[string]string{"role": "worker"})
+	lbna := makeLBNodeAgent("edge-only", map[string]interface{}{
+		"nodeSelector": map[string]interface{}{
+			"matchLabels": map[string]interface{}{"role": "edge"},
+		},
+		"local": map[string]interface{}{"localInterface": "default"},
+	})
+
+	c := newFakeClients([]runtime.Object{node}, lbna)
+
+	out, err := captureOutput(t, func() error {
+		return runValidate(context.Background(), c, outputTable, false)
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "nodeSelector matches 0 of 1 nodes")
+	assert.Contains(t, out, "selected by no LBNodeAgent")
+}
+
+// A specific selector overriding the catch-all is the documented
+// default-plus-override pattern. It must report which resource governs the
+// node WITHOUT warning — otherwise a correct configuration could never
+// validate clean and --strict would fail CI on it.
+func TestRunValidate_ScopedOverrideIsNotAWarning(t *testing.T) {
+	node := makeNode("node-a", map[string]string{"role": "edge"})
+	catchAll := makeLBNodeAgent("aaa-catchall", map[string]interface{}{
+		"local": map[string]interface{}{"localInterface": "default"},
+	})
+	scoped := makeLBNodeAgent("zzz-scoped", map[string]interface{}{
+		"nodeSelector": map[string]interface{}{
+			"matchLabels": map[string]interface{}{"role": "edge"},
+		},
+		"local": map[string]interface{}{"localInterface": "default"},
+	})
+
+	c := newFakeClients([]runtime.Object{node}, catchAll, scoped)
+
+	out, err := captureOutput(t, func() error {
+		return runValidate(context.Background(), c, outputTable, false)
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "using a scoped LBNodeAgent override")
+	assert.Contains(t, out, "using purelb-system/zzz-scoped")
+	assert.Contains(t, out, "over purelb-system/aaa-catchall")
+	assert.NotContains(t, out, "resolved by name order")
+	assert.Contains(t, out, "0 WARN")
+
+	// --strict must also pass: this configuration is correct.
+	_, err = captureOutput(t, func() error {
+		return runValidate(context.Background(), c, outputTable, true)
+	})
+	assert.NoError(t, err, "--strict must not fail on the default-plus-override pattern")
+}
+
+// Two SPECIFIC selectors matching one node is genuinely ambiguous: the winner
+// is decided only by namespace/name sort, so it stays a warning.
+func TestRunValidate_ContestedNodeWarns(t *testing.T) {
+	node := makeNode("node-a", map[string]string{"role": "edge", "tier": "front"})
+	byRole := makeLBNodeAgent("aaa-by-role", map[string]interface{}{
+		"nodeSelector": map[string]interface{}{
+			"matchLabels": map[string]interface{}{"role": "edge"},
+		},
+		"local": map[string]interface{}{"localInterface": "default"},
+	})
+	byTier := makeLBNodeAgent("zzz-by-tier", map[string]interface{}{
+		"nodeSelector": map[string]interface{}{
+			"matchLabels": map[string]interface{}{"tier": "front"},
+		},
+		"local": map[string]interface{}{"localInterface": "default"},
+	})
+
+	c := newFakeClients([]runtime.Object{node}, byRole, byTier)
+
+	out, err := captureOutput(t, func() error {
+		return runValidate(context.Background(), c, outputTable, false)
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "matched by multiple specific nodeSelectors")
+	assert.Contains(t, out, "resolved by name order")
+	assert.Contains(t, out, "using purelb-system/aaa-by-role")
+}
+
+// TestRunValidate_LocalInterfaceRegex covers the documented footgun: matching
+// is unanchored, so "eth" also selects veth interfaces.
+func TestRunValidate_LocalInterfaceRegex(t *testing.T) {
+	node := makeNode("node-a", nil)
+	lbna := makeLBNodeAgent("default", map[string]interface{}{
+		"local": map[string]interface{}{"localInterface": "eth"},
+	})
+
+	c := newFakeClients([]runtime.Object{node}, lbna)
+
+	out, err := captureOutput(t, func() error {
+		return runValidate(context.Background(), c, outputTable, false)
+	})
+	require.NoError(t, err)
+	assert.Contains(t, out, "unanchored")
+	assert.Contains(t, out, "^eth$")
+}
+
+// An invalid regex is a hard failure: the agent rejects the config and the
+// selected nodes announce nothing.
+func TestRunValidate_InvalidLocalInterface(t *testing.T) {
+	node := makeNode("node-a", nil)
+	lbna := makeLBNodeAgent("default", map[string]interface{}{
+		"local": map[string]interface{}{"localInterface": "["},
+	})
+
+	c := newFakeClients([]runtime.Object{node}, lbna)
+
+	out, err := captureOutput(t, func() error {
+		return runValidate(context.Background(), c, outputTable, false)
+	})
+	assert.Error(t, err, "an invalid localInterface must fail validation")
+	assert.Contains(t, out, "not a valid regex")
 }

@@ -90,6 +90,8 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 	svcList, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
 	leaseList, _ := c.core.CoordinationV1().Leases(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	bgpnsList, _ := c.dynamic.Resource(gvrBGPNodeStatuses).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	nodeList, _ := c.core.CoreV1().Nodes().List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 
 	snap := &clusterSnapshot{
 		pods:            pods,
@@ -97,6 +99,8 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 		serviceGroups:   sgList,
 		leases:          leaseList,
 		bgpNodeStatuses: bgpnsList,
+		lbNodeAgents:    lbnaList,
+		nodes:           nodeList,
 	}
 	return renderStatus(snap, format)
 }
@@ -232,6 +236,33 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 		warnings = append(warnings, fmt.Sprintf("%d node(s) unhealthy", totalNodes-healthyCount))
 	}
 
+	// A node can hold a perfectly healthy lease and still announce nothing,
+	// because no LBNodeAgent nodeSelector selects it or because its
+	// localInterface regex is invalid. Counting only lease health would
+	// report such a cluster as fully operational.
+	agents := decodeLBNodeAgents(snap.lbNodeAgents)
+	deselected, invalidCfg := 0, 0
+	if snap.nodes != nil {
+		for i := range snap.nodes.Items {
+			switch resolveNodeConfig(agents, snap.nodes.Items[i].Labels).State {
+			case configStateDeselected:
+				deselected++
+			case configStateInvalid:
+				invalidCfg++
+			}
+		}
+	}
+	if deselected > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d node(s) selected by no LBNodeAgent", deselected))
+	}
+	if invalidCfg > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d node(s) with invalid localInterface", invalidCfg))
+	}
+	electionSummaryStr := fmt.Sprintf("%d/%d nodes healthy | %d subnets covered", healthyCount, totalNodes, len(subnetSet))
+	if deselected > 0 || invalidCfg > 0 {
+		electionSummaryStr += fmt.Sprintf(" | %d node(s) announcing nothing", deselected+invalidCfg)
+	}
+
 	// === BGP ===
 	bgp := detectBGPState(snap.bgpNodeStatuses, pods)
 	bgpSummary := bgp.statusSummary()
@@ -245,30 +276,53 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 	}
 
 	// === Services ===
+	// Two distinct problems are counted here: services awaiting allocation,
+	// and allocated addresses that nothing is announcing. The second used to
+	// be invisible, so a cluster where every VIP had lost its announcer still
+	// reported "Overall: OK" while `services` reported the same addresses as
+	// NO ANNOUNCER. announceState is now the shared verdict for both views.
 	totalSvcs := 0
 	totalIPs := 0
-	svcProblems := 0
+	pendingSvcs := 0
+	unannouncedIPs := 0
+
+	var healthyNodes map[string]bool
+	if snap.leases != nil {
+		healthyNodes = buildHealthyNodeSet(snap.leases.Items)
+	} else {
+		healthyNodes = map[string]bool{}
+	}
 
 	if snap.services != nil {
 		for _, svc := range snap.services.Items {
 			ann := svc.Annotations
 			if ann == nil || ann[annotationAllocatedBy] != brandPureLB {
+				if svc.Spec.Type == v1.ServiceTypeLoadBalancer && ann != nil && ann[annotationServiceGroup] != "" {
+					pendingSvcs++
+				}
 				continue
 			}
 			totalSvcs++
 			totalIPs += len(svc.Status.LoadBalancer.Ingress)
-		}
-		for _, svc := range snap.services.Items {
-			if svc.Spec.Type == v1.ServiceTypeLoadBalancer {
-				ann := svc.Annotations
-				if ann != nil && ann[annotationServiceGroup] != "" && ann[annotationAllocatedBy] != brandPureLB {
-					svcProblems++
+
+			announcers := serviceAnnouncers(ann)
+			poolType := ann[annotationPoolType]
+			for _, ingress := range svc.Status.LoadBalancer.Ingress {
+				if ingress.IP == "" {
+					continue
+				}
+				if announceState(announcers, ingress.IP, poolType, healthyNodes) != svcStatusOK {
+					unannouncedIPs++
 				}
 			}
 		}
 	}
-	if svcProblems > 0 {
-		warnings = append(warnings, fmt.Sprintf("%d service(s) pending", svcProblems))
+	svcProblems := pendingSvcs + unannouncedIPs
+	if pendingSvcs > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d service(s) pending", pendingSvcs))
+	}
+	if unannouncedIPs > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d IP(s) not announced", unannouncedIPs))
 	}
 
 	// === Overall ===
@@ -280,7 +334,7 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 	overview := statusOverview{
 		Components: comp,
 		Pools:      poolStatus{Summary: strings.Join(poolParts, " | ")},
-		Election:   electionStatus{Summary: fmt.Sprintf("%d/%d nodes healthy | %d subnets covered", healthyCount, totalNodes, len(subnetSet))},
+		Election:   electionStatus{Summary: electionSummaryStr},
 		BGP:        bgpStatus{Summary: bgpSummary},
 		Services:   svcStatus{Summary: fmt.Sprintf("%d services, %d IPs | %d problem(s)", totalSvcs, totalIPs, svcProblems)},
 		Overall:    overall,

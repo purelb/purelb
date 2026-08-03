@@ -43,6 +43,12 @@ const (
 	annotationMultiPool     = "purelb.io/multi-pool"
 	annotationReEvaluate    = "purelb.io/re-evaluate"
 	annotationAllowLocal    = "purelb.io/allow-local"
+	annotationNodeAffinity  = "purelb.io/node-affinity"
+
+	// nodeAffinityServiceEndpoints is the only supported value of the
+	// node-affinity annotation: bias each address's election toward nodes
+	// hosting Ready/Serving endpoints.
+	nodeAffinityServiceEndpoints = "service-endpoints"
 
 	brandPureLB = "PureLB"
 
@@ -69,30 +75,59 @@ const (
 	familyV6 = 10
 )
 
-// dummyInterfaceName returns the dummy interface name from the LBNodeAgent CR,
-// defaulting to "kube-lb0" if not configured or not found.
+// dummyInterfaceName returns the dummy interface name configured by the
+// LBNodeAgent resources, defaulting to "kube-lb0". When several resources
+// configure different names it returns them comma-joined rather than picking
+// one arbitrarily — with nodeSelector-scoped resources the name is per-node,
+// so callers without a node in hand cannot resolve a single answer.
 func dummyInterfaceName(ctx context.Context, c *clients) string {
 	lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
-	if lbnaList != nil && len(lbnaList.Items) > 0 {
-		di, _, _ := unstructured.NestedString(lbnaList.Items[0].Object, "spec", "local", "dummyInterface")
-		if di != "" {
-			return di
-		}
-	}
-	return "kube-lb0"
+	return strings.Join(dummyInterfaces(decodeLBNodeAgents(lbnaList)), ",")
 }
 
-// resolveDummyInterface extracts the dummy interface name from a pre-fetched
-// LBNodeAgent list, defaulting to "kube-lb0". Use this when the list is already
-// available (e.g., from a clusterSnapshot) to avoid an extra API call.
+// resolveDummyInterface extracts the dummy interface name(s) from a
+// pre-fetched LBNodeAgent list. Use this when the list is already available
+// (e.g., from a clusterSnapshot) to avoid an extra API call.
 func resolveDummyInterface(lbnaList *unstructured.UnstructuredList) string {
-	if lbnaList != nil && len(lbnaList.Items) > 0 {
-		di, _, _ := unstructured.NestedString(lbnaList.Items[0].Object, "spec", "local", "dummyInterface")
-		if di != "" {
-			return di
+	return strings.Join(dummyInterfaces(decodeLBNodeAgents(lbnaList)), ",")
+}
+
+// Per-IP announcement status values, shared by the `services` table and the
+// `status` problem count so the two views cannot disagree.
+const (
+	svcStatusOK                 = "OK"
+	svcStatusPending            = "PENDING"
+	svcStatusNoAnnouncer        = "NO ANNOUNCER"
+	svcStatusAnnouncerUnhealthy = "ANNOUNCER UNHEALTHY"
+)
+
+// serviceAnnouncers builds an ip -> announcement map from a service's
+// announcing-IPv4/-IPv6 annotations.
+func serviceAnnouncers(ann map[string]string) map[string]announcement {
+	announcers := map[string]announcement{}
+	for _, suffix := range []string{"-IPv4", "-IPv6"} {
+		for _, a := range parseAnnouncingAnnotation(ann[annotationAnnouncing+suffix]) {
+			announcers[a.IP] = a
 		}
 	}
-	return "kube-lb0"
+	return announcers
+}
+
+// announceState classifies one allocated service IP. Remote-pool addresses
+// live on every node's dummy interface and carry no per-node annotation, so
+// their absence is normal; for a local pool it means nothing is answering ARP
+// or ND for that address.
+func announceState(announcers map[string]announcement, ip, poolType string, healthyNodes map[string]bool) string {
+	if a, ok := announcers[ip]; ok {
+		if !healthyNodes[a.Node] {
+			return svcStatusAnnouncerUnhealthy
+		}
+		return svcStatusOK
+	}
+	if poolType == poolTypeRemote {
+		return svcStatusOK
+	}
+	return svcStatusNoAnnouncer
 }
 
 // addrFamily returns the address family of an IP address.

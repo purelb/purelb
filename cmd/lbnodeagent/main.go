@@ -16,16 +16,49 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
+
+// selectorState reports which interface-selector state this node is
+// in: 1 for the active state, 0 for the others. The four states are
+// otherwise indistinguishable from the outside (config_loaded_bool
+// keeps reporting the previous good config during an invalid-config
+// outage).
+var selectorState = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: purelbv2.MetricsNamespace,
+	Subsystem: "lbnodeagent",
+	Name:      "selector_state",
+	Help:      "Interface selector state (1 = active): default, configured, deselected, invalid",
+}, []string{"state"})
+
+func init() {
+	prometheus.MustRegister(selectorState)
+}
+
+func recordSelectorState(active string) {
+	for _, state := range []string{"default", "configured", "deselected", "invalid"} {
+		value := 0.0
+		if state == active {
+			value = 1.0
+		}
+		selectorState.WithLabelValues(state).Set(value)
+	}
+}
 
 // parseDurationEnv parses a duration from an environment variable, returning
 // the default if the env var is not set or cannot be parsed.
@@ -88,7 +121,108 @@ func main() {
 		os.Exit(1)
 	}
 
-	client, err := k8s.New(&k8s.Config{
+	// selector bridges config delivery (CR-controller goroutine, via
+	// configChanged below) to the election's renewLoop goroutine, which
+	// reads it through the GetLocalSubnets closure. It is the only
+	// shared state in this file; everything else is per-delivery locals.
+	// nil means "no config yet / remote-only": the election falls back
+	// to default-interface detection, today's behavior. An empty
+	// selector means "advertise nothing".
+	var selector atomic.Pointer[election.InterfaceSelector]
+
+	// client is captured by configChanged before it is assigned. That is
+	// safe because the k8s client only invokes callbacks from inside
+	// client.Run(), which happens-after the assignment below.
+	var client *k8s.Client
+
+	// configChanged wraps ctrl.SetConfig with nodeSelector evaluation
+	// and keeps the election selector coherent with the announcer: the
+	// lease must never advertise a subnet the announcer cannot announce
+	// on. Convergence after a config change is two-wave: wave 1
+	// reprocesses services against the stale lease subnets; wave 2
+	// follows the next lease renewal (≤2.5s) plus informer propagation.
+	configChanged := func(cfg *purelbv2.Config) k8s.SyncState {
+		// Fetch our Node's labels fresh per delivery — no stored label
+		// state. Like a Pod's nodeSelector, label changes take effect
+		// when config is next delivered (CR event, informer resync, or
+		// pod restart), not continuously.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		node, err := client.Clientset().CoreV1().Nodes().Get(ctx, *myNode, metav1.GetOptions{})
+		cancel()
+		if err != nil {
+			// SyncStateError makes the CR controller requeue this
+			// delivery with backoff; config is not applied.
+			logging.Info(logger, "op", "configChanged", "error", err,
+				"msg", "failed to get node for nodeSelector evaluation, delivery will be retried")
+			return k8s.SyncStateError
+		}
+
+		for _, agent := range cfg.Agents {
+			logging.Debug(logger, "op", "configChanged", "agent", agent.Namespace+"/"+agent.Name,
+				"hasNodeSelector", fmt.Sprintf("%t", agent.Spec.NodeSelector != nil))
+		}
+
+		preFilter := len(cfg.Agents)
+		cfg.Agents = purelbv2.AgentsForNode(cfg.Agents, node.Labels)
+		if len(cfg.Agents) > 1 {
+			winner := cfg.Agents[0]
+			for _, ignored := range cfg.Agents[1:] {
+				logging.Info(logger, "op", "configChanged", "msg", "multiple LBNodeAgents match this node, using highest precedence",
+					"node", *myNode, "using", winner.Namespace+"/"+winner.Name, "ignoring", ignored.Namespace+"/"+ignored.Name)
+				client.Errorf(ignored, "ConfigIgnored",
+					"LBNodeAgent %s/%s takes precedence on node %s", winner.Namespace, winner.Name, *myNode)
+			}
+		}
+
+		// Announcer first: the selector is stored only after we know
+		// whether the announcer accepted the config, so the lease can
+		// never advertise what the announcer failed to configure.
+		ret := ctrl.SetConfig(cfg)
+
+		state := "default"
+		switch {
+		case ret == k8s.SyncStateError:
+			// Invalid regex, dummy-interface failure, any announcer
+			// config failure: the announcer announces nothing, so the
+			// lease must advertise nothing.
+			selector.Store(&election.InterfaceSelector{})
+			state = "invalid"
+			if offending := purelbv2.FirstLocalAgent(cfg.Agents); offending != nil {
+				client.Errorf(offending, "ConfigError",
+					"invalid configuration: node %s is announcing nothing until this is fixed", *myNode)
+			}
+		case preFilter > 0 && len(cfg.Agents) == 0:
+			// Every CR's nodeSelector deselected this node: the
+			// announcer is unconfigured, so advertise nothing. (A
+			// default fallback here would win elections it cannot
+			// serve — a blackhole.)
+			selector.Store(&election.InterfaceSelector{})
+			state = "deselected"
+		default:
+			sel, selErr := election.SelectorFromConfig(cfg)
+			if selErr != nil {
+				// Cannot happen when SetConfig succeeded (same regex,
+				// same agent), but stay coherent if it ever does.
+				selector.Store(&election.InterfaceSelector{})
+				state = "invalid"
+			} else {
+				// sel is nil for remote-only clusters (no Local spec):
+				// keep the default-detection lease, today's behavior.
+				selector.Store(sel)
+				if sel != nil {
+					state = "configured"
+				}
+			}
+		}
+		recordSelectorState(state)
+		logging.Info(logger, "op", "configChanged", "selectorState", state,
+			"node", *myNode, "matchingAgents", fmt.Sprintf("%d", len(cfg.Agents)),
+			"msg", "config delivery evaluated")
+
+		return ret
+	}
+
+	client, err = k8s.New(&k8s.Config{
 		ProcessName:        "purelb-lbnodeagent",
 		NodeName:           *myNode,
 		Logger:             logger,
@@ -97,7 +231,7 @@ func main() {
 
 		ServiceChanged: ctrl.ServiceChanged,
 		ServiceDeleted: ctrl.DeleteBalancer,
-		ConfigChanged:  ctrl.SetConfig,
+		ConfigChanged:  configChanged,
 		// Note: Shutdown is handled explicitly in main() after client.Run() returns
 		// to ensure proper ordering: mark unhealthy -> withdraw -> delete lease -> cleanup
 	})
@@ -121,9 +255,11 @@ func main() {
 		StopCh:         stopCh,
 		OnMemberChange: client.ForceSync,
 		GetLocalSubnets: func() ([]string, error) {
-			// TODO: This will be populated from LBNodeAgent config in Milestone 4
-			// For now, use default interface detection
-			return election.GetLocalSubnets([]string{}, true, logger)
+			// Runs on the election's renewLoop goroutine every
+			// LeaseDuration/2. Before the first config delivery the
+			// selector is nil and this is default-interface detection,
+			// identical to the historical behavior.
+			return election.GetSelectedSubnets(selector.Load(), logger)
 		},
 	})
 	if err != nil {

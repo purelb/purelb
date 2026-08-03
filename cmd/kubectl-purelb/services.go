@@ -136,7 +136,7 @@ func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filt
 					Name:      svc.Name,
 					IP:        "<pending>",
 					Pool:      ann[annotationServiceGroup],
-					Status:    "PENDING",
+					Status:    svcStatusPending,
 				}
 				if filterPool == "" || row.Pool == filterPool {
 					rows = append(rows, row)
@@ -151,12 +151,7 @@ func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filt
 
 		// Parse announcing annotations for both families (local pools only;
 		// remote pools derive the interface from the LBNodeAgent CR).
-		announcers := map[string]announcement{} // ip -> announcement
-		for _, suffix := range []string{"-IPv4", "-IPv6"} {
-			for _, a := range parseAnnouncingAnnotation(ann[annotationAnnouncing+suffix]) {
-				announcers[a.IP] = a
-			}
-		}
+		announcers := serviceAnnouncers(ann)
 
 		// Build port string for sharing display
 		portStrs := []string{}
@@ -175,7 +170,7 @@ func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filt
 				Pool:       poolName,
 				PoolType:   poolType,
 				SharingKey: sharingKey,
-				Status:     "PENDING",
+				Status:     svcStatusPending,
 			}
 			rows = append(rows, row)
 			continue
@@ -187,22 +182,18 @@ func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filt
 				continue
 			}
 
-			// Determine announcer and status
+			// Determine announcer and status. announceState is shared with
+			// `status` so the per-IP verdict is defined in exactly one place.
 			announcing := ""
-			status := "OK"
+			status := announceState(announcers, ipStr, poolType, healthyNodes)
 
 			if a, ok := announcers[ipStr]; ok {
 				announcing = a.Node + "/" + a.Interface
-				if !healthyNodes[a.Node] {
-					status = "ANNOUNCER UNHEALTHY"
-				}
 			} else if poolType == poolTypeRemote {
 				// Remote pools: all nodes announce on the dummy interface.
 				// Derive the name from the LBNodeAgent CR instead of an
 				// annotation to avoid a write storm from multiple agents.
 				announcing = dummyIface
-			} else {
-				status = "NO ANNOUNCER"
 			}
 
 			row := svcRow{
@@ -226,7 +217,7 @@ func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filt
 			if filterIP != "" && ipStr != filterIP {
 				continue
 			}
-			if problemsOnly && status == "OK" {
+			if problemsOnly && status == svcStatusOK {
 				continue
 			}
 
@@ -312,7 +303,7 @@ func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filt
 		}
 
 		statusMarker := r.Status
-		if r.Status != "OK" && r.Status != "PENDING" {
+		if r.Status != svcStatusOK && r.Status != svcStatusPending {
 			statusMarker = r.Status + "  ***"
 		}
 

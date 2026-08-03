@@ -18,11 +18,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
+	"sort"
 	"syscall"
 
 	"github.com/mdlayher/arp"
 	"github.com/mdlayher/ethernet"
+	"github.com/mdlayher/ndp"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 
@@ -30,48 +33,81 @@ import (
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
+// errIndeterminate means interface resolution could not be decided
+// this cycle (e.g. a partial netlink dump). Callers must not treat it
+// as "non-local": withdrawing an announcement on uncertain evidence
+// would turn transient kernel-dump races into VIP flaps.
+var errIndeterminate = errors.New("interface resolution indeterminate")
+
 // findLocal tries to find a "local" network interface based on the
 // name of the interface and the IP addresses that are assigned to it.
 // A network interface is considered local if its name matches the
-// configuration regex and lbIP is within the same network as the
-// interface.  If both are true, then the netlink.Link return value
-// will be the default interface and error will be nil.  If error is
-// non-nil then no local interface was found.
-func findLocal(regex *regexp.Regexp, lbIP net.IP) (net.IPNet, netlink.Link, error) {
+// configuration regex (excluding the interface named exclude) and lbIP
+// is within the same network as the interface.  If both are true, then
+// the netlink.Link return value will be that interface and error will
+// be nil.  If error is non-nil then no local interface was found;
+// errIndeterminate means resolution was uncertain this cycle.
+func findLocal(regex *regexp.Regexp, exclude string, lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return net.IPNet{}, nil, err
 	}
 
+	// Collect the matching names, then sort: enumeration is in ifindex
+	// order which is boot-dependent, and when one subnet spans two
+	// matching interfaces the announce interface must not change
+	// across reboots.
+	matched := []string{}
 	for _, intf := range interfaces {
+		if intf.Name == exclude {
+			continue
+		}
 		if regex.Match([]byte(intf.Name)) {
-			// The interface name matches the local regex so check if the
-			// addresses also match
-			nlIntf, err := netlink.LinkByName(intf.Name)
-			if err != nil {
-				return net.IPNet{}, nil, err
-			}
-			if ipnet, link, err := checkLocal(nlIntf, lbIP); err == nil {
-				// The addresses match so this is a local interface
-				return ipnet, link, nil
-			}
+			matched = append(matched, intf.Name)
+		}
+	}
+	sort.Strings(matched)
+
+	indeterminate := false
+	for _, name := range matched {
+		nlIntf, err := netlink.LinkByName(name)
+		if err != nil {
+			// The interface disappeared between enumeration and lookup —
+			// routine veth churn on pod-dense nodes. Skip it; aborting
+			// the whole scan would fail resolution for every other
+			// matching interface.
+			continue
+		}
+		ipnet, link, err := checkLocal(nlIntf, lbIP)
+		if err == nil {
+			// The addresses match so this is a local interface
+			return ipnet, link, nil
+		}
+		if errors.Is(err, errIndeterminate) {
+			indeterminate = true
 		}
 	}
 
+	if indeterminate {
+		return net.IPNet{}, nil, errIndeterminate
+	}
 	return net.IPNet{}, nil, fmt.Errorf("No local interface found")
 }
 
 // checkLocal determines whether lbIP belongs to the same network as
 // intf.  If so, then the netlink.Link return value will be the
 // default interface and error will be nil.  If error is non-nil then
-// the address is non-local.
+// the address is non-local; errIndeterminate means the address dump
+// was partial and no containing address was seen, so "non-local"
+// cannot be concluded this cycle.
 func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	var lbIPNet net.IPNet = net.IPNet{IP: lbIP}
 
 	family := purelbv2.AddrFamily(lbIP)
 
 	defaddrs, err := netlink.AddrList(intf, family)
-	if err != nil && !errors.Is(err, netlink.ErrDumpInterrupted) {
+	partialDump := errors.Is(err, netlink.ErrDumpInterrupted)
+	if err != nil && !partialDump {
 		return lbIPNet, intf, err
 	}
 
@@ -97,6 +133,11 @@ func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error)
 	}
 
 	if lbIPNet.Mask == nil {
+		if partialDump {
+			// The dump was interrupted and we saw no containing address:
+			// it may simply have been missing from the partial results.
+			return lbIPNet, intf, errIndeterminate
+		}
 		return lbIPNet, intf, fmt.Errorf("non-local address")
 	}
 
@@ -321,6 +362,53 @@ func sendGARP(ifName string, ip net.IP) error {
 		if err = client.WriteTo(pkt, ethernet.Broadcast); err != nil {
 			return fmt.Errorf("writing %q gratuitous packet for %q: %w", op, ip, err)
 		}
+	}
+	return nil
+}
+
+// buildUnsolicitedNA assembles the unsolicited Neighbor Advertisement
+// for target announced from hwAddr: Override set so neighbors replace
+// an existing cache entry for the moved VIP, Solicited clear (nobody
+// asked), Router clear (the VIP is a host address, not a router).
+func buildUnsolicitedNA(target netip.Addr, hwAddr net.HardwareAddr) *ndp.NeighborAdvertisement {
+	return &ndp.NeighborAdvertisement{
+		Override:      true,
+		TargetAddress: target,
+		Options: []ndp.Option{
+			&ndp.LinkLayerAddress{Direction: ndp.Target, Addr: hwAddr},
+		},
+	}
+}
+
+// sendUnsolicitedNA sends an unsolicited Neighbor Advertisement for ip
+// on ifName — the IPv6 counterpart of sendGARP. The kernel does not do
+// this for us: adding an address only triggers DAD, whose probes are
+// sourced from :: and update no neighbor caches, so without this a
+// moved IPv6 VIP converges only via NUD timeouts.
+func sendUnsolicitedNA(ifName string, ip net.IP) error {
+	if ip.To4() != nil {
+		return fmt.Errorf("not an IPv6 address: %s", ip)
+	}
+	target, ok := netip.AddrFromSlice(ip.To16())
+	if !ok {
+		return fmt.Errorf("invalid IPv6 address: %s", ip)
+	}
+
+	ifi, err := net.InterfaceByName(ifName)
+	if err != nil {
+		return fmt.Errorf("finding interface named %s: %w", ifName, err)
+	}
+
+	c, _, err := ndp.Listen(ifi, ndp.LinkLocal)
+	if err != nil {
+		return fmt.Errorf("creating NDP responder for %s: %w", ifName, err)
+	}
+	defer c.Close()
+
+	// RFC 4861 §7.2.6: unsolicited advertisements go to the all-nodes
+	// multicast address.
+	if err := c.WriteTo(buildUnsolicitedNA(target, ifi.HardwareAddr), nil, netip.AddrFrom16([16]byte{0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01})); err != nil {
+		return fmt.Errorf("writing unsolicited NA for %q: %w", ip, err)
 	}
 	return nil
 }

@@ -222,13 +222,33 @@ func FormatSubnetsAnnotation(subnets []string) string {
 	return strings.Join(subnets, ",")
 }
 
+// maxAnnotationSubnets caps how many subnet entries we accept from a
+// single lease annotation. Peer leases are written by other nodes; a
+// buggy writer must not be able to bloat every node's election maps.
+const maxAnnotationSubnets = 256
+
 // ParseSubnetsAnnotation parses the annotation value back into a slice
-// of subnet strings. Returns an empty slice for empty input.
+// of subnet strings. Returns an empty slice for empty input. Entries
+// that are not valid CIDRs are dropped, and at most
+// maxAnnotationSubnets entries are returned. Valid entries keep their
+// original spelling — downstream consumers match them as exact strings
+// against ServiceGroup subnet specs.
 func ParseSubnetsAnnotation(annotation string) []string {
 	if annotation == "" {
 		return []string{}
 	}
-	return strings.Split(annotation, ",")
+	entries := strings.Split(annotation, ",")
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if _, _, err := net.ParseCIDR(entry); err != nil {
+			continue
+		}
+		result = append(result, entry)
+		if len(result) == maxAnnotationSubnets {
+			break
+		}
+	}
+	return result
 }
 
 // SubnetContainsIP checks if any of the given subnets contains the IP address.

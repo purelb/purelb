@@ -71,6 +71,23 @@ var (
 		Help:      "Total number of addresses withdrawn from interfaces",
 	})
 
+	// naSent counts unsolicited IPv6 Neighbor Advertisements sent —
+	// the IPv6 counterpart of garpSent.
+	naSent = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "na_sent_total",
+		Help:      "Total number of unsolicited IPv6 Neighbor Advertisements sent",
+	})
+
+	// naErrors counts unsolicited NA send failures.
+	naErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "na_errors_total",
+		Help:      "Total number of unsolicited IPv6 Neighbor Advertisement send errors",
+	})
+
 	// electionWins counts how many times this node won an election.
 	electionWins = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: purelbv2.MetricsNamespace,
@@ -102,6 +119,8 @@ var (
 func init() {
 	prometheus.MustRegister(garpSent)
 	prometheus.MustRegister(garpErrors)
+	prometheus.MustRegister(naSent)
+	prometheus.MustRegister(naErrors)
 	prometheus.MustRegister(addressRenewalCount)
 	prometheus.MustRegister(addressRenewalErrors)
 	prometheus.MustRegister(addressAdditions)
@@ -119,6 +138,16 @@ func RecordGARPSent() {
 // RecordGARPError increments the GARP error counter.
 func RecordGARPError() {
 	garpErrors.Inc()
+}
+
+// RecordNASent increments the unsolicited-NA sent counter.
+func RecordNASent() {
+	naSent.Inc()
+}
+
+// RecordNAError increments the unsolicited-NA error counter.
+func RecordNAError() {
+	naErrors.Inc()
 }
 
 // RecordAddressRenewal increments the address renewal counter.

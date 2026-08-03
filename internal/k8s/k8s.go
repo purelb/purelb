@@ -237,7 +237,13 @@ func New(cfg *Config) (*Client, error) {
 
 	// Custom Resource Watcher
 
-	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Second*0)
+	// The 10-minute resync replays the cached CRs through the update
+	// handlers (no apiserver load). ServiceGroup replays are filtered by
+	// the generation check, but LBNodeAgent replays re-deliver config:
+	// that bounds how long a node-label-only change can go unnoticed by
+	// nodeSelector evaluation and gives config delivery a self-healing
+	// floor if a delivery was lost.
+	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Minute*10)
 	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, c.ForceSync, clientset, crClient, c.crInformerFactory)
 
 	// Service Watcher
