@@ -402,6 +402,23 @@ test_multi_interface() {
     echo "TEST: Multi-Interface Node ($MULTI_IF_NODE via $MULTI_IF_IFACE)"
     echo "=========================================="
 
+    # ----- Pre-clean: a failed earlier run leaks the scoped CR and node
+    # label (fail() exits before this test's cleanup, and the suite's
+    # iteration cleanup doesn't touch LBNodeAgent resources), which the
+    # baseline guard below would then trip over. Self-heal first.
+    if kubectl get lbnodeagent multi-if-test -n purelb-system >/dev/null 2>&1 || \
+       kubectl get node "$MULTI_IF_NODE" -o jsonpath='{.metadata.labels.purelb-test}' 2>/dev/null | grep -q .; then
+        info "Cleaning up leftovers from a previous run..."
+        kubectl delete lbnodeagent multi-if-test -n purelb-system --ignore-not-found >/dev/null 2>&1 || true
+        kubectl delete svc multi-if-lb -n $NAMESPACE --ignore-not-found >/dev/null 2>&1 || true
+        kubectl delete deployment multi-if-echo -n $NAMESPACE --ignore-not-found >/dev/null 2>&1 || true
+        kubectl delete servicegroup multi-if-test -n purelb-system --ignore-not-found >/dev/null 2>&1 || true
+        kubectl label node "$MULTI_IF_NODE" purelb-test- >/dev/null 2>&1 || true
+        wait_for_lease_subnet_gone "$MULTI_IF_NODE" "$MULTI_IF_SUBNET" 30 \
+            || fail "Multi-interface: pre-clean did not restore baseline lease"
+        pass "Leftovers cleaned, baseline restored"
+    fi
+
     # ----- Baselines
     local baseline_subnets baseline_count metrics
     baseline_subnets=$(get_node_lease_subnets "$MULTI_IF_NODE")
@@ -5228,6 +5245,12 @@ for iter in $(seq 1 $ITERATIONS); do
         kubectl get servicegroup -n purelb-system -o name 2>/dev/null \
             | grep -v '/default$' \
             | xargs -r kubectl delete -n purelb-system --ignore-not-found 2>/dev/null || true
+        # Test-created LBNodeAgent resources (multi-interface test) leak the
+        # same way; keep only 'default'.
+        kubectl get lbnodeagent -n purelb-system -o name 2>/dev/null \
+            | grep -v '/default$' \
+            | xargs -r kubectl delete -n purelb-system --ignore-not-found 2>/dev/null || true
+        kubectl label node --all purelb-test- 2>/dev/null || true
     fi
 done
 
