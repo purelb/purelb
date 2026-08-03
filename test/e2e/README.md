@@ -28,14 +28,14 @@ LBNodeAgent CRs and multi-NIC announcement on a dual-homed node. It only
 runs when the `MULTI_IF_*` environment variables are set (all six are
 required together — a partial set fails loudly rather than silently
 skipping). One-command invocation for the prox-purelb2 profile
-(purelb2-3 is dual-homed: eth1 on the 251 subnet, eth2 on the 250
+(purelb2-3 is dual-homed: eth1 on the 251 subnet, eth0 on the 250
 subnet; nodes 1-2 provide the other-node-on-subnet the migration
 assertion needs):
 
 ```bash
 cd local
 MULTI_IF_NODE=purelb2-3 \
-MULTI_IF_IFACE=eth2 \
+MULTI_IF_IFACE=eth0 \
 MULTI_IF_SUBNET=172.30.250.0/24 \
 MULTI_IF_SUBNET6=2001:470:b8f3:250::/64 \
 MULTI_IF_POOL_V4=172.30.250.220/30 \
