@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
 	"syscall"
 
 	"github.com/mdlayher/arp"
@@ -30,48 +31,81 @@ import (
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
+// errIndeterminate means interface resolution could not be decided
+// this cycle (e.g. a partial netlink dump). Callers must not treat it
+// as "non-local": withdrawing an announcement on uncertain evidence
+// would turn transient kernel-dump races into VIP flaps.
+var errIndeterminate = errors.New("interface resolution indeterminate")
+
 // findLocal tries to find a "local" network interface based on the
 // name of the interface and the IP addresses that are assigned to it.
 // A network interface is considered local if its name matches the
-// configuration regex and lbIP is within the same network as the
-// interface.  If both are true, then the netlink.Link return value
-// will be the default interface and error will be nil.  If error is
-// non-nil then no local interface was found.
-func findLocal(regex *regexp.Regexp, lbIP net.IP) (net.IPNet, netlink.Link, error) {
+// configuration regex (excluding the interface named exclude) and lbIP
+// is within the same network as the interface.  If both are true, then
+// the netlink.Link return value will be that interface and error will
+// be nil.  If error is non-nil then no local interface was found;
+// errIndeterminate means resolution was uncertain this cycle.
+func findLocal(regex *regexp.Regexp, exclude string, lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return net.IPNet{}, nil, err
 	}
 
+	// Collect the matching names, then sort: enumeration is in ifindex
+	// order which is boot-dependent, and when one subnet spans two
+	// matching interfaces the announce interface must not change
+	// across reboots.
+	matched := []string{}
 	for _, intf := range interfaces {
+		if intf.Name == exclude {
+			continue
+		}
 		if regex.Match([]byte(intf.Name)) {
-			// The interface name matches the local regex so check if the
-			// addresses also match
-			nlIntf, err := netlink.LinkByName(intf.Name)
-			if err != nil {
-				return net.IPNet{}, nil, err
-			}
-			if ipnet, link, err := checkLocal(nlIntf, lbIP); err == nil {
-				// The addresses match so this is a local interface
-				return ipnet, link, nil
-			}
+			matched = append(matched, intf.Name)
+		}
+	}
+	sort.Strings(matched)
+
+	indeterminate := false
+	for _, name := range matched {
+		nlIntf, err := netlink.LinkByName(name)
+		if err != nil {
+			// The interface disappeared between enumeration and lookup —
+			// routine veth churn on pod-dense nodes. Skip it; aborting
+			// the whole scan would fail resolution for every other
+			// matching interface.
+			continue
+		}
+		ipnet, link, err := checkLocal(nlIntf, lbIP)
+		if err == nil {
+			// The addresses match so this is a local interface
+			return ipnet, link, nil
+		}
+		if errors.Is(err, errIndeterminate) {
+			indeterminate = true
 		}
 	}
 
+	if indeterminate {
+		return net.IPNet{}, nil, errIndeterminate
+	}
 	return net.IPNet{}, nil, fmt.Errorf("No local interface found")
 }
 
 // checkLocal determines whether lbIP belongs to the same network as
 // intf.  If so, then the netlink.Link return value will be the
 // default interface and error will be nil.  If error is non-nil then
-// the address is non-local.
+// the address is non-local; errIndeterminate means the address dump
+// was partial and no containing address was seen, so "non-local"
+// cannot be concluded this cycle.
 func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	var lbIPNet net.IPNet = net.IPNet{IP: lbIP}
 
 	family := purelbv2.AddrFamily(lbIP)
 
 	defaddrs, err := netlink.AddrList(intf, family)
-	if err != nil && !errors.Is(err, netlink.ErrDumpInterrupted) {
+	partialDump := errors.Is(err, netlink.ErrDumpInterrupted)
+	if err != nil && !partialDump {
 		return lbIPNet, intf, err
 	}
 
@@ -97,6 +131,11 @@ func checkLocal(intf netlink.Link, lbIP net.IP) (net.IPNet, netlink.Link, error)
 	}
 
 	if lbIPNet.Mask == nil {
+		if partialDump {
+			// The dump was interrupted and we saw no containing address:
+			// it may simply have been missing from the partial results.
+			return lbIPNet, intf, errIndeterminate
+		}
 		return lbIPNet, intf, fmt.Errorf("non-local address")
 	}
 

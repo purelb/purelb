@@ -15,6 +15,7 @@
 package local
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -117,57 +118,61 @@ func (a *announcer) SetConfig(cfg *purelbv2.Config) error {
 	// the default is nil which means that we don't announce
 	a.config = nil
 
-	// if there's a "Local" agent config then we'll announce
-	for _, agent := range cfg.Agents {
-		if spec := agent.Spec.Local; spec != nil {
-			logging.Info(a.logger, "op", "setConfig", "spec", spec, "name", agent.Namespace+"/"+agent.Name)
+	// The election selector uses the same helper, so both sides always
+	// choose the same agent (the coherence invariant).
+	agent := purelbv2.FirstLocalAgent(cfg.Agents)
+	if agent == nil {
+		logging.Info(a.logger, "event", "noConfig")
+		return nil
+	}
+	spec := agent.Spec.Local
+	logging.Info(a.logger, "op", "setConfig", "spec", spec, "name", agent.Namespace+"/"+agent.Name)
 
-			// stash the local ServiceGroup configs
-			a.groups = map[string]*purelbv2.ServiceGroupLocalSpec{}
-			a.remoteGroups = map[string]*purelbv2.ServiceGroupRemoteSpec{}
-			for _, group := range cfg.Groups {
-				if group.Spec.Local != nil {
-					a.groups[group.ObjectMeta.Name] = group.Spec.Local
-				}
-				if group.Spec.Remote != nil {
-					a.remoteGroups[group.ObjectMeta.Name] = group.Spec.Remote
-				}
-			}
-
-			// if the user specified an interface regex then we'll compile
-			// that now, and use it (when we get an address) to find a local
-			// interface
-			if spec.LocalInterface != "default" {
-				if regex, err := regexp.Compile(spec.LocalInterface); err != nil {
-					return fmt.Errorf("error compiling regex \"%s\": %s", spec.LocalInterface, err.Error())
-				} else {
-					a.localNameRegex = regex
-				}
-			} else {
-				a.localNameRegex = nil
-
-			}
-
-			// now that we've got a config we can create the dummy interface
-			var err error
-			if a.dummyInt, err = addDummyInterface(spec.DummyInterface); err != nil {
-				return fmt.Errorf("error adding interface \"%s\": %s", spec.DummyInterface, err.Error())
-			}
-
-			// The dummy interface is set up so we can set the config which
-			// will allow announcements to happen.
-			a.config = spec
-
-			// we've got our marching orders so we don't need to continue
-			// scanning
-			return nil
+	// stash the local ServiceGroup configs
+	a.groups = map[string]*purelbv2.ServiceGroupLocalSpec{}
+	a.remoteGroups = map[string]*purelbv2.ServiceGroupRemoteSpec{}
+	for _, group := range cfg.Groups {
+		if group.Spec.Local != nil {
+			a.groups[group.ObjectMeta.Name] = group.Spec.Local
+		}
+		if group.Spec.Remote != nil {
+			a.remoteGroups[group.ObjectMeta.Name] = group.Spec.Remote
 		}
 	}
 
-	if a.config == nil {
-		logging.Info(a.logger, "event", "noConfig")
+	if err := a.applyLocalSpec(spec); err != nil {
+		return err
 	}
 
+	// now that we've got a config we can create the dummy interface
+	var err error
+	if a.dummyInt, err = addDummyInterface(spec.DummyInterface); err != nil {
+		return fmt.Errorf("error adding interface \"%s\": %s", spec.DummyInterface, err.Error())
+	}
+
+	// The dummy interface is set up so we can set the config which
+	// will allow announcements to happen.
+	a.config = spec
+
+	return nil
+}
+
+// applyLocalSpec applies the netlink-free part of a Local spec: regex
+// compilation. Extracted from SetConfig so it can be unit-tested
+// without CAP_NET_ADMIN. An empty LocalInterface is treated as
+// "default" — kubebuilder defaulting can be bypassed by programmatic
+// clients, and compiling "" would yield a match-everything regex. The
+// election's SelectorFromConfig applies the identical rule.
+func (a *announcer) applyLocalSpec(spec *purelbv2.LBNodeAgentLocalSpec) error {
+	if spec.LocalInterface == "default" || spec.LocalInterface == "" {
+		a.localNameRegex = nil
+		return nil
+	}
+	regex, err := regexp.Compile(spec.LocalInterface)
+	if err != nil {
+		return fmt.Errorf("error compiling regex \"%s\": %s", spec.LocalInterface, err.Error())
+	}
+	a.localNameRegex = regex
 	return nil
 }
 
@@ -186,14 +191,21 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 	// if we haven't been configured then we won't announce
 	if a.config == nil {
 		logging.Info(l, "event", "noConfig")
-		// We are not announcing anything, so drop any slot that still names
-		// us (e.g. the local config was removed after we had won).
+		// We are not announcing anything: withdraw any address we may
+		// still hold and drop any slot that still names us. nodeSelector
+		// deselection and config removal land here — the slot alone is
+		// not enough, because a previously-announced VIP would stay on
+		// the NIC with a live renewal timer re-adding it while another
+		// node wins the election (duplicate ARP responders).
 		for _, ingress := range svc.Status.LoadBalancer.Ingress {
 			if lbIP := net.ParseIP(ingress.IP); lbIP != nil {
+				if err := a.deleteAddress(nsName, "noConfig", lbIP); err != nil {
+					retErr = err
+				}
 				a.clearOwnAnnounceSlot(svc, lbIP)
 			}
 		}
-		return nil
+		return retErr
 	}
 
 	// add the address to our announcement database
@@ -217,7 +229,16 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 		if a.localNameRegex != nil {
 			// The user specified an announcement interface regex so use it to
 			// try to find a local interface
-			lbIPNet, localif, err := findLocal(a.localNameRegex, lbIP)
+			lbIPNet, localif, err := findLocal(a.localNameRegex, a.config.DummyInterface, lbIP)
+			if err != nil {
+				// The regex didn't resolve; try the explicitly-configured
+				// extra interfaces (spec.interfaces) before falling through.
+				if xNet, xIf, xErr := a.tryExtraInterfaces(lbIP); xErr == nil {
+					lbIPNet, localif, err = xNet, xIf, nil
+				} else if errors.Is(xErr, errIndeterminate) {
+					err = xErr
+				}
+			}
 			if err == nil {
 				// We found a local interface, announce the address on it
 				if err := a.announceLocal(svc, preferred, localif, lbIP, lbIPNet); err != nil {
@@ -228,11 +249,21 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 				if err := a.announceRemote(svc, epSlices, a.dummyInt, lbIP); err != nil {
 					retErr = err
 				}
+			} else if errors.Is(err, errIndeterminate) {
+				// A partial netlink dump made resolution uncertain. Do not
+				// withdraw on uncertain evidence — the next SetBalancer
+				// cycle re-checks.
+				logging.Info(l, "event", "resolutionIndeterminate", "ip", lbIP,
+					"msg", "interface resolution indeterminate this cycle, skipping withdrawal")
 			} else {
 				// lbIP is from a local pool but no local interface matches.
-				// Do NOT announce - subnet-aware election will handle this.
-				// This node is healthy (its lease is valid) but not
-				// announcing, so nothing else will clear a stale slot for us.
+				// Withdraw any stale announcement: the annotation slot alone
+				// is not enough — a previously-announced VIP would stay on
+				// the NIC with a live renewal timer re-adding it while
+				// another node wins the election (duplicate ARP responders).
+				if err := a.deleteAddress(nsName, "noLocalInterface", lbIP); err != nil {
+					retErr = err
+				}
 				a.clearOwnAnnounceSlot(svc, lbIP)
 				logging.Info(l, "event", "noLocalInterface", "ip", lbIP,
 					"msg", "local pool IP has no matching local interface, not announcing")
@@ -240,16 +271,33 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 
 		} else {
 			// The user wants us to determine the "default" interface
+			var lbIPNet net.IPNet
+			var localif netlink.Link
 			announceInt, err := netutil.DefaultInterface(purelbv2.AddrFamily(lbIP))
 			if err != nil {
-				logging.Info(l, "event", "announceError", "err", err)
-				retErr = err
-				continue
+				if len(a.config.Interfaces) == 0 {
+					// No fallback interfaces configured: keep the historical
+					// hard-error path.
+					logging.Info(l, "event", "announceError", "err", err)
+					retErr = err
+					continue
+				}
+			} else {
+				lbIPNet, localif, err = checkLocal(announceInt, lbIP)
 			}
-			if lbIPNet, defaultif, err := checkLocal(announceInt, lbIP); err == nil {
-				// The default interface is a local interface, announce the
-				// address on it
-				if err := a.announceLocal(svc, preferred, defaultif, lbIP, lbIPNet); err != nil {
+			if err != nil {
+				// The default interface didn't resolve; try the
+				// explicitly-configured extra interfaces (spec.interfaces)
+				// before falling through.
+				if xNet, xIf, xErr := a.tryExtraInterfaces(lbIP); xErr == nil {
+					lbIPNet, localif, err = xNet, xIf, nil
+				} else if errors.Is(xErr, errIndeterminate) {
+					err = xErr
+				}
+			}
+			if err == nil {
+				// We found a local interface, announce the address on it
+				if err := a.announceLocal(svc, preferred, localif, lbIP, lbIPNet); err != nil {
 					retErr = err
 				}
 			} else if a.isRemotePool(lbIP) {
@@ -257,11 +305,22 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 				if err := a.announceRemote(svc, epSlices, a.dummyInt, lbIP); err != nil {
 					retErr = err
 				}
+			} else if errors.Is(err, errIndeterminate) {
+				// A partial netlink dump made resolution uncertain. Do not
+				// withdraw on uncertain evidence — the next SetBalancer
+				// cycle re-checks.
+				logging.Info(l, "event", "resolutionIndeterminate", "ip", lbIP,
+					"msg", "interface resolution indeterminate this cycle, skipping withdrawal")
 			} else {
-				// lbIP is from a local pool but doesn't match the default interface.
-				// Do NOT announce - subnet-aware election will handle this.
-				// This node is healthy but not announcing, so nothing else
-				// will clear a stale slot for us.
+				// lbIP is from a local pool but doesn't match the default
+				// interface or any extra interface. Withdraw any stale
+				// announcement: the annotation slot alone is not enough — a
+				// previously-announced VIP would stay on the NIC with a live
+				// renewal timer re-adding it while another node wins the
+				// election (duplicate ARP responders).
+				if err := a.deleteAddress(nsName, "noLocalInterface", lbIP); err != nil {
+					retErr = err
+				}
 				a.clearOwnAnnounceSlot(svc, lbIP)
 				logging.Info(l, "event", "noLocalInterface", "ip", lbIP,
 					"msg", "local pool IP has no matching local interface, not announcing")
@@ -271,6 +330,40 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 
 	// Return the most recent error
 	return retErr
+}
+
+// tryExtraInterfaces tries to resolve lbIP on the interfaces listed in
+// the Local spec's Interfaces field, in listed order (the documented
+// contract); the first interface whose addresses contain lbIP wins.
+// Missing interfaces are skipped without error — the CR is
+// cluster-wide, so heterogeneous nodes are expected. Returns
+// errIndeterminate when a candidate's address dump was partial and
+// none succeeded, so the caller can avoid withdrawing on uncertain
+// evidence.
+func (a *announcer) tryExtraInterfaces(lbIP net.IP) (net.IPNet, netlink.Link, error) {
+	indeterminate := false
+	for _, name := range a.config.Interfaces {
+		if name == "" || name == a.config.DummyInterface {
+			continue
+		}
+		nlIntf, err := netlink.LinkByName(name)
+		if err != nil {
+			logging.Debug(a.logger, "op", "tryExtraInterfaces", "interface", name,
+				"msg", "interface not found, skipping")
+			continue
+		}
+		ipnet, link, err := checkLocal(nlIntf, lbIP)
+		if err == nil {
+			return ipnet, link, nil
+		}
+		if errors.Is(err, errIndeterminate) {
+			indeterminate = true
+		}
+	}
+	if indeterminate {
+		return net.IPNet{}, nil, errIndeterminate
+	}
+	return net.IPNet{}, nil, fmt.Errorf("no extra interface matched")
 }
 
 func (a *announcer) announceLocal(svc *v1.Service, preferred []string, announceInt netlink.Link, lbIP net.IP, lbIPNet net.IPNet) error {

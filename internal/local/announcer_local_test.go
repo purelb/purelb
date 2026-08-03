@@ -15,7 +15,9 @@
 package local
 
 import (
+	"errors"
 	"net"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -869,4 +871,203 @@ func TestBuildPreferredNodes(t *testing.T) {
 		// election (no fallback metric since len(preferred)==0).
 		assert.Empty(t, got)
 	})
+}
+
+func TestApplyLocalSpec(t *testing.T) {
+	t.Run("default clears regex", func(t *testing.T) {
+		a := &announcer{logger: log.NewNopLogger(), localNameRegex: regexp.MustCompile("stale")}
+		assert.NoError(t, a.applyLocalSpec(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "default"}))
+		assert.Nil(t, a.localNameRegex)
+	})
+
+	t.Run("empty treated as default", func(t *testing.T) {
+		a := &announcer{logger: log.NewNopLogger(), localNameRegex: regexp.MustCompile("stale")}
+		assert.NoError(t, a.applyLocalSpec(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: ""}))
+		assert.Nil(t, a.localNameRegex)
+	})
+
+	t.Run("regex compiled", func(t *testing.T) {
+		a := &announcer{logger: log.NewNopLogger()}
+		assert.NoError(t, a.applyLocalSpec(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "^(eth1|eth2)$"}))
+		if assert.NotNil(t, a.localNameRegex) {
+			assert.True(t, a.localNameRegex.MatchString("eth1"))
+			assert.False(t, a.localNameRegex.MatchString("eth10"))
+		}
+	})
+
+	t.Run("invalid regex errors", func(t *testing.T) {
+		a := &announcer{logger: log.NewNopLogger()}
+		assert.Error(t, a.applyLocalSpec(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "["}))
+		assert.Nil(t, a.localNameRegex)
+	})
+}
+
+func TestFindLocal(t *testing.T) {
+	t.Run("resolves loopback address", func(t *testing.T) {
+		ipnet, link, err := findLocal(regexp.MustCompile("^lo$"), "", net.ParseIP("127.0.0.1"))
+		assert.NoError(t, err)
+		assert.Equal(t, "lo", link.Attrs().Name)
+		assert.Equal(t, "127.0.0.1/8", ipnet.String())
+	})
+
+	t.Run("exclude removes the only match", func(t *testing.T) {
+		_, _, err := findLocal(regexp.MustCompile("^lo$"), "lo", net.ParseIP("127.0.0.1"))
+		assert.Error(t, err)
+	})
+
+	t.Run("no matching interface", func(t *testing.T) {
+		_, _, err := findLocal(regexp.MustCompile("^purelb-nomatch$"), "", net.ParseIP("127.0.0.1"))
+		assert.Error(t, err)
+		assert.False(t, errors.Is(err, errIndeterminate))
+	})
+}
+
+func TestTryExtraInterfaces(t *testing.T) {
+	loV6 := func() bool {
+		lo, err := net.InterfaceByName("lo")
+		if err != nil {
+			return false
+		}
+		addrs, _ := lo.Addrs()
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.To4() == nil && ipnet.IP.IsLoopback() {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("resolves IPv4 on explicit interface", func(t *testing.T) {
+		a := &announcer{logger: log.NewNopLogger(),
+			config: &purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"lo"}}}
+		ipnet, link, err := a.tryExtraInterfaces(net.ParseIP("127.0.0.1"))
+		assert.NoError(t, err)
+		assert.Equal(t, "lo", link.Attrs().Name)
+		assert.Equal(t, "127.0.0.1/8", ipnet.String())
+	})
+
+	t.Run("resolves IPv6 on explicit interface", func(t *testing.T) {
+		if !loV6() {
+			t.Skip("loopback has no IPv6 address")
+		}
+		a := &announcer{logger: log.NewNopLogger(),
+			config: &purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"lo"}}}
+		_, link, err := a.tryExtraInterfaces(net.ParseIP("::1"))
+		assert.NoError(t, err)
+		assert.Equal(t, "lo", link.Attrs().Name)
+	})
+
+	t.Run("dummy interface name skipped", func(t *testing.T) {
+		a := &announcer{logger: log.NewNopLogger(),
+			config: &purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"lo"}, DummyInterface: "lo"}}
+		_, _, err := a.tryExtraInterfaces(net.ParseIP("127.0.0.1"))
+		assert.Error(t, err)
+	})
+
+	t.Run("missing interface skipped without error abort", func(t *testing.T) {
+		a := &announcer{logger: log.NewNopLogger(),
+			config: &purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"purelb-does-not-exist0", "lo"}}}
+		_, link, err := a.tryExtraInterfaces(net.ParseIP("127.0.0.1"))
+		assert.NoError(t, err)
+		assert.Equal(t, "lo", link.Attrs().Name)
+	})
+
+	t.Run("no candidate matches", func(t *testing.T) {
+		a := &announcer{logger: log.NewNopLogger(),
+			config: &purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"purelb-does-not-exist0"}}}
+		_, _, err := a.tryExtraInterfaces(net.ParseIP("127.0.0.1"))
+		assert.Error(t, err)
+		assert.False(t, errors.Is(err, errIndeterminate))
+	})
+}
+
+// withdrawalTestAnnouncer builds an announcer that has "announced"
+// TEST-NET addresses (192.0.2.0/24 is never on a real interface, so
+// deleteAddr's scan is read-only and removes nothing) with a live
+// renewal timer, ready to be driven into a withdrawal path.
+func withdrawalTestAnnouncer(config *purelbv2.LBNodeAgentLocalSpec) *announcer {
+	a := &announcer{
+		logger:       log.NewNopLogger(),
+		myNode:       "node-a",
+		client:       nopServiceEvent{},
+		config:       config,
+		groups:       map[string]*purelbv2.ServiceGroupLocalSpec{},
+		remoteGroups: map[string]*purelbv2.ServiceGroupRemoteSpec{},
+		svcIngresses: map[string][]v1.LoadBalancerIngress{},
+	}
+	return a
+}
+
+// announceForTest simulates a prior successful announcement of ip for
+// nsName: an announced-set entry plus a scheduled renewal timer.
+func announceForTest(a *announcer, nsName, ip string) {
+	a.announced.Store(renewalKey(nsName, ip), struct{}{})
+	lbIP := net.ParseIP(ip)
+	a.scheduleRenewal(nsName, net.IPNet{IP: lbIP, Mask: net.CIDRMask(24, 32)}, nil,
+		AddressOptions{ValidLft: 300, PreferedLft: 300})
+}
+
+func TestSetBalancerWithdrawsOnNoLocalInterface(t *testing.T) {
+	const slotKey = "purelb.io/announcing-IPv4"
+	a := withdrawalTestAnnouncer(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "^purelb-nomatch$"})
+	a.localNameRegex = regexp.MustCompile("^purelb-nomatch$")
+
+	svc := lbSvc("192.0.2.1")
+	svc.Namespace = "default"
+	svc.Name = "test-svc"
+	svc.Annotations = map[string]string{slotKey: "node-a,eth0,192.0.2.1"}
+	announceForTest(a, "default/test-svc", "192.0.2.1")
+
+	assert.NoError(t, a.SetBalancer(svc, nil))
+
+	key := renewalKey("default/test-svc", "192.0.2.1")
+	_, announced := a.announced.Load(key)
+	assert.False(t, announced, "announced entry must be removed")
+	_, timerAlive := a.addressRenewals.Load(key)
+	assert.False(t, timerAlive, "renewal timer must be cancelled")
+	assert.Empty(t, svc.Annotations[slotKey], "announce slot must be cleared")
+}
+
+func TestSetBalancerWithdrawsOnNoConfig(t *testing.T) {
+	const slotKey = "purelb.io/announcing-IPv4"
+	a := withdrawalTestAnnouncer(nil) // nodeSelector deselection / config removal
+
+	svc := lbSvc("192.0.2.1")
+	svc.Namespace = "default"
+	svc.Name = "test-svc"
+	svc.Annotations = map[string]string{slotKey: "node-a,eth0,192.0.2.1"}
+	announceForTest(a, "default/test-svc", "192.0.2.1")
+
+	assert.NoError(t, a.SetBalancer(svc, nil))
+
+	key := renewalKey("default/test-svc", "192.0.2.1")
+	_, announced := a.announced.Load(key)
+	assert.False(t, announced, "announced entry must be removed")
+	_, timerAlive := a.addressRenewals.Load(key)
+	assert.False(t, timerAlive, "renewal timer must be cancelled")
+	assert.Empty(t, svc.Annotations[slotKey], "announce slot must be cleared")
+}
+
+func TestWithdrawalSharedIPRefcount(t *testing.T) {
+	a := withdrawalTestAnnouncer(nil)
+
+	announceForTest(a, "default/svc-a", "192.0.2.1")
+	announceForTest(a, "default/svc-b", "192.0.2.1")
+
+	// Withdrawing one service leaves the other's state intact — the
+	// shared address must not be removed while another announcer holds it.
+	assert.NoError(t, a.deleteAddress("default/svc-a", "test", net.ParseIP("192.0.2.1")))
+	_, aAnnounced := a.announced.Load(renewalKey("default/svc-a", "192.0.2.1"))
+	assert.False(t, aAnnounced)
+	_, bAnnounced := a.announced.Load(renewalKey("default/svc-b", "192.0.2.1"))
+	assert.True(t, bAnnounced, "second service's announced entry must survive")
+	_, bTimer := a.addressRenewals.Load(renewalKey("default/svc-b", "192.0.2.1"))
+	assert.True(t, bTimer, "second service's renewal timer must survive")
+
+	// Withdrawing the second reference releases the address.
+	assert.NoError(t, a.deleteAddress("default/svc-b", "test", net.ParseIP("192.0.2.1")))
+	_, bAnnounced = a.announced.Load(renewalKey("default/svc-b", "192.0.2.1"))
+	assert.False(t, bAnnounced)
+	_, bTimer = a.addressRenewals.Load(renewalKey("default/svc-b", "192.0.2.1"))
+	assert.False(t, bTimer)
 }
