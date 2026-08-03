@@ -563,8 +563,10 @@ func (e *Election) DeleteOurLease() error {
 func (e *Election) createOrUpdateLease() error {
 	ctx := e.ctx
 
-	// Get subnets for annotation
+	// Get subnets for annotation. The same slice feeds both the
+	// annotation and the subnet-count gauge so they can never disagree.
 	var subnetsAnnotation string
+	subnetCount := -1
 	if e.config.GetLocalSubnets != nil {
 		subnets, err := e.config.GetLocalSubnets()
 		if err != nil {
@@ -572,6 +574,7 @@ func (e *Election) createOrUpdateLease() error {
 				"error", err, "msg", "failed to get local subnets, continuing without")
 		} else {
 			subnetsAnnotation = FormatSubnetsAnnotation(subnets)
+			subnetCount = len(subnets)
 		}
 	}
 
@@ -622,10 +625,8 @@ func (e *Election) createOrUpdateLease() error {
 		e.leaseHealthy.Store(true)
 		e.renewFailures.Store(0)
 		RecordLeaseHealthy(true)
-		if e.config.GetLocalSubnets != nil {
-			if subnets, err := e.config.GetLocalSubnets(); err == nil {
-				RecordLocalSubnetCount(len(subnets))
-			}
+		if subnetCount >= 0 {
+			RecordLocalSubnetCount(subnetCount)
 		}
 		return nil
 	}
@@ -655,10 +656,8 @@ func (e *Election) createOrUpdateLease() error {
 	e.leaseHealthy.Store(true)
 	e.renewFailures.Store(0)
 	RecordLeaseHealthy(true)
-	if e.config.GetLocalSubnets != nil {
-		if subnets, err := e.config.GetLocalSubnets(); err == nil {
-			RecordLocalSubnetCount(len(subnets))
-		}
+	if subnetCount >= 0 {
+		RecordLocalSubnetCount(subnetCount)
 	}
 	return nil
 }
@@ -694,6 +693,7 @@ func (e *Election) renewLease() error {
 			newAnnotation := FormatSubnetsAnnotation(subnets)
 			if lease.Annotations[SubnetsAnnotation] != newAnnotation {
 				lease.Annotations[SubnetsAnnotation] = newAnnotation
+				RecordLocalSubnetCount(len(subnets))
 				logging.Info(e.config.Logger, "op", "election", "action", "subnetsChanged",
 					"lease", e.leaseName, "subnets", newAnnotation)
 			}
