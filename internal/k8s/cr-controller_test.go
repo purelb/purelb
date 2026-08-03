@@ -16,10 +16,16 @@ package k8s
 
 import (
 	"testing"
+	"time"
 
+	"github.com/go-kit/log"
+	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/workqueue"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
+	purelbfake "purelb.io/pkg/generated/clientset/versioned/fake"
+	"purelb.io/pkg/generated/informers/externalversions"
 )
 
 func newServiceGroup(name string) *purelbv2.ServiceGroup {
@@ -75,5 +81,60 @@ func TestSGUpdateNeedsReconcile(t *testing.T) {
 				t.Errorf("sgUpdateNeedsReconcile = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSyncHandlerRequeuesOnConfigError pins the SyncStateError
+// contract: the delivery is retried with rate-limited backoff (a
+// transient failure inside the callback must not leave the consumer on
+// stale config until the next CR event), the error metric still
+// increments, and forceSync is not called.
+func TestSyncHandlerRequeuesOnConfigError(t *testing.T) {
+	purelbClient := purelbfake.NewSimpleClientset()
+	factory := externalversions.NewSharedInformerFactory(purelbClient, 0)
+
+	state := SyncStateError
+	calls := 0
+	c := &Controller{
+		logger:     log.NewNopLogger(),
+		configCB:   func(*purelbv2.Config) SyncState { calls++; return state },
+		forceSync:  func() { t.Error("forceSync must not be called on SyncStateError") },
+		sgLister:   factory.Purelb().V2().ServiceGroups().Lister(),
+		lbnaLister: factory.Purelb().V2().LBNodeAgents().Lister(),
+		workqueue:  workqueue.NewTypedRateLimitingQueueWithConfig(workqueue.DefaultTypedControllerRateLimiter[string](), workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"}),
+	}
+	defer c.workqueue.ShutDown()
+
+	errorsBefore := ptu.ToFloat64(updateErrors)
+
+	c.workqueue.Add("lbna/default/test")
+	if !c.processNextWorkItem() {
+		t.Fatal("processNextWorkItem returned shutdown")
+	}
+	if calls != 1 {
+		t.Fatalf("configCB calls = %d, want 1", calls)
+	}
+	if got := ptu.ToFloat64(updateErrors); got != errorsBefore+1 {
+		t.Errorf("updateErrors = %v, want %v", got, errorsBefore+1)
+	}
+
+	// The rate limiter re-adds after its base delay; poll for the requeue.
+	deadline := time.Now().Add(5 * time.Second)
+	for c.workqueue.Len() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if c.workqueue.Len() != 1 {
+		t.Fatal("item was not requeued after SyncStateError")
+	}
+
+	// A subsequent success consumes the requeued item and Forgets it —
+	// no further retries.
+	state = SyncStateSuccess
+	if !c.processNextWorkItem() {
+		t.Fatal("processNextWorkItem returned shutdown")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if c.workqueue.Len() != 0 {
+		t.Errorf("queue length after success = %d, want 0", c.workqueue.Len())
 	}
 }

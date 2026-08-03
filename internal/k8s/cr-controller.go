@@ -229,7 +229,16 @@ func (c *Controller) syncHandler() error {
 	case SyncStateSuccess:
 		configLoaded.Set(1)
 	case SyncStateError:
+		// Count the error AND return non-nil so processNextWorkItem
+		// requeues this delivery with rate-limited backoff. Without the
+		// requeue a transient failure inside the callback (e.g. a Node
+		// GET during config delivery) would silently leave the consumer
+		// on stale config until the next CR event. Retrying a permanent
+		// config error is bounded (the rate limiter caps backoff and
+		// Forget resets it on the next success) and both consumers'
+		// callbacks are idempotent. forceSync is deliberately not called.
 		updateErrors.Inc()
+		return fmt.Errorf("config rejected by consumer, requeuing")
 	case SyncStateReprocessAll:
 		configLoaded.Set(1)
 		c.forceSync()
