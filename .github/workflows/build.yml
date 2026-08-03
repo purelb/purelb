@@ -2,25 +2,33 @@
 # https://github.com/actions/starter-workflows/blob/main/pages/hugo.yml
 name: Deploy Hugo site to Pages
 
+# The published site documents the LATEST RELEASE, not main. Docs content is
+# built from the latest release tag so that purelb.io never describes features
+# that are merged but unreleased (or omits features that are still shipping).
+# There is deliberately no `push` trigger: merging docs to main does not
+# publish them.
+#
 # Triggers:
-#   - push: normal commits to main / website-exp
 #   - workflow_run: fires after Update Helm Repository Index completes
-#     successfully. Needed because helm-index.yml's commit to main is made
-#     with secrets.GITHUB_TOKEN, which does NOT trigger downstream push
-#     workflows. workflow_run bypasses that restriction so the Hugo site
-#     (which serves the helm chart index) actually gets rebuilt.
-#   - workflow_dispatch: manual catchup.
+#     successfully, which itself only runs after a tag-push CI run. This is
+#     the release path. workflow_run is required because helm-index.yml's
+#     commit to main is made with secrets.GITHUB_TOKEN, which does NOT
+#     trigger downstream push workflows.
+#   - workflow_dispatch: manual catchup, and the escape hatch for publishing
+#     from an arbitrary ref (see the `ref` input). Note that an out-of-band
+#     publish is reverted by the next release build, so anything published
+#     that way must also be carried into the next release.
 on:
-  push:
-    branches:
-    - main
-    - website-exp
-
   workflow_run:
     workflows: ["Update Helm Repository Index"]
     types: [completed]
 
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref to publish (branch, tag or SHA). Blank = latest release.'
+        required: false
+        default: ''
 
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
@@ -44,15 +52,78 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # For workflow_run triggers, only build when the upstream workflow
-    # succeeded. push and workflow_dispatch always run.
+    # succeeded. workflow_dispatch always runs.
     if: |
       github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
     steps:
-      - name: Checkout
+      # The docs describe the latest release, so resolve that tag rather than
+      # building whatever ref triggered us. The releases/latest API honours
+      # the "Latest" flag and excludes drafts and prereleases, so an rc tag
+      # published as a prerelease will not take over the site.
+      - name: Resolve ref to publish
+        id: ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          if [ -n "$INPUT_REF" ]; then
+            ref="$INPUT_REF"
+            release=false
+            echo "Publishing manually requested ref: $ref"
+          else
+            ref=$(gh api "repos/${{ github.repository }}/releases/latest" -q .tag_name)
+            release=true
+            echo "Publishing latest release: $ref"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout docs content at ${{ steps.ref.outputs.ref }}
         uses: actions/checkout@v6
         with:
+          ref: ${{ steps.ref.outputs.ref }}
           submodules: recursive
+
+      # website/static/charts/index.yaml is a release artifact, not docs: it is
+      # regenerated and committed to main by helm-index.yml AFTER a tag is cut,
+      # so a tag's own tree never lists its own chart. Take the index from main
+      # (build-time only, never committed) or `helm repo add` would lose the
+      # newest release.
+      - name: Check out current Helm index from main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          sparse-checkout: website/static/charts
+          path: .index-overlay
+
+      - name: Overlay current Helm index
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+          IS_RELEASE: ${{ steps.ref.outputs.release }}
+        run: |
+          cp .index-overlay/website/static/charts/index.yaml \
+             website/static/charts/index.yaml
+          rm -rf .index-overlay
+          # Only assert on the release path: a manually dispatched ref may be a
+          # branch or SHA, which will never appear in the chart index.
+          if [ "$IS_RELEASE" != "true" ]; then
+            echo "Manual ref publish; skipping Helm index version check."
+            exit 0
+          fi
+          # The index must list the release we are publishing docs for.
+          # Compare without the leading "v" so either convention matches.
+          want="${REF#v}"
+          if grep -Eq "^[[:space:]]+version:[[:space:]]+v?${want}$" \
+              website/static/charts/index.yaml; then
+            echo "Helm index includes $REF"
+          else
+            echo "::error::Helm index from main does not list $REF." \
+                 "Has helm-index.yml run for this release?"
+            grep -E "^[[:space:]]+version:" website/static/charts/index.yaml | sort -u
+            exit 1
+          fi
+
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v6

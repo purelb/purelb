@@ -241,6 +241,30 @@ Tag push fires:
 
 Total ~10 minutes from tag push to published index. No manual intervention.
 
+## The website publishes the latest release, not main
+
+`build.yml` has no `push` trigger. Merging docs to main does **not** publish
+them: the site is built from the tag reported by the `releases/latest` API,
+so purelb.io always describes the newest release rather than unreleased work
+on main. Docs written alongside a feature go live when that feature ships.
+
+Two consequences worth remembering:
+
+- **Doc-only fixes wait for the next release.** The escape hatch is
+  `gh workflow run build.yml -f ref=<branch|tag|sha>`, which publishes any
+  ref immediately. It is reverted by the next release build, so anything
+  published that way must also land in the next release or it disappears.
+- **A prerelease must be flagged as one.** `releases/latest` excludes drafts
+  and prereleases. If an rc is published as a normal GitHub release it
+  becomes the live documentation.
+
+`website/static/charts/index.yaml` is exempt from the freeze. It is a release
+artifact, written to main by step 2 *after* the tag is cut, so a tag's own
+tree never lists its own chart (v0.16.6's tree stops at v0.16.5). `build.yml`
+therefore overlays main's copy of the index onto the release checkout at build
+time and fails the build if the index does not list the release being
+published — without that, `helm repo add` would lose the newest chart.
+
 ## Post-release verification
 
 - [ ] `gh release view $NEW` shows the expected assets (install manifests,
