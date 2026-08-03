@@ -1,5 +1,13 @@
 # Plan: Subnet-Aware Election via K8s Leases
 
+> **Status note (multi-interface work, post-v0.17.0):** "Milestone 4" —
+> config-driven subnet detection — is implemented: the election honors
+> `localInterface` (default or regex) and `interfaces[]`, on both the
+> election and announcer sides. The `localInterface: "none"` value
+> sketched below was **NOT implemented**; the supported values are
+> `default` and a regex. Deselecting a node entirely is done with
+> `spec.nodeSelector` on the LBNodeAgent resource instead.
+
 ## Summary
 
 Replace HashiCorp memberlist with Kubernetes Leases that include subnet annotations. This enables **subnet-aware election**: only nodes with a matching local subnet participate in the election for a given IP. No more kubelb0 fallback when any node has the subnet locally.

@@ -77,27 +77,30 @@ Field | Type | Description
 
 Field | Type | Description
 ------|------|------------
+`nodeSelector` | metav1.LabelSelector | Limits which nodes this resource applies to. Absent or empty = all nodes (catch-all). When multiple resources match a node: specific selector beats catch-all, then namespace/name sort order. See [Node Selection]({{< relref "/docs/configuration/lbnodeagent#node-selection-nodeselector" >}}).
 `local` | LBNodeAgentLocalSpec | Local announcer configuration
 
 ### LBNodeAgentLocalSpec
 
 Field | Type | Default | Description
 ------|------|---------|------------
-`localInterface` | string | `"default"` | Interface for local address announcement. `"default"` uses the interface with the default route. Regex patterns match interface names.
+`localInterface` | string | `"default"` | Interface for local address announcement **and** election subnet detection. `"default"` uses the interface with the default route. Regex patterns match interface names (unanchored — anchor your pattern).
 `dummyInterface` | string | `"kube-lb0"` | Dummy interface for remote addresses. Created automatically if it doesn't exist.
-`interfaces` | []string | | Additional interfaces for subnet detection in election
-`garpConfig` | GARPConfig | | Gratuitous ARP configuration
+`interfaces` | []string | | Additional interfaces, by exact name, for election subnet detection and announcement. Tried in listed order; missing names are skipped.
+`garpConfig` | GARPConfig | | Gratuitous announcement configuration (GARP for IPv4, unsolicited Neighbor Advertisement for IPv6)
 `addressConfig` | AddressConfig | | Address lifetime and flag configuration
 
 ### GARPConfig
 
+Applies to both IPv4 (gratuitous ARP) and IPv6 (unsolicited Neighbor Advertisement) announcements.
+
 Field | Type | Default | Description
 ------|------|---------|------------
-`enabled` | bool | `true` | Send GARP packets when addresses are added
-`initialDelay` | string (duration) | `"100ms"` | Wait time before first GARP
-`count` | int (1-10) | `3` | Number of GARP packets to send
-`interval` | string (duration) | `"500ms"` | Time between GARP packets
-`verifyBeforeSend` | bool | `true` | Verify election win before each GARP
+`enabled` | bool | `true` | Send announcement packets when addresses are added
+`initialDelay` | string (duration) | `"100ms"` | Wait time before first packet
+`count` | int (1-10) | `3` | Number of packets to send
+`interval` | string (duration) | `"500ms"` | Time between packets
+`verifyBeforeSend` | bool | `true` | Verify election win before each packet
 
 ### AddressConfig
 

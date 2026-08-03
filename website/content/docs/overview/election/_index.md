@@ -79,7 +79,14 @@ Variable | Default | Description
 The election is subnet-aware: only nodes that have the address's subnet in their Lease annotations are candidates. This means:
 
 - On a multi-subnet cluster, an address from subnet A will only be announced by a node on subnet A.
-- The `interfaces` field in the [LBNodeAgent configuration]({{< relref "/docs/configuration/lbnodeagent" >}}) can add additional interfaces for subnet detection.
+- The subnets a node advertises come from its [LBNodeAgent configuration]({{< relref "/docs/configuration/lbnodeagent" >}}): the interfaces selected by `localInterface` (default route or regex) plus any listed in `interfaces`. The Lease advertises exactly the subnets the announcer can announce on — the two sides always agree.
+- A dual-homed node (NICs on two subnets) is a candidate for addresses on both, once its configuration selects both NICs.
+
+### Convergence After Configuration Changes
+
+Changing an LBNodeAgent resource converges in two waves: services are first re-processed against the not-yet-updated Lease subnets, then the next Lease renewal (within ~2.5s) publishes the new subnets and peers re-elect. Total convergence is typically 3–5 seconds, during which a *shrinking* change (a node losing a subnet) is a bounded traffic gap for affected addresses, and a *growing* change can briefly leave two nodes answering ARP/NDP for the same address. Both windows are the same magnitude as an unplanned node failure; on clusters with many services, prefer making LBNodeAgent edits in a maintenance window.
+
+IPv4 failover convergence is accelerated by GARP and IPv6 by unsolicited Neighbor Advertisements — see [GARP Configuration]({{< relref "/docs/configuration/lbnodeagent#garp-configuration" >}}).
 
 ## Monitoring
 
