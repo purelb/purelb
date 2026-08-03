@@ -38,7 +38,7 @@ func AgentsForNode(agents []*LBNodeAgent, nodeLabels map[string]string) []*LBNod
 		if agent == nil {
 			continue
 		}
-		if isCatchAll(agent.Spec.NodeSelector) {
+		if IsCatchAll(agent.Spec.NodeSelector) {
 			catchAll = append(catchAll, agent)
 			continue
 		}
@@ -69,9 +69,13 @@ func FirstLocalAgent(agents []*LBNodeAgent) *LBNodeAgent {
 	return nil
 }
 
-// isCatchAll reports whether the selector matches all nodes: nil, or
-// empty (no matchLabels and no matchExpressions).
-func isCatchAll(sel *metav1.LabelSelector) bool {
+// IsCatchAll reports whether the selector matches all nodes: nil, or
+// empty (no matchLabels and no matchExpressions). It is exported because
+// it defines the precedence classes used by AgentsForNode, and callers
+// that explain a resolution — such as the kubectl plugin distinguishing
+// an intended override from an ambiguous collision — must classify
+// selectors exactly the same way.
+func IsCatchAll(sel *metav1.LabelSelector) bool {
 	return sel == nil || (len(sel.MatchLabels) == 0 && len(sel.MatchExpressions) == 0)
 }
 

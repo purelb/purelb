@@ -22,8 +22,11 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
@@ -104,13 +107,12 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 		}
 	}
 
-	// Get dummy interface name from LBNodeAgent (using already-fetched lbnaList)
-	dummyInterface := "kube-lb0"
-	if len(lbnaList.Items) > 0 {
-		if di, _, _ := unstructured.NestedString(lbnaList.Items[0].Object, "spec", "local", "dummyInterface"); di != "" {
-			dummyInterface = di
-		}
-	}
+	// Dummy interface names configured across all LBNodeAgents. With
+	// nodeSelector-scoped resources different nodes can use different names,
+	// so BGP netlinkImport has to cover every one of them; reading only the
+	// first resource in list order would check an arbitrary node's name.
+	agents := decodeLBNodeAgents(lbnaList)
+	dummyInterfaceNames := dummyInterfaces(agents)
 
 	// ========== Pool checks ==========
 	hasRemotePool := false
@@ -244,11 +246,92 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 	}
 
 	// ========== LBNodeAgent checks ==========
-	if len(lbnaList.Items) == 0 {
+	if len(agents) == 0 {
 		checks = append(checks, checkResult{"WARN", "No LBNodeAgent configured"})
 	} else {
-		for _, lbna := range lbnaList.Items {
-			checks = append(checks, checkResult{"PASS", fmt.Sprintf("LBNodeAgent %q: configured", lbna.GetName())})
+		for _, agent := range agents {
+			name := agentName(agent)
+
+			// A nodeSelector that matches nothing is dead configuration:
+			// the resource exists but governs no node.
+			matchCount := 0
+			if nodeList != nil {
+				for i := range nodeList.Items {
+					if matchesNode(agent, nodeList.Items[i].Labels) {
+						matchCount++
+					}
+				}
+			}
+			switch {
+			case nodeList == nil:
+				checks = append(checks, checkResult{"PASS", fmt.Sprintf("LBNodeAgent %q: configured", name)})
+			case matchCount == 0:
+				checks = append(checks, checkResult{"WARN", fmt.Sprintf(
+					"LBNodeAgent %q: nodeSelector matches 0 of %d nodes (configuration has no effect)", name, len(nodeList.Items))})
+			default:
+				scope := "all nodes"
+				if agent.Spec.NodeSelector != nil {
+					scope = fmt.Sprintf("%d of %d nodes", matchCount, len(nodeList.Items))
+				}
+				checks = append(checks, checkResult{"PASS", fmt.Sprintf("LBNodeAgent %q: configured, selects %s", name, scope)})
+			}
+
+			// localInterface is a regex unless it is "default", and both the
+			// announcer and the election match it UNANCHORED.
+			if agent.Spec.Local != nil {
+				pattern := agent.Spec.Local.LocalInterface
+				invalid, unanchored := localInterfaceIssues(pattern)
+				switch {
+				case invalid:
+					checks = append(checks, checkResult{"FAIL", fmt.Sprintf(
+						"LBNodeAgent %q: localInterface %q is not a valid regex — selected nodes announce nothing", name, pattern)})
+				case unanchored:
+					checks = append(checks, checkResult{"WARN", fmt.Sprintf(
+						"LBNodeAgent %q: localInterface %q is unanchored — it matches any interface name containing %q, including pod veth interfaces; anchor it as %q",
+						name, pattern, pattern, "^"+pattern+"$")})
+				}
+			}
+		}
+
+		// Nodes that no LBNodeAgent selects announce nothing at all. This is
+		// legitimate (deliberately excluding a node) but silent otherwise.
+		if nodeList != nil {
+			var orphans, overridden, contested []string
+			for i := range nodeList.Items {
+				node := &nodeList.Items[i]
+				cfg := resolveNodeConfig(agents, node.Labels)
+				if cfg.State == configStateDeselected {
+					orphans = append(orphans, node.Name)
+				}
+				if len(cfg.Ignored) == 0 {
+					continue
+				}
+				detail := fmt.Sprintf("%s (using %s, over %s)", node.Name, cfg.Agent, strings.Join(cfg.Ignored, ", "))
+				if cfg.Contested {
+					contested = append(contested, detail)
+				} else {
+					overridden = append(overridden, detail)
+				}
+			}
+			if len(orphans) > 0 {
+				checks = append(checks, checkResult{"WARN", fmt.Sprintf(
+					"%d node(s) selected by no LBNodeAgent, announcing nothing: %s", len(orphans), strings.Join(orphans, ", "))})
+			}
+			// A specific selector beating a catch-all is the documented
+			// default-plus-override pattern: report which resource governs,
+			// but do not warn — otherwise a correct configuration could never
+			// validate clean, and --strict would fail CI on it.
+			if len(overridden) > 0 {
+				checks = append(checks, checkResult{"PASS", fmt.Sprintf(
+					"%d node(s) using a scoped LBNodeAgent override: %s", len(overridden), strings.Join(overridden, "; "))})
+			}
+			// Two specific selectors matching one node is genuinely ambiguous:
+			// the winner is decided only by namespace/name sort order.
+			if len(contested) > 0 {
+				checks = append(checks, checkResult{"WARN", fmt.Sprintf(
+					"%d node(s) matched by multiple specific nodeSelectors, resolved by name order: %s",
+					len(contested), strings.Join(contested, "; "))})
+			}
 		}
 	}
 
@@ -264,18 +347,23 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 			if !importEnabled {
 				checks = append(checks, checkResult{"WARN", fmt.Sprintf("BGPConfiguration %q: netlinkImport disabled (k8gobgp will advertise NO routes)", cfgName)})
 			} else {
-				// Check interface match
-				found := false
+				// Every dummy interface in use must be watched, not just one:
+				// nodeSelector-scoped LBNodeAgents may configure different
+				// names on different nodes.
+				watched := map[string]bool{}
 				for _, iface := range importInterfaces {
-					if iface == dummyInterface {
-						found = true
-						break
+					watched[iface] = true
+				}
+				var missing []string
+				for _, name := range dummyInterfaceNames {
+					if !watched[name] {
+						missing = append(missing, name)
 					}
 				}
-				if found {
-					checks = append(checks, checkResult{"PASS", fmt.Sprintf("BGPConfiguration %q: netlinkImport enabled, watching %v (matches LBNodeAgent dummyInterface %q)", cfgName, importInterfaces, dummyInterface)})
+				if len(missing) == 0 {
+					checks = append(checks, checkResult{"PASS", fmt.Sprintf("BGPConfiguration %q: netlinkImport enabled, watching %v (covers LBNodeAgent dummyInterface(s) %v)", cfgName, importInterfaces, dummyInterfaceNames)})
 				} else {
-					checks = append(checks, checkResult{"FAIL", fmt.Sprintf("BGPConfiguration %q: netlinkImport interfaces %v do not include LBNodeAgent dummyInterface %q", cfgName, importInterfaces, dummyInterface)})
+					checks = append(checks, checkResult{"FAIL", fmt.Sprintf("BGPConfiguration %q: netlinkImport interfaces %v do not include LBNodeAgent dummyInterface(s) %v", cfgName, importInterfaces, missing)})
 				}
 			}
 
@@ -293,22 +381,17 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 				addr, _ := config["neighborAddress"].(string)
 				peerASN, _ := config["peerAsn"].(int64)
 
-				// Check if nodeSelector matches any nodes
+				// Check if nodeSelector matches any nodes. Full label-selector
+				// semantics: the previous matchLabels-only comparison silently
+				// treated a matchExpressions-based selector as matching
+				// everything, hiding a neighbor that reaches no node.
 				selectorRaw, hasSelector := n["nodeSelector"]
 				if hasSelector && selectorRaw != nil && nodeList != nil {
-					matchCount := 0
-					selector, ok := selectorRaw.(map[string]interface{})
-					if ok {
-						matchLabels, _ := selector["matchLabels"].(map[string]interface{})
-						if matchLabels != nil {
-							for _, node := range nodeList.Items {
-								if labelsMatch(node.Labels, matchLabels) {
-									matchCount++
-								}
-							}
-						}
-					}
-					if matchCount == 0 {
+					count, err := countMatchingNodes(selectorRaw, nodeList.Items)
+					switch {
+					case err != nil:
+						checks = append(checks, checkResult{"FAIL", fmt.Sprintf("BGPConfiguration %q: neighbor %s (AS %d) has an invalid nodeSelector: %v", cfgName, addr, peerASN, err)})
+					case count == 0:
 						checks = append(checks, checkResult{"FAIL", fmt.Sprintf("BGPConfiguration %q: neighbor %s (AS %d) nodeSelector matches 0 nodes", cfgName, addr, peerASN)})
 					}
 				}
@@ -363,12 +446,28 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 }
 
 // labelsMatch checks if a node's labels contain all the required matchLabels.
-func labelsMatch(nodeLabels map[string]string, matchLabels map[string]interface{}) bool {
-	for k, v := range matchLabels {
-		expected, _ := v.(string)
-		if nodeLabels[k] != expected {
-			return false
+// countMatchingNodes evaluates an unstructured label selector against the
+// given nodes with full Kubernetes semantics (matchLabels AND
+// matchExpressions), so selectors the plugin cannot interpret surface as an
+// error rather than silently matching everything.
+func countMatchingNodes(selectorRaw interface{}, nodes []v1.Node) (int, error) {
+	raw, ok := selectorRaw.(map[string]interface{})
+	if !ok {
+		return 0, fmt.Errorf("nodeSelector is not an object")
+	}
+	labelSelector := &metav1.LabelSelector{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(raw, labelSelector); err != nil {
+		return 0, err
+	}
+	selector, err := metav1.LabelSelectorAsSelector(labelSelector)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for i := range nodes {
+		if selector.Matches(labels.Set(nodes[i].Labels)) {
+			count++
 		}
 	}
-	return true
+	return count, nil
 }

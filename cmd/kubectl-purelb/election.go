@@ -38,6 +38,11 @@ type nodeLeaseInfo struct {
 	ExpiresIn  string   `json:"expiresIn"`
 	Healthy    bool     `json:"healthy"`
 	Announcing int      `json:"announcing"`
+	// Config reports which LBNodeAgent governs this node. A node with a
+	// healthy lease still announces nothing when no nodeSelector selects it
+	// ("deselected") or its localInterface regex is invalid ("invalid"),
+	// which lease health alone cannot express.
+	Config      nodeConfig `json:"config"`
 }
 
 type subnetCoverage struct {
@@ -130,6 +135,20 @@ func runElection(ctx context.Context, c *clients, format outputFormat, filterNod
 		return fmt.Errorf("listing leases: %w", err)
 	}
 
+	// Node labels plus LBNodeAgent resources let us resolve which
+	// configuration governs each node, using the same precedence the node
+	// agents apply. Both are best-effort: without them the CONFIG column
+	// simply reports "unknown".
+	nodeList, _ := c.core.CoreV1().Nodes().List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	agents := decodeLBNodeAgents(lbnaList)
+	nodeLabels := map[string]map[string]string{}
+	if nodeList != nil {
+		for i := range nodeList.Items {
+			nodeLabels[nodeList.Items[i].Name] = nodeList.Items[i].Labels
+		}
+	}
+
 	// Parse leases into node info
 	// Also build subnet -> nodes map
 	var nodes []nodeLeaseInfo
@@ -161,12 +180,18 @@ func runElection(ctx context.Context, c *clients, format outputFormat, filterNod
 			}
 		}
 
+		cfg := nodeConfig{State: "unknown"}
+		if labels, known := nodeLabels[nodeName]; known {
+			cfg = resolveNodeConfig(agents, labels)
+		}
+
 		nodes = append(nodes, nodeLeaseInfo{
 			Name:       nodeName,
 			Subnets:    subnets,
 			RenewedAgo: renewedAgo,
 			ExpiresIn:  expiresIn,
 			Healthy:    healthy,
+			Config:     cfg,
 		})
 
 		nodeSubnets[nodeName] = subnets
@@ -353,6 +378,12 @@ func runElection(ctx context.Context, c *clients, format outputFormat, filterNod
 				hasProblems = true
 			}
 		}
+		for _, n := range nodes {
+			if n.Config.State == configStateInvalid {
+				fmt.Printf("INVALID CONFIG: node %s (%s) - announces nothing\n", n.Name, n.Config.Reason)
+				hasProblems = true
+			}
+		}
 		for _, u := range uncovered {
 			fmt.Printf("UNCOVERED: %s range %s (subnet %s) - no nodes with this subnet\n",
 				u.ServiceGroup, u.Pool, u.Subnet)
@@ -367,16 +398,36 @@ func runElection(ctx context.Context, c *clients, format outputFormat, filterNod
 
 	// Full table output
 	tw := tableWriter(os.Stdout)
-	fmt.Fprintf(tw, "NODE\tSUBNETS\tRENEWED\tEXPIRES\tHEALTHY\tANNOUNCING\n")
+	fmt.Fprintf(tw, "NODE\tCONFIG\tSUBNETS\tRENEWED\tEXPIRES\tHEALTHY\tANNOUNCING\n")
 	for _, n := range nodes {
 		subnets := strings.Join(n.Subnets, ",")
 		if subnets == "" {
 			subnets = "(none)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%v\t%d IPs\n",
-			n.Name, subnets, n.RenewedAgo, n.ExpiresIn, n.Healthy, n.Announcing)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%v\t%d IPs\n",
+			n.Name, n.Config.State, subnets, n.RenewedAgo, n.ExpiresIn, n.Healthy, n.Announcing)
 	}
 	tw.Flush()
+
+	// Nodes that are configured out of announcing deserve an explicit note:
+	// a healthy lease with no subnets looks identical to a misconfiguration.
+	for _, n := range nodes {
+		switch n.Config.State {
+		case configStateDeselected:
+			fmt.Printf("  note: %s is selected by no LBNodeAgent — announces nothing\n", n.Name)
+		case configStateInvalid:
+			fmt.Printf("  note: %s has an invalid config (%s) — announces nothing\n", n.Name, n.Config.Reason)
+		}
+		if len(n.Config.Ignored) > 0 {
+			if n.Config.Contested {
+				fmt.Printf("  note: %s matches multiple specific nodeSelectors; using %s over %s (resolved by name order)\n",
+					n.Name, n.Config.Agent, strings.Join(n.Config.Ignored, ", "))
+			} else {
+				fmt.Printf("  note: %s uses scoped override %s (over %s)\n",
+					n.Name, n.Config.Agent, strings.Join(n.Config.Ignored, ", "))
+			}
+		}
+	}
 
 	// Subnet coverage
 	fmt.Printf("\nMembers: %d, Subnets: %d unique\n", len(nodes), len(coverage))

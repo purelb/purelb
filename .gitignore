@@ -13,6 +13,9 @@ pkg/generated
 pkg/apis/purelb/*/zz_generated.deepcopy.go
 
 # build / test / local artifacts
-kubectl-purelb
+# Root-anchored: the plugin binary is built to the repo root by `make plugin`.
+# Unanchored, this pattern also matched cmd/kubectl-purelb/, so new source
+# files in the plugin were silently untracked.
+/kubectl-purelb
 test/e2e/timing/timing-results-*.csv
 .claude/

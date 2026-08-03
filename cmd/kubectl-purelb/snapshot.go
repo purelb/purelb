@@ -36,6 +36,9 @@ type clusterSnapshot struct {
 	leases          *coordinationv1.LeaseList
 	bgpNodeStatuses *unstructured.UnstructuredList
 	lbNodeAgents    *unstructured.UnstructuredList
+	// nodes carries node labels, needed to resolve which LBNodeAgent
+	// (if any) selects each node.
+	nodes *v1.NodeList
 }
 
 // fetchSnapshot fetches all resources needed by the dashboard in parallel.
@@ -99,6 +102,15 @@ func fetchSnapshot(ctx context.Context, c *clients) (*clusterSnapshot, error) {
 		snap.lbNodeAgents, err = c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 		if err != nil {
 			return fmt.Errorf("listing LBNodeAgents: %w", err)
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		var err error
+		snap.nodes, err = c.core.CoreV1().Nodes().List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+		if err != nil {
+			return fmt.Errorf("listing nodes: %w", err)
 		}
 		return nil
 	})
