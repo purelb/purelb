@@ -358,6 +358,16 @@ type LBNodeAgent struct {
 
 // LBNodeAgentSpec configures the node agents.
 type LBNodeAgentSpec struct {
+	// NodeSelector limits which nodes this agent configuration applies
+	// to. A nil or empty selector matches all nodes (catch-all). When
+	// multiple LBNodeAgent resources match a node, specific selectors
+	// take precedence over catch-alls, then resources are ordered by
+	// namespace/name and the first is used. Like a Pod's nodeSelector,
+	// node label changes are evaluated when configuration is next
+	// delivered, not continuously.
+	// +optional
+	NodeSelector *metav1.LabelSelector `json:"nodeSelector,omitempty"`
+
 	// Local configures announcement of service addresses by configuring
 	// the underlying operating system networking.
 	// +optional
