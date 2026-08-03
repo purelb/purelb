@@ -273,6 +273,404 @@ test_lease_verification() {
 }
 
 #---------------------------------------------------------------------
+# Test: Multi-Interface Node (gated on MULTI_IF_* env)
+# Exercises nodeSelector-scoped LBNodeAgent CRs and multi-NIC subnet
+# detection/announcement on a dual-homed node: regex and interfaces[]
+# selection, lease convergence, affinity pinning, withdrawal on config
+# shrink (renewal-timer death), migration to another eligible node, and
+# full deselection (noConfig withdrawal).
+#
+# Requires a node with a second NIC plus explicit configuration; the
+# expectations are deliberately NOT autodetected (they would then be
+# derived from the code under test). Skips when none of the MULTI_IF_*
+# variables are set; fails loudly when only some are.
+#
+# Env contract (all required together):
+#   MULTI_IF_NODE     dual-homed node name             (e.g. purelb2-3)
+#   MULTI_IF_IFACE    second NIC on that node          (e.g. eth2)
+#   MULTI_IF_SUBNET   second NIC's IPv4 subnet, exact network form
+#                     matching the SG subnet spec      (e.g. 172.30.250.0/24)
+#   MULTI_IF_SUBNET6  second NIC's IPv6 subnet, exact network form
+#                                            (e.g. 2001:470:b8f3:250::/64)
+#   MULTI_IF_POOL_V4  IPv4 pool inside MULTI_IF_SUBNET (e.g. 172.30.250.220/30)
+#   MULTI_IF_POOL_V6  IPv6 pool inside MULTI_IF_SUBNET6
+# The migration assertion additionally expects at least one OTHER node
+# to be on MULTI_IF_SUBNET (true on prox-purelb2: nodes 1-2).
+#---------------------------------------------------------------------
+MULTI_IF_REQUIRED_VARS="MULTI_IF_NODE MULTI_IF_IFACE MULTI_IF_SUBNET MULTI_IF_SUBNET6 MULTI_IF_POOL_V4 MULTI_IF_POOL_V6"
+
+# wait_for_lease_subnet NODE SUBNET [TIMEOUT] — poll until the node's
+# lease annotation contains SUBNET (fixed-string match).
+wait_for_lease_subnet() {
+    local node=$1 subnet=$2 timeout=${3:-20} elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        if get_node_lease_subnets "$node" | grep -qF "$subnet"; then return 0; fi
+        sleep 2; elapsed=$((elapsed + 2))
+    done
+    return 1
+}
+
+# wait_for_lease_subnet_gone NODE SUBNET [TIMEOUT]
+wait_for_lease_subnet_gone() {
+    local node=$1 subnet=$2 timeout=${3:-20} elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        if ! get_node_lease_subnets "$node" | grep -qF "$subnet"; then return 0; fi
+        sleep 2; elapsed=$((elapsed + 2))
+    done
+    return 1
+}
+
+# vip_on_iface NODE IFACE IP — is IP configured on NODE's IFACE?
+vip_on_iface() {
+    node_ssh "$1" "ip -o addr show $2 2>/dev/null | grep -q ' $3/'" 2>/dev/null
+}
+
+# assert_selector_state NODE STATE — the selector_state gauge must
+# report 1 for STATE on NODE.
+assert_selector_state() {
+    local node=$1 state=$2
+    local metrics value
+    metrics=$(scrape_lbnodeagent_metrics "$node")
+    value=$(extract_metric "$metrics" "purelb_lbnodeagent_selector_state{state=\"$state\"}")
+    if [ "$value" = "1" ]; then
+        pass "selector_state{state=\"$state\"}=1 on $node"
+    else
+        fail "selector_state{state=\"$state\"} on $node is '${value:-missing}', want 1"
+    fi
+}
+
+# apply_multi_if_cr VARIANT — create/update the scoped LBNodeAgent CR.
+# VARIANT "regex" uses a localInterface regex covering both NICs;
+# VARIANT "interfaces" uses localInterface default + interfaces[].
+# validLifetime 60 makes the renewal interval 30s so the
+# "not re-added after >35s" assertions actually prove timer death
+# (at the default 300 the first re-add is at 150s and a short wait
+# would pass even with the bug present).
+apply_multi_if_cr() {
+    local variant=$1
+    local primary_iface="${NODE_IFACE[$MULTI_IF_NODE]}"
+    local iface_config
+    if [ "$variant" = "regex" ]; then
+        iface_config="localInterface: \"^(${primary_iface}|${MULTI_IF_IFACE})\$\""
+    else
+        iface_config=$(printf 'localInterface: default\n    interfaces:\n    - %s' "$MULTI_IF_IFACE")
+    fi
+    kubectl apply -f - <<EOF
+apiVersion: purelb.io/v2
+kind: LBNodeAgent
+metadata:
+  name: multi-if-test
+  namespace: purelb-system
+spec:
+  nodeSelector:
+    matchLabels:
+      purelb-test: multi-if
+  local:
+    ${iface_config}
+    garpConfig:
+      enabled: true
+    addressConfig:
+      localInterface:
+        validLifetime: 60
+        preferredLifetime: 60
+EOF
+}
+
+test_multi_interface() {
+    # ----- Env gate: skip only when nothing is set; partial = loud fail
+    local set_count=0 total=0 missing=""
+    local var
+    for var in $MULTI_IF_REQUIRED_VARS; do
+        total=$((total + 1))
+        if [ -n "${!var:-}" ]; then
+            set_count=$((set_count + 1))
+        else
+            missing="$missing $var"
+        fi
+    done
+    if [ "$set_count" -eq 0 ]; then
+        info "SKIP: Multi-interface test (set these to enable):"
+        for var in $MULTI_IF_REQUIRED_VARS; do detail "$var"; done
+        return 0
+    fi
+    if [ "$set_count" -ne "$total" ]; then
+        fail "Multi-interface: partial MULTI_IF_* environment - missing:$missing"
+    fi
+
+    echo ""
+    echo "=========================================="
+    echo "TEST: Multi-Interface Node ($MULTI_IF_NODE via $MULTI_IF_IFACE)"
+    echo "=========================================="
+
+    # ----- Baselines
+    local baseline_subnets baseline_count metrics
+    baseline_subnets=$(get_node_lease_subnets "$MULTI_IF_NODE")
+    metrics=$(scrape_lbnodeagent_metrics "$MULTI_IF_NODE")
+    baseline_count=$(extract_metric "$metrics" "purelb_election_local_subnet_count")
+    detail "$MULTI_IF_NODE baseline lease subnets: $baseline_subnets (count metric: ${baseline_count:-?})"
+    if echo "$baseline_subnets" | grep -qF "$MULTI_IF_SUBNET"; then
+        fail "Multi-interface: baseline lease already contains $MULTI_IF_SUBNET - stale scoped config?"
+    fi
+
+    declare -A other_baseline
+    local node
+    for node in $NODES; do
+        [ "$node" = "$MULTI_IF_NODE" ] && continue
+        other_baseline[$node]=$(get_node_lease_subnets "$node")
+    done
+
+    # ----- Phase 1: scoped CR (nodeSelector) with interface regex
+    info "Labeling $MULTI_IF_NODE and creating scoped LBNodeAgent (regex variant)..."
+    kubectl label node "$MULTI_IF_NODE" purelb-test=multi-if --overwrite >/dev/null
+    apply_multi_if_cr regex
+
+    wait_for_lease_subnet "$MULTI_IF_NODE" "$MULTI_IF_SUBNET" 20 \
+        || fail "Multi-interface: lease never gained $MULTI_IF_SUBNET"
+    pass "Lease gained $MULTI_IF_SUBNET"
+    wait_for_lease_subnet "$MULTI_IF_NODE" "$MULTI_IF_SUBNET6" 20 \
+        || fail "Multi-interface: lease never gained $MULTI_IF_SUBNET6"
+    pass "Lease gained $MULTI_IF_SUBNET6"
+
+    assert_log_contains_on_node "$MULTI_IF_NODE" "subnetsChanged" \
+        "lease subnet annotation updated after scoped config"
+    pass "subnetsChanged logged on $MULTI_IF_NODE"
+    assert_selector_state "$MULTI_IF_NODE" "configured"
+
+    metrics=$(scrape_lbnodeagent_metrics "$MULTI_IF_NODE")
+    local new_count
+    new_count=$(extract_metric "$metrics" "purelb_election_local_subnet_count")
+    if [ -n "$baseline_count" ] && [ -n "$new_count" ] && [ "$new_count" -gt "$baseline_count" ]; then
+        pass "local_subnet_count increased ($baseline_count -> $new_count)"
+    else
+        fail "local_subnet_count did not increase (was ${baseline_count:-?}, now ${new_count:-?})"
+    fi
+
+    for node in $NODES; do
+        [ "$node" = "$MULTI_IF_NODE" ] && continue
+        if [ "$(get_node_lease_subnets "$node")" = "${other_baseline[$node]}" ]; then
+            pass "Scoping: $node lease unchanged"
+        else
+            fail "Multi-interface: scoped CR changed $node lease (was '${other_baseline[$node]}', now '$(get_node_lease_subnets "$node")')"
+        fi
+    done
+
+    # ----- Second-subnet pool + affinity-pinned service
+    info "Creating second-subnet ServiceGroup, pinned endpoints and dual-stack Service..."
+    kubectl apply -f - <<EOF
+apiVersion: purelb.io/v2
+kind: ServiceGroup
+metadata:
+  name: multi-if-test
+  namespace: purelb-system
+spec:
+  local:
+    v4pools:
+    - subnet: ${MULTI_IF_SUBNET}
+      pool: ${MULTI_IF_POOL_V4}
+      aggregation: default
+    v6pools:
+    - subnet: ${MULTI_IF_SUBNET6}
+      pool: ${MULTI_IF_POOL_V6}
+      aggregation: default
+EOF
+    CLEANUP_SGS+=("multi-if-test")
+
+    kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multi-if-echo
+  namespace: $NAMESPACE
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: multi-if-echo
+  template:
+    metadata:
+      labels:
+        app: multi-if-echo
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: ${MULTI_IF_NODE}
+      containers:
+      - name: nginx
+        image: nginx
+        ports:
+        - containerPort: 80
+EOF
+    kubectl wait --for=condition=Available deployment/multi-if-echo -n $NAMESPACE --timeout=120s \
+        || fail "Multi-interface: pinned deployment never became available"
+
+    kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: multi-if-lb
+  namespace: $NAMESPACE
+  annotations:
+    purelb.io/service-group: multi-if-test
+    purelb.io/node-affinity: service-endpoints
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: RequireDualStack
+  ipFamilies:
+  - IPv4
+  - IPv6
+  selector:
+    app: multi-if-echo
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+    kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' \
+        svc/multi-if-lb -n $NAMESPACE --timeout=30s || fail "Multi-interface: no IP allocated"
+
+    local vip4="" vip6="" ip
+    for ip in $(kubectl get svc multi-if-lb -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[*].ip}'); do
+        case "$ip" in
+            *:*) vip6="$ip" ;;
+            *)   vip4="$ip" ;;
+        esac
+    done
+    [ -n "$vip4" ] || fail "Multi-interface: no IPv4 VIP allocated"
+    [ -n "$vip6" ] || fail "Multi-interface: no IPv6 VIP allocated"
+    detail "VIPs: $vip4 / $vip6"
+
+    wait_for_announcer "$NAMESPACE" multi-if-lb IPv4 "$MULTI_IF_NODE" 30 \
+        || fail "Multi-interface: $MULTI_IF_NODE never announced $vip4 ($(get_announcing "$NAMESPACE" multi-if-lb IPv4))"
+    pass "$MULTI_IF_NODE announces $vip4"
+    wait_for_announcer "$NAMESPACE" multi-if-lb IPv6 "$MULTI_IF_NODE" 30 \
+        || fail "Multi-interface: $MULTI_IF_NODE never announced $vip6 ($(get_announcing "$NAMESPACE" multi-if-lb IPv6))"
+    pass "$MULTI_IF_NODE announces $vip6"
+
+    vip_on_iface "$MULTI_IF_NODE" "$MULTI_IF_IFACE" "$vip4" \
+        || fail "Multi-interface: $vip4 not present on $MULTI_IF_IFACE"
+    pass "$vip4 on $MULTI_IF_IFACE"
+    vip_on_iface "$MULTI_IF_NODE" "$MULTI_IF_IFACE" "$vip6" \
+        || fail "Multi-interface: $vip6 not present on $MULTI_IF_IFACE"
+    pass "$vip6 on $MULTI_IF_IFACE"
+
+    # IPv6 failover parity: announcing a v6 VIP must send unsolicited
+    # Neighbor Advertisements (the GARP counterpart).
+    sleep 3
+    metrics=$(scrape_lbnodeagent_metrics "$MULTI_IF_NODE")
+    local na_sent
+    na_sent=$(extract_metric "$metrics" "purelb_lbnodeagent_na_sent_total")
+    if [ -n "$na_sent" ] && [ "$na_sent" -gt 0 ]; then
+        pass "Unsolicited NA sent (na_sent_total=$na_sent)"
+    else
+        fail "Multi-interface: na_sent_total is '${na_sent:-missing}' after IPv6 announcement"
+    fi
+
+    # ----- Transition A: delete the scoped CR (fallback to catch-all)
+    info "Deleting scoped CR - node must withdraw and the VIP must migrate..."
+    kubectl delete lbnodeagent multi-if-test -n purelb-system
+
+    wait_for_lease_subnet_gone "$MULTI_IF_NODE" "$MULTI_IF_SUBNET" 20 \
+        || fail "Multi-interface: lease kept $MULTI_IF_SUBNET after scoped CR deletion"
+    pass "Lease shrank (lost $MULTI_IF_SUBNET)"
+
+    sleep 3
+    assert_log_contains_on_node "$MULTI_IF_NODE" "withdrawAddress" \
+        "withdrawal after config shrink"
+    pass "withdrawAddress logged on $MULTI_IF_NODE"
+
+    # The renewal timer must be dead: with validLifetime 60 the timer
+    # would re-add the address after 30s, so absence after >35s proves
+    # the withdrawal cancelled it.
+    info "Waiting 40s to prove the renewal timer died (interval 30s at validLifetime 60)..."
+    sleep 40
+    if vip_on_iface "$MULTI_IF_NODE" "$MULTI_IF_IFACE" "$vip4"; then
+        fail "Multi-interface: $vip4 re-appeared on $MULTI_IF_IFACE - renewal timer survived withdrawal"
+    fi
+    pass "$vip4 stayed off $MULTI_IF_IFACE for >35s (timer dead)"
+    if vip_on_iface "$MULTI_IF_NODE" "$MULTI_IF_IFACE" "$vip6"; then
+        fail "Multi-interface: $vip6 re-appeared on $MULTI_IF_IFACE - renewal timer survived withdrawal"
+    fi
+    pass "$vip6 stayed off $MULTI_IF_IFACE for >35s (timer dead)"
+
+    # Convergence upper bound: another node on that subnet must have
+    # picked the VIP up (not just absence on the old node).
+    local new_announcer
+    new_announcer=$(get_announcing "$NAMESPACE" multi-if-lb IPv4)
+    if [ -n "$new_announcer" ] && ! announcing_has_node "$new_announcer" "$MULTI_IF_NODE"; then
+        pass "VIP migrated: $new_announcer"
+    else
+        fail "Multi-interface: VIP did not migrate to another eligible node (annotation: '$new_announcer')"
+    fi
+
+    # ----- Phase 2: scoped CR with localInterface default + interfaces[]
+    info "Re-creating scoped CR (interfaces[] variant) - affinity must pull the VIP back..."
+    apply_multi_if_cr interfaces
+
+    wait_for_lease_subnet "$MULTI_IF_NODE" "$MULTI_IF_SUBNET" 20 \
+        || fail "Multi-interface: interfaces[] variant never restored $MULTI_IF_SUBNET"
+    pass "interfaces[] variant restored lease subnet"
+
+    wait_for_announcer "$NAMESPACE" multi-if-lb IPv4 "$MULTI_IF_NODE" 45 \
+        || fail "Multi-interface: affinity did not pull $vip4 back to $MULTI_IF_NODE"
+    pass "Affinity pulled $vip4 back to $MULTI_IF_NODE (interfaces[] path)"
+    vip_on_iface "$MULTI_IF_NODE" "$MULTI_IF_IFACE" "$vip4" \
+        || fail "Multi-interface: $vip4 not on $MULTI_IF_IFACE via interfaces[]"
+    pass "$vip4 on $MULTI_IF_IFACE via interfaces[]"
+
+    # ----- Transition B: deselect the node entirely (noConfig path).
+    # The default catch-all CR would still match, so it temporarily gets
+    # a NotIn selector that excludes the labeled node. The subshell trap
+    # restores it even if an assertion fails mid-test.
+    info "Deselecting $MULTI_IF_NODE from every CR (noConfig withdrawal)..."
+    if ! (
+        trap 'kubectl patch lbnodeagent default -n purelb-system --type=json -p "[{\"op\":\"remove\",\"path\":\"/spec/nodeSelector\"}]" >/dev/null 2>&1 || true' EXIT
+        kubectl patch lbnodeagent default -n purelb-system --type=merge -p \
+            '{"spec":{"nodeSelector":{"matchExpressions":[{"key":"purelb-test","operator":"NotIn","values":["multi-if"]}]}}}' >/dev/null
+        kubectl patch lbnodeagent multi-if-test -n purelb-system --type=merge -p \
+            '{"spec":{"nodeSelector":{"matchLabels":{"purelb-test":"deselected-nothing-matches"}}}}' >/dev/null
+
+        elapsed=0
+        while [ $elapsed -lt 20 ]; do
+            [ -z "$(get_node_lease_subnets "$MULTI_IF_NODE")" ] && break
+            sleep 2; elapsed=$((elapsed + 2))
+        done
+        [ -z "$(get_node_lease_subnets "$MULTI_IF_NODE")" ] \
+            || fail "Multi-interface: deselected node still advertises subnets: $(get_node_lease_subnets "$MULTI_IF_NODE")"
+        pass "Deselected node advertises no subnets"
+
+        assert_selector_state "$MULTI_IF_NODE" "deselected"
+
+        sleep 3
+        assert_log_contains_on_node "$MULTI_IF_NODE" "noConfig" \
+            "deselection lands in the noConfig path"
+        pass "noConfig logged on deselected node"
+
+        info "Waiting 40s to prove the noConfig withdrawal killed the renewal timer..."
+        sleep 40
+        if vip_on_iface "$MULTI_IF_NODE" "$MULTI_IF_IFACE" "$vip4" || \
+           vip_on_iface "$MULTI_IF_NODE" "$MULTI_IF_IFACE" "$vip6"; then
+            fail "Multi-interface: VIP re-appeared on deselected node - noConfig withdrawal incomplete"
+        fi
+        pass "VIPs stayed off the deselected node for >35s"
+    ); then
+        fail "Multi-interface: deselect sub-test failed"
+    fi
+
+    # ----- Cleanup (default CR was restored by the subshell trap)
+    info "Cleaning up multi-interface test resources..."
+    kubectl delete svc multi-if-lb -n $NAMESPACE --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete deployment multi-if-echo -n $NAMESPACE --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete lbnodeagent multi-if-test -n purelb-system --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete servicegroup multi-if-test -n purelb-system --ignore-not-found >/dev/null 2>&1 || true
+    kubectl label node "$MULTI_IF_NODE" purelb-test- >/dev/null 2>&1 || true
+
+    wait_for_lease_subnet_gone "$MULTI_IF_NODE" "$MULTI_IF_SUBNET" 20 \
+        || fail "Multi-interface: cleanup did not restore baseline lease"
+    pass "Baseline lease restored after cleanup"
+
+    pass "Multi-interface node test complete"
+}
+
+#---------------------------------------------------------------------
 # Test: Local Pool No Matching Subnet
 # Tests that when no node has the pool's subnet, the IP is NOT announced
 # anywhere. There is no fallback - subnet filtering is strict.
@@ -4692,6 +5090,7 @@ run_all_tests() {
     echo -e "${BLUE}  TEST GROUP: Subnet-Aware Election${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
     test_lease_verification
+    test_multi_interface
     test_local_pool_no_matching_subnet
     test_remote_pool
     pause_for_review
