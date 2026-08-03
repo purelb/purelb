@@ -18,12 +18,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"sort"
 	"syscall"
 
 	"github.com/mdlayher/arp"
 	"github.com/mdlayher/ethernet"
+	"github.com/mdlayher/ndp"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 
@@ -360,6 +362,53 @@ func sendGARP(ifName string, ip net.IP) error {
 		if err = client.WriteTo(pkt, ethernet.Broadcast); err != nil {
 			return fmt.Errorf("writing %q gratuitous packet for %q: %w", op, ip, err)
 		}
+	}
+	return nil
+}
+
+// buildUnsolicitedNA assembles the unsolicited Neighbor Advertisement
+// for target announced from hwAddr: Override set so neighbors replace
+// an existing cache entry for the moved VIP, Solicited clear (nobody
+// asked), Router clear (the VIP is a host address, not a router).
+func buildUnsolicitedNA(target netip.Addr, hwAddr net.HardwareAddr) *ndp.NeighborAdvertisement {
+	return &ndp.NeighborAdvertisement{
+		Override:      true,
+		TargetAddress: target,
+		Options: []ndp.Option{
+			&ndp.LinkLayerAddress{Direction: ndp.Target, Addr: hwAddr},
+		},
+	}
+}
+
+// sendUnsolicitedNA sends an unsolicited Neighbor Advertisement for ip
+// on ifName — the IPv6 counterpart of sendGARP. The kernel does not do
+// this for us: adding an address only triggers DAD, whose probes are
+// sourced from :: and update no neighbor caches, so without this a
+// moved IPv6 VIP converges only via NUD timeouts.
+func sendUnsolicitedNA(ifName string, ip net.IP) error {
+	if ip.To4() != nil {
+		return fmt.Errorf("not an IPv6 address: %s", ip)
+	}
+	target, ok := netip.AddrFromSlice(ip.To16())
+	if !ok {
+		return fmt.Errorf("invalid IPv6 address: %s", ip)
+	}
+
+	ifi, err := net.InterfaceByName(ifName)
+	if err != nil {
+		return fmt.Errorf("finding interface named %s: %w", ifName, err)
+	}
+
+	c, _, err := ndp.Listen(ifi, ndp.LinkLocal)
+	if err != nil {
+		return fmt.Errorf("creating NDP responder for %s: %w", ifName, err)
+	}
+	defer c.Close()
+
+	// RFC 4861 §7.2.6: unsolicited advertisements go to the all-nodes
+	// multicast address.
+	if err := c.WriteTo(buildUnsolicitedNA(target, ifi.HardwareAddr), nil, netip.AddrFrom16([16]byte{0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01})); err != nil {
+		return fmt.Errorf("writing unsolicited NA for %q: %w", ip, err)
 	}
 	return nil
 }

@@ -453,13 +453,13 @@ func (a *announcer) announceLocal(svc *v1.Service, preferred []string, announceI
 		"ip":      lbIP.String(),
 	}).Set(1)
 
-	// Send GARP if configured. IPv4 only: gratuitous ARP has no IPv6
-	// equivalent (arp.NewPacket rejects non-4-byte addresses), so an IPv6
-	// address would only spin up the sequence goroutine to fail on every
-	// packet. IPv6 neighbours learn the new location from the kernel.
-	if lbIP.To4() != nil {
-		a.sendGARPSequence(lbIP, announceInt.Attrs().Name)
-	}
+	// Send gratuitous announcements if configured: GARP for IPv4,
+	// unsolicited Neighbor Advertisements for IPv6. The kernel does NOT
+	// notify IPv6 neighbours when an address is added — it only runs
+	// DAD, whose probes are sourced from :: and update no neighbor
+	// caches (and the skip-DAD annotation suppresses even those) — so
+	// without the NA a moved IPv6 VIP converges only via NUD timeouts.
+	a.sendGARPSequence(lbIP, announceInt.Attrs().Name)
 
 	return nil
 }
@@ -1041,8 +1041,11 @@ func (a *announcer) getLocalAddressOptions() AddressOptions {
 	return opts
 }
 
-// sendGARPSequence sends GARP packets according to the GARPConfig.
-// The GARP sequence runs in a goroutine to avoid blocking the main announcement.
+// sendGARPSequence sends gratuitous announcement packets according to
+// the GARPConfig: GARP for IPv4 addresses, unsolicited Neighbor
+// Advertisements for IPv6 (its protocol counterpart — same config
+// gate, delay, count, interval and verify-before-send semantics).
+// The sequence runs in a goroutine to avoid blocking the main announcement.
 func (a *announcer) sendGARPSequence(lbIP net.IP, ifName string) {
 	if a.config == nil || a.config.GARPConfig == nil {
 		return // GARP not configured
@@ -1094,7 +1097,18 @@ func (a *announcer) sendGARPSequence(lbIP net.IP, ifName string) {
 		verifyBeforeSend = *cfg.VerifyBeforeSend
 	}
 
-	// Run GARP sequence in a goroutine to avoid blocking
+	// Pick the family-appropriate packet. The sequence semantics are
+	// identical; only the wire format differs.
+	op := "sendGARP"
+	send := func() error { return sendGARP(ifName, lbIP) }
+	recordSent, recordError := RecordGARPSent, RecordGARPError
+	if lbIP.To4() == nil {
+		op = "sendUnsolicitedNA"
+		send = func() error { return sendUnsolicitedNA(ifName, lbIP) }
+		recordSent, recordError = RecordNASent, RecordNAError
+	}
+
+	// Run the sequence in a goroutine to avoid blocking
 	go func() {
 		ipStr := lbIP.String()
 
@@ -1113,21 +1127,20 @@ func (a *announcer) sendGARPSequence(lbIP net.IP, ifName string) {
 			if verifyBeforeSend && a.election != nil {
 				winner := a.election.Winner(ipStr)
 				if winner != a.myNode {
-					logging.Debug(a.logger, "op", "sendGARP", "ip", ipStr, "packet", i+1, "of", count,
-						"msg", "skipping GARP, no longer winner", "winner", winner)
+					logging.Debug(a.logger, "op", op, "ip", ipStr, "packet", i+1, "of", count,
+						"msg", "skipping announcement, no longer winner", "winner", winner)
 					return // Stop the sequence, we lost ownership
 				}
 			}
 
-			// Send GARP
-			if err := sendGARP(ifName, lbIP); err != nil {
-				RecordGARPError()
-				logging.Info(a.logger, "op", "sendGARP", "ip", ipStr, "interface", ifName,
+			if err := send(); err != nil {
+				recordError()
+				logging.Info(a.logger, "op", op, "ip", ipStr, "interface", ifName,
 					"packet", i+1, "of", count, "error", err)
 				// Continue sending remaining packets even on error
 			} else {
-				RecordGARPSent()
-				logging.Debug(a.logger, "op", "sendGARP", "ip", ipStr, "interface", ifName,
+				recordSent()
+				logging.Debug(a.logger, "op", op, "ip", ipStr, "interface", ifName,
 					"packet", i+1, "of", count, "msg", "sent")
 			}
 		}

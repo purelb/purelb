@@ -17,12 +17,14 @@ package local
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"regexp"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/mdlayher/ndp"
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
@@ -1070,4 +1072,44 @@ func TestWithdrawalSharedIPRefcount(t *testing.T) {
 	assert.False(t, bAnnounced)
 	_, bTimer = a.addressRenewals.Load(renewalKey("default/svc-b", "192.0.2.1"))
 	assert.False(t, bTimer)
+}
+
+// TestBuildUnsolicitedNA pins the wire-level shape of the IPv6
+// failover announcement without needing a raw socket: Override set
+// (neighbors must replace the moved VIP's cache entry), Solicited and
+// Router clear, target = the VIP, with a target link-layer address
+// option. ndp.MarshalMessage round-trips through the real wire format.
+func TestBuildUnsolicitedNA(t *testing.T) {
+	hw := net.HardwareAddr{0x02, 0x00, 0x5e, 0x10, 0x00, 0x01}
+	target := netip.MustParseAddr("2001:db8::10")
+
+	na := buildUnsolicitedNA(target, hw)
+	assert.True(t, na.Override)
+	assert.False(t, na.Solicited)
+	assert.False(t, na.Router)
+	assert.Equal(t, target, na.TargetAddress)
+
+	raw, err := ndp.MarshalMessage(na)
+	assert.NoError(t, err)
+	assert.Equal(t, byte(136), raw[0], "ICMPv6 type must be Neighbor Advertisement")
+
+	parsed, err := ndp.ParseMessage(raw)
+	assert.NoError(t, err)
+	round, ok := parsed.(*ndp.NeighborAdvertisement)
+	if assert.True(t, ok) {
+		assert.Equal(t, target, round.TargetAddress)
+		assert.True(t, round.Override)
+		assert.False(t, round.Solicited)
+		if assert.Len(t, round.Options, 1) {
+			lla, ok := round.Options[0].(*ndp.LinkLayerAddress)
+			if assert.True(t, ok) {
+				assert.Equal(t, ndp.Target, lla.Direction)
+				assert.Equal(t, hw, lla.Addr)
+			}
+		}
+	}
+}
+
+func TestSendUnsolicitedNARejectsIPv4(t *testing.T) {
+	assert.Error(t, sendUnsolicitedNA("lo", net.ParseIP("192.0.2.1")))
 }
