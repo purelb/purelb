@@ -11,3 +11,8 @@ spec:
     v4pools:
     - pool: 10.255.1.100-10.255.1.110
       subnet: 10.255.1.0/24
+    # No Service allocates from the v6 range; it exists so the
+    # idle-pool status assertions cover both families.
+    v6pools:
+    - pool: fc00:255:1::100-fc00:255:1::110
+      subnet: fc00:255:1::/64

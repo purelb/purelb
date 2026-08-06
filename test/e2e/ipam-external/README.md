@@ -14,7 +14,10 @@ reflects the sidecar's `Stats`.
 - `pool-type` annotation matches the configured `announce` mode.
 - For `announce: local`, the VIP lands on a node interface and is reachable.
 - `.status.ipam`, `.status.allocatedIPv4`, `.status.availableIPv4` are
-  populated from the sidecar's `Stats` RPC.
+  populated from the sidecar's `Stats` RPC. These appear as soon as the
+  ServiceGroup is configured — PureLB reads `Stats` once when a pool's cache
+  is cold, so an external pool reports its addresses and capacity before
+  anything has allocated from it.
 - `purelb_allocator_sidecar_rpc_total` records `Allocate`/`Stats`/`Release`
   with `code="OK"` and **no** failed RPCs.
 - On delete, the address is withdrawn and `Release` is called on the sidecar.

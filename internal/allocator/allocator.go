@@ -16,6 +16,7 @@ package allocator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -53,9 +54,10 @@ type ListServicesFunc func() []v1.Service
 //
 // sgByName is parallel to pools (same keys, same lifetime) and holds
 // DeepCopies of the ServiceGroup objects from the informer cache.
-// DeepCopying is mandatory — informer-cache objects must never be mutated
-// per k8s client-go contract, and the status writer needs a stable SG
-// pointer to construct UpdateStatus requests from.
+// DeepCopying is mandatory — informer-cache objects must never be
+// mutated per the client-go contract. The status writer uses these only
+// for identity (name/namespace); status writes are server-side applies
+// and carry no ResourceVersion, so nothing here goes stale.
 type allocatorState struct {
 	pools    map[string]Pool
 	sgByName map[string]*purelbv2.ServiceGroup
@@ -73,10 +75,10 @@ type Allocator struct {
 	listServices    ListServicesFunc
 
 	// lastWritten caches the most recently successfully-written status per
-	// ServiceGroup name. Used by maybeUpdateSGStatus to elide no-op API
-	// writes when the computed status equals what was last sent. Owned by
-	// G1 (queue worker) — sync.Map is safe for the rare concurrent reads
-	// from any future helper goroutines.
+	// ServiceGroup name. Used by writeSGStatus to elide no-op API writes
+	// when the computed status equals what was last sent. Written only by
+	// G1 (queue worker); G2 deletes entries for pools that config removed
+	// (SetPools), which is why this is a sync.Map rather than a plain map.
 	lastWritten sync.Map // map[svcGroupName]purelbv2.ServiceGroupStatus
 
 	// sidecarConns holds one shared *grpc.ClientConn per external-IPAM
@@ -236,46 +238,138 @@ func (a *Allocator) maybeUpdateSGStatus(pool Pool) {
 		return
 	}
 
-	// For sidecar pools, refresh the cached Stats before building status.
-	// Pure display accessors read that cache; this is the only place an
-	// RPC fires for status. Best-effort — on failure we proceed with the
-	// last-good cache (the interceptor records the RPC error metric).
-	if sp, isSidecar := pool.(*SidecarPool); isSidecar {
-		ctx, cancel := a.sgStatusClient.APIContext()
+	ctx, cancel := a.sgStatusClient.APIContext()
+	defer cancel()
+
+	// refresh=true: this call follows an allocation or release from
+	// this pool, so a sidecar's Stats are known to be out of date.
+	if _, err := a.writeSGStatus(ctx, sg, pool, true); err != nil {
+		if !a.sgStatusClient.IsShutdownError(err) {
+			logging.Info(a.logger, "op", "updateSGStatus", "error", err, "sg", sg.Name)
+		}
+	}
+}
+
+// PublishAllSGStatus writes .status for every configured pool,
+// including pools that have no allocations. This is what makes a
+// freshly-created ServiceGroup show its announce method, IPAM source,
+// addresses and capacity immediately, rather than staying blank until
+// the first Service happens to allocate from it.
+//
+// Runs from G1 (the work queue goroutine) via the poolStatus queue
+// item, so it shares the allocation hot path's single-writer
+// discipline. Best-effort: it returns an aggregate error for logging,
+// but the caller must not requeue on it (see the poolStatus case in
+// k8s.Client.sync for why).
+//
+// ctx bounds the whole sweep, not each ServiceGroup, so one queue item
+// stays bounded at the standard API timeout however many pools are
+// configured. Pools not reached before the deadline are picked up by
+// the next publish.
+func (a *Allocator) PublishAllSGStatus(ctx context.Context) error {
+	if a.sgStatusClient == nil {
+		return nil
+	}
+	s := a.state.Load()
+	if s == nil {
+		return nil
+	}
+
+	// Register the IPs of Services that already exist before computing
+	// counts. A publish is normally triggered by a config change, which
+	// can land before the work queue has processed the Service backlog
+	// (and, at startup, before the controller is even marked synced, so
+	// SetBalancer refuses to allocate). Without this the sweep would
+	// report every pool as empty and lastWritten would cache that as
+	// authoritative. populateFromExisting reads the Service informer
+	// cache directly, so it does not depend on either.
+	a.populateFromExisting(s.pools)
+
+	var (
+		errs    []error
+		written int
+		elided  int
+	)
+	for name, pool := range s.pools {
+		sg, ok := s.sgByName[name]
+		if !ok || sg == nil {
+			continue
+		}
+
+		// Only pay for a sidecar Stats RPC when we have nothing cached.
+		// A sweep runs on every config change and every Service
+		// deletion; refreshing unconditionally would put one blocking
+		// gRPC per external-IPAM pool on the allocation goroutine each
+		// time. A cold cache means a restart or a fresh config, which
+		// is exactly when a sidecar pool needs its first read — and
+		// because SidecarPool.Contains reports false, NotifyExisting
+		// never reaches updateStats for these pools, so this is their
+		// only refresh path at startup.
+		refresh := false
+		if sp, isSidecar := pool.(*SidecarPool); isSidecar {
+			refresh = sp.stats.Load() == nil
+		}
+
+		wrote, err := a.writeSGStatus(ctx, sg, pool, refresh)
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			if !a.sgStatusClient.IsShutdownError(err) {
+				logging.Info(a.logger, "op", "publishPoolStatus", "error", err, "sg", name)
+			}
+		case wrote:
+			written++
+		default:
+			elided++
+		}
+	}
+
+	logging.Debug(a.logger, "op", "publishPoolStatus", "pools", len(s.pools),
+		"written", written, "unchanged", elided, "errors", len(errs))
+	return errors.Join(errs...)
+}
+
+// writeSGStatus computes pool's status and writes it to sg. Reports
+// whether an API write was actually issued — false when the lastWritten
+// cache elided it as a no-op.
+//
+// refresh asks an external-IPAM sidecar for fresh Stats before the
+// status is computed. Callers on the allocation path pass true (the
+// allocation just changed the numbers); the bulk publish passes true
+// only for a cold cache, to keep a blocking RPC off the hot path.
+//
+// Caller must hold a non-nil sgStatusClient and a live sg.
+func (a *Allocator) writeSGStatus(ctx context.Context, sg *purelbv2.ServiceGroup, pool Pool, refresh bool) (bool, error) {
+	// Pure display accessors read the Stats cache; this is the only
+	// place an RPC fires for status. Best-effort — on failure we
+	// proceed with the last-good cache (the interceptor records the
+	// RPC error metric).
+	if sp, isSidecar := pool.(*SidecarPool); isSidecar && refresh {
 		if err := sp.refreshStats(ctx); err != nil {
 			logging.Info(a.logger, "op", "refreshSidecarStats", "error", err, "sg", sg.Name)
 		}
-		cancel()
 	}
 
 	newStatus := buildStatus(pool)
 	if prev, loaded := a.lastWritten.Load(sg.Name); loaded {
 		if statusEqual(prev.(purelbv2.ServiceGroupStatus), newStatus) {
-			return // no-op
+			return false, nil // no-op
 		}
 	}
 
 	sgCopy := sg.DeepCopy()
 	sgCopy.Status = newStatus
-	updated, err := a.sgStatusClient.UpdateServiceGroupStatus(sgCopy)
-	if err != nil {
+	if err := a.sgStatusClient.UpdateServiceGroupStatus(ctx, sgCopy); err != nil {
 		sgStatusWritesTotal.WithLabelValues(classifyStatusErr(err)).Inc()
-		if !a.sgStatusClient.IsShutdownError(err) {
-			logging.Info(a.logger, "op", "updateSGStatus", "error", err, "sg", sg.Name)
-		}
-		// Do NOT update lastWritten — next call retries.
-		return
+		// Do NOT update lastWritten — the next publish retries.
+		return false, err
 	}
 	sgStatusWritesTotal.WithLabelValues("success").Inc()
 	a.lastWritten.Store(sg.Name, newStatus)
-	// Refresh the cached SG's ResourceVersion so the next UpdateStatus
-	// call uses the latest server version and doesn't hit "object has
-	// been modified" conflicts. Safe to mutate in-place: sgByName is
-	// G1-single-writer (this code path); the SG pointer is exclusive
-	// to the allocator (DeepCopy was taken in SetPools).
-	if updated != nil {
-		sg.ResourceVersion = updated.ResourceVersion
-	}
+	logging.Info(a.logger, "op", "updateSGStatus", "sg", sg.Name,
+		"announce", newStatus.Announce, "ipam", newStatus.IPAM,
+		"allocatedV4", newStatus.AllocatedIPv4, "allocatedV6", newStatus.AllocatedIPv6)
+	return true, nil
 }
 
 // buildStatus computes the ServiceGroupStatus payload for a pool. Pure

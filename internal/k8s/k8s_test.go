@@ -15,6 +15,8 @@
 package k8s
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -302,3 +304,96 @@ func (m *mockIndexer) ListIndexFuncValues(indexName string) []string          { 
 func (m *mockIndexer) ByIndex(indexName, indexedValue string) ([]interface{}, error)  { return nil, nil }
 func (m *mockIndexer) GetIndexers() cache.Indexers                            { return nil }
 func (m *mockIndexer) AddIndexers(newIndexers cache.Indexers) error           { return nil }
+
+// TestEnqueuePoolStatus_NoPublisher verifies that a consumer which owns
+// no address pools (lbnodeagent) never puts a dead item on the queue.
+func TestEnqueuePoolStatus_NoPublisher(t *testing.T) {
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[queueItem](),
+	)
+	defer queue.ShutDown()
+
+	c := &Client{queue: queue} // publishPoolStatus left nil
+	c.EnqueuePoolStatus()
+
+	assert.Equal(t, 0, queue.Len(), "no publisher wired should mean nothing queued")
+}
+
+// TestEnqueuePoolStatus_Collapses verifies the sweep is a singleton: a
+// burst of triggers (one per Service deletion, say) must collapse into a
+// single pending sweep rather than queueing one item each.
+func TestEnqueuePoolStatus_Collapses(t *testing.T) {
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[queueItem](),
+	)
+	defer queue.ShutDown()
+
+	c := &Client{queue: queue}
+	c.SetPoolStatusPublisher(func(context.Context) error { return nil })
+
+	for i := 0; i < 5; i++ {
+		c.EnqueuePoolStatus()
+	}
+
+	assert.Equal(t, 1, queue.Len(), "repeated triggers should collapse into one sweep")
+
+	item, _ := queue.Get()
+	assert.Equal(t, poolStatus{}, item)
+	queue.Done(item)
+}
+
+// TestSyncPoolStatus_NeverRequeues is the guard on the no-retry
+// decision. The failures that persist on this path (a ServiceGroup CRD
+// with no status subresource, or a missing servicegroups/status RBAC
+// grant) are permanent, so requeuing would spin forever on the same
+// goroutine that allocates addresses.
+func TestSyncPoolStatus_NeverRequeues(t *testing.T) {
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[queueItem](),
+	)
+	defer queue.ShutDown()
+
+	calls := 0
+	c := &Client{queue: queue, logger: log.NewNopLogger()}
+	c.SetPoolStatusPublisher(func(context.Context) error {
+		calls++
+		return errors.New("servicegroups.purelb.io \"x\" not found")
+	})
+
+	assert.Equal(t, SyncStateSuccess, c.sync(poolStatus{}),
+		"a failed publish must not be requeued")
+	assert.Equal(t, 1, calls)
+}
+
+// TestSyncPoolStatus_NilPublisher verifies sync tolerates the item
+// arriving with no publisher wired.
+func TestSyncPoolStatus_NilPublisher(t *testing.T) {
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[queueItem](),
+	)
+	defer queue.ShutDown()
+
+	c := &Client{queue: queue, logger: log.NewNopLogger()}
+	assert.Equal(t, SyncStateSuccess, c.sync(poolStatus{}))
+}
+
+// TestSyncSynced_PublishesPoolStatus verifies that reaching the synced
+// milestone schedules a publish, so pools that own no Services still get
+// a status when the config arrived before the caches were warm.
+func TestSyncSynced_PublishesPoolStatus(t *testing.T) {
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[queueItem](),
+	)
+	defer queue.ShutDown()
+
+	c := &Client{queue: queue, logger: log.NewNopLogger()}
+	c.SetPoolStatusPublisher(func(context.Context) error { return nil })
+	c.synced = func() {}
+
+	assert.Equal(t, SyncStateSuccess, c.sync(synced("")))
+
+	require.Equal(t, 1, queue.Len(), "synced should schedule a pool status publish")
+	item, _ := queue.Get()
+	assert.Equal(t, poolStatus{}, item)
+	queue.Done(item)
+}

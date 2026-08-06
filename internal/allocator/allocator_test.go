@@ -26,11 +26,13 @@ import (
 	"github.com/google/go-cmp/cmp"
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	ipamv1 "purelb.io/api/ipam/v1"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -1590,27 +1592,27 @@ func TestCapitalize(t *testing.T) {
 }
 
 // fakeStatusWriter captures ServiceGroupStatusWriter calls for tests of
-// maybeUpdateSGStatus. The next write returns nextErr when non-nil.
+// maybeUpdateSGStatus. The next write returns nextErr when non-nil;
+// errForSG fails every write for the named ServiceGroups.
 type fakeStatusWriter struct {
 	updates       []*purelbv2.ServiceGroup
 	nextErr       error
+	errForSG      map[string]error
 	apiCtxCalls   int
 	shutdownCalls int
 }
 
-func (f *fakeStatusWriter) UpdateServiceGroupStatus(sg *purelbv2.ServiceGroup) (*purelbv2.ServiceGroup, error) {
+func (f *fakeStatusWriter) UpdateServiceGroupStatus(_ context.Context, sg *purelbv2.ServiceGroup) error {
 	f.updates = append(f.updates, sg.DeepCopy())
+	if err, ok := f.errForSG[sg.Name]; ok {
+		return err
+	}
 	if f.nextErr != nil {
 		err := f.nextErr
 		f.nextErr = nil
-		return nil, err
+		return err
 	}
-	// Simulate API server: bump ResourceVersion to demonstrate the fake
-	// behaves like the real one. Tests that care about ResourceVersion
-	// propagation can assert on this.
-	updated := sg.DeepCopy()
-	updated.ResourceVersion = sg.ResourceVersion + "-bumped"
-	return updated, nil
+	return nil
 }
 func (f *fakeStatusWriter) APIContext() (context.Context, context.CancelFunc) {
 	f.apiCtxCalls++
@@ -1709,4 +1711,240 @@ func TestMaybeUpdateSGStatus_UnknownPool(t *testing.T) {
 	})
 	// No-op; no panic.
 	alloc.maybeUpdateSGStatus(pool)
+}
+
+// sgFor builds a minimal ServiceGroup object for status-writer tests.
+func sgFor(name string) *purelbv2.ServiceGroup {
+	return &purelbv2.ServiceGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "purelb-system"},
+	}
+}
+
+// statusByName indexes a fakeStatusWriter's captured writes by
+// ServiceGroup name. Map iteration in PublishAllSGStatus makes write
+// order nondeterministic, so tests must never assert on it.
+func statusByName(w *fakeStatusWriter) map[string]purelbv2.ServiceGroupStatus {
+	out := map[string]purelbv2.ServiceGroupStatus{}
+	for _, sg := range w.updates {
+		out[sg.Name] = sg.Status
+	}
+	return out
+}
+
+// TestPublishAllSGStatus is the core of the "blank status" fix: pools
+// that have never allocated an address must still publish their
+// announce method, IPAM source, addresses and capacity. Covers IPv4,
+// IPv6 and dual-stack so the v6 half can't silently regress.
+func TestPublishAllSGStatus(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	writer := &fakeStatusWriter{}
+	alloc.SetServiceGroupStatusWriter(writer)
+
+	v4 := &fakeStatusPool{
+		name: "v4-only", poolType: "local", ipamSource: "Cluster",
+		displayAddresses: []string{"192.168.1.0/24"},
+		sizeV4:           254, hasKnownCapacity: true,
+	}
+	v6 := &fakeStatusPool{
+		name: "v6-only", poolType: "local", ipamSource: "Cluster",
+		displayAddresses: []string{"fc00::/120"},
+		sizeV6:           256, hasKnownCapacity: true,
+	}
+	dual := &fakeStatusPool{
+		name: "dual", poolType: "remote", ipamSource: "Cluster",
+		displayAddresses: []string{"10.0.0.0/24", "fc00:1::/120"},
+		sizeV4:           254, sizeV6: 256, hasKnownCapacity: true,
+	}
+
+	alloc.state.Store(&allocatorState{
+		pools: map[string]Pool{"v4-only": v4, "v6-only": v6, "dual": dual},
+		sgByName: map[string]*purelbv2.ServiceGroup{
+			"v4-only": sgFor("v4-only"), "v6-only": sgFor("v6-only"), "dual": sgFor("dual"),
+		},
+	})
+
+	require.NoError(t, alloc.PublishAllSGStatus(context.Background()))
+	assert.Equal(t, 3, len(writer.updates), "every pool should publish, allocations or not")
+
+	got := statusByName(writer)
+	assert.Equal(t, purelbv2.ServiceGroupStatus{
+		Announce: "Local", IPAM: "Cluster",
+		Addresses:     []string{"192.168.1.0/24"},
+		AllocatedIPv4: 0, AllocatedIPv6: 0,
+		AvailableIPv4: ptrI64(254), AvailableIPv6: ptrI64(0),
+	}, got["v4-only"])
+	assert.Equal(t, purelbv2.ServiceGroupStatus{
+		Announce: "Local", IPAM: "Cluster",
+		Addresses:     []string{"fc00::/120"},
+		AllocatedIPv4: 0, AllocatedIPv6: 0,
+		AvailableIPv4: ptrI64(0), AvailableIPv6: ptrI64(256),
+	}, got["v6-only"])
+	assert.Equal(t, purelbv2.ServiceGroupStatus{
+		Announce: "Remote", IPAM: "Cluster",
+		Addresses:     []string{"10.0.0.0/24", "fc00:1::/120"},
+		AllocatedIPv4: 0, AllocatedIPv6: 0,
+		AvailableIPv4: ptrI64(254), AvailableIPv6: ptrI64(256),
+	}, got["dual"])
+
+	// A second sweep with unchanged pools must not hit the API at all.
+	require.NoError(t, alloc.PublishAllSGStatus(context.Background()))
+	assert.Equal(t, 3, len(writer.updates), "unchanged sweep should write nothing")
+}
+
+// TestPublishAllSGStatus_BeforeSynced is the regression test for the
+// startup ordering trap: a publish triggered by a config change can run
+// before the work queue has processed any Service, and SetBalancer
+// refuses to allocate until the controller is marked synced. Without
+// populateFromExisting the sweep would report every pool empty and cache
+// that as authoritative.
+func TestPublishAllSGStatus_BeforeSynced(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	writer := &fakeStatusWriter{}
+	alloc.SetServiceGroupStatusWriter(writer)
+
+	pool, err := NewLocalPool("default", allocatorTestLogger,
+		&purelbv2.AddressPool{Pool: "192.168.1.1-192.168.1.10", Subnet: "192.168.1.0/24", Aggregation: "default"},
+		&purelbv2.AddressPool{Pool: "fc00::1-fc00::10", Subnet: "fc00::/120", Aggregation: "default"},
+		nil, nil, purelbv2.PoolTypeLocal, false, false, false)
+	require.NoError(t, err)
+
+	// Two dual-stack Services already carry allocated addresses, exactly
+	// as they would in the informer cache after an allocator restart.
+	// Note SetBalancer has NOT run for them (controller not synced).
+	alloc.SetListServices(func() []v1.Service {
+		return []v1.Service{
+			existingSvc("ns1", "svc1", "192.168.1.1", "fc00::1"),
+			existingSvc("ns2", "svc2", "192.168.1.2", "fc00::2"),
+		}
+	})
+
+	alloc.state.Store(&allocatorState{
+		pools:    map[string]Pool{"default": &pool},
+		sgByName: map[string]*purelbv2.ServiceGroup{"default": sgFor("default")},
+	})
+
+	require.NoError(t, alloc.PublishAllSGStatus(context.Background()))
+
+	got := statusByName(writer)["default"]
+	assert.Equal(t, int64(2), got.AllocatedIPv4, "must count IPs of pre-existing Services, not report an empty pool")
+	assert.Equal(t, int64(2), got.AllocatedIPv6, "must count pre-existing IPv6 allocations too")
+	assert.Equal(t, int64(8), *got.AvailableIPv4, "10-address v4 range less 2 allocated")
+	// fc00::1-fc00::10 is hex: 16 addresses, less the 2 allocated.
+	assert.Equal(t, int64(14), *got.AvailableIPv6)
+}
+
+// existingSvc builds a Service that looks like one PureLB already
+// allocated for: branded, with LoadBalancer ingress addresses.
+func existingSvc(ns, name string, ips ...string) v1.Service {
+	svc := v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:   ns,
+			Name:        name,
+			Annotations: map[string]string{purelbv2.BrandAnnotation: purelbv2.Brand},
+		},
+		Spec: v1.ServiceSpec{Type: v1.ServiceTypeLoadBalancer},
+	}
+	for _, ip := range ips {
+		svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, v1.LoadBalancerIngress{IP: ip})
+	}
+	return svc
+}
+
+// TestPublishAllSGStatus_SidecarRefreshOnlyWhenCold guards the hot path:
+// a sweep runs on every config change and every Service deletion, so it
+// must not fire a blocking gRPC per external-IPAM pool each time. Only a
+// cold cache (restart, fresh config) justifies the RPC.
+func TestPublishAllSGStatus_SidecarRefreshOnlyWhenCold(t *testing.T) {
+	fake := &fakeIPAM{statsFunc: func(*ipamv1.StatsRequest) (*ipamv1.StatsResponse, error) {
+		return &ipamv1.StatsResponse{
+			InUseV4: 1, InUseV6: 2, SizeV4: 10, SizeV6: 20,
+			HasKnownCapacity: true,
+			DisplayAddresses: []string{"10.1.0.0/24", "fc00:2::/120"},
+		}, nil
+	}}
+	conn := startFakeIPAM(t, fake)
+
+	alloc := New(allocatorTestLogger)
+	alloc.SetServiceGroupStatusWriter(&fakeStatusWriter{})
+
+	pool := NewSidecarPool("ext", allocatorTestLogger,
+		purelbv2.ServiceGroupExternalSpec{Provider: "test", Announce: "local"}, conn)
+	alloc.state.Store(&allocatorState{
+		pools:    map[string]Pool{"ext": pool},
+		sgByName: map[string]*purelbv2.ServiceGroup{"ext": sgFor("ext")},
+	})
+
+	// Cold cache: one RPC, and the status reflects what the sidecar said.
+	require.NoError(t, alloc.PublishAllSGStatus(context.Background()))
+	assert.Equal(t, 1, fake.statsCalls, "cold cache should be filled by exactly one Stats RPC")
+
+	// Warm cache: repeated sweeps must be free.
+	require.NoError(t, alloc.PublishAllSGStatus(context.Background()))
+	require.NoError(t, alloc.PublishAllSGStatus(context.Background()))
+	assert.Equal(t, 1, fake.statsCalls, "warm cache must not fire further Stats RPCs")
+}
+
+// TestPublishAllSGStatus_ErrorsAreCollectedNotFatal: one broken
+// ServiceGroup must not stop the others from publishing, and the failed
+// one must stay uncached so the next sweep retries it.
+func TestPublishAllSGStatus_ErrorsAreCollectedNotFatal(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	writer := &fakeStatusWriter{
+		errForSG: map[string]error{
+			"broken": apierrors.NewForbidden(
+				schema.GroupResource{Group: "purelb.io", Resource: "servicegroups"}, "broken", nil),
+		},
+	}
+	alloc.SetServiceGroupStatusWriter(writer)
+
+	mk := func(name string) *fakeStatusPool {
+		return &fakeStatusPool{
+			name: name, poolType: "local", ipamSource: "Cluster",
+			displayAddresses: []string{"192.168.1.0/24"},
+			sizeV4:           254, hasKnownCapacity: true,
+		}
+	}
+	alloc.state.Store(&allocatorState{
+		pools: map[string]Pool{"ok1": mk("ok1"), "broken": mk("broken"), "ok2": mk("ok2")},
+		sgByName: map[string]*purelbv2.ServiceGroup{
+			"ok1": sgFor("ok1"), "broken": sgFor("broken"), "ok2": sgFor("ok2"),
+		},
+	})
+
+	err := alloc.PublishAllSGStatus(context.Background())
+	require.Error(t, err, "the aggregate error must surface the failure")
+	assert.Contains(t, err.Error(), "broken")
+	assert.Equal(t, 3, len(writer.updates), "a failing pool must not abort the sweep")
+
+	// The two healthy pools are cached; only the broken one is retried.
+	writer.updates = nil
+	assert.Error(t, alloc.PublishAllSGStatus(context.Background()))
+	assert.Equal(t, 1, len(writer.updates), "only the failed pool should be retried")
+	assert.Equal(t, "broken", writer.updates[0].Name)
+}
+
+// TestPublishAllSGStatus_NoClient: the allocator must run happily with
+// no status writer wired (unit tests, and any consumer that owns no
+// pools).
+func TestPublishAllSGStatus_NoClient(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.state.Store(&allocatorState{
+		pools:    map[string]Pool{"p": &fakeStatusPool{name: "p", poolType: "local"}},
+		sgByName: map[string]*purelbv2.ServiceGroup{"p": sgFor("p")},
+	})
+	assert.NoError(t, alloc.PublishAllSGStatus(context.Background()))
+}
+
+// TestPublishAllSGStatus_PoolWithoutServiceGroup: a pool whose
+// ServiceGroup is missing from the snapshot is skipped, not panicked on.
+func TestPublishAllSGStatus_PoolWithoutServiceGroup(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	writer := &fakeStatusWriter{}
+	alloc.SetServiceGroupStatusWriter(writer)
+	alloc.state.Store(&allocatorState{
+		pools:    map[string]Pool{"orphan": &fakeStatusPool{name: "orphan", poolType: "local"}},
+		sgByName: map[string]*purelbv2.ServiceGroup{},
+	})
+	assert.NoError(t, alloc.PublishAllSGStatus(context.Background()))
+	assert.Empty(t, writer.updates)
 }

@@ -163,6 +163,34 @@ When `balancePools: true`, new allocations pick the range with the fewest IPs cu
 
 Setting `skipIPv6DAD: true` (local pools only) disables IPv6 Duplicate Address Detection. This speeds up address configuration but should only be used when you are certain there are no address conflicts on the network.
 
+## ServiceGroup Status
+
+PureLB writes a `.status` to every ServiceGroup it has parsed, and `kubectl get servicegroups` surfaces it:
+
+```console
+$ kubectl get servicegroups -n purelb-system
+NAME      ANNOUNCE   IPAM      ADDRESSES                                    ALLOCATED-V4   ALLOCATED-V6
+default   Local      Cluster   ["192.168.1.100-192.168.1.200","fc00::/120"] 3              1
+```
+
+`kubectl get servicegroups -o wide` adds the `Available-V4` and `Available-V6` columns.
+
+| Field | Meaning |
+|---|---|
+| `announce` | How the addresses are announced: `Local` or `Remote` |
+| `ipam` | Where addresses come from: `Cluster` for local pools, or the external provider name |
+| `addresses` | The configured address ranges, as written in the spec |
+| `allocatedIPv4` / `allocatedIPv6` | Addresses currently in use, per family |
+| `availableIPv4` / `availableIPv6` | Addresses still free, per family. Absent when the pool's capacity is not knowable — an external IPAM provider that does not report a size |
+
+Status is published as soon as the ServiceGroup is configured, so a new pool reports its addresses and capacity before anything has allocated from it. It is refreshed on every allocation and release, and whenever the ServiceGroup's spec changes.
+
+{{< hint info >}}
+**A blank status means PureLB did not accept the ServiceGroup.** If `kubectl get servicegroups` shows empty columns for a group, its spec failed to parse — check the allocator logs (`kubectl logs -n purelb-system deployment/allocator`) for the reason.
+{{< /hint >}}
+
+An IPv6-only pool reports `availableIPv4: 0`, and an IPv4-only pool reports `availableIPv6: 0`, because the pool has no capacity in that family. This is not the same as an exhausted pool — compare against `addresses` to tell them apart.
+
 ## Modifying ServiceGroups
 
 Changing a ServiceGroup does **not** change services that have already been allocated. Modified ServiceGroups only affect subsequently created services. This is intentional: address changes should happen service by service, not by a pool change affecting all associated services.
