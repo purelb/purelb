@@ -323,6 +323,14 @@ metadata:
   name: allocator
   namespace: purelb-system
 spec:
+  # The allocator is the cluster-wide owner of IP allocation, so exactly
+  # one must run. Recreate rather than the default RollingUpdate: with a
+  # single replica maxSurge rounds up to 1, which would briefly run two
+  # allocators handing out addresses from the same pools during every
+  # upgrade. A short gap in allocation is the safer trade.
+  replicas: 1
+  strategy:
+    type: Recreate
   revisionHistoryLimit: 3
   selector:
     matchLabels:

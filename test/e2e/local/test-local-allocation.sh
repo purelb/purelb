@@ -778,9 +778,59 @@ test_remote_pool() {
     info "Remote pools should place IPs on kube-lb0, not local interface."
     info "They bypass subnet filtering entirely."
 
+    # Sample the status-write counter BEFORE the ServiceGroup exists.
+    # The allocator publishes within milliseconds of the apply, so a
+    # baseline taken afterwards would already include the write.
+    local SG_METRICS_BEFORE SG_WRITES_BEFORE
+    SG_METRICS_BEFORE=$(scrape_allocator_metrics)
+    SG_WRITES_BEFORE=$(extract_metric "${SG_METRICS_BEFORE:-}" 'purelb_allocator_sg_status_writes_total{outcome="success"}')
+    SG_WRITES_BEFORE=${SG_WRITES_BEFORE:-0}
+
     # Apply the remote ServiceGroup
     info "Applying remote-pool ServiceGroup..."
     kubectl apply -f ${SCRIPT_DIR}/servicegroup-remote.yaml
+
+    # A pool must publish its status as soon as it is configured, before
+    # anything allocates from it. This runs while no Service references
+    # remote-pool, so it fails if status is still only a side effect of
+    # allocation.
+    info "Verifying ServiceGroup status is populated before any allocation..."
+    kubectl wait --for=jsonpath='{.status.announce}'=Remote \
+        servicegroup/remote-pool -n purelb-system --timeout=30s \
+        || fail "ServiceGroup status not published for an idle pool"
+
+    local SG_IPAM SG_ADDR SG_ALLOC_V4 SG_ALLOC_V6 SG_AVAIL_V4 SG_AVAIL_V6
+    SG_IPAM=$(kubectl get servicegroup remote-pool -n purelb-system -o jsonpath='{.status.ipam}')
+    SG_ADDR=$(kubectl get servicegroup remote-pool -n purelb-system -o jsonpath='{.status.addresses[0]}')
+    SG_ALLOC_V4=$(kubectl get servicegroup remote-pool -n purelb-system -o jsonpath='{.status.allocatedIPv4}')
+    SG_ALLOC_V6=$(kubectl get servicegroup remote-pool -n purelb-system -o jsonpath='{.status.allocatedIPv6}')
+    SG_AVAIL_V4=$(kubectl get servicegroup remote-pool -n purelb-system -o jsonpath='{.status.availableIPv4}')
+    SG_AVAIL_V6=$(kubectl get servicegroup remote-pool -n purelb-system -o jsonpath='{.status.availableIPv6}')
+
+    [ -n "$SG_IPAM" ] || fail "ServiceGroup status.ipam empty for idle pool"
+    [ -n "$SG_ADDR" ] || fail "ServiceGroup status.addresses empty for idle pool"
+    [ "$SG_ALLOC_V4" = "0" ] || fail "Idle pool reports allocatedIPv4=$SG_ALLOC_V4, expected 0"
+    [ "$SG_ALLOC_V6" = "0" ] || fail "Idle pool reports allocatedIPv6=$SG_ALLOC_V6, expected 0"
+    [ "${SG_AVAIL_V4:-0}" -gt 0 ] || fail "Idle pool reports availableIPv4=$SG_AVAIL_V4, expected > 0"
+    [ "${SG_AVAIL_V6:-0}" -gt 0 ] || fail "Idle pool reports availableIPv6=$SG_AVAIL_V6, expected > 0"
+    pass "Idle pool published status (ipam=$SG_IPAM addresses=$SG_ADDR v4avail=$SG_AVAIL_V4 v6avail=$SG_AVAIL_V6)"
+
+    assert_log_contains "allocator" "updateSGStatus" "ServiceGroup status write logged"
+
+    local SG_METRICS_AFTER SG_WRITES_AFTER SG_FORBIDDEN SG_OTHER
+    SG_METRICS_AFTER=$(scrape_allocator_metrics)
+    if [ -n "$SG_METRICS_AFTER" ]; then
+        SG_WRITES_AFTER=$(extract_metric "$SG_METRICS_AFTER" 'purelb_allocator_sg_status_writes_total{outcome="success"}')
+        [ "${SG_WRITES_AFTER:-0}" -gt "$SG_WRITES_BEFORE" ] \
+            || fail "sg_status_writes_total{success} did not increase (${SG_WRITES_BEFORE} -> ${SG_WRITES_AFTER:-0})"
+        # Server-side apply removes the conflict class entirely, and a
+        # missing RBAC grant or CRD status subresource would show here.
+        SG_FORBIDDEN=$(extract_metric "$SG_METRICS_AFTER" 'purelb_allocator_sg_status_writes_total{outcome="forbidden"}')
+        SG_OTHER=$(extract_metric "$SG_METRICS_AFTER" 'purelb_allocator_sg_status_writes_total{outcome="other"}')
+        [ "${SG_FORBIDDEN:-0}" -eq 0 ] || fail "sg_status_writes_total{forbidden}=${SG_FORBIDDEN} (check servicegroups/status RBAC)"
+        [ "${SG_OTHER:-0}" -eq 0 ] || fail "sg_status_writes_total{other}=${SG_OTHER} (check the ServiceGroup CRD has a status subresource)"
+        pass "ServiceGroup status writes succeeded with no forbidden/other errors"
+    fi
 
     # Create service requesting IP from remote pool
     info "Creating service requesting IP from remote-pool..."

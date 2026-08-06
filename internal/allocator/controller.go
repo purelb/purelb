@@ -67,6 +67,7 @@ func (c *controller) SetClient(client *k8s.Client) {
 	c.ips.SetClient(client)
 	c.ips.SetServiceGroupStatusWriter(client)
 	c.ips.SetListServices(client.ListServices)
+	client.SetPoolStatusPublisher(c.ips.PublishAllSGStatus)
 
 	data, err := os.ReadFile(namespacePath)
 	if err != nil {

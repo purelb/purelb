@@ -56,6 +56,13 @@ type Controller struct {
 	lbnasSynced cache.InformerSynced
 	lbnaLister  listers.LBNodeAgentLister
 
+	// publishPoolStatus asks the consumer to republish every pool's
+	// ServiceGroup .status after a config change. Separate from
+	// forceSync because a pool with no Services has nothing for
+	// forceSync to reprocess — which is exactly the case that left
+	// .status blank.
+	publishPoolStatus func()
+
 	// workqueue is a rate limited work queue. This is used to queue
 	// work to be processed instead of performing it as soon as a change
 	// happens. This means we can ensure we only process a fixed amount
@@ -75,6 +82,7 @@ func NewCRController(
 	logger log.Logger,
 	configCB func(*purelbv2.Config) SyncState,
 	forceSync func(),
+	publishPoolStatus func(),
 	kubeclientset kubernetes.Interface,
 	purelbclientset clientset.Interface,
 	informerFactory externalversions.SharedInformerFactory) *Controller {
@@ -91,10 +99,11 @@ func NewCRController(
 	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: controllerAgentName})
 
 	controller := &Controller{
-		logger:          logger,
-		configCB:        configCB,
-		forceSync:       forceSync,
-		kubeclientset:   kubeclientset,
+		logger:            logger,
+		configCB:          configCB,
+		forceSync:         forceSync,
+		publishPoolStatus: publishPoolStatus,
+		kubeclientset:     kubeclientset,
 		purelbclientset: purelbclientset,
 		lbnaLister:      lbnaInformer.Lister(),
 		lbnasSynced:     lbnaInformer.Informer().HasSynced,
@@ -242,6 +251,13 @@ func (c *Controller) syncHandler() error {
 	case SyncStateReprocessAll:
 		configLoaded.Set(1)
 		c.forceSync()
+		// Republish pool status too. forceSync only re-enqueues
+		// Services, so a ServiceGroup that owns none would otherwise
+		// never have its status written. Enqueued after forceSync so
+		// the sweep lands behind the Service keys it depends on.
+		if c.publishPoolStatus != nil {
+			c.publishPoolStatus()
+		}
 	}
 
 	return nil

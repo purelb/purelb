@@ -17,6 +17,7 @@ package k8s
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -36,6 +37,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -44,6 +46,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/utils/ptr"
 )
 
 // serviceNameIndexName is the name of the custom indexer that maps
@@ -85,6 +88,32 @@ type Client struct {
 	configChanged  func(*purelbv2.Config) SyncState
 	synced         func()
 	shutdown       func()
+
+	// publishPoolStatus republishes every address pool's ServiceGroup
+	// .status. Set by SetPoolStatusPublisher; nil in consumers that own
+	// no pools (lbnodeagent), which makes EnqueuePoolStatus a no-op.
+	publishPoolStatus func(context.Context) error
+}
+
+// SetPoolStatusPublisher wires the callback invoked when a poolStatus
+// work item is processed. Only the allocator sets this.
+func (c *Client) SetPoolStatusPublisher(fn func(context.Context) error) {
+	c.publishPoolStatus = fn
+}
+
+// EnqueuePoolStatus schedules a republish of every pool's ServiceGroup
+// .status on the work queue.
+//
+// The publish has to happen on the queue goroutine: pools are swapped
+// in from the CR controller goroutine, while status writing belongs to
+// the same goroutine that allocates, so that the two cannot interleave
+// on a pool's counters. Repeated calls collapse into a single pending
+// sweep.
+func (c *Client) EnqueuePoolStatus() {
+	if c.publishPoolStatus == nil {
+		return
+	}
+	c.queue.Add(poolStatus{})
 }
 
 // ServiceEvent adds events to services.
@@ -107,12 +136,11 @@ type ServiceEvent interface {
 // APIContext on the new interface lets the allocator construct
 // cancellable contexts without needing a *Client reference.
 type ServiceGroupStatusWriter interface {
-	// UpdateServiceGroupStatus writes sg.Status via the status subresource.
-	// Returns the updated ServiceGroup (with bumped ResourceVersion) on
-	// success — callers should use this to refresh their cached SG so
-	// subsequent UpdateStatus calls don't hit "object has been modified"
-	// conflicts. nil + error on failure.
-	UpdateServiceGroupStatus(sg *purelbv2.ServiceGroup) (*purelbv2.ServiceGroup, error)
+	// UpdateServiceGroupStatus writes sg.Status via the status
+	// subresource. The caller supplies ctx so that a bulk publish can
+	// bound the cost of the whole sweep with one deadline rather than
+	// paying a fresh timeout per ServiceGroup.
+	UpdateServiceGroupStatus(ctx context.Context, sg *purelbv2.ServiceGroup) error
 	APIContext() (context.Context, context.CancelFunc)
 	IsShutdownError(err error) bool
 }
@@ -132,25 +160,48 @@ func (c *Client) IsShutdownError(err error) bool {
 	return c.isShutdownError(err)
 }
 
-// UpdateServiceGroupStatus writes sg's .status subresource. Mirrors
-// maybeUpdateService's pattern: uses apiContext() for timeout-bounded
-// cancellable I/O; sets FieldManager so SSA users see PureLB's owner
-// identity correctly; classifies shutdown errors as benign.
-func (c *Client) UpdateServiceGroupStatus(sg *purelbv2.ServiceGroup) (*purelbv2.ServiceGroup, error) {
-	ctx, cancel := c.apiContext()
-	defer cancel()
-	updated, err := c.crClient.PurelbV2().ServiceGroups(sg.Namespace).UpdateStatus(ctx, sg, metav1.UpdateOptions{
-		FieldManager: "purelb-allocator",
+// UpdateServiceGroupStatus writes sg's .status subresource using a
+// server-side apply patch.
+//
+// Apply rather than UpdateStatus deliberately. UpdateStatus is a
+// read-modify-write keyed on ResourceVersion, which forced the
+// allocator to cache an RV per ServiceGroup and refresh it after every
+// write. That cache is only rebuilt when a ServiceGroup's *generation*
+// changes (see sgUpdateNeedsReconcile), so any RV bump that leaves the
+// spec alone — a label, a GitOps tracking annotation, a finalizer, or a
+// second allocator during a rolling upgrade — stranded the cached RV
+// and made every subsequent status write conflict permanently. PureLB
+// is the sole writer of ServiceGroup .status, so the optimistic
+// concurrency check bought nothing and cost that failure mode.
+//
+// Apply also gives correct removal semantics: fields PureLB owns but
+// omits (availableIPv4/6 when capacity is unknowable) are deleted
+// rather than left stale.
+func (c *Client) UpdateServiceGroupStatus(ctx context.Context, sg *purelbv2.ServiceGroup) error {
+	// Minimal apply configuration: identity plus the fields we own. No
+	// ResourceVersion — apply is not conditional on one.
+	body, err := json.Marshal(map[string]interface{}{
+		"apiVersion": purelbv2.SchemeGroupVersion.String(),
+		"kind":       "ServiceGroup",
+		"metadata": map[string]interface{}{
+			"name":      sg.Name,
+			"namespace": sg.Namespace,
+		},
+		"status": sg.Status,
 	})
 	if err != nil {
-		if c.isShutdownError(err) {
-			c.logger.Log("op", "updateSGStatus", "msg", "skipping update during shutdown")
-			return nil, nil
-		}
-		// Caller is responsible for logging + classifying for metrics.
-		return nil, err
+		return err
 	}
-	return updated, nil
+
+	_, err = c.crClient.PurelbV2().ServiceGroups(sg.Namespace).Patch(ctx, sg.Name,
+		types.ApplyPatchType, body,
+		metav1.PatchOptions{FieldManager: "purelb-allocator", Force: ptr.To(true)},
+		"status")
+	// The error is returned even during shutdown: the write did not
+	// happen, so the caller must not cache the status as persisted.
+	// The caller suppresses the log for shutdown errors via
+	// IsShutdownError.
+	return err
 }
 
 // SyncState is the result of calling synchronization callbacks.
@@ -198,6 +249,13 @@ type synced string
 
 func (synced) isQueueItem() {}
 
+// poolStatus asks the consumer to republish .status for every
+// configured address pool. A singleton: all instances compare equal, so
+// the work queue collapses a burst of triggers into one sweep.
+type poolStatus struct{}
+
+func (poolStatus) isQueueItem() {}
+
 // New connects to masterAddr, using kubeconfig to authenticate.
 //
 // The client uses processName to identify itself to the cluster
@@ -244,7 +302,7 @@ func New(cfg *Config) (*Client, error) {
 	// nodeSelector evaluation and gives config delivery a self-healing
 	// floor if a delivery was lost.
 	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Minute*10)
-	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, c.ForceSync, clientset, crClient, c.crInformerFactory)
+	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, c.ForceSync, c.EnqueuePoolStatus, clientset, crClient, c.crInformerFactory)
 
 	// Service Watcher
 
@@ -736,6 +794,29 @@ func (c *Client) sync(key queueItem) SyncState {
 		if c.synced != nil {
 			c.synced()
 		}
+		// Publish pool status once the caches are warm, so pools that
+		// own no Services still get a status even if the config arrived
+		// before this point.
+		c.EnqueuePoolStatus()
+		return SyncStateSuccess
+
+	case poolStatus:
+		if c.publishPoolStatus == nil {
+			return SyncStateSuccess
+		}
+		ctx, cancel := c.apiContext()
+		defer cancel()
+		if err := c.publishPoolStatus(ctx); err != nil {
+			c.logger.Log("op", "publishPoolStatus", "error", err)
+		}
+		// Deliberately never SyncStateError. The failures that persist
+		// here are permanent, not transient: a ServiceGroup CRD without
+		// the status subresource (404) or a missing servicegroups/status
+		// RBAC grant (403). Requeuing those would spin forever on the
+		// goroutine that allocates addresses. Transient failures are
+		// covered by how often a publish is triggered anyway — every
+		// config change, every Service deletion, and the LBNodeAgent
+		// informer resync.
 		return SyncStateSuccess
 
 	default:
