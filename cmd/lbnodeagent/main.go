@@ -157,6 +157,15 @@ func main() {
 			return k8s.SyncStateError
 		}
 
+		// Log locally as well as in the allocator. An operator debugging a
+		// VIP that stopped being announced looks at the node agent, and a
+		// dropped `remote` group is exactly why it would have stopped.
+		for _, g := range cfg.DroppedGroups {
+			logging.Info(logger, "op", "configChanged", "event", "serviceGroupOutOfScope",
+				"sg", g.Namespace+"/"+g.Name, "isRemote", fmt.Sprintf("%t", g.Spec.Remote != nil),
+				"msg", "ignored: ServiceGroups are read only from the PureLB install namespace")
+		}
+
 		for _, agent := range cfg.Agents {
 			logging.Debug(logger, "op", "configChanged", "agent", agent.Namespace+"/"+agent.Name,
 				"hasNodeSelector", fmt.Sprintf("%t", agent.Spec.NodeSelector != nil))
@@ -227,6 +236,7 @@ func main() {
 		NodeName:           *myNode,
 		Logger:             logger,
 		Kubeconfig:         *kubeconfig,
+		Namespace:          *namespace,
 		ReadEndpointSlices: true,
 
 		ServiceChanged: ctrl.ServiceChanged,

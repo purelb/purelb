@@ -31,8 +31,15 @@ func main() {
 	var (
 		port       = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
 		kubeconfig = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "absolute path to the kubeconfig file (only needed when running outside of k8s)")
+		namespace  = flag.String("namespace", os.Getenv("PURELB_NAMESPACE"), "namespace in which PureLB is installed (from the downward API)")
 	)
 	flag.Parse()
+
+	// Resolve once and share: the allocator uses it for lease lookups and the
+	// CR controller for ServiceGroup scoping, and the two disagreeing would be
+	// worse than either being wrong.
+	installNamespace := k8s.InstallNamespace(logger, *namespace)
+	logger.Log("op", "startup", "installNamespace", installNamespace)
 
 	stopCh := make(chan struct{})
 	go func() {
@@ -46,7 +53,7 @@ func main() {
 	defer logger.Log("op", "shutdown", "msg", "done")
 
 	// Set up controller
-	c, err := allocator.NewController(logger, allocator.New(logger))
+	c, err := allocator.NewController(logger, allocator.New(logger), installNamespace)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to allocate controller")
 		os.Exit(1)
@@ -56,6 +63,7 @@ func main() {
 		ProcessName: "purelb-allocator",
 		Logger:      logger,
 		Kubeconfig:  *kubeconfig,
+		Namespace:   installNamespace,
 
 		ServiceChanged: c.SetBalancer,
 		ServiceDeleted: c.DeleteBalancer,

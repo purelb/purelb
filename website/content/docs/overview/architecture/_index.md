@@ -49,7 +49,11 @@ BGPNodeStatus | `bgp.purelb.io/v1` | Per-node BGP status (written by k8gobgp, re
 
 ## Namespace
 
-All PureLB components run in the `purelb-system` namespace. ServiceGroups and LBNodeAgents are namespaced resources -- we recommend placing them in `purelb-system` for simplicity, but they can be created in other namespaces if RBAC requires it.
+All PureLB components run in the `purelb-system` namespace.
+
+ServiceGroups and LBNodeAgents are namespaced resources. **As of v0.17.0, PureLB reads ServiceGroups only from its own install namespace** — one created elsewhere is ignored entirely. LBNodeAgents are still read from every namespace.
+
+Restrict `create` and `patch` on `servicegroups.purelb.io` to cluster administrators: a ServiceGroup defines cluster-wide address ranges and which namespaces may draw from them, so the ability to write one is the real tenancy boundary.
 
 ## Security
 

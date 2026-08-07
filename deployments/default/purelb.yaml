@@ -349,12 +349,10 @@ spec:
       - image: ghcr.io/purelb/purelb/allocator:VERSION_TAG
         imagePullPolicy: IfNotPresent
         env:
-        - name: NETBOX_USER_TOKEN
+        - name: PURELB_NAMESPACE
           valueFrom:
-            secretKeyRef:
-              name: netbox-client
-              key: user-token
-              optional: true
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: DEFAULT_ANNOUNCER
           value: "PureLB"
         name: allocator

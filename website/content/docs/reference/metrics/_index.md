@@ -12,7 +12,8 @@ Metric | Type | Labels | Description
 -------|------|--------|------------
 `purelb_address_pool_size` | Gauge | `pool` | Total number of addresses in the pool
 `purelb_address_pool_addresses_in_use` | Gauge | `pool` | Number of addresses currently allocated
-`purelb_address_pool_allocation_rejected_total` | Counter | `pool`, `reason` | Allocation requests rejected (exhaustion, sharing constraints, etc.)
+`purelb_address_pool_allocation_rejected_total` | Counter | `pool`, `reason` | Allocation requests rejected. `reason` is `exhausted`, `port_conflict`, `sharing_key_conflict`, `multipool_refused` (multi-pool asked of a pool that cannot serve it) or `multipool_pool_mismatch` (`purelb.io/allocated-from` disagreed with the addresses held; `pool` is `<unknown>`)
+`purelb_servicegroups_out_of_scope` | Gauge | `namespace`, `name`, `type` | ServiceGroups ignored because they are not in the PureLB install namespace. `type` is `local`, `remote` or `external` — a `remote` group being ignored withdraws its addresses from every node, a `local` one only makes its pool unallocatable
 `purelb_address_pool_multipool_allocations_total` | Counter | `pool` | Multi-pool allocations performed
 `purelb_address_pool_multipool_partial_total` | Counter | `pool` | Multi-pool allocations where some ranges were exhausted or had no active nodes
 `purelb_address_pool_balance_pools_allocations_total` | Counter | `pool` | Balanced allocation (balancePools) allocations performed

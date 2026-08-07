@@ -39,6 +39,19 @@ var (
 		Help:      "Number of addresses allocated from the pool",
 	}, labelNames)
 
+	// serviceGroupsOutOfScope reports ServiceGroups that exist but are
+	// ignored because they live outside the install namespace. Labelled by
+	// name and type as well as namespace: without the name an alert says a
+	// namespace has one but not which, and without the type you cannot tell
+	// "pool unavailable" from "addresses actively withdrawn", which is the
+	// difference between a local and a remote group.
+	serviceGroupsOutOfScope = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: "servicegroups",
+		Name:      "out_of_scope",
+		Help:      "ServiceGroups ignored because they are not in the PureLB install namespace",
+	}, []string{"namespace", "name", "type"})
+
 	allocationRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
@@ -101,6 +114,7 @@ var (
 func init() {
 	prometheus.MustRegister(poolCapacity)
 	prometheus.MustRegister(poolActive)
+	prometheus.MustRegister(serviceGroupsOutOfScope)
 	prometheus.MustRegister(allocationRejected)
 	prometheus.MustRegister(multipoolAllocations)
 	prometheus.MustRegister(multipoolPartial)

@@ -27,4 +27,12 @@ type Config struct {
 
 	// Agents contains all LBNodeAgent resources from the cluster.
 	Agents []*LBNodeAgent
+
+	// DroppedGroups contains ServiceGroups that were listed but excluded
+	// from Groups, so that consumers can report them. They are carried
+	// rather than discarded because the filtering happens in a code path
+	// shared by both binaries, while the events belong to exactly one of
+	// them -- emitting from the shared path would produce one event per
+	// node per reconcile.
+	DroppedGroups []*ServiceGroup
 }

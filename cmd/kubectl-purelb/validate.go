@@ -17,8 +17,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -68,13 +70,37 @@ func newValidateCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 	return cmd
 }
 
+const defaultPoolName = "default"
+
 func runValidate(ctx context.Context, c *clients, format outputFormat, strict bool) error {
 	var checks []checkResult
 
-	// Fetch resources
-	sgList, err := c.dynamic.Resource(gvrServiceGroups).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	// List across all namespaces, not just the install namespace. The
+	// allocator reads only its own, so anything elsewhere is ignored -- and
+	// this is the pre-upgrade gate that has to report exactly that. A
+	// namespace-scoped list cannot see what it needs to flag.
+	allSGs, err := c.dynamic.Resource(gvrServiceGroups).Namespace("").List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 	if err != nil {
 		return fmt.Errorf("listing ServiceGroups: %w", err)
+	}
+
+	sgList := &unstructured.UnstructuredList{}
+	for _, sg := range allSGs.Items {
+		if sg.GetNamespace() == purelbNamespace {
+			sgList.Items = append(sgList.Items, sg)
+			continue
+		}
+		kind := "local"
+		if _, isRemote, _ := unstructured.NestedMap(sg.Object, "spec", "remote"); isRemote {
+			kind = "remote"
+		}
+		impact := "its pool is not allocatable"
+		if kind == "remote" {
+			impact = "addresses allocated from it are withdrawn from every node"
+		}
+		checks = append(checks, checkResult{"FAIL", fmt.Sprintf(
+			"ServiceGroup %q is in namespace %q, not the PureLB install namespace %q. PureLB ignores it: %s. Move it, or re-run with -n if PureLB is installed elsewhere",
+			sg.GetName(), sg.GetNamespace(), purelbNamespace, impact)})
 	}
 
 	lbnaList, err := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
@@ -123,6 +149,16 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 		family string
 	}
 	var allRanges []rangeEntry
+
+	// nsBinding mirrors the allocator's eligibility model: several
+	// ServiceGroups may serve one namespace, and exactly one of them must
+	// mark itself as that namespace's default.
+	type nsBinding struct {
+		eligible []string
+		marked   []string
+		enforced bool
+	}
+	nsBindings := map[string]nsBinding{}
 
 	sgCount := 0
 	for _, sg := range sgList.Items {
@@ -206,13 +242,51 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 			}
 		}
 
-		if _, ok := spec["netbox"]; ok {
-			checks = append(checks, checkResult{"PASS", fmt.Sprintf("ServiceGroup %q: Netbox config present (URL reachability not checked)", sgName)})
+		if spec["local"] == nil && spec["remote"] == nil && spec["external"] == nil {
+			checks = append(checks, checkResult{"FAIL", fmt.Sprintf("ServiceGroup %q: no local, remote, or external spec", sgName)})
 		}
 
-		if spec["local"] == nil && spec["remote"] == nil && spec["netbox"] == nil {
-			checks = append(checks, checkResult{"FAIL", fmt.Sprintf("ServiceGroup %q: no local, remote, or netbox spec", sgName)})
+		// Record namespace bindings for the cross-object checks below.
+		if nss, found, _ := unstructured.NestedStringSlice(sg.Object, "spec", "namespaces"); found {
+			isDefault, _, _ := unstructured.NestedBool(sg.Object, "spec", "namespaceDefault")
+			enforces, _, _ := unstructured.NestedBool(sg.Object, "spec", "enforceNamespaces")
+			for _, ns := range nss {
+				binding := nsBindings[ns]
+				if !slices.Contains(binding.eligible, sgName) {
+					binding.eligible = append(binding.eligible, sgName)
+				}
+				if isDefault && !slices.Contains(binding.marked, sgName) {
+					binding.marked = append(binding.marked, sgName)
+				}
+				binding.enforced = binding.enforced || enforces
+				nsBindings[ns] = binding
+			}
 		}
+	}
+
+	// Several ServiceGroups may serve one namespace -- an L2 + BGP tenant
+	// needs two -- but exactly one must say which an unannotated Service
+	// gets. When enforcement is off this is silent at allocation time (the
+	// Service quietly lands on "default"), so this check is the only signal
+	// an operator gets.
+	for _, ns := range slices.Sorted(maps.Keys(nsBindings)) {
+		b := nsBindings[ns]
+		if len(b.eligible) < 2 || len(b.marked) == 1 {
+			continue
+		}
+		slices.Sort(b.eligible)
+		outcome := fmt.Sprintf("unannotated Services in %q fall back to the %q pool", ns, defaultPoolName)
+		if b.enforced {
+			outcome = fmt.Sprintf("unannotated Services in %q are denied", ns)
+		}
+		what := "none sets namespaceDefault"
+		if len(b.marked) > 1 {
+			slices.Sort(b.marked)
+			what = fmt.Sprintf("%v all set namespaceDefault", b.marked)
+		}
+		checks = append(checks, checkResult{"FAIL", fmt.Sprintf(
+			"Namespace %q is served by %v and %s; exactly one must. Until then, %s",
+			ns, b.eligible, what, outcome)})
 	}
 
 	// Check for overlapping ranges between ServiceGroups

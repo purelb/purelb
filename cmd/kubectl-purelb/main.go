@@ -41,6 +41,14 @@ func main() {
 	// Bind kubeconfig / context / namespace flags to all commands
 	flags.AddFlags(root.PersistentFlags())
 
+	// -n/--namespace selects the namespace PureLB is installed in, which is
+	// what every command needs to find PureLB's own resources.
+	root.PersistentPreRun = func(_ *cobra.Command, _ []string) {
+		if flags.Namespace != nil && *flags.Namespace != "" {
+			purelbNamespace = *flags.Namespace
+		}
+	}
+
 	root.AddCommand(
 		newStatusCmd(flags),
 		newPoolsCmd(flags),

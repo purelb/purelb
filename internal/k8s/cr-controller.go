@@ -18,6 +18,8 @@ package k8s
 import (
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-kit/log"
@@ -48,6 +50,10 @@ type Controller struct {
 	kubeclientset kubernetes.Interface
 	// purelbclientset is a clientset for our own API group
 	purelbclientset clientset.Interface
+
+	// installNamespace is the namespace PureLB is installed in, as resolved
+	// by InstallNamespace. Empty when it could not be determined.
+	installNamespace string
 
 	sgsSynced   cache.InformerSynced
 	configCB    func(*purelbv2.Config) SyncState
@@ -80,6 +86,7 @@ type Controller struct {
 // to PureLB custom resources.
 func NewCRController(
 	logger log.Logger,
+	installNamespace string,
 	configCB func(*purelbv2.Config) SyncState,
 	forceSync func(),
 	publishPoolStatus func(),
@@ -100,6 +107,7 @@ func NewCRController(
 
 	controller := &Controller{
 		logger:            logger,
+		installNamespace:  installNamespace,
 		configCB:          configCB,
 		forceSync:         forceSync,
 		publishPoolStatus: publishPoolStatus,
@@ -210,6 +218,49 @@ func (c *Controller) processNextWorkItem() bool {
 }
 
 // syncHandler notifies the callback that there's a new config.  We
+// scopeToInstallNamespace splits groups into those PureLB will use and those
+// it ignores because they live outside the install namespace.
+//
+// A ServiceGroup's namespace has never meant anything: it selects where
+// .status is written and nothing else. A group in "tenant-a" contributes a
+// pool to the same cluster-wide table as one in the install namespace, while
+// pools are keyed by name alone -- so out-of-namespace groups bought no
+// isolation and cost cross-namespace name collisions and a route to claim the
+// "default" pool. They are no longer read.
+//
+// Two deliberate fail-open branches. Both exist because getting this wrong
+// silently removes every pool, and an allocator that reports healthy while
+// failing every allocation is worse than one that ignores a misplaced object.
+func (c *Controller) scopeToInstallNamespace(groups []*purelbv2.ServiceGroup) (kept, dropped []*purelbv2.ServiceGroup) {
+	// 1. Namespace unknown: filter nothing. Better to honour a misplaced
+	//    ServiceGroup than to discard every correctly-placed one.
+	if c.installNamespace == "" {
+		c.logger.Log("op", "scopeServiceGroups", "event", "installNamespaceUnknown",
+			"msg", "install namespace could not be determined; ServiceGroups are not being scoped. Set --namespace or PURELB_NAMESPACE")
+		return groups, nil
+	}
+
+	for _, g := range groups {
+		if g.Namespace == c.installNamespace {
+			kept = append(kept, g)
+		} else {
+			dropped = append(dropped, g)
+		}
+	}
+
+	// 2. Every group dropped: the namespace is wrong, not the cluster.
+	//    Nobody installs PureLB and then places all of their ServiceGroups
+	//    somewhere else, so treat this as a misconfigured namespace.
+	if len(kept) == 0 && len(dropped) > 0 {
+		c.logger.Log("op", "scopeServiceGroups", "event", "installNamespaceSuspect",
+			"installNamespace", c.installNamespace, "wouldDrop", len(dropped),
+			"msg", "scoping would discard every ServiceGroup; keeping them all and continuing. Check --namespace or PURELB_NAMESPACE")
+		return groups, nil
+	}
+
+	return kept, dropped
+}
+
 // process the config as a single unit so anytime we get a
 // notification that something changed we read everything.
 func (c *Controller) syncHandler() error {
@@ -223,6 +274,26 @@ func (c *Controller) syncHandler() error {
 		c.logger.Log("error listing ServiceGroups", err)
 		return err
 	}
+	// The lister walks the indexer's map, so its order varies between calls.
+	// parseGroups is order-sensitive -- it rejects the LATER of two
+	// overlapping-range ServiceGroups -- so without a stable order which one
+	// survives flips from one reconcile to the next. Sort by
+	// (namespace, name): a total order, because that pair is unique for any
+	// Kubernetes object. Sorting by name alone would leave two same-named
+	// ServiceGroups in different namespaces tied, and sort.Slice is not
+	// stable, so the flapping would persist.
+	//
+	// Sorting in place is safe: List appends into a fresh slice on every
+	// call, so both the header and the backing array are per-call and the
+	// shared cache objects are never touched. Do not "fix" this with a
+	// defensive clone.
+	slices.SortFunc(cfg.Groups, func(a, b *purelbv2.ServiceGroup) int {
+		if n := strings.Compare(a.Namespace, b.Namespace); n != 0 {
+			return n
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	cfg.Groups, cfg.DroppedGroups = c.scopeToInstallNamespace(cfg.Groups)
 	cfg.Agents, err = c.lbnaLister.LBNodeAgents("").List(labels.Everything())
 	if err != nil {
 		c.logger.Log("error listing node agents", err)

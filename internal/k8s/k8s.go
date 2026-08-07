@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -218,9 +219,38 @@ const (
 	SyncStateReprocessAll
 )
 
+// saNamespacePath is where the ServiceAccount token projection puts the
+// namespace a Pod is running in.
+const saNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+// InstallNamespace determines the namespace PureLB is installed in. An
+// explicit flag or PURELB_NAMESPACE wins; otherwise it falls back to the
+// ServiceAccount projection, which keeps deployments working whose manifests
+// predate the downward-API env var.
+//
+// An empty result is deliberately not fatal. Both binaries derive config from
+// this value, and refusing to start on a missing namespace would turn a
+// cosmetic packaging gap into an outage; callers degrade instead. Whitespace
+// is trimmed because the projected file has no trailing newline guarantee.
+func InstallNamespace(logger log.Logger, flagValue string) string {
+	if ns := strings.TrimSpace(flagValue); ns != "" {
+		return ns
+	}
+	data, err := os.ReadFile(saNamespacePath)
+	if err != nil {
+		logger.Log("op", "startup", "error", err,
+			"msg", "could not determine install namespace; set --namespace or PURELB_NAMESPACE")
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
 // Config specifies the configuration of the Kubernetes
 // client/watcher.
 type Config struct {
+	// Namespace is the namespace PureLB is installed in, as resolved by
+	// InstallNamespace. May be empty if it could not be determined.
+	Namespace          string
 	ProcessName        string
 	NodeName           string
 	ReadEndpointSlices bool
@@ -302,7 +332,7 @@ func New(cfg *Config) (*Client, error) {
 	// nodeSelector evaluation and gives config delivery a self-healing
 	// floor if a delivery was lost.
 	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Minute*10)
-	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, c.ForceSync, c.EnqueuePoolStatus, clientset, crClient, c.crInformerFactory)
+	c.crController = *NewCRController(c.logger, cfg.Namespace, cfg.ConfigChanged, c.ForceSync, c.EnqueuePoolStatus, clientset, crClient, c.crInformerFactory)
 
 	// Service Watcher
 
