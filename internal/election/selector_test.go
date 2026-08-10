@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -192,12 +193,12 @@ func TestSelectedInterfaceNames(t *testing.T) {
 	t.Run("sorted deterministic order", func(t *testing.T) {
 		names := selectedInterfaceNames(&InterfaceSelector{
 			Interfaces: []string{"zzz0", "aaa0", "mmm0"},
-		})
+		}, log.NewNopLogger())
 		assert.Equal(t, []string{"aaa0", "mmm0", "zzz0"}, names)
 	})
 
 	t.Run("empty names dropped", func(t *testing.T) {
-		names := selectedInterfaceNames(&InterfaceSelector{Interfaces: []string{"", "eth1"}})
+		names := selectedInterfaceNames(&InterfaceSelector{Interfaces: []string{"", "eth1"}}, log.NewNopLogger())
 		assert.Equal(t, []string{"eth1"}, names)
 	})
 }

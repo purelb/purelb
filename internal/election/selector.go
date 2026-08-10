@@ -110,7 +110,7 @@ func GetSelectedSubnets(sel *InterfaceSelector, logger log.Logger) ([]string, er
 		return []string{}, nil
 	}
 
-	names := selectedInterfaceNames(sel)
+	names := selectedInterfaceNames(sel, logger)
 
 	// Log the selected names (not just the resulting subnets) so an
 	// under-anchored regex that catches veth/bridge interfaces is
@@ -138,7 +138,7 @@ func GetSelectedSubnets(sel *InterfaceSelector, logger log.Logger) ([]string, er
 // result is deduplicated and sorted: ifindex enumeration order is
 // boot-dependent, and deterministic order keeps logs and scans stable
 // across reboots.
-func selectedInterfaceNames(sel *InterfaceSelector) []string {
+func selectedInterfaceNames(sel *InterfaceSelector, logger log.Logger) []string {
 	nameSet := make(map[string]struct{})
 
 	for _, name := range sel.Interfaces {
@@ -149,7 +149,14 @@ func selectedInterfaceNames(sel *InterfaceSelector) []string {
 	}
 
 	if sel.Regex != nil {
-		if interfaces, err := net.Interfaces(); err == nil {
+		interfaces, err := net.Interfaces()
+		if err != nil {
+			// Silently returning fewer names here shrinks the subnets this
+			// node advertises, which loses it elections and withdraws VIPs.
+			// That must not look like a clean "no match".
+			logging.Info(logger, "op", "selectedInterfaceNames", "error", err,
+				"msg", "could not enumerate interfaces; regex-selected interfaces are missing from this lease")
+		} else {
 			candidates := make([]string, 0, len(interfaces))
 			for _, intf := range interfaces {
 				if intf.Flags&net.FlagLoopback != 0 {
@@ -180,7 +187,7 @@ func matchInterfaceNames(regex *regexp.Regexp, exclude string, names []string) [
 		if name == exclude {
 			continue
 		}
-		if regex.Match([]byte(name)) {
+		if regex.MatchString(name) {
 			matched = append(matched, name)
 		}
 	}

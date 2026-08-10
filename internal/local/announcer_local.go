@@ -645,14 +645,21 @@ func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 	// delete this service from our announcement database
 	delete(a.svcIngresses, nsName)
 
+	// Every address is attempted before returning, and failures are
+	// reported: a swallowed error here leaves the VIP on the NIC after the
+	// Service is gone, with nothing left to trigger another withdrawal.
+	var errs []error
 	for _, ingress := range ingress {
 		lbIP := net.ParseIP(ingress.IP)
 		if lbIP == nil {
-			return fmt.Errorf("invalid LoadBalancer IP: %s, belongs to %s", ingress.IP, nsName)
+			errs = append(errs, fmt.Errorf("invalid LoadBalancer IP: %s, belongs to %s", ingress.IP, nsName))
+			continue
 		}
-		a.deleteAddress(nsName, reason, lbIP)
+		if err := a.deleteAddress(nsName, reason, lbIP); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // deleteAddress deletes the IP address associated with the
