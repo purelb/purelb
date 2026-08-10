@@ -163,7 +163,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 			if len(svc.Status.LoadBalancer.Ingress) > 0 {
 				logging.Info(l, "op", "unassign", "reason", "type is not LoadBalancer", "ingress", svc.Status.LoadBalancer.Ingress)
 				c.client.Infof(svc, "AddressReleased", fmt.Sprintf("Service is Type %s, not LoadBalancer", svc.Spec.Type))
-				if err := c.ips.Unassign(pools, nsName); err != nil {
+				if err := c.ips.Unassign(pools, nsName, svc.Annotations[purelbv2.PoolAnnotation]); err != nil {
 					logging.Info(l, "op", "unassign", "error", err)
 					return k8s.SyncStateError
 				}

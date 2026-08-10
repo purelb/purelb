@@ -294,7 +294,7 @@ func TestAssignment(t *testing.T) {
 	for _, test := range tests {
 		service := service(test.svc, test.ports, test.sharingKey)
 		if test.ip == "" {
-			alloc.Unassign(pools, namespacedName(&service))
+			alloc.Unassign(pools, namespacedName(&service), "")
 			continue
 		}
 		ip := net.ParseIP(test.ip)
@@ -526,7 +526,7 @@ func TestPoolAllocation(t *testing.T) {
 	for _, test := range tests {
 		service := service(test.svc, test.ports, test.sharingKey)
 		if test.unassign {
-			alloc.Unassign(pools, namespacedName(&service))
+			alloc.Unassign(pools, namespacedName(&service), "")
 			continue
 		}
 		pool := "test"
@@ -707,7 +707,7 @@ func TestPoolMetrics(t *testing.T) {
 	for _, test := range tests {
 		service := service(test.svc, test.ports, test.sharingKey)
 		if test.ip == "" {
-			alloc.Unassign(pools, namespacedName(&service))
+			alloc.Unassign(pools, namespacedName(&service), "")
 			assert.Equal(t, test.ipsInUse, ptu.ToFloat64(poolActive.WithLabelValues(testSG.ObjectMeta.Name)), "incorrect pool active IP count after unassign")
 			continue
 		}

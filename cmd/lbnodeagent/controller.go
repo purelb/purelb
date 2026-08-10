@@ -76,7 +76,7 @@ func (c *controller) ServiceChanged(svc *v1.Service, epSlices []*discoveryv1.End
 		delete(svc.Annotations, purelbv2.AnnounceAnnotation+"-unknown")
 
 		logging.Info(c.logger, "op", "withdraw", "reason", "notLoadBalancerType", "node", c.myNode, "service", nsName)
-		c.DeleteBalancer(nsName)
+		c.DeleteBalancer(nsName, "")
 
 		// This is a "best-effort" operation. If it fails there's not much
 		// point in retrying because it's unlikely that anything will
@@ -113,7 +113,11 @@ func (c *controller) ServiceChanged(svc *v1.Service, epSlices []*discoveryv1.End
 // DeleteBalancer deletes any changes that we have made on behalf of
 // nsName. nsName must be a namespaced name string, e.g.,
 // "purelb/example".
-func (c *controller) DeleteBalancer(nsName string) k8s.SyncState {
+// DeleteBalancer withdraws a deleted Service's addresses. The pool the
+// address came from is irrelevant here -- the node agent keys everything on
+// the Service name and the addresses it recorded -- so it is accepted to
+// satisfy the shared client interface and ignored.
+func (c *controller) DeleteBalancer(nsName string, _ string) k8s.SyncState {
 	retval := k8s.SyncStateSuccess
 
 	logging.Debug(c.logger, "op", "deleteBalancer", "name", nsName)

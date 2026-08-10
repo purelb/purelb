@@ -431,7 +431,7 @@ func TestMultiPoolDeleteRecycles(t *testing.T) {
 	assert.Empty(t, svc2.Status.LoadBalancer.Ingress, "pool exhausted, no IPs")
 
 	// Delete first service — should free both IPs
-	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer(namespacedName(svc1)))
+	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer(namespacedName(svc1), ""))
 
 	// Now second service should succeed
 	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc2, nil))
@@ -786,7 +786,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	k.reset()
 
 	// Deleting the first LB should tell us to reprocess all services.
-	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer(namespacedName(svc1)), "DeleteBalancer didn't tell us to reprocess all balancers")
+	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer(namespacedName(svc1), ""), "DeleteBalancer didn't tell us to reprocess all balancers")
 
 	// Setting svc2 should now allocate correctly.
 	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc2, nil), "SetBalancer svc2 failed")
@@ -900,7 +900,7 @@ func TestConcurrentSetPoolsAndSetBalancer(t *testing.T) {
 		for i := 0; i < iterations; i++ {
 			svc := service(fmt.Sprintf("svc-%d", i), ports("tcp/80"), "")
 			c.SetBalancer(&svc, nil)
-			c.DeleteBalancer(fmt.Sprintf("default/svc-%d", i))
+			c.DeleteBalancer(fmt.Sprintf("default/svc-%d", i), "")
 		}
 	}()
 

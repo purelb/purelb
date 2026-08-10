@@ -731,7 +731,7 @@ func (a *Allocator) allocateSpecificIP(st *allocatorState, svc *v1.Service) (boo
 	}
 
 	// If the service had addresses before, release them.
-	if err := a.Unassign(pools, namespacedName(svc)); err != nil {
+	if err := a.Unassign(pools, namespacedName(svc), svc.Annotations[purelbv2.PoolAnnotation]); err != nil {
 		return false, err
 	}
 
@@ -789,7 +789,7 @@ func (a *Allocator) allocateFromPool(pools map[string]Pool, svc *v1.Service, poo
 	// (e.g., SingleStack → DualStack) where we want to keep existing IPs
 	// and only allocate missing families.
 	if len(svc.Status.LoadBalancer.Ingress) == 0 {
-		if err := a.Unassign(pools, namespacedName(svc)); err != nil {
+		if err := a.Unassign(pools, namespacedName(svc), svc.Annotations[purelbv2.PoolAnnotation]); err != nil {
 			return err
 		}
 	}
@@ -885,7 +885,7 @@ func (a *Allocator) allocateMultiPool(pools map[string]Pool, svc *v1.Service, po
 	}
 
 	// Release any existing allocations for this service
-	if err := a.Unassign(pools, namespacedName(svc)); err != nil {
+	if err := a.Unassign(pools, namespacedName(svc), svc.Annotations[purelbv2.PoolAnnotation]); err != nil {
 		return err
 	}
 	svc.Status.LoadBalancer.Ingress = nil
@@ -1060,13 +1060,24 @@ func (a *Allocator) poolContext() (context.Context, context.CancelFunc) {
 // the case where dropping the error leaks an address in a system PureLB
 // does not own. Every pool is still attempted before returning, so one
 // unreachable sidecar cannot strand releases in the others.
-func (a *Allocator) Unassign(pools map[string]Pool, svc string) error {
+// namedPool is the ServiceGroup the Service says it was allocated from, or
+// "" when unknown. It is used only to skip external pools that demonstrably
+// did not hold the address: LocalPool.Release is an in-memory map walk, so
+// asking every local pool costs nothing and guards against a stale or
+// tampered annotation, whereas every SidecarPool asked is a gRPC round trip
+// to a separate IPAM system. A conforming sidecar scopes Release by the
+// request's pool field, so the spurious calls were harmless -- just work no
+// one needed.
+func (a *Allocator) Unassign(pools map[string]Pool, svc string, namedPool string) error {
 	var errs []error
 
 	// tell the pools that the address has been released. there might
 	// not be a pool, e.g., in the case of a config change that moves
 	// addresses from one pool to another
 	for name, p := range pools {
+		if _, external := p.(*SidecarPool); external && namedPool != "" && name != namedPool {
+			continue
+		}
 		ctx, cancel := a.poolContext()
 		err := p.Release(ctx, svc)
 		cancel()

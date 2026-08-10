@@ -34,7 +34,7 @@ type Controller interface {
 	SetClient(*k8s.Client)
 	SetConfig(*purelbv2.Config) k8s.SyncState
 	SetBalancer(*v1.Service, []*discoveryv1.EndpointSlice) k8s.SyncState
-	DeleteBalancer(string) k8s.SyncState
+	DeleteBalancer(name, pool string) k8s.SyncState
 	MarkSynced()
 	Shutdown()
 }
@@ -79,9 +79,12 @@ func (c *controller) SetClient(client *k8s.Client) {
 	c.ips.SetActiveSubnets(client.ActiveSubnets, c.installNamespace)
 }
 
-func (c *controller) DeleteBalancer(name string) k8s.SyncState {
+// DeleteBalancer releases a deleted Service's address. pool is the
+// ServiceGroup it was allocated from, or "" when that could not be
+// determined; see Unassign for what "" costs.
+func (c *controller) DeleteBalancer(name, pool string) k8s.SyncState {
 	pools := c.ips.Pools()
-	if err := c.ips.Unassign(pools, name); err != nil {
+	if err := c.ips.Unassign(pools, name, pool); err != nil {
 		logging.Info(c.logger, "op", "deleteBalancer", "error", err)
 		return k8s.SyncStateError
 	}

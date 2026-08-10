@@ -662,14 +662,20 @@ func (p LocalPool) IPAMSource() string {
 }
 
 // InUseV4 returns the number of IPv4 addresses currently allocated.
+//
+// The family is decided by looking for a colon rather than by parsing.
+// Keys in addressesInUse are produced by net.IP.String(), which renders
+// IPv4 -- including the IPv4-mapped form -- as a dotted quad and IPv6 with
+// colons, so the test is exact. It matters because buildStatus calls this
+// on every allocation and every release, for every pool, and a ParseIP per
+// address meant an allocation and a full parse each time.
+//
+// Still counted from the map rather than cached, so it cannot drift out of
+// step with the allocations it describes.
 func (p LocalPool) InUseV4() int {
 	n := 0
 	for ipStr := range p.addressesInUse {
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
-		if ip.To4() != nil {
+		if !strings.Contains(ipStr, ":") {
 			n++
 		}
 	}
@@ -677,14 +683,11 @@ func (p LocalPool) InUseV4() int {
 }
 
 // InUseV6 returns the number of IPv6 addresses currently allocated.
+// Same colon test as InUseV4; see there for why.
 func (p LocalPool) InUseV6() int {
 	n := 0
 	for ipStr := range p.addressesInUse {
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
-		if ip.To4() == nil {
+		if strings.Contains(ipStr, ":") {
 			n++
 		}
 	}
