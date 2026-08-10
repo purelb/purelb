@@ -32,9 +32,9 @@ func main() {
 	flags := genericclioptions.NewConfigFlags(true)
 
 	root := &cobra.Command{
-		Use:   "kubectl-purelb",
-		Short: "Operational visibility for PureLB LoadBalancer",
-		Long:  "kubectl-purelb provides consolidated views of PureLB pool utilization, service announcements, election state, and BGP data plane health.",
+		Use:          "kubectl-purelb",
+		Short:        "Operational visibility for PureLB LoadBalancer",
+		Long:         "kubectl-purelb provides consolidated views of PureLB pool utilization, service announcements, election state, and BGP data plane health.",
 		SilenceUsage: true,
 	}
 

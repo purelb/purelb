@@ -38,9 +38,18 @@ help: ## Display help message
 all: check crd image ## Build it all!
 
 .PHONY: check
-check: generate check-deps check-helm-rbac-source ## Run "short" tests + bundled-dep consistency check
+check: generate check-deps check-helm-rbac-source check-gofmt ## Run "short" tests + bundled-dep consistency check
 	go vet ./...
 	go test -race -short ./...
+
+.PHONY: check-gofmt
+check-gofmt: ## Fail if any tracked Go source is not gofmt-clean
+	@unformatted=$$(gofmt -l ./api ./cmd ./internal ./pkg 2>/dev/null); \
+	if [ -n "$$unformatted" ]; then \
+		echo "These files are not gofmt-clean; run: gofmt -w <file>"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi
 
 .PHONY: image
 image: generate ## Build executables and containers

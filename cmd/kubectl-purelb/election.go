@@ -42,7 +42,7 @@ type nodeLeaseInfo struct {
 	// healthy lease still announces nothing when no nodeSelector selects it
 	// ("deselected") or its localInterface regex is invalid ("invalid"),
 	// which lease health alone cannot express.
-	Config      nodeConfig `json:"config"`
+	Config nodeConfig `json:"config"`
 }
 
 type subnetCoverage struct {
@@ -67,11 +67,11 @@ type drainResult struct {
 }
 
 type electionSummary struct {
-	Nodes      []nodeLeaseInfo  `json:"nodes"`
-	Coverage   []subnetCoverage `json:"subnetCoverage"`
-	Uncovered  []uncoveredRange `json:"uncoveredRanges,omitempty"`
-	DrainSim   []drainResult    `json:"drainSimulation,omitempty"`
-	DrainNode  string           `json:"drainNode,omitempty"`
+	Nodes     []nodeLeaseInfo  `json:"nodes"`
+	Coverage  []subnetCoverage `json:"subnetCoverage"`
+	Uncovered []uncoveredRange `json:"uncoveredRanges,omitempty"`
+	DrainSim  []drainResult    `json:"drainSimulation,omitempty"`
+	DrainNode string           `json:"drainNode,omitempty"`
 }
 
 func newElectionCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {

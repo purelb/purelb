@@ -168,9 +168,9 @@ func newMultiPoolController(t *testing.T, v4pools []purelbv2.AddressPool, v6pool
 	a.SetActiveSubnets(mockActiveSubnets(activeSubnets), "purelb")
 
 	c := &controller{
-		logger:    l,
-		ips:       a,
-		client:    k,
+		logger: l,
+		ips:    a,
+		client: k,
 	}
 	c.isDefault.Store(true)
 
@@ -205,9 +205,9 @@ func newMixedController(t *testing.T) (*controller, *testK8S) {
 	a.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24", "192.168.2.0/24"}), "purelb")
 
 	c := &controller{
-		logger:    l,
-		ips:       a,
-		client:    k,
+		logger: l,
+		ips:    a,
+		client: k,
 	}
 	c.isDefault.Store(true)
 
@@ -589,9 +589,9 @@ func TestMultiPoolConfigReprocess(t *testing.T) {
 	a.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24", "192.168.2.0/24"}), "purelb")
 
 	c := &controller{
-		logger:    l,
-		ips:       a,
-		client:    k,
+		logger: l,
+		ips:    a,
+		client: k,
 	}
 	c.isDefault.Store(true)
 
@@ -644,9 +644,9 @@ func TestMultiPoolExplicitLBClass(t *testing.T) {
 	a.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24", "192.168.2.0/24"}), "purelb")
 
 	c := &controller{
-		logger:    l,
-		ips:       a,
-		client:    k,
+		logger: l,
+		ips:    a,
+		client: k,
 		// isDefault defaults to false (not the default announcer)
 	}
 
@@ -688,9 +688,9 @@ func TestMultiPoolNotDefaultAnnouncer(t *testing.T) {
 	a.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24"}), "purelb")
 
 	c := &controller{
-		logger:    l,
-		ips:       a,
-		client:    k,
+		logger: l,
+		ips:    a,
+		client: k,
 		// isDefault defaults to false (not the default announcer)
 	}
 

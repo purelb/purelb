@@ -112,13 +112,13 @@ func NewCRController(
 		forceSync:         forceSync,
 		publishPoolStatus: publishPoolStatus,
 		kubeclientset:     kubeclientset,
-		purelbclientset: purelbclientset,
-		lbnaLister:      lbnaInformer.Lister(),
-		lbnasSynced:     lbnaInformer.Informer().HasSynced,
-		sgLister:        sgInformer.Lister(),
-		sgsSynced:       sgInformer.Informer().HasSynced,
-		workqueue:       workqueue.NewTypedRateLimitingQueueWithConfig(workqueue.DefaultTypedControllerRateLimiter[string](), workqueue.TypedRateLimitingQueueConfig[string]{Name: "ServiceGroups"}),
-		recorder:        recorder,
+		purelbclientset:   purelbclientset,
+		lbnaLister:        lbnaInformer.Lister(),
+		lbnasSynced:       lbnaInformer.Informer().HasSynced,
+		sgLister:          sgInformer.Lister(),
+		sgsSynced:         sgInformer.Informer().HasSynced,
+		workqueue:         workqueue.NewTypedRateLimitingQueueWithConfig(workqueue.DefaultTypedControllerRateLimiter[string](), workqueue.TypedRateLimitingQueueConfig[string]{Name: "ServiceGroups"}),
+		recorder:          recorder,
 	}
 
 	// Set up event handlers for when resources change

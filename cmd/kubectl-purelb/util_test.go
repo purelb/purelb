@@ -226,9 +226,9 @@ func TestElectionHashMatchesPureLB(t *testing.T) {
 		winner     string
 	}{
 		// 3-node cluster, various IPs
-		{"192.168.1.100", []string{"node-a", "node-b", "node-c"}, ""},   // computed below
-		{"10.0.0.1", []string{"alpha", "beta", "gamma"}, ""},            // computed below
-		{"2001:db8::1", []string{"node-1", "node-2"}, ""},               // computed below
+		{"192.168.1.100", []string{"node-a", "node-b", "node-c"}, ""}, // computed below
+		{"10.0.0.1", []string{"alpha", "beta", "gamma"}, ""},          // computed below
+		{"2001:db8::1", []string{"node-1", "node-2"}, ""},             // computed below
 	}
 
 	// We can't hardcode expected winners without running the real code,

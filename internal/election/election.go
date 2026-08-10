@@ -253,10 +253,10 @@ func (e *Election) Start() error {
 // shutdown sequence: marks unhealthy, stops renewals, and deletes the lease.
 //
 // For more granular control during graceful shutdown, use:
-//   1. MarkUnhealthy() - causes Winner() to return ""
-//   2. [caller triggers address withdrawal via ForceSync]
-//   3. StopRenewals() - stops the renewal goroutine
-//   4. DeleteOurLease() - removes our lease from the cluster
+//  1. MarkUnhealthy() - causes Winner() to return ""
+//  2. [caller triggers address withdrawal via ForceSync]
+//  3. StopRenewals() - stops the renewal goroutine
+//  4. DeleteOurLease() - removes our lease from the cluster
 func (e *Election) Shutdown() {
 	logging.Info(e.config.Logger, "op", "election", "action", "shutdown", "msg", "starting graceful shutdown")
 

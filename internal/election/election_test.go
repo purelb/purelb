@@ -609,8 +609,8 @@ func TestWinnerWithOverlappingSubnets(t *testing.T) {
 	e.state.Store(&electionState{
 		liveNodes: []string{"node-a", "node-b"},
 		subnetToNodes: map[string][]string{
-			"10.0.0.0/8":   {"node-a"},
-			"10.0.1.0/24":  {"node-b"},
+			"10.0.0.0/8":  {"node-a"},
+			"10.0.1.0/24": {"node-b"},
 		},
 		nodeToSubnets: map[string][]string{
 			"node-a": {"10.0.0.0/8"},

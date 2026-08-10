@@ -221,8 +221,8 @@ func (p *SidecarPool) DisplayAddresses() []string {
 	return nil
 }
 
-func (p *SidecarPool) InUse() int    { return p.InUseV4() + p.InUseV6() }
-func (p *SidecarPool) Size() uint64  { return p.SizeV4() + p.SizeV6() }
+func (p *SidecarPool) InUse() int   { return p.InUseV4() + p.InUseV6() }
+func (p *SidecarPool) Size() uint64 { return p.SizeV4() + p.SizeV6() }
 
 // wantsFamily reports whether svc requests the given IP family. A service
 // with no explicit IPFamilies (rare for LoadBalancer) is treated as

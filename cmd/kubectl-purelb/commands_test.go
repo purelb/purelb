@@ -70,8 +70,8 @@ func newFakeClients(coreObjects []runtime.Object, dynamicObjects ...runtime.Obje
 	)
 
 	return &clients{
-		core:    fake.NewSimpleClientset(coreObjects...),
-		dynamic: dynClient,
+		core:      fake.NewSimpleClientset(coreObjects...),
+		dynamic:   dynClient,
 		namespace: "purelb-system",
 	}
 }
@@ -293,7 +293,7 @@ func TestRunServices_NoAnnouncerRemoteIsOK(t *testing.T) {
 // =============================================================================
 
 func TestBuildHealthyNodeSet(t *testing.T) {
-	healthy := makeLease("node-a", "10.0.0.0/24", 2) // renewed 2s ago, dur=10s, not expired
+	healthy := makeLease("node-a", "10.0.0.0/24", 2)  // renewed 2s ago, dur=10s, not expired
 	expired := makeLease("node-b", "10.1.0.0/24", 20) // renewed 20s ago, dur=10s, expired
 
 	result := buildHealthyNodeSet([]coordinationv1.Lease{*healthy, *expired})

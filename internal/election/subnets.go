@@ -43,7 +43,6 @@ const SubnetsAnnotation = "purelb.io/subnets"
 // recreation where an old pod might delete a new pod's lease.
 const InstanceAnnotation = "purelb.io/instance"
 
-
 // GetLocalSubnets returns all subnets from the specified interfaces.
 // If includeDefault is true, the interface with the default route is
 // also included. The returned subnets are in CIDR notation (e.g.,
@@ -214,7 +213,6 @@ func networkAddress(ipnet *net.IPNet) string {
 	ones, _ := ipnet.Mask.Size()
 	return fmt.Sprintf("%s/%d", network.String(), ones)
 }
-
 
 // FormatSubnetsAnnotation formats a slice of subnets into the annotation
 // value format (comma-separated).

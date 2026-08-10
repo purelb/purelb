@@ -74,10 +74,10 @@ type Client struct {
 	// API calls should use shorter timeouts to allow graceful shutdown.
 	shuttingDown atomic.Bool
 
-	svcIndexer       cache.Indexer
-	svcInformer      cache.Controller
-	epSliceIndexer   cache.Indexer
-	epSliceInformer  cache.Controller
+	svcIndexer      cache.Indexer
+	svcInformer     cache.Controller
+	epSliceIndexer  cache.Indexer
+	epSliceInformer cache.Controller
 
 	crInformerFactory externalversions.SharedInformerFactory
 	crController      Controller

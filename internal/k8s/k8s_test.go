@@ -60,9 +60,9 @@ func TestAnnouncingOnlyUpdate(t *testing.T) {
 			wantSkip: false,
 		},
 		{
-			name: "announcing-IPv4 changed -> skip",
-			old:  base(),
-			new:  withAnn(base(), "purelb.io/announcing-IPv4", "node-b,eth0,10.0.0.1"),
+			name:     "announcing-IPv4 changed -> skip",
+			old:      base(),
+			new:      withAnn(base(), "purelb.io/announcing-IPv4", "node-b,eth0,10.0.0.1"),
 			wantSkip: true,
 		},
 		{
@@ -76,9 +76,9 @@ func TestAnnouncingOnlyUpdate(t *testing.T) {
 			wantSkip: true,
 		},
 		{
-			name: "announcing-IPv6 added alongside existing v4 -> skip",
-			old:  base(),
-			new:  withAnn(base(), "purelb.io/announcing-IPv6", "node-a,eth0,2001:db8::1"),
+			name:     "announcing-IPv6 added alongside existing v4 -> skip",
+			old:      base(),
+			new:      withAnn(base(), "purelb.io/announcing-IPv6", "node-a,eth0,2001:db8::1"),
 			wantSkip: true,
 		},
 		{
@@ -290,20 +290,26 @@ func (m *mockIndexer) ListKeys() []string {
 }
 
 // Unused methods required by cache.Indexer interface
-func (m *mockIndexer) Add(obj interface{}) error                              { return nil }
-func (m *mockIndexer) Update(obj interface{}) error                           { return nil }
-func (m *mockIndexer) Delete(obj interface{}) error                           { return nil }
-func (m *mockIndexer) List() []interface{}                                    { return nil }
-func (m *mockIndexer) Get(obj interface{}) (item interface{}, exists bool, err error) { return nil, false, nil }
-func (m *mockIndexer) GetByKey(key string) (item interface{}, exists bool, err error) { return nil, false, nil }
-func (m *mockIndexer) Replace([]interface{}, string) error                    { return nil }
-func (m *mockIndexer) Resync() error                                          { return nil }
-func (m *mockIndexer) Index(indexName string, obj interface{}) ([]interface{}, error) { return nil, nil }
-func (m *mockIndexer) IndexKeys(indexName, indexedValue string) ([]string, error)     { return nil, nil }
-func (m *mockIndexer) ListIndexFuncValues(indexName string) []string          { return nil }
-func (m *mockIndexer) ByIndex(indexName, indexedValue string) ([]interface{}, error)  { return nil, nil }
-func (m *mockIndexer) GetIndexers() cache.Indexers                            { return nil }
-func (m *mockIndexer) AddIndexers(newIndexers cache.Indexers) error           { return nil }
+func (m *mockIndexer) Add(obj interface{}) error    { return nil }
+func (m *mockIndexer) Update(obj interface{}) error { return nil }
+func (m *mockIndexer) Delete(obj interface{}) error { return nil }
+func (m *mockIndexer) List() []interface{}          { return nil }
+func (m *mockIndexer) Get(obj interface{}) (item interface{}, exists bool, err error) {
+	return nil, false, nil
+}
+func (m *mockIndexer) GetByKey(key string) (item interface{}, exists bool, err error) {
+	return nil, false, nil
+}
+func (m *mockIndexer) Replace([]interface{}, string) error { return nil }
+func (m *mockIndexer) Resync() error                       { return nil }
+func (m *mockIndexer) Index(indexName string, obj interface{}) ([]interface{}, error) {
+	return nil, nil
+}
+func (m *mockIndexer) IndexKeys(indexName, indexedValue string) ([]string, error)    { return nil, nil }
+func (m *mockIndexer) ListIndexFuncValues(indexName string) []string                 { return nil }
+func (m *mockIndexer) ByIndex(indexName, indexedValue string) ([]interface{}, error) { return nil, nil }
+func (m *mockIndexer) GetIndexers() cache.Indexers                                   { return nil }
+func (m *mockIndexer) AddIndexers(newIndexers cache.Indexers) error                  { return nil }
 
 // TestEnqueuePoolStatus_NoPublisher verifies that a consumer which owns
 // no address pools (lbnodeagent) never puts a dead item on the queue.

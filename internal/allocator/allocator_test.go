@@ -760,7 +760,7 @@ func TestSpecificAddress(t *testing.T) {
 	svc1 := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
-				purelbv2.DesiredGroupAnnotation: defaultPoolName,
+				purelbv2.DesiredGroupAnnotation:   defaultPoolName,
 				purelbv2.DesiredAddressAnnotation: "1.2.3.8",
 			},
 		},
@@ -965,10 +965,10 @@ func TestServiceAddresses(t *testing.T) {
 	// Test the preferred way to assign a specific address (i.e., our
 	// annotation). This overrides LoadBalancerIP.
 	svc1.ObjectMeta = metav1.ObjectMeta{
-			Annotations: map[string]string{
-				purelbv2.DesiredAddressAnnotation: addr2,
-			},
-		}
+		Annotations: map[string]string{
+			purelbv2.DesiredAddressAnnotation: addr2,
+		},
+	}
 	ips, err = alloc.serviceAddresses(svc1)
 	assert.Nil(t, err)
 	assert.Equal(t, 1, len(ips))
@@ -976,10 +976,10 @@ func TestServiceAddresses(t *testing.T) {
 
 	// Test multiple addresses
 	svc1.ObjectMeta = metav1.ObjectMeta{
-			Annotations: map[string]string{
-				purelbv2.DesiredAddressAnnotation: addr1 + "," + addr2,
-			},
-		}
+		Annotations: map[string]string{
+			purelbv2.DesiredAddressAnnotation: addr1 + "," + addr2,
+		},
+	}
 	ips, err = alloc.serviceAddresses(svc1)
 	assert.Nil(t, err)
 	assert.Equal(t, 2, len(ips))
@@ -1217,7 +1217,7 @@ func TestBalancePoolsMultiPoolMutualExclusion(t *testing.T) {
 						{Pool: "10.0.0.1-10.0.0.5", Subnet: "10.0.0.0/24"},
 						{Pool: "10.0.1.1-10.0.1.5", Subnet: "10.0.1.0/24"},
 					},
-					MultiPool: true,
+					MultiPool:    true,
 					BalancePools: true,
 				},
 			},
@@ -1353,41 +1353,41 @@ func TestIncrementalMultiPoolNoOp(t *testing.T) {
 // fakeStatusPool implements just enough of Pool for buildStatus tests.
 // Each field is set per-case to exercise a specific buildStatus branch.
 type fakeStatusPool struct {
-	name              string
-	poolType          string
-	ipamSource        string
-	displayAddresses  []string
-	inUseV4           int
-	inUseV6           int
-	sizeV4            uint64
-	sizeV6            uint64
-	hasKnownCapacity  bool
+	name             string
+	poolType         string
+	ipamSource       string
+	displayAddresses []string
+	inUseV4          int
+	inUseV6          int
+	sizeV4           uint64
+	sizeV6           uint64
+	hasKnownCapacity bool
 }
 
-func (f *fakeStatusPool) String() string                                  { return f.name }
-func (f *fakeStatusPool) PoolType() string                                { return f.poolType }
-func (f *fakeStatusPool) IPAMSource() string                              { return f.ipamSource }
-func (f *fakeStatusPool) DisplayAddresses() []string                      { return f.displayAddresses }
-func (f *fakeStatusPool) InUseV4() int                                    { return f.inUseV4 }
-func (f *fakeStatusPool) InUseV6() int                                    { return f.inUseV6 }
-func (f *fakeStatusPool) SizeV4() uint64                                  { return f.sizeV4 }
-func (f *fakeStatusPool) SizeV6() uint64                                  { return f.sizeV6 }
-func (f *fakeStatusPool) HasKnownCapacity() bool                          { return f.hasKnownCapacity }
-func (f *fakeStatusPool) InUse() int                                      { return f.inUseV4 + f.inUseV6 }
-func (f *fakeStatusPool) Size() uint64                                    { return f.sizeV4 + f.sizeV6 }
-func (f *fakeStatusPool) Notify(context.Context, *v1.Service) error       { return nil }
+func (f *fakeStatusPool) String() string                                    { return f.name }
+func (f *fakeStatusPool) PoolType() string                                  { return f.poolType }
+func (f *fakeStatusPool) IPAMSource() string                                { return f.ipamSource }
+func (f *fakeStatusPool) DisplayAddresses() []string                        { return f.displayAddresses }
+func (f *fakeStatusPool) InUseV4() int                                      { return f.inUseV4 }
+func (f *fakeStatusPool) InUseV6() int                                      { return f.inUseV6 }
+func (f *fakeStatusPool) SizeV4() uint64                                    { return f.sizeV4 }
+func (f *fakeStatusPool) SizeV6() uint64                                    { return f.sizeV6 }
+func (f *fakeStatusPool) HasKnownCapacity() bool                            { return f.hasKnownCapacity }
+func (f *fakeStatusPool) InUse() int                                        { return f.inUseV4 + f.inUseV6 }
+func (f *fakeStatusPool) Size() uint64                                      { return f.sizeV4 + f.sizeV6 }
+func (f *fakeStatusPool) Notify(context.Context, *v1.Service) error         { return nil }
 func (f *fakeStatusPool) Assign(context.Context, net.IP, *v1.Service) error { return nil }
-func (f *fakeStatusPool) AssignNext(context.Context, *v1.Service) error   { return nil }
-func (f *fakeStatusPool) Release(context.Context, string) error           { return nil }
-func (f *fakeStatusPool) ReleaseIP(context.Context, string, net.IP) error { return nil }
+func (f *fakeStatusPool) AssignNext(context.Context, *v1.Service) error     { return nil }
+func (f *fakeStatusPool) Release(context.Context, string) error             { return nil }
+func (f *fakeStatusPool) ReleaseIP(context.Context, string, net.IP) error   { return nil }
 func (f *fakeStatusPool) AssignNextPerRange(context.Context, *v1.Service, []string) error {
 	return nil
 }
-func (f *fakeStatusPool) Overlaps(Pool) bool { return false }
+func (f *fakeStatusPool) Overlaps(Pool) bool   { return false }
 func (f *fakeStatusPool) Contains(net.IP) bool { return false }
-func (f *fakeStatusPool) SkipIPv6DAD() bool   { return false }
-func (f *fakeStatusPool) MultiPool() bool     { return false }
-func (f *fakeStatusPool) BalancePools() bool  { return false }
+func (f *fakeStatusPool) SkipIPv6DAD() bool    { return false }
+func (f *fakeStatusPool) MultiPool() bool      { return false }
+func (f *fakeStatusPool) BalancePools() bool   { return false }
 
 // ptrI64 returns a pointer to v. Used for inline expected-value
 // construction in table-driven tests.
@@ -1537,13 +1537,23 @@ func TestStatusEqual(t *testing.T) {
 		{
 			name: "Available* separate-allocation-same-value match (this is the key cache-elision case)",
 			a:    base,
-			b:    func() purelbv2.ServiceGroupStatus { c := base; v4, v6 := int64(251), int64(0); c.AvailableIPv4 = &v4; c.AvailableIPv6 = &v6; return c }(),
+			b: func() purelbv2.ServiceGroupStatus {
+				c := base
+				v4, v6 := int64(251), int64(0)
+				c.AvailableIPv4 = &v4
+				c.AvailableIPv6 = &v6
+				return c
+			}(),
 			want: true,
 		},
 		{
 			name: "Addresses length differs",
 			a:    base,
-			b:    func() purelbv2.ServiceGroupStatus { c := base; c.Addresses = []string{"192.168.1.0/24", "extra"}; return c }(),
+			b: func() purelbv2.ServiceGroupStatus {
+				c := base
+				c.Addresses = []string{"192.168.1.0/24", "extra"}
+				return c
+			}(),
 			want: false,
 		},
 		{
