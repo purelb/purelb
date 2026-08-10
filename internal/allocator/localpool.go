@@ -26,8 +26,8 @@ import (
 	"github.com/vishvananda/netlink/nl"
 	v1 "k8s.io/api/core/v1"
 
-	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	"purelb.io/internal/logging"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 // LocalPool is the configuration of an IP address pool.
@@ -251,7 +251,7 @@ func (p LocalPool) available(ip net.IP, service *v1.Service) error {
 }
 
 // AssignNext assigns the next available IP to service.
-func (p LocalPool) AssignNext(_ context.Context, service *v1.Service) error {
+func (p LocalPool) AssignNext(ctx context.Context, service *v1.Service) error {
 	families, err := p.whichFamilies(service)
 	if err != nil {
 		return err
@@ -260,22 +260,22 @@ func (p LocalPool) AssignNext(_ context.Context, service *v1.Service) error {
 	if len(families) == 0 {
 		// Any address is OK so try V6 first then V4 and assign the first
 		// one that succeeds
-		if err = p.assignFamily(nl.FAMILY_V6, service); err == nil {
+		if err = p.assignFamily(ctx, nl.FAMILY_V6, service); err == nil {
 			return err
 		}
-		return p.assignFamily(nl.FAMILY_V4, service)
+		return p.assignFamily(ctx, nl.FAMILY_V4, service)
 	}
 
 	// We have a specific set of families to assign
 	for _, family := range families {
-		if err := p.assignFamily(family, service); err != nil {
+		if err := p.assignFamily(ctx, family, service); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (p LocalPool) assignFamily(family int, service *v1.Service) error {
+func (p LocalPool) assignFamily(ctx context.Context, family int, service *v1.Service) error {
 	// Check if the service already has an address for this family
 	// This supports IP family transitions (e.g., SingleStack → DualStack)
 	// where we want to keep existing addresses and only allocate missing ones
@@ -299,7 +299,7 @@ func (p LocalPool) assignFamily(family int, service *v1.Service) error {
 	// Balanced allocation: pick least-used range.
 	// Skip for services with sharing keys — they must use the bound IP.
 	if p.balancePools && SharingKey(service) == "" {
-		return p.assignFamilyBalancePools(family, service)
+		return p.assignFamilyBalancePools(ctx, family, service)
 	}
 
 	var lastErr error
@@ -310,7 +310,7 @@ func (p LocalPool) assignFamily(family int, service *v1.Service) error {
 	boundIP := p.ipForSharingKey(sharingKey, family)
 
 	for pos := p.first(family); pos != nil; pos = p.next(pos) {
-		if err := p.Assign(context.Background(), pos, service); err == nil {
+		if err := p.Assign(ctx, pos, service); err == nil {
 			// we found an available address
 			return nil
 		} else {
@@ -750,7 +750,7 @@ func (p LocalPool) countAllocationsPerRange(ranges []*purelbv2.IPRange) []int {
 // assignFamilyBalancePools allocates an IP from the range with the fewest
 // current allocations, distributing services evenly across subnets.
 // Falls through to subsequent ranges if the preferred range is exhausted.
-func (p LocalPool) assignFamilyBalancePools(family int, service *v1.Service) error {
+func (p LocalPool) assignFamilyBalancePools(ctx context.Context, family int, service *v1.Service) error {
 	var ranges []*purelbv2.IPRange
 	if family == nl.FAMILY_V6 {
 		ranges = p.v6Ranges
@@ -777,7 +777,7 @@ func (p LocalPool) assignFamilyBalancePools(family int, service *v1.Service) err
 
 	// Try ranges in least-allocated order
 	for _, idx := range indices {
-		if err := p.assignFromRange(ranges[idx], service); err == nil {
+		if err := p.assignFromRange(ctx, ranges[idx], service); err == nil {
 			logging.Info(p.logger, "op", "assignFamilyBalancePools", "service", namespacedName(service),
 				"range", ranges[idx], "msg", "balancePools allocation selected range")
 			balancePoolsAllocations.WithLabelValues(p.name).Inc()
@@ -793,10 +793,10 @@ func (p LocalPool) assignFamilyBalancePools(family int, service *v1.Service) err
 // assignFromRange tries to assign the next available IP from a single range
 // to the service. Returns nil on success, error if the range is exhausted
 // or all IPs have conflicts.
-func (p LocalPool) assignFromRange(ipRange *purelbv2.IPRange, service *v1.Service) error {
+func (p LocalPool) assignFromRange(ctx context.Context, ipRange *purelbv2.IPRange, service *v1.Service) error {
 	var lastErr error
 	for ip := ipRange.First(); ip != nil; ip = ipRange.Next(ip) {
-		if err := p.Assign(context.Background(), ip, service); err == nil {
+		if err := p.Assign(ctx, ip, service); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -860,7 +860,7 @@ func (p LocalPool) AssignNextPerRange(ctx context.Context, svc *v1.Service, acti
 				continue
 			}
 
-			if err := p.assignFromRange(ipRange, svc); err != nil {
+			if err := p.assignFromRange(ctx, ipRange, svc); err != nil {
 				p.logger.Log("op", "assignNextPerRange", "range", ipRange,
 					"subnet", subnets[i], "error", err, "msg", "range exhausted, continuing")
 				allocationRejected.WithLabelValues(p.name, "exhausted").Inc()

@@ -236,9 +236,15 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 			if len(excessIPs) > 0 {
 				logging.Info(l, "op", "ipFamilyTransition", "action", "releaseExcess", "excessIPs", excessIPs)
 
-				// Release the excess IPs from the pool
-				if err := c.ips.ReleaseIPs(pools, nsName, excessIPs); err != nil {
+				// Release the excess IPs from the pool. The pool named by the
+				// Service is passed as a fallback for external pools, whose
+				// addresses cannot be found by address (SidecarPool.Contains
+				// is false) -- without it the address would be dropped from
+				// .status while the external IPAM still held it.
+				if err := c.ips.ReleaseIPs(pools, nsName, excessIPs, svc.Annotations[purelbv2.PoolAnnotation]); err != nil {
 					logging.Info(l, "op", "releaseExcess", "error", err)
+					c.client.Errorf(svc, "ReleaseFailed",
+						"Failed to release addresses after IP family transition: %s", err)
 					// Continue anyway - we'll update the ingress to remove them
 				}
 
@@ -265,6 +271,21 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 	if err := c.ips.Allocate(st, svc); err != nil {
 		logging.Info(l, "op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", nsName, err)
+		recordAllocationFailure(svc, err)
+
+		// Requeue only what retrying can fix. A pool that is exhausted, a
+		// namespace boundary, a sharing conflict or a malformed address will
+		// fail identically forever, and requeuing those spins the goroutine
+		// that allocates every address in the cluster. A sidecar that is
+		// down or timing out is the opposite: the Service is correct and
+		// only the moment was wrong, and without a requeue it stays pending
+		// until some unrelated event happens to re-enqueue it. The work
+		// queue's rate limiter caps the backoff, and Forget resets it on the
+		// next success, so even a permanently dead sidecar settles into
+		// occasional retries rather than a spin.
+		if isRetryableAllocationErr(err) {
+			return k8s.SyncStateError
+		}
 		return k8s.SyncStateSuccess
 	}
 

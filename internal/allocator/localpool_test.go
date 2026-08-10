@@ -41,8 +41,8 @@ func TestEmptyPool(t *testing.T) {
 	var svc v1.Service
 	p := LocalPool{}
 	assert.Equal(t, uint64(0), p.Size(), "incorrect pool size")
-	assert.Error(t, p.assignFamily(nl.FAMILY_V6, &svc))
-	assert.Error(t, p.assignFamily(nl.FAMILY_V4, &svc))
+	assert.Error(t, p.assignFamily(context.Background(), nl.FAMILY_V6, &svc))
+	assert.Error(t, p.assignFamily(context.Background(), nl.FAMILY_V4, &svc))
 	assert.Error(t, p.AssignNext(context.Background(), &svc))
 }
 

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-kit/log"
 	"google.golang.org/grpc"
@@ -38,6 +39,11 @@ import (
 
 const (
 	defaultPoolName string = "default"
+
+	// defaultPoolTimeout bounds a single Pool mutating operation when no
+	// API-context source is wired (unit tests). Matches the standard PureLB
+	// API timeout so a sidecar gets the same grace as the apiserver.
+	defaultPoolTimeout = 10 * time.Second
 )
 
 // ActiveSubnetsFunc is a function that returns the set of subnets with
@@ -609,7 +615,10 @@ func (a *Allocator) NotifyExisting(pools map[string]Pool, svc *v1.Service) error
 		}
 
 		// Tell the pool about the assignment
-		if err := pool.Notify(context.Background(), svc); err != nil {
+		ctx, cancel := a.poolContext()
+		err := pool.Notify(ctx, svc)
+		cancel()
+		if err != nil {
 			return err
 		}
 		a.updateStats(pool)
@@ -737,7 +746,10 @@ func (a *Allocator) allocateSpecificIP(st *allocatorState, svc *v1.Service) (boo
 		// Does the IP already have allocs? If so, needs to be the same
 		// sharing key, and have non-overlapping ports. If not, the proposed
 		// IP needs to be allowed by configuration.
-		if err := pool.Assign(context.Background(), ip, svc); err != nil {
+		ctx, cancel := a.poolContext()
+		err := pool.Assign(ctx, ip, svc)
+		cancel()
+		if err != nil {
 			return false, err
 		}
 
@@ -795,7 +807,10 @@ func (a *Allocator) allocateFromPool(pools map[string]Pool, svc *v1.Service, poo
 	// Roll back only what this call added. Pre-existing addresses from an
 	// IP-family transition must survive, so this cannot be Unassign.
 	committed := len(svc.Status.LoadBalancer.Ingress)
-	if err := pool.AssignNext(context.Background(), svc); err != nil {
+	ctx, cancel := a.poolContext()
+	err := pool.AssignNext(ctx, svc)
+	cancel()
+	if err != nil {
 		a.rollbackIngress(pool, svc, committed)
 		return err
 	}
@@ -835,7 +850,10 @@ func (a *Allocator) rollbackIngress(pool Pool, svc *v1.Service, keep int) {
 		if ip == nil {
 			continue
 		}
-		if err := pool.ReleaseIP(context.Background(), namespacedName(svc), ip); err != nil {
+		ctx, cancel := a.poolContext()
+		err := pool.ReleaseIP(ctx, namespacedName(svc), ip)
+		cancel()
+		if err != nil {
 			logging.Info(a.logger, "op", "rollbackIngress", "error", err,
 				"svc", namespacedName(svc), "ip", added.IP)
 		}
@@ -881,7 +899,10 @@ func (a *Allocator) allocateMultiPool(pools map[string]Pool, svc *v1.Service, po
 	logging.Info(a.logger, "op", "allocateMultiPool", "activeSubnets", strings.Join(activeSubnets, ","),
 		"svc", namespacedName(svc))
 
-	if err := pool.AssignNextPerRange(context.Background(), svc, activeSubnets); err != nil {
+	ctx, cancel := a.poolContext()
+	err = pool.AssignNextPerRange(ctx, svc, activeSubnets)
+	cancel()
+	if err != nil {
 		return err
 	}
 
@@ -987,7 +1008,10 @@ func (a *Allocator) IncrementalMultiPool(st *allocatorState, svc *v1.Service) (b
 
 	existingCount := len(svc.Status.LoadBalancer.Ingress)
 
-	if err := pool.AssignNextPerRange(context.Background(), svc, activeSubnets); err != nil {
+	ctx, cancel := a.poolContext()
+	err = pool.AssignNextPerRange(ctx, svc, activeSubnets)
+	cancel()
+	if err != nil {
 		return false, err
 	}
 
@@ -1010,26 +1034,60 @@ func (a *Allocator) IncrementalMultiPool(st *allocatorState, svc *v1.Service) (b
 	return false, nil
 }
 
+// poolContext returns a bounded, cancellable context for a Pool mutating
+// operation.
+//
+// Pool methods take a context precisely so that implementations backed by
+// network I/O can be bounded; passing context.Background() defeated that.
+// The allocator's work queue is single-threaded, so an external IPAM
+// sidecar that accepts a connection and never replies would otherwise wedge
+// every Service reconcile, status write and release in the cluster.
+//
+// Prefers the client's API context, which shortens to 500ms during
+// shutdown; falls back to a fixed timeout when no client is wired (tests).
+// Callers MUST invoke the returned CancelFunc.
+func (a *Allocator) poolContext() (context.Context, context.CancelFunc) {
+	if a.sgStatusClient != nil {
+		return a.sgStatusClient.APIContext()
+	}
+	return context.WithTimeout(context.Background(), defaultPoolTimeout)
+}
+
 // Unassign frees the IP associated with service, if any.
+//
+// Release failures are returned, not discarded. LocalPool.Release cannot
+// fail, so in practice this reports only external-IPAM failures -- exactly
+// the case where dropping the error leaks an address in a system PureLB
+// does not own. Every pool is still attempted before returning, so one
+// unreachable sidecar cannot strand releases in the others.
 func (a *Allocator) Unassign(pools map[string]Pool, svc string) error {
-	var err error
+	var errs []error
 
 	// tell the pools that the address has been released. there might
 	// not be a pool, e.g., in the case of a config change that moves
 	// addresses from one pool to another
-	for _, p := range pools {
-		if err = p.Release(context.Background(), svc); err == nil {
-			a.updateStats(p) // This pool released the address
+	for name, p := range pools {
+		ctx, cancel := a.poolContext()
+		err := p.Release(ctx, svc)
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			logging.Info(a.logger, "op", "unassign", "error", err, "pool", name, "svc", svc,
+				"msg", "pool failed to release the address")
+			continue
 		}
+		a.updateStats(p) // This pool released the address
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // ReleaseIPs releases specific IP addresses for a service. Used during
 // IP family transitions (e.g., DualStack → SingleStack) when only some
 // addresses need to be released.
-func (a *Allocator) ReleaseIPs(pools map[string]Pool, svc string, ips []string) error {
+func (a *Allocator) ReleaseIPs(pools map[string]Pool, svc string, ips []string, namedPool string) error {
+	var errs []error
+
 	for _, ipStr := range ips {
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
@@ -1040,18 +1098,39 @@ func (a *Allocator) ReleaseIPs(pools map[string]Pool, svc string, ips []string) 
 		// Find which pool contains this IP and release it
 		pool := poolFor(pools, ip)
 		if pool == nil {
+			// SidecarPool.Contains is hardcoded false, so an external pool can
+			// never be found by address and this path would silently drop the
+			// release -- the address vanishes from the Service while the
+			// external IPAM still holds it. Fall back to the pool the Service
+			// says it came from, but only when that pool is external: for any
+			// other pool poolFor is authoritative, and trusting a user-editable
+			// annotation there would let a Service free a neighbour's address.
+			if p, ok := pools[namedPool]; ok {
+				if _, external := p.(*SidecarPool); external {
+					pool = p
+				}
+			}
+		}
+		if pool == nil {
 			logging.Info(a.logger, "op", "releaseIPs", "warning", "no pool found for IP", "ip", ipStr)
 			continue
 		}
 
-		if err := pool.ReleaseIP(context.Background(), svc, ip); err != nil {
+		ctx, cancel := a.poolContext()
+		err := pool.ReleaseIP(ctx, svc, ip)
+		cancel()
+		if err != nil {
+			// Returned, not just logged: for an external pool this is a
+			// leaked address in a system PureLB does not own.
+			errs = append(errs, fmt.Errorf("%s: %w", ipStr, err))
 			logging.Info(a.logger, "op", "releaseIPs", "error", err, "ip", ipStr)
 			// Continue releasing other IPs even if one fails
+			continue
 		}
 		a.updateStats(pool)
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // poolFor returns the pool that owns the requested IP, or "" if none.
@@ -1087,7 +1166,7 @@ func (a *Allocator) serviceAddresses(svc *v1.Service) ([]net.IP, error) {
 		logging.Info(a.logger, "op", "serviceAddresses", "svc", svc.Name, "deprecation", "Service.Spec.LoadBalancerIP is deprecated, use "+purelbv2.DesiredAddressAnnotation+" annotation")
 	}
 
-	for _, rawAddr := range(strings.Split(rawAddrs, ",")) {
+	for _, rawAddr := range strings.Split(rawAddrs, ",") {
 		ip := net.ParseIP(rawAddr)
 		if ip == nil {
 			return nil, fmt.Errorf("invalid user-specified address: \"%q\"", rawAddr)
