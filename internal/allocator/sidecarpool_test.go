@@ -318,3 +318,34 @@ func TestUnassignTargetsNamedExternalPool(t *testing.T) {
 		assert.Equal(t, 1, extCalls, "the named external pool is still released")
 	})
 }
+
+// TestParsePoolValidatesExternalAnnounce covers the defence against a stale
+// or pruned ServiceGroup CRD. The CRD constrains announce to local|remote,
+// but if that constraint is missing the value reaches PoolType() verbatim,
+// purelb.io/pool-type is written empty, and the node agent has no way to
+// decide between a local interface and the dummy interface -- so it
+// announces nothing and the allocator says nothing. Failing the parse turns
+// that into a visible ParseFailed event on the ServiceGroup.
+func TestParsePoolValidatesExternalAnnounce(t *testing.T) {
+	a := New(log.NewNopLogger())
+
+	for _, announce := range []string{"", "Local", "REMOTE", "bgp", "dummy"} {
+		t.Run("rejected/"+announce, func(t *testing.T) {
+			_, err := a.parsePool("ext", purelbv2.ServiceGroupSpec{
+				External: &purelbv2.ServiceGroupExternalSpec{Provider: "p", Announce: announce},
+			})
+			assert.Error(t, err, "announce %q must not produce a pool", announce)
+		})
+	}
+
+	for _, announce := range []string{purelbv2.PoolTypeLocal, purelbv2.PoolTypeRemote} {
+		t.Run("accepted/"+announce, func(t *testing.T) {
+			p, err := a.parsePool("ext", purelbv2.ServiceGroupSpec{
+				External: &purelbv2.ServiceGroupExternalSpec{Provider: "p", Announce: announce},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, announce, p.PoolType(),
+				"pool-type annotation is written from PoolType(); it must match announce")
+		})
+	}
+}
