@@ -27,6 +27,7 @@ import (
 	"github.com/mdlayher/ndp"
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/vishvananda/netlink"
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -266,12 +267,8 @@ func TestOtherAnnouncerOf_IgnoresUnannouncedServices(t *testing.T) {
 }
 
 func TestGetLocalAddressOptions_Defaults(t *testing.T) {
-	a := &announcer{
-		logger: log.NewNopLogger(),
-		config: nil, // No config
-	}
-
-	opts := a.getLocalAddressOptions()
+	// nil snapshot == not configured; the helper must still yield defaults.
+	opts := getLocalAddressOptions(nil)
 
 	assert.Equal(t, 300, opts.ValidLft, "default ValidLft should be 300")
 	assert.Equal(t, 300, opts.PreferedLft, "default PreferedLft should be 300")
@@ -355,9 +352,8 @@ func TestGetLocalAddressOptions_WithConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := &announcer{
-				logger: log.NewNopLogger(),
-				config: &purelbv2.LBNodeAgentLocalSpec{
+			c := &announcerConfig{
+				spec: &purelbv2.LBNodeAgentLocalSpec{
 					AddressConfig: &purelbv2.AddressConfig{
 						LocalInterface: &purelbv2.InterfaceAddressConfig{
 							ValidLifetime:     tt.validLifetime,
@@ -368,7 +364,7 @@ func TestGetLocalAddressOptions_WithConfig(t *testing.T) {
 				},
 			}
 
-			opts := a.getLocalAddressOptions()
+			opts := getLocalAddressOptions(c)
 
 			assert.Equal(t, tt.expectedValid, opts.ValidLft, "ValidLft mismatch")
 			assert.Equal(t, tt.expectedPreferred, opts.PreferedLft, "PreferedLft mismatch")
@@ -378,12 +374,8 @@ func TestGetLocalAddressOptions_WithConfig(t *testing.T) {
 }
 
 func TestGetDummyAddressOptions_Defaults(t *testing.T) {
-	a := &announcer{
-		logger: log.NewNopLogger(),
-		config: nil, // No config
-	}
-
-	opts := a.getDummyAddressOptions()
+	// nil snapshot == not configured; the helper must still yield defaults.
+	opts := getDummyAddressOptions(nil)
 
 	assert.Equal(t, 0, opts.ValidLft, "default ValidLft should be 0 (permanent)")
 	assert.Equal(t, 0, opts.PreferedLft, "default PreferedLft should be 0 (permanent)")
@@ -431,9 +423,8 @@ func TestGetDummyAddressOptions_WithConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := &announcer{
-				logger: log.NewNopLogger(),
-				config: &purelbv2.LBNodeAgentLocalSpec{
+			c := &announcerConfig{
+				spec: &purelbv2.LBNodeAgentLocalSpec{
 					AddressConfig: &purelbv2.AddressConfig{
 						DummyInterface: &purelbv2.InterfaceAddressConfig{
 							ValidLifetime:     tt.validLifetime,
@@ -444,7 +435,7 @@ func TestGetDummyAddressOptions_WithConfig(t *testing.T) {
 				},
 			}
 
-			opts := a.getDummyAddressOptions()
+			opts := getDummyAddressOptions(c)
 
 			assert.Equal(t, tt.expectedValid, opts.ValidLft, "ValidLft mismatch")
 			assert.Equal(t, tt.expectedPreferred, opts.PreferedLft, "PreferedLft mismatch")
@@ -482,26 +473,25 @@ func TestGetAddressOptions_NilConfigLevels(t *testing.T) {
 		},
 	}
 
+	// A nil spec never appears in a published snapshot -- "not configured"
+	// is a nil *announcerConfig -- so that case maps to a nil snapshot.
+	snapshot := func(spec *purelbv2.LBNodeAgentLocalSpec) *announcerConfig {
+		if spec == nil {
+			return nil
+		}
+		return &announcerConfig{spec: spec}
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name+" local", func(t *testing.T) {
-			a := &announcer{
-				logger: log.NewNopLogger(),
-				config: tt.config,
-			}
-
 			// Should not panic
-			opts := a.getLocalAddressOptions()
+			opts := getLocalAddressOptions(snapshot(tt.config))
 			assert.Equal(t, 300, opts.ValidLft, "default ValidLft")
 		})
 
 		t.Run(tt.name+" dummy", func(t *testing.T) {
-			a := &announcer{
-				logger: log.NewNopLogger(),
-				config: tt.config,
-			}
-
 			// Should not panic
-			opts := a.getDummyAddressOptions()
+			opts := getDummyAddressOptions(snapshot(tt.config))
 			assert.Equal(t, 0, opts.ValidLft, "default ValidLft")
 		})
 	}
@@ -768,7 +758,7 @@ func TestSkipDADFromServiceAnnotation(t *testing.T) {
 // =================================================================
 
 // ptrBool returns &b. Required because EndpointConditions fields are pointers.
-func ptrBool(b bool) *bool { return &b }
+func ptrBool(b bool) *bool    { return &b }
 func ptrStr(s string) *string { return &s }
 
 // makeSlice builds a single-slice EndpointSlice list for tests. Each
@@ -875,32 +865,32 @@ func TestBuildPreferredNodes(t *testing.T) {
 	})
 }
 
-func TestApplyLocalSpec(t *testing.T) {
-	t.Run("default clears regex", func(t *testing.T) {
-		a := &announcer{logger: log.NewNopLogger(), localNameRegex: regexp.MustCompile("stale")}
-		assert.NoError(t, a.applyLocalSpec(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "default"}))
-		assert.Nil(t, a.localNameRegex)
+func TestCompileLocalInterface(t *testing.T) {
+	t.Run("default yields no regex", func(t *testing.T) {
+		re, err := compileLocalInterface(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "default"})
+		assert.NoError(t, err)
+		assert.Nil(t, re)
 	})
 
 	t.Run("empty treated as default", func(t *testing.T) {
-		a := &announcer{logger: log.NewNopLogger(), localNameRegex: regexp.MustCompile("stale")}
-		assert.NoError(t, a.applyLocalSpec(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: ""}))
-		assert.Nil(t, a.localNameRegex)
+		re, err := compileLocalInterface(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: ""})
+		assert.NoError(t, err)
+		assert.Nil(t, re)
 	})
 
 	t.Run("regex compiled", func(t *testing.T) {
-		a := &announcer{logger: log.NewNopLogger()}
-		assert.NoError(t, a.applyLocalSpec(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "^(eth1|eth2)$"}))
-		if assert.NotNil(t, a.localNameRegex) {
-			assert.True(t, a.localNameRegex.MatchString("eth1"))
-			assert.False(t, a.localNameRegex.MatchString("eth10"))
+		re, err := compileLocalInterface(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "^(eth1|eth2)$"})
+		assert.NoError(t, err)
+		if assert.NotNil(t, re) {
+			assert.True(t, re.MatchString("eth1"))
+			assert.False(t, re.MatchString("eth10"))
 		}
 	})
 
 	t.Run("invalid regex errors", func(t *testing.T) {
-		a := &announcer{logger: log.NewNopLogger()}
-		assert.Error(t, a.applyLocalSpec(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "["}))
-		assert.Nil(t, a.localNameRegex)
+		re, err := compileLocalInterface(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "["})
+		assert.Error(t, err)
+		assert.Nil(t, re)
 	})
 }
 
@@ -939,10 +929,16 @@ func TestTryExtraInterfaces(t *testing.T) {
 		return false
 	}
 
+	a := &announcer{logger: log.NewNopLogger()}
+	// tryExtraInterfaces reads its spec from the snapshot it is handed, not
+	// from announcer state, so each case just builds the snapshot it wants.
+	cfgFor := func(spec *purelbv2.LBNodeAgentLocalSpec) *announcerConfig {
+		return &announcerConfig{spec: spec}
+	}
+
 	t.Run("resolves IPv4 on explicit interface", func(t *testing.T) {
-		a := &announcer{logger: log.NewNopLogger(),
-			config: &purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"lo"}}}
-		ipnet, link, err := a.tryExtraInterfaces(net.ParseIP("127.0.0.1"))
+		ipnet, link, err := a.tryExtraInterfaces(
+			cfgFor(&purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"lo"}}), net.ParseIP("127.0.0.1"))
 		assert.NoError(t, err)
 		assert.Equal(t, "lo", link.Attrs().Name)
 		assert.Equal(t, "127.0.0.1/8", ipnet.String())
@@ -952,32 +948,31 @@ func TestTryExtraInterfaces(t *testing.T) {
 		if !loV6() {
 			t.Skip("loopback has no IPv6 address")
 		}
-		a := &announcer{logger: log.NewNopLogger(),
-			config: &purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"lo"}}}
-		_, link, err := a.tryExtraInterfaces(net.ParseIP("::1"))
+		_, link, err := a.tryExtraInterfaces(
+			cfgFor(&purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"lo"}}), net.ParseIP("::1"))
 		assert.NoError(t, err)
 		assert.Equal(t, "lo", link.Attrs().Name)
 	})
 
 	t.Run("dummy interface name skipped", func(t *testing.T) {
-		a := &announcer{logger: log.NewNopLogger(),
-			config: &purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"lo"}, DummyInterface: "lo"}}
-		_, _, err := a.tryExtraInterfaces(net.ParseIP("127.0.0.1"))
+		_, _, err := a.tryExtraInterfaces(
+			cfgFor(&purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"lo"}, DummyInterface: "lo"}),
+			net.ParseIP("127.0.0.1"))
 		assert.Error(t, err)
 	})
 
 	t.Run("missing interface skipped without error abort", func(t *testing.T) {
-		a := &announcer{logger: log.NewNopLogger(),
-			config: &purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"purelb-does-not-exist0", "lo"}}}
-		_, link, err := a.tryExtraInterfaces(net.ParseIP("127.0.0.1"))
+		_, link, err := a.tryExtraInterfaces(
+			cfgFor(&purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"purelb-does-not-exist0", "lo"}}),
+			net.ParseIP("127.0.0.1"))
 		assert.NoError(t, err)
 		assert.Equal(t, "lo", link.Attrs().Name)
 	})
 
 	t.Run("no candidate matches", func(t *testing.T) {
-		a := &announcer{logger: log.NewNopLogger(),
-			config: &purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"purelb-does-not-exist0"}}}
-		_, _, err := a.tryExtraInterfaces(net.ParseIP("127.0.0.1"))
+		_, _, err := a.tryExtraInterfaces(
+			cfgFor(&purelbv2.LBNodeAgentLocalSpec{Interfaces: []string{"purelb-does-not-exist0"}}),
+			net.ParseIP("127.0.0.1"))
 		assert.Error(t, err)
 		assert.False(t, errors.Is(err, errIndeterminate))
 	})
@@ -987,15 +982,28 @@ func TestTryExtraInterfaces(t *testing.T) {
 // TEST-NET addresses (192.0.2.0/24 is never on a real interface, so
 // deleteAddr's scan is read-only and removes nothing) with a live
 // renewal timer, ready to be driven into a withdrawal path.
+// A nil config means "not configured" and is published as a nil snapshot,
+// which is what nodeSelector deselection and config removal produce.
+// Otherwise the snapshot is assembled exactly as SetConfig would, regex
+// included, so these tests exercise the same shape the real path publishes.
 func withdrawalTestAnnouncer(config *purelbv2.LBNodeAgentLocalSpec) *announcer {
 	a := &announcer{
 		logger:       log.NewNopLogger(),
 		myNode:       "node-a",
 		client:       nopServiceEvent{},
-		config:       config,
-		groups:       map[string]*purelbv2.ServiceGroupLocalSpec{},
-		remoteGroups: map[string]*purelbv2.ServiceGroupRemoteSpec{},
 		svcIngresses: map[string][]v1.LoadBalancerIngress{},
+	}
+	if config != nil {
+		regex, err := compileLocalInterface(config)
+		if err != nil {
+			panic(err) // test fixture: a bad regex here is a test bug
+		}
+		a.cfg.Store(&announcerConfig{
+			spec:           config,
+			groups:         map[string]*purelbv2.ServiceGroupLocalSpec{},
+			remoteGroups:   map[string]*purelbv2.ServiceGroupRemoteSpec{},
+			localNameRegex: regex,
+		})
 	}
 	return a
 }
@@ -1011,8 +1019,9 @@ func announceForTest(a *announcer, nsName, ip string) {
 
 func TestSetBalancerWithdrawsOnNoLocalInterface(t *testing.T) {
 	const slotKey = "purelb.io/announcing-IPv4"
+	// withdrawalTestAnnouncer compiles LocalInterface into the snapshot, so
+	// the regex no longer has to be poked in separately.
 	a := withdrawalTestAnnouncer(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "^purelb-nomatch$"})
-	a.localNameRegex = regexp.MustCompile("^purelb-nomatch$")
 
 	svc := lbSvc("192.0.2.1")
 	svc.Namespace = "default"
@@ -1048,6 +1057,134 @@ func TestSetBalancerWithdrawsOnNoConfig(t *testing.T) {
 	_, timerAlive := a.addressRenewals.Load(key)
 	assert.False(t, timerAlive, "renewal timer must be cancelled")
 	assert.Empty(t, svc.Annotations[slotKey], "announce slot must be cleared")
+}
+
+// TestSetConfigStoresNilWhenNoAgentSelectsNode covers the single most
+// dangerous line of the snapshot change. SetConfig used to blank the
+// config on entry, which implicitly meant "no agent => announce nothing".
+// Removing that blanking (it was the race window) means the no-agent path
+// has to store nil explicitly; if it ever stops doing so, a node whose
+// LBNodeAgent was deleted, or that a nodeSelector deselected, would keep
+// announcing on its last config forever.
+//
+// Reachable without CAP_NET_ADMIN because it returns before
+// addDummyInterface.
+func TestSetConfigStoresNilWhenNoAgentSelectsNode(t *testing.T) {
+	a := withdrawalTestAnnouncer(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "^eth0$"})
+	assert.NotNil(t, a.cfg.Load(), "fixture should start configured")
+
+	// No agent has a Local spec: deselected, or the CR was deleted.
+	assert.NoError(t, a.SetConfig(&purelbv2.Config{Agents: nil}))
+	assert.Nil(t, a.cfg.Load(), "no governing agent must publish a nil snapshot")
+}
+
+// TestSetConfigStoresNilOnInvalidRegex checks the other fail-safe path: a
+// config the announcer rejects must not leave the previous one live, or
+// the node would announce on config the operator believes was replaced.
+func TestSetConfigStoresNilOnInvalidRegex(t *testing.T) {
+	a := withdrawalTestAnnouncer(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "^eth0$"})
+	assert.NotNil(t, a.cfg.Load(), "fixture should start configured")
+
+	err := a.SetConfig(&purelbv2.Config{Agents: []*purelbv2.LBNodeAgent{
+		{Spec: purelbv2.LBNodeAgentSpec{Local: &purelbv2.LBNodeAgentLocalSpec{LocalInterface: "["}}},
+	}})
+	assert.Error(t, err, "an uncompilable localInterface must be rejected")
+	assert.Nil(t, a.cfg.Load(), "a rejected config must publish a nil snapshot")
+}
+
+// TestSetBalancerConcurrentWithConfigSwap is the regression test for the
+// crash that restarted every node agent on the test cluster: SetConfig
+// (CR-controller goroutine) publishing config while SetBalancer
+// (service-sync goroutine) was mid-announcement.
+//
+// Before the snapshot change this reproduced two distinct failures --
+// a nil dereference of the spec pointer in tryExtraInterfaces, and
+// "concurrent map iteration and map write" on groups/remoteGroups, the
+// latter a runtime fatal error that no recover() can catch.
+//
+// The writer is the real SetConfig, not a bare a.cfg.Store: driving the
+// production writer is what makes this a regression test rather than a
+// test of the fixture. Verified by temporarily restoring the pre-fix
+// unsynchronized field, which makes this fail with a DATA RACE whose
+// stack is the one seen in the crash-looping pods --
+// tryExtraInterfaces <- SetBalancer against SetConfig.
+//
+// SetConfig ends in addDummyInterface, which needs CAP_NET_ADMIN. Both
+// outcomes are useful: unprivileged, it fails and publishes a nil
+// snapshot (exercising the fail-safe path); privileged, it publishes a
+// real one. The interface is named distinctively and removed on cleanup
+// so a root test run leaves nothing behind.
+//
+// TEST-NET-1 addresses are never present on a real interface, so the
+// netlink work the reader drives is read-only.
+func TestSetBalancerConcurrentWithConfigSwap(t *testing.T) {
+	const tmpDummy = "purelb-race-test0"
+
+	a := withdrawalTestAnnouncer(&purelbv2.LBNodeAgentLocalSpec{
+		LocalInterface: "^purelb-nomatch$",
+		Interfaces:     []string{"purelb-does-not-exist0", "lo"},
+	})
+
+	t.Cleanup(func() {
+		if link, err := netlink.LinkByName(tmpDummy); err == nil {
+			_ = removeInterface(link)
+		}
+	})
+
+	// Alternating deliveries: one that selects this node and one that
+	// deselects it, so the writer exercises both the publish and the
+	// store-nil paths the way a nodeSelector change does.
+	configured := &purelbv2.Config{Agents: []*purelbv2.LBNodeAgent{
+		{Spec: purelbv2.LBNodeAgentSpec{Local: &purelbv2.LBNodeAgentLocalSpec{
+			LocalInterface: "^purelb-nomatch$",
+			Interfaces:     []string{"purelb-does-not-exist0", "lo"},
+			DummyInterface: tmpDummy,
+		}}},
+		{Spec: purelbv2.LBNodeAgentSpec{Local: nil}},
+	}}
+	deselected := &purelbv2.Config{Agents: nil}
+
+	const iterations = 500
+	stop := make(chan struct{})
+	var writer sync.WaitGroup
+
+	writer.Add(1)
+	go func() {
+		defer writer.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// Errors are expected without CAP_NET_ADMIN and are not the
+			// point; the point is that the reader never observes a
+			// half-applied config.
+			if i%4 == 3 {
+				_ = a.SetConfig(deselected)
+				continue
+			}
+			_ = a.SetConfig(configured)
+		}
+	}()
+
+	// Exactly one reader. SetBalancer writes svcIngresses, which is
+	// deliberately unsynchronized because production only ever calls it
+	// from the single service-sync goroutine; a second reader here would
+	// manufacture a map race that cannot happen in the real agent and
+	// would test the fixture rather than the fix.
+	svc := lbSvc("192.0.2.1")
+	svc.Namespace = "default"
+	svc.Name = "test-svc"
+	for i := 0; i < iterations; i++ {
+		// Errors are expected and irrelevant: nothing on this host holds
+		// a TEST-NET address. The assertion is that this neither panics
+		// nor trips the race detector.
+		_ = a.SetBalancer(svc, nil)
+	}
+
+	close(stop)
+	writer.Wait()
 }
 
 func TestWithdrawalSharedIPRefcount(t *testing.T) {
