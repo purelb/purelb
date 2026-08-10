@@ -171,12 +171,45 @@ func main() {
 				"hasNodeSelector", fmt.Sprintf("%t", agent.Spec.NodeSelector != nil))
 		}
 
+		// AgentsForNode drops agents whose selector will not convert, and
+		// documents that reporting them is the caller's job. Do that here:
+		// otherwise a typo in matchExpressions removes an LBNodeAgent from
+		// consideration with no log, no event and no metric, which looks
+		// exactly like the CR not existing.
 		preFilter := len(cfg.Agents)
+		for _, agent := range cfg.Agents {
+			if purelbv2.IsCatchAll(agent.Spec.NodeSelector) {
+				continue
+			}
+			if _, err := metav1.LabelSelectorAsSelector(agent.Spec.NodeSelector); err != nil {
+				logging.Info(logger, "op", "configChanged", "event", "invalidNodeSelector",
+					"agent", agent.Namespace+"/"+agent.Name, "error", err,
+					"msg", "nodeSelector could not be evaluated; this LBNodeAgent matches no node")
+				client.Errorf(agent, "InvalidNodeSelector",
+					"nodeSelector could not be evaluated (%s); this LBNodeAgent applies to no node", err)
+			}
+		}
+
 		cfg.Agents = purelbv2.AgentsForNode(cfg.Agents, node.Labels)
+
+		// Report the agent whose configuration is actually applied, which is
+		// the first one with a Local spec, not simply the highest-precedence
+		// match. The announcer and the election selector both resolve through
+		// FirstLocalAgent, so an LBNodeAgent carrying only a nodeSelector
+		// sorts to the front, gets skipped, and naming it here would event
+		// "ignored" against the CR that is genuinely in force.
 		if len(cfg.Agents) > 1 {
-			winner := cfg.Agents[0]
-			for _, ignored := range cfg.Agents[1:] {
-				logging.Info(logger, "op", "configChanged", "msg", "multiple LBNodeAgents match this node, using highest precedence",
+			winner := purelbv2.FirstLocalAgent(cfg.Agents)
+			if winner == nil {
+				logging.Info(logger, "op", "configChanged", "event", "noLocalSpec", "node", *myNode,
+					"matching", fmt.Sprintf("%d", len(cfg.Agents)),
+					"msg", "LBNodeAgents match this node but none has a local spec; announcing nothing")
+			}
+			for _, ignored := range cfg.Agents {
+				if winner == nil || ignored == winner {
+					continue
+				}
+				logging.Info(logger, "op", "configChanged", "msg", "multiple LBNodeAgents match this node, using highest precedence with a local spec",
 					"node", *myNode, "using", winner.Namespace+"/"+winner.Name, "ignoring", ignored.Namespace+"/"+ignored.Name)
 				client.Errorf(ignored, "ConfigIgnored",
 					"LBNodeAgent %s/%s takes precedence on node %s", winner.Namespace, winner.Name, *myNode)

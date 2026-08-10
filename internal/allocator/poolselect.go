@@ -15,10 +15,13 @@
 package allocator
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	v1 "k8s.io/api/core/v1"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -53,6 +56,59 @@ var (
 	// none or more than one is marked as its default.
 	ErrAmbiguousDefault = errors.New("ambiguous namespace default")
 )
+
+// allocationFailureReason maps an allocation error to a bounded metric
+// label. The sentinels above exist so this can classify without string
+// matching; anything unrecognised lands in "other" rather than minting a
+// new series, because the error text can contain a Service's own
+// annotation values.
+func allocationFailureReason(err error) string {
+	switch {
+	case errors.Is(err, ErrNamespaceDenied):
+		return "namespace_denied"
+	case errors.Is(err, ErrAmbiguousDefault):
+		return "ambiguous_namespace_default"
+	case errors.Is(err, ErrNoUsablePool):
+		return "no_usable_pool"
+	case errors.Is(err, ErrUnknownPool):
+		return "unknown_pool"
+	default:
+		return "other"
+	}
+}
+
+// recordAllocationFailure counts a failed allocation by reason.
+//
+// The pool label is the requested ServiceGroup only when the Service named
+// one, and even then it is bounded by the annotation being a ServiceGroup
+// name; when nothing was named there is no pool to attribute the failure
+// to, so it is recorded as "<none>". Never the raw error text, which would
+// let a Service mint unbounded Prometheus series.
+func recordAllocationFailure(svc *v1.Service, err error) {
+	pool := svc.Annotations[purelbv2.DesiredGroupAnnotation]
+	if pool == "" {
+		pool = "<none>"
+	}
+	allocationRejected.WithLabelValues(pool, allocationFailureReason(err)).Inc()
+}
+
+// isRetryableAllocationErr reports whether re-running the same allocation
+// later could plausibly succeed.
+//
+// Only transport-level failures against an external IPAM sidecar qualify.
+// Everything the allocator decides for itself -- exhaustion, sharing
+// conflicts, namespace boundaries, unparseable addresses -- is a property
+// of the request or the config and will fail identically on every retry.
+func isRetryableAllocationErr(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Aborted:
+		return true
+	}
+	return false
+}
 
 // resolve returns the pool svc must allocate from and the provenance of the
 // choice.

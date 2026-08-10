@@ -26,6 +26,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
 
@@ -36,6 +37,7 @@ type svcRow struct {
 	IP         string `json:"ip"`
 	Pool       string `json:"pool"`
 	PoolType   string `json:"poolType"`
+	IPAM       string `json:"ipam"`
 	Announcing string `json:"announcing"` // "node/iface" or ""
 	SharingKey string `json:"sharingKey"`
 	Status     string `json:"status"`
@@ -49,11 +51,11 @@ type sharedIPGroup struct {
 }
 
 type servicesSummary struct {
-	Services    []svcRow        `json:"services"`
-	SharedIPs   []sharedIPGroup `json:"sharedIPs,omitempty"`
-	TotalSvc    int             `json:"totalServices"`
-	TotalIPs    int             `json:"totalIPs"`
-	Problems    int             `json:"problems"`
+	Services  []svcRow        `json:"services"`
+	SharedIPs []sharedIPGroup `json:"sharedIPs,omitempty"`
+	TotalSvc  int             `json:"totalServices"`
+	TotalIPs  int             `json:"totalIPs"`
+	Problems  int             `json:"problems"`
 }
 
 func newServicesCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
@@ -98,11 +100,15 @@ func runServices(ctx context.Context, c *clients, format outputFormat, filterPoo
 		return fmt.Errorf("listing leases: %w", err)
 	}
 	lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	// ServiceGroups carry .status.ipam, the only place the address source is
+	// recorded. Best-effort: without it every pool simply reports "cluster".
+	sgList, _ := c.dynamic.Resource(gvrServiceGroups).Namespace("").List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 
 	snap := &clusterSnapshot{
-		services:     svcList,
-		leases:       leaseList,
-		lbNodeAgents: lbnaList,
+		services:      svcList,
+		serviceGroups: sgList,
+		leases:        leaseList,
+		lbNodeAgents:  lbnaList,
 	}
 	return renderServices(snap, format, filterPool, filterNode, filterIP, problemsOnly)
 }
@@ -112,6 +118,7 @@ func runServices(ctx context.Context, c *clients, format outputFormat, filterPoo
 func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filterNode, filterIP string, problemsOnly bool) error {
 	healthyNodes := buildHealthyNodeSet(snap.leases.Items)
 	dummyIface := resolveDummyInterface(snap.lbNodeAgents)
+	poolIPAM := buildPoolIPAM(snap.serviceGroups)
 
 	var rows []svcRow
 	// Track sharing: sharingKey -> IP -> []services with ports
@@ -169,6 +176,7 @@ func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filt
 				IP:         "<pending>",
 				Pool:       poolName,
 				PoolType:   poolType,
+				IPAM:       poolIPAM[poolName],
 				SharingKey: sharingKey,
 				Status:     svcStatusPending,
 			}
@@ -202,6 +210,7 @@ func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filt
 				IP:         ipStr,
 				Pool:       poolName,
 				PoolType:   poolType,
+				IPAM:       poolIPAM[poolName],
 				Announcing: announcing,
 				SharingKey: sharingKey,
 				Status:     status,
@@ -286,7 +295,7 @@ func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filt
 
 	// Table output
 	tw := tableWriter(os.Stdout)
-	fmt.Fprintf(tw, "NAMESPACE\tSERVICE\tIPS\tPOOL\tTYPE\tANNOUNCING\tSHARING\tSTATUS\n")
+	fmt.Fprintf(tw, "NAMESPACE\tSERVICE\tIPS\tPOOL\tTYPE\tIPAM\tANNOUNCING\tSHARING\tSTATUS\n")
 
 	for _, r := range rows {
 		announcing := r.Announcing
@@ -301,14 +310,18 @@ func renderServices(snap *clusterSnapshot, format outputFormat, filterPool, filt
 		if poolType == "" {
 			poolType = "-"
 		}
+		ipam := r.IPAM
+		if ipam == "" {
+			ipam = "-"
+		}
 
 		statusMarker := r.Status
 		if r.Status != svcStatusOK && r.Status != svcStatusPending {
 			statusMarker = r.Status + "  ***"
 		}
 
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			r.Namespace, r.Name, r.IP, r.Pool, poolType, announcing, sharing, statusMarker)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			r.Namespace, r.Name, r.IP, r.Pool, poolType, ipam, announcing, sharing, statusMarker)
 	}
 	tw.Flush()
 
@@ -362,4 +375,37 @@ func countUniqueSvcs(rows []svcRow) int {
 		seen[r.Namespace+"/"+r.Name] = true
 	}
 	return len(seen)
+}
+
+// buildPoolIPAM maps ServiceGroup name to the source that allocates its
+// addresses, read from .status.ipam.
+//
+// The TYPE column reports the announcement mechanism, which SidecarPool
+// derives from spec.external.announce -- so an external pool announced
+// locally reports "local", identical to a cluster-IPAM pool, and nothing in
+// the output revealed that PureLB was not the allocator. The ServiceGroup
+// CRD keeps these as two separate print columns (Announce and IPAM) for
+// exactly that reason; this mirrors it.
+//
+// Pools with no status yet fall back to "cluster": .status is written by
+// the allocator, and a ServiceGroup that has not been reconciled is far more
+// likely to be a local pool than an external one.
+func buildPoolIPAM(sgs *unstructured.UnstructuredList) map[string]string {
+	out := map[string]string{}
+	if sgs == nil {
+		return out
+	}
+	for i := range sgs.Items {
+		sg := &sgs.Items[i]
+		name := sg.GetName()
+		if name == "" {
+			continue
+		}
+		ipam, found, err := unstructured.NestedString(sg.Object, "status", "ipam")
+		if err != nil || !found || ipam == "" {
+			ipam = "cluster"
+		}
+		out[name] = strings.ToLower(ipam)
+	}
+	return out
 }

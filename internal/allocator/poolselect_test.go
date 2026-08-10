@@ -16,10 +16,14 @@ package allocator
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -266,4 +270,68 @@ func TestBoundNamespacesInStatus(t *testing.T) {
 	assert.Equal(t, []string{"tenant-a", "tenant-a-staging"},
 		writer.updates[len(writer.updates)-1].Status.BoundNamespaces,
 		"statusEqual must not elide a pure spec.namespaces edit")
+}
+
+// TestAllocationFailureReason locks in the metric taxonomy. The sentinels
+// exist so failures can be classified without string matching; before this
+// they were defined and never consumed, so a namespace boundary refusing a
+// tenant's Services produced no metric at all.
+func TestAllocationFailureReason(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"namespace denied", fmt.Errorf("%w: nope", ErrNamespaceDenied), "namespace_denied"},
+		{"ambiguous default", fmt.Errorf("%w: nope", ErrAmbiguousDefault), "ambiguous_namespace_default"},
+		{"no usable pool", fmt.Errorf("%w: nope", ErrNoUsablePool), "no_usable_pool"},
+		{"unknown pool", fmt.Errorf("%w %q", ErrUnknownPool, "x"), "unknown_pool"},
+		{"unclassified", errors.New("pool exhausted"), "other"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, allocationFailureReason(tt.err))
+		})
+	}
+}
+
+// TestIsRetryableAllocationErr covers the requeue decision. Getting this
+// wrong in either direction is costly: retrying a permanent failure spins
+// the goroutine that allocates every address in the cluster, and not
+// retrying a transient one leaves a correct Service pending indefinitely.
+func TestIsRetryableAllocationErr(t *testing.T) {
+	retryable := []struct {
+		name string
+		err  error
+	}{
+		{"sidecar down", status.Error(codes.Unavailable, "connection refused")},
+		{"sidecar too slow", status.Error(codes.DeadlineExceeded, "timeout")},
+		{"sidecar out of capacity right now", status.Error(codes.ResourceExhausted, "busy")},
+		{"sidecar aborted", status.Error(codes.Aborted, "conflict")},
+		{"our context timed out", context.DeadlineExceeded},
+		{"our context cancelled", context.Canceled},
+	}
+	for _, tt := range retryable {
+		t.Run("retry/"+tt.name, func(t *testing.T) {
+			assert.True(t, isRetryableAllocationErr(tt.err))
+		})
+	}
+
+	permanent := []struct {
+		name string
+		err  error
+	}{
+		{"namespace boundary", fmt.Errorf("%w: nope", ErrNamespaceDenied)},
+		{"ambiguous default", fmt.Errorf("%w: nope", ErrAmbiguousDefault)},
+		{"unknown pool", fmt.Errorf("%w %q", ErrUnknownPool, "x")},
+		{"pool exhausted", errors.New("no available IPs")},
+		{"sharing conflict", errors.New("sharing key does not match")},
+		{"sidecar rejected the request", status.Error(codes.InvalidArgument, "bad pool")},
+		{"sidecar has no such pool", status.Error(codes.NotFound, "no pool")},
+	}
+	for _, tt := range permanent {
+		t.Run("no-retry/"+tt.name, func(t *testing.T) {
+			assert.False(t, isRetryableAllocationErr(tt.err))
+		})
+	}
 }
