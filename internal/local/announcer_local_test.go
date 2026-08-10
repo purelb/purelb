@@ -540,7 +540,7 @@ func TestScheduleRenewal_FiniteLifetime(t *testing.T) {
 	assert.Equal(t, 150*time.Second, renewal.interval, "renewal interval should be 50% of lifetime")
 
 	// Clean up timer
-	renewal.timer.Stop()
+	renewal.stopTimer()
 }
 
 func TestScheduleRenewal_MinimumInterval(t *testing.T) {
@@ -566,7 +566,7 @@ func TestScheduleRenewal_MinimumInterval(t *testing.T) {
 	assert.Equal(t, 30*time.Second, renewal.interval, "renewal interval should be at minimum 30s")
 
 	// Clean up timer
-	renewal.timer.Stop()
+	renewal.stopTimer()
 }
 
 func TestScheduleRenewal_ReplacesExisting(t *testing.T) {
@@ -600,7 +600,7 @@ func TestScheduleRenewal_ReplacesExisting(t *testing.T) {
 	assert.NotEqual(t, interval1, renewal2.interval, "interval should be different after replacement")
 
 	// Clean up timer
-	renewal2.timer.Stop()
+	renewal2.stopTimer()
 }
 
 func TestCancelRenewal(t *testing.T) {
@@ -668,7 +668,7 @@ func TestScheduleRenewal_ConcurrentAccess(t *testing.T) {
 
 	// Clean up any remaining timers
 	a.addressRenewals.Range(func(key, val interface{}) bool {
-		val.(*addressRenewal).timer.Stop()
+		val.(*addressRenewal).stopTimer()
 		return true
 	})
 }
@@ -1185,6 +1185,93 @@ func TestSetBalancerConcurrentWithConfigSwap(t *testing.T) {
 
 	close(stop)
 	writer.Wait()
+}
+
+// TestRenewalTimerConcurrentWithSchedule is the regression test for the
+// addressRenewal.timer race: renewAddress re-arms the timer on the timer's
+// own goroutine while scheduleRenewal Stops it on the service-sync
+// goroutine, which happens whenever a Service is re-announced as its
+// renewal fires.
+//
+// scheduleRenewal is the pairing that was wide open, because it Stopped the
+// superseded timer without consulting cancelled. cancelRenewal and
+// WithdrawAll set cancelled before Stop and renewAddress re-checks it, which
+// narrows their window to a couple of instructions but does not close it --
+// so timer is atomic rather than flag-gated, which fixes all three at once.
+//
+// Verified to catch the defect by reverting timer to a plain *time.Timer,
+// which makes this fail with a DATA RACE pairing renewAddress's re-arm
+// against scheduleRenewal's Stop.
+//
+// A real link is used so renewAddress gets past addNetworkWithOptions;
+// unprivileged the call fails, which still falls through to the re-arm.
+// TEST-NET-1 means nothing is configured on the host either way.
+func TestRenewalTimerConcurrentWithSchedule(t *testing.T) {
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		t.Skip("no loopback interface")
+	}
+	a := &announcer{logger: log.NewNopLogger(), myNode: "node-a", client: nopServiceEvent{}}
+
+	const nsName = "default/renew-race"
+	ipnet := net.IPNet{IP: net.ParseIP("192.0.2.1"), Mask: net.CIDRMask(24, 32)}
+	key := renewalKey(nsName, ipnet.IP.String())
+	opts := AddressOptions{ValidLft: 300, PreferedLft: 300}
+
+	for i := 0; i < 300; i++ {
+		r := &addressRenewal{ipNet: ipnet, link: lo, opts: opts, interval: time.Hour}
+		r.timer.Store(time.AfterFunc(time.Hour, func() {}))
+		a.addressRenewals.Store(key, r)
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { // the fired renewal timer, re-arming itself
+			defer wg.Done()
+			a.renewAddress(key)
+		}()
+		// service-sync goroutine re-announcing the same address
+		a.scheduleRenewal(nsName, ipnet, lo, opts)
+		wg.Wait()
+	}
+
+	// Leave no timers behind for other tests in the package.
+	a.addressRenewals.Range(func(k, v interface{}) bool {
+		v.(*addressRenewal).cancelled.Store(true)
+		v.(*addressRenewal).stopTimer()
+		a.addressRenewals.Delete(k)
+		return true
+	})
+}
+
+// TestScheduleRenewalCancelsSupersededTimer covers the second half of the
+// same fix. scheduleRenewal replaces a renewal wholesale, so the superseded
+// one must be marked cancelled and not merely Stopped: an in-flight
+// renewAddress re-checks that flag before re-arming, and without it a
+// Stopped timer could arm itself again and go on firing untracked, with
+// nothing left in the map to cancel it.
+func TestScheduleRenewalCancelsSupersededTimer(t *testing.T) {
+	a := &announcer{logger: log.NewNopLogger(), myNode: "node-a", client: nopServiceEvent{}}
+
+	const nsName = "default/superseded"
+	ipnet := net.IPNet{IP: net.ParseIP("192.0.2.2"), Mask: net.CIDRMask(24, 32)}
+	key := renewalKey(nsName, ipnet.IP.String())
+	opts := AddressOptions{ValidLft: 300, PreferedLft: 300}
+
+	a.scheduleRenewal(nsName, ipnet, nil, opts)
+	first, ok := a.addressRenewals.Load(key)
+	assert.True(t, ok, "first renewal should be tracked")
+
+	a.scheduleRenewal(nsName, ipnet, nil, opts)
+	second, ok := a.addressRenewals.Load(key)
+	assert.True(t, ok, "replacement renewal should be tracked")
+	assert.NotSame(t, first, second, "scheduleRenewal should install a new renewal")
+
+	assert.True(t, first.(*addressRenewal).cancelled.Load(),
+		"superseded renewal must be marked cancelled, not just stopped")
+	assert.False(t, second.(*addressRenewal).cancelled.Load(),
+		"the live renewal must not be marked cancelled")
+
+	a.cancelRenewal(nsName, ipnet.IP.String())
 }
 
 func TestWithdrawalSharedIPRefcount(t *testing.T) {

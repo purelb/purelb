@@ -122,13 +122,31 @@ type announcer struct {
 
 // addressRenewal holds the state needed to periodically refresh an address
 // before its lifetime expires.
+//
+// timer is atomic because it is written by the renewal timer's own
+// goroutine (renewAddress re-arming itself) and read by the service-sync
+// goroutine (scheduleRenewal, cancelRenewal, WithdrawAll, all calling
+// Stop). The cancelled flag does not make a plain field safe: cancelRenewal
+// and WithdrawAll set it before Stop and renewAddress re-checks it before
+// re-arming, which narrows the window to the couple of instructions between
+// that check and the assignment but does not close it -- and scheduleRenewal
+// Stops the old timer without touching cancelled at all, leaving the window
+// wide open.
 type addressRenewal struct {
 	ipNet     net.IPNet
 	link      netlink.Link
 	opts      AddressOptions
-	timer     *time.Timer
+	timer     atomic.Pointer[time.Timer]
 	interval  time.Duration
 	cancelled atomic.Bool // Set when renewal is cancelled to prevent race with timer
+}
+
+// stopTimer stops this renewal's timer if one has been armed. Safe to call
+// from any goroutine and safe before the first arm.
+func (r *addressRenewal) stopTimer() {
+	if t := r.timer.Load(); t != nil {
+		t.Stop()
+	}
 }
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -705,7 +723,7 @@ func (a *announcer) WithdrawAll() {
 	a.addressRenewals.Range(func(key, val interface{}) bool {
 		renewal := val.(*addressRenewal)
 		renewal.cancelled.Store(true)
-		renewal.timer.Stop()
+		renewal.stopTimer()
 		return true
 	})
 
@@ -1024,14 +1042,19 @@ func (a *announcer) scheduleRenewal(svcName string, lbIPNet net.IPNet, link netl
 		interval: interval,
 	}
 
-	// Cancel existing timer if any
+	// Cancel existing timer if any. Mark it cancelled as well as stopping
+	// it: an in-flight renewAddress for the old renewal re-checks that flag
+	// before re-arming, so without this the superseded timer can arm itself
+	// again after being Stopped and go on firing untracked.
 	if old, loaded := a.addressRenewals.LoadAndDelete(key); loaded {
-		old.(*addressRenewal).timer.Stop()
+		oldRenewal := old.(*addressRenewal)
+		oldRenewal.cancelled.Store(true)
+		oldRenewal.stopTimer()
 	}
 
-	renewal.timer = time.AfterFunc(interval, func() {
+	renewal.timer.Store(time.AfterFunc(interval, func() {
 		a.renewAddress(key)
-	})
+	}))
 
 	a.addressRenewals.Store(key, renewal)
 	logging.Debug(a.logger, "op", "scheduleRenewal", "key", key, "interval", interval)
@@ -1065,9 +1088,9 @@ func (a *announcer) renewAddress(key string) {
 	}
 
 	// Reschedule for next renewal
-	renewal.timer = time.AfterFunc(renewal.interval, func() {
+	renewal.timer.Store(time.AfterFunc(renewal.interval, func() {
 		a.renewAddress(key)
-	})
+	}))
 }
 
 // cancelRenewal stops the renewal timer for a specific service/IP combination.
@@ -1078,7 +1101,7 @@ func (a *announcer) cancelRenewal(svcName, ip string) {
 		// Mark as cancelled first, then stop timer
 		// This prevents a race where timer fires between LoadAndDelete and Stop
 		renewal.cancelled.Store(true)
-		renewal.timer.Stop()
+		renewal.stopTimer()
 		logging.Debug(a.logger, "op", "cancelRenewal", "key", key)
 	}
 }
