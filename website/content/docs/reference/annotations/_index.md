@@ -10,8 +10,8 @@ These annotations are set by users on Service resources to control PureLB behavi
 
 Annotation | Value | Description
 -----------|-------|------------
-`purelb.io/service-group` | ServiceGroup name | Select which ServiceGroup to allocate from. If not set, the `default` ServiceGroup is used.
-`purelb.io/addresses` | IP address(es) | Request a specific IP. For dual-stack, comma-separate: `"192.168.1.100,fd00:1::100"`. Must be within the ServiceGroup's pool.
+`purelb.io/service-group` | ServiceGroup name | Select which ServiceGroup to allocate from. If not set, PureLB uses whichever ServiceGroup serves this Service's namespace, falling back to the one named `default`. Refused if the named ServiceGroup does not serve this namespace and enforcement is on — see [namespace restriction]({{< relref "/docs/configuration/service-groups#restricting-a-servicegroup-to-namespaces" >}}).
+`purelb.io/addresses` | IP address(es) | Request a specific IP. For dual-stack, comma-separate: `"192.168.1.100,fd00:1::100"`. Must be within a ServiceGroup's pool, and subject to the same namespace restriction as `purelb.io/service-group` — pinning an address is a way of naming its ServiceGroup. Not supported for `external` (sidecar IPAM) pools.
 `purelb.io/allow-shared-ip` | sharing key (string) | Enable IP sharing between services with the same key. Services must use different ports. Forces `externalTrafficPolicy: Cluster`.
 `purelb.io/allow-local` | `"true"` | Override: allow `externalTrafficPolicy: Local` on local address pools. Not recommended -- local addresses are announced by a single node, so `Local` policy drops traffic when target pods aren't on that node.
 `purelb.io/multi-pool` | `"true"` or `"false"` | Override the ServiceGroup's `multiPool` setting for this service.

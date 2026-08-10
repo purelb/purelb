@@ -257,3 +257,95 @@ func TestParsePool_ExternalDefaultSocket(t *testing.T) {
 	assert.True(t, ok, "empty Socket must fall back to defaultSidecarSocket")
 	a.closeAllSidecarConns()
 }
+
+// TestUnassignTargetsNamedExternalPool covers the pool-targeting rule in
+// Unassign. Getting it wrong in either direction is costly: skipping too
+// eagerly leaks an address in a system PureLB does not own, and skipping
+// never means one gRPC per configured sidecar on every Service deletion.
+func TestUnassignTargetsNamedExternalPool(t *testing.T) {
+	newPool := func(t *testing.T, name string, calls *int) *SidecarPool {
+		f := &fakeIPAM{releaseFunc: func(*ipamv1.ReleaseRequest) (*ipamv1.ReleaseResponse, error) {
+			*calls++
+			return &ipamv1.ReleaseResponse{}, nil
+		}}
+		conn := startFakeIPAM(t, f)
+		return NewSidecarPool(name, log.NewNopLogger(),
+			purelbv2.ServiceGroupExternalSpec{Provider: "test", Announce: "local"}, conn)
+	}
+
+	t.Run("named pool is released, the other external pool is not asked", func(t *testing.T) {
+		var mineCalls, theirsCalls int
+		a := New(log.NewNopLogger())
+		pools := map[string]Pool{
+			"mine":   newPool(t, "mine", &mineCalls),
+			"theirs": newPool(t, "theirs", &theirsCalls),
+		}
+		require.NoError(t, a.Unassign(pools, "ns/svc", "mine"))
+		assert.Equal(t, 1, mineCalls, "the pool that held the address must be released")
+		assert.Equal(t, 0, theirsCalls, "an unrelated sidecar must not be contacted")
+	})
+
+	t.Run("unknown pool falls back to asking every pool", func(t *testing.T) {
+		var aCalls, bCalls int
+		a := New(log.NewNopLogger())
+		pools := map[string]Pool{
+			"a": newPool(t, "a", &aCalls),
+			"b": newPool(t, "b", &bCalls),
+		}
+		// "" means the pool could not be determined -- an un-annotated
+		// Service, or a tombstone whose payload was lost. Releasing from
+		// none of them would leak, so every pool is asked.
+		require.NoError(t, a.Unassign(pools, "ns/svc", ""))
+		assert.Equal(t, 1, aCalls)
+		assert.Equal(t, 1, bCalls)
+	})
+
+	t.Run("a stale name does not skip local pools", func(t *testing.T) {
+		var extCalls int
+		a := New(log.NewNopLogger())
+		local, err := NewLocalPool("local", log.NewNopLogger(),
+			&purelbv2.AddressPool{Pool: "192.0.2.0/24", Subnet: "192.0.2.0/24", Aggregation: "default"},
+			nil, nil, nil, purelbv2.PoolTypeLocal, false, false, false)
+		require.NoError(t, err)
+		pools := map[string]Pool{
+			"local": local,
+			"ext":   newPool(t, "ext", &extCalls),
+		}
+		// The annotation is user-editable, so it must never be able to stop
+		// a local pool from releasing; only the (network-cost) external
+		// pools are skipped on the strength of it.
+		require.NoError(t, a.Unassign(pools, "ns/svc", "ext"))
+		assert.Equal(t, 1, extCalls, "the named external pool is still released")
+	})
+}
+
+// TestParsePoolValidatesExternalAnnounce covers the defence against a stale
+// or pruned ServiceGroup CRD. The CRD constrains announce to local|remote,
+// but if that constraint is missing the value reaches PoolType() verbatim,
+// purelb.io/pool-type is written empty, and the node agent has no way to
+// decide between a local interface and the dummy interface -- so it
+// announces nothing and the allocator says nothing. Failing the parse turns
+// that into a visible ParseFailed event on the ServiceGroup.
+func TestParsePoolValidatesExternalAnnounce(t *testing.T) {
+	a := New(log.NewNopLogger())
+
+	for _, announce := range []string{"", "Local", "REMOTE", "bgp", "dummy"} {
+		t.Run("rejected/"+announce, func(t *testing.T) {
+			_, err := a.parsePool("ext", purelbv2.ServiceGroupSpec{
+				External: &purelbv2.ServiceGroupExternalSpec{Provider: "p", Announce: announce},
+			})
+			assert.Error(t, err, "announce %q must not produce a pool", announce)
+		})
+	}
+
+	for _, announce := range []string{purelbv2.PoolTypeLocal, purelbv2.PoolTypeRemote} {
+		t.Run("accepted/"+announce, func(t *testing.T) {
+			p, err := a.parsePool("ext", purelbv2.ServiceGroupSpec{
+				External: &purelbv2.ServiceGroupExternalSpec{Provider: "p", Announce: announce},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, announce, p.PoolType(),
+				"pool-type annotation is written from PoolType(); it must match announce")
+		})
+	}
+}

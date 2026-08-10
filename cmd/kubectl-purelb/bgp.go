@@ -43,10 +43,10 @@ type bgpSessionRow struct {
 }
 
 type bgpSessionsSummary struct {
-	GlobalASN  int64           `json:"globalASN"`
-	RouterIDMode string       `json:"routerIDMode"`
-	Sessions   []bgpSessionRow `json:"sessions"`
-	Problems   []string        `json:"problems,omitempty"`
+	GlobalASN    int64           `json:"globalASN"`
+	RouterIDMode string          `json:"routerIDMode"`
+	Sessions     []bgpSessionRow `json:"sessions"`
+	Problems     []string        `json:"problems,omitempty"`
 }
 
 func newBGPCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {

@@ -39,9 +39,9 @@ type statusOverview struct {
 }
 
 type componentStatus struct {
-	AllocatorReady   string `json:"allocator"`
-	NodeAgentReady   string `json:"lbnodeagent"`
-	K8GoBGPReady     string `json:"k8gobgp,omitempty"`
+	AllocatorReady string `json:"allocator"`
+	NodeAgentReady string `json:"lbnodeagent"`
+	K8GoBGPReady   string `json:"k8gobgp,omitempty"`
 }
 
 type poolStatus struct {
@@ -369,4 +369,3 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 
 	return nil
 }
-

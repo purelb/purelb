@@ -153,6 +153,21 @@ func (a *Allocator) parsePool(name string, group purelbv2.ServiceGroupSpec) (Poo
 			purelbv2.PoolTypeRemote, false,
 			group.Remote.MultiPool, group.Remote.BalancePools)
 	} else if group.External != nil {
+		// The CRD constrains announce to local|remote and marks it required,
+		// so this normally cannot fire. It is checked anyway because the
+		// consequence of an empty value is silent and remote: PoolType()
+		// returns it verbatim, so purelb.io/pool-type is written empty, and
+		// the node agent then cannot tell whether to put the address on a
+		// local interface or on the dummy interface -- it announces nothing,
+		// with nothing in the allocator to say why. A ServiceGroup applied
+		// against a stale or pruned CRD is exactly how that arrives.
+		switch group.External.Announce {
+		case purelbv2.PoolTypeLocal, purelbv2.PoolTypeRemote:
+		default:
+			return nil, fmt.Errorf("external pool announce must be %q or %q, got %q (is the ServiceGroup CRD up to date?)",
+				purelbv2.PoolTypeLocal, purelbv2.PoolTypeRemote, group.External.Announce)
+		}
+
 		socket := group.External.Socket
 		if socket == "" {
 			socket = defaultSidecarSocket

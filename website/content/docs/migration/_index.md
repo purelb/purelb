@@ -12,6 +12,10 @@ install (v0.15.x or earlier).
 If you are installing PureLB for the first time, **skip this guide** and follow
 the normal install instructions.
 
+If you are already on `purelb.io/v2` (v0.16.x) and upgrading to v0.17.0, this
+guide does not apply — see
+[v0.16.x to v0.17.0]({{< ref "/docs/migration/v0-17-0" >}}) instead.
+
 Steps 1–3 are the same no matter how PureLB was installed. **Step 4 forks** into
 a Helm path and a manifest path — follow the one matching your install. Helm was
 the default in v0.13, so it is shown first. Step 5 onward is shared again.

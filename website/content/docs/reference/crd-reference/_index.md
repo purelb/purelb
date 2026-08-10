@@ -18,7 +18,12 @@ Field | Type | Required | Description
 ------|------|----------|------------
 `local` | ServiceGroupLocalSpec | No | Pool of addresses on the same subnet as nodes
 `remote` | ServiceGroupRemoteSpec | No | Pool of addresses on a different subnet (for BGP routing)
-`netbox` | ServiceGroupNetboxSpec | No | External IPAM via Netbox
+`external` | ServiceGroupExternalSpec | No | Addresses managed by an external IPAM system via a sidecar
+`namespaces` | []string | No | Service namespaces this ServiceGroup serves. Empty means all. Several ServiceGroups may serve one namespace
+`enforceNamespaces` | bool | No | Make `namespaces` a boundary rather than a default. Requires a non-empty `namespaces`
+`namespaceDefault` | bool | No | Which ServiceGroup an unannotated Service gets, where several serve one namespace. Requires a non-empty `namespaces`
+
+Exactly one of `local`, `remote` or `external` must be specified.
 
 ### ServiceGroupLocalSpec
 
@@ -63,7 +68,18 @@ Field | Type | Required | Description
 
 Field | Type | Description
 ------|------|------------
-`allocatedCount` | int | Number of IP addresses currently allocated from this pool
+`announce` | string | Announcement mechanism: `Local` (node interface) or `Remote` (`kube-lb0`, advertised via BGP)
+`ipam` | string | `Cluster` when PureLB allocates, or the external provider's name
+`addresses` | []string | Human-readable summary of the pool's address scope
+`allocatedIPv4` | int64 | IPv4 addresses currently allocated
+`allocatedIPv6` | int64 | IPv6 addresses currently allocated
+`availableIPv4` | int64 | IPv4 addresses still available. Absent when capacity is not knowable
+`availableIPv6` | int64 | IPv6 addresses still available. Absent when capacity is not knowable
+`boundNamespaces` | []string | The namespace list the allocator parsed from `spec.namespaces`
+
+A blank status means PureLB rejected the spec — check the ServiceGroup's events.
+
+`boundNamespaces` confirms what the allocator **read**, which is not the same as what the API server accepted, and it is not a report of what is being *enforced*: it reflects neither `enforceNamespaces` nor an unresolved `namespaceDefault`. It also cannot detect a pruned CRD, because `spec.namespaces` and this field ship in the same CRD and a stale CRD removes both — to check for pruning, apply the field and read the object back.
 
 ---
 

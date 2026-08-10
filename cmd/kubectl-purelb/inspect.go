@@ -31,27 +31,27 @@ import (
 )
 
 type inspectResult struct {
-	Service      string             `json:"service"`
-	Type         string             `json:"type"`
-	IPFamilies   string             `json:"ipFamilies"`
-	ETP          string             `json:"externalTrafficPolicy"`
-	Status       string             `json:"status"`
-	Allocations  []allocationInfo   `json:"allocations,omitempty"`
-	Elections    []electionInfo     `json:"elections,omitempty"`
+	Service       string             `json:"service"`
+	Type          string             `json:"type"`
+	IPFamilies    string             `json:"ipFamilies"`
+	ETP           string             `json:"externalTrafficPolicy"`
+	Status        string             `json:"status"`
+	Allocations   []allocationInfo   `json:"allocations,omitempty"`
+	Elections     []electionInfo     `json:"elections,omitempty"`
 	Announcements []announcementInfo `json:"announcements,omitempty"`
-	Sharing      *sharingInfo       `json:"sharing,omitempty"`
-	Endpoints    endpointsInfo      `json:"endpoints"`
-	BGP          []bgpRouteCheck    `json:"bgp,omitempty"`
-	BGPNote      string             `json:"bgpNote,omitempty"` // canonical sentence when BGP state is NotEnabled / NotConfigured
-	Diagnosis    *diagnosisInfo     `json:"diagnosis,omitempty"`
+	Sharing       *sharingInfo       `json:"sharing,omitempty"`
+	Endpoints     endpointsInfo      `json:"endpoints"`
+	BGP           []bgpRouteCheck    `json:"bgp,omitempty"`
+	BGPNote       string             `json:"bgpNote,omitempty"` // canonical sentence when BGP state is NotEnabled / NotConfigured
+	Diagnosis     *diagnosisInfo     `json:"diagnosis,omitempty"`
 }
 
 type allocationInfo struct {
-	IP          string `json:"ip"`
-	Pool        string `json:"pool"`
-	PoolType    string `json:"poolType"`
-	Range       string `json:"range,omitempty"`
-	Subnet      string `json:"subnet,omitempty"`
+	IP       string `json:"ip"`
+	Pool     string `json:"pool"`
+	PoolType string `json:"poolType"`
+	Range    string `json:"range,omitempty"`
+	Subnet   string `json:"subnet,omitempty"`
 }
 
 type electionInfo struct {
@@ -70,15 +70,15 @@ type electionInfo struct {
 }
 
 type announcementInfo struct {
-	IP        string `json:"ip"`
-	Node      string `json:"node"`
-	Interface string `json:"interface"`
-	Healthy   bool   `json:"leaseHealthy"`
+	IP         string `json:"ip"`
+	Node       string `json:"node"`
+	Interface  string `json:"interface"`
+	Healthy    bool   `json:"leaseHealthy"`
 	RenewedAgo string `json:"renewedAgo,omitempty"`
 }
 
 type sharingInfo struct {
-	Key      string   `json:"key"`
+	Key       string   `json:"key"`
 	CoTenants []string `json:"coTenants"` // "namespace/name (ports)"
 }
 
@@ -88,10 +88,10 @@ type endpointsInfo struct {
 }
 
 type bgpRouteCheck struct {
-	IP       string `json:"ip"`
-	Node     string `json:"node"`
-	InRIB    bool   `json:"inRIB"`
-	Advertised bool  `json:"advertised"`
+	IP         string `json:"ip"`
+	Node       string `json:"node"`
+	InRIB      bool   `json:"inRIB"`
+	Advertised bool   `json:"advertised"`
 }
 
 type diagnosisInfo struct {
@@ -145,9 +145,9 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 	}
 
 	result := inspectResult{
-		Service:    nsName,
-		Type:       string(svc.Spec.Type),
-		ETP:        string(svc.Spec.ExternalTrafficPolicy),
+		Service: nsName,
+		Type:    string(svc.Spec.Type),
+		ETP:     string(svc.Spec.ExternalTrafficPolicy),
 	}
 
 	// IP families

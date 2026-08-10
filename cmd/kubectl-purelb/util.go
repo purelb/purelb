@@ -62,8 +62,12 @@ const (
 	subnetsAnnotation = "purelb.io/subnets"
 )
 
-// PureLB system namespace default.
-const purelbNamespace = "purelb-system"
+// purelbNamespace is where PureLB is installed. Every command resolves
+// PureLB's own resources here, and the allocator reads ServiceGroups only
+// from this namespace, so a plugin that assumed the default would flag every
+// correctly-placed ServiceGroup on a non-standard install and miss the real
+// ones. Overridden by -n/--namespace in main.
+var purelbNamespace = "purelb-system"
 
 // svcFieldSelector limits Services.List to LoadBalancer type, reducing
 // response payload and API server work via server-side filtering.

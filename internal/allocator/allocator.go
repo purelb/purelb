@@ -18,10 +18,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-kit/log"
 	"google.golang.org/grpc"
@@ -36,6 +39,11 @@ import (
 
 const (
 	defaultPoolName string = "default"
+
+	// defaultPoolTimeout bounds a single Pool mutating operation when no
+	// API-context source is wired (unit tests). Matches the standard PureLB
+	// API timeout so a sidecar gets the same grace as the apiserver.
+	defaultPoolTimeout = 10 * time.Second
 )
 
 // ActiveSubnetsFunc is a function that returns the set of subnets with
@@ -61,6 +69,30 @@ type ListServicesFunc func() []v1.Service
 type allocatorState struct {
 	pools    map[string]Pool
 	sgByName map[string]*purelbv2.ServiceGroup
+
+	// nsToPools maps a Service namespace to the ServiceGroups serving it.
+	// Absent means the namespace is bound by nothing and falls back to the
+	// pool named "default", exactly as before this feature existed.
+	nsToPools map[string]nsBinding
+
+	// confinedGroups holds every ServiceGroup that serves at least one
+	// confined namespace. Exclusion is derived from this rather than from a
+	// group's own EnforceNamespaces: fencing a tenant's L2 pool while
+	// leaving its BGP pool reachable cluster-wide would be a half-open
+	// fence, so enforcing on any one of a namespace's groups fences all of
+	// them.
+	confinedGroups map[string]bool
+}
+
+// nsBinding is what a namespace resolves to. eligible is a set, because
+// several ServiceGroups serving one namespace is normal -- a ServiceGroup is
+// exactly one of local, remote or external, so an L2 + BGP tenant needs two.
+// Only def needs a single pick.
+type nsBinding struct {
+	eligible []string // every ServiceGroup serving this namespace, sorted
+	def      string   // the unannotated default; "" when unresolvable
+	enforce  bool     // any eligible ServiceGroup sets EnforceNamespaces
+	defErr   string   // why def is empty, verbatim into the Service event
 }
 
 // An Allocator tracks IP address pools and allocates addresses from them.
@@ -107,15 +139,24 @@ func (a *Allocator) SetServiceGroupStatusWriter(w k8s.ServiceGroupStatusWriter) 
 	a.sgStatusClient = w
 }
 
-// Pools returns the current pool snapshot. Call once per processing
-// cycle and pass the result to all allocator methods within that cycle.
+// Pools returns the current pool snapshot. Retained for the release paths,
+// which are namespace-blind by design and must not see the binding index.
 // Nil-safe for startup before first config arrives.
 func (a *Allocator) Pools() map[string]Pool {
-	s := a.state.Load()
-	if s == nil {
-		return nil
+	return a.Snapshot().pools
+}
+
+// Snapshot returns the whole config snapshot -- pools, ServiceGroups and the
+// namespace binding index. Call once per processing cycle and pass the result
+// to every allocator method in that cycle, so that a Service is never
+// authorized against one generation's bindings and allocated from another's.
+//
+// Never returns nil, because callers dereference it on the allocation path.
+func (a *Allocator) Snapshot() *allocatorState {
+	if s := a.state.Load(); s != nil {
+		return s
 	}
-	return s.pools
+	return &allocatorState{}
 }
 
 // SetClient sets this Allocator's client field.
@@ -170,8 +211,18 @@ func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 		}
 	}
 
-	// Atomic swap — after this, G1's next Pools() call sees the new map
-	a.state.Store(&allocatorState{pools: pools, sgByName: sgByName})
+	nsToPools, confinedGroups := a.buildNSIndex(groups, pools)
+
+	// Atomic swap — after this, G1's next Pools() call sees the new map.
+	// Everything derived from this config is published together so a reader
+	// can never mix a binding index from one generation with pools from
+	// another.
+	a.state.Store(&allocatorState{
+		pools:          pools,
+		sgByName:       sgByName,
+		nsToPools:      nsToPools,
+		confinedGroups: confinedGroups,
+	})
 	a.populated.Store(false)
 
 	// Set capacity for new pools (size is static, safe from G2).
@@ -181,6 +232,79 @@ func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 	}
 
 	return nil
+}
+
+// buildNSIndex resolves, once per config change, which ServiceGroups serve
+// each namespace, which of them is the unannotated default, and whether the
+// namespace is confined. Runs on G2 from SetPools and is published by the
+// same atomic swap as pools, so an index can never be paired with a
+// different generation's pools.
+//
+// Only ServiceGroups that survived parseGroups contribute: a group whose
+// spec is broken has no pool, and binding a namespace to it would deny every
+// Service in that namespace on the strength of a YAML error elsewhere.
+func (a *Allocator) buildNSIndex(groups []*purelbv2.ServiceGroup, pools map[string]Pool) (map[string]nsBinding, map[string]bool) {
+	idx := map[string]nsBinding{}
+	marked := map[string][]string{}
+
+	for _, g := range groups {
+		if _, parsed := pools[g.Name]; !parsed {
+			continue
+		}
+		// Dedupe: +listType=set is deliberately not used (under server-side
+		// apply it gives per-element ownership, so an entry deleted from Git
+		// would silently persist). The API server therefore accepts
+		// `namespaces: [a, a]`, and without this a single ServiceGroup with a
+		// copy-pasted entry would appear twice in eligible, look like two
+		// groups competing, and deny its own namespace.
+		for _, ns := range slices.Compact(slices.Sorted(slices.Values(g.Spec.Namespaces))) {
+			b := idx[ns]
+			b.eligible = append(b.eligible, g.Name)
+			b.enforce = b.enforce || g.Spec.EnforceNamespaces
+			idx[ns] = b
+			if g.Spec.NamespaceDefault {
+				marked[ns] = append(marked[ns], g.Name)
+			}
+		}
+	}
+
+	for ns, b := range idx {
+		// Sorted for stable event text and inspect output only; it never
+		// selects anything, so the build stays order-independent.
+		slices.Sort(b.eligible)
+		m := marked[ns]
+		slices.Sort(m)
+		switch {
+		case len(b.eligible) == 1:
+			b.def = b.eligible[0]
+		case len(m) == 1:
+			b.def = m[0]
+		case len(m) == 0:
+			b.defErr = fmt.Sprintf("namespace %q is served by %v and none sets namespaceDefault; exactly one must", ns, b.eligible)
+		default:
+			b.defErr = fmt.Sprintf("namespace %q: %v all set namespaceDefault; exactly one must", ns, m)
+		}
+		idx[ns] = b
+	}
+
+	// Exclusion is derived from namespace confinement, not from a group's own
+	// EnforceNamespaces. Reading the target's own flag would fence a tenant's
+	// L2 pool while leaving its BGP pool reachable from every namespace in
+	// the cluster.
+	confined := map[string]bool{}
+	for _, b := range idx {
+		if !b.enforce {
+			continue
+		}
+		for _, name := range b.eligible {
+			confined[name] = true
+		}
+	}
+
+	if len(idx) == 0 {
+		return nil, nil
+	}
+	return idx, confined
 }
 
 // populateFromExisting scans the service cache and registers all
@@ -351,6 +475,13 @@ func (a *Allocator) writeSGStatus(ctx context.Context, sg *purelbv2.ServiceGroup
 	}
 
 	newStatus := buildStatus(pool)
+	// Set here rather than in buildStatus, which is a pure Pool function with
+	// no ServiceGroup in scope. Copied from the spec slice, never assembled
+	// from a map: statusEqual compares element-wise, so a varying order would
+	// defeat the elision cache and produce one apply per ServiceGroup on every
+	// sweep, forever.
+	newStatus.BoundNamespaces = slices.Clone(sg.Spec.Namespaces)
+
 	if prev, loaded := a.lastWritten.Load(sg.Name); loaded {
 		if statusEqual(prev.(purelbv2.ServiceGroupStatus), newStatus) {
 			return false, nil // no-op
@@ -428,6 +559,14 @@ func statusEqual(a, b purelbv2.ServiceGroupStatus) bool {
 			return false
 		}
 	}
+	// This list is hand-maintained, so a new status field that is not
+	// compared here is written once and then frozen: the elision cache would
+	// report the status unchanged forever while the allocator acted on a
+	// newer spec. Editing spec.namespaces changes nothing else, so without
+	// this the confirmation signal would show the old list indefinitely.
+	if !slices.Equal(a.BoundNamespaces, b.BoundNamespaces) {
+		return false
+	}
 	return true
 }
 
@@ -476,7 +615,10 @@ func (a *Allocator) NotifyExisting(pools map[string]Pool, svc *v1.Service) error
 		}
 
 		// Tell the pool about the assignment
-		if err := pool.Notify(context.Background(), svc); err != nil {
+		ctx, cancel := a.poolContext()
+		err := pool.Notify(ctx, svc)
+		cancel()
+		if err != nil {
 			return err
 		}
 		a.updateStats(pool)
@@ -490,7 +632,9 @@ func (a *Allocator) NotifyExisting(pools map[string]Pool, svc *v1.Service) error
 // the pool specified in the purelbv2.DesiredGroupAnnotation
 // annotation. If neither is specified then we will attempt to
 // allocate from a pool named "default", if it exists.
-func (a *Allocator) Allocate(pools map[string]Pool, svc *v1.Service) error {
+func (a *Allocator) Allocate(st *allocatorState, svc *v1.Service) error {
+	pools := st.pools
+
 	// Ensure pool state reflects all existing allocations before
 	// assigning a new IP. This is called here (not in SetPools) because
 	// SetPools runs on the CR controller goroutine where the service
@@ -500,7 +644,7 @@ func (a *Allocator) Allocate(pools map[string]Pool, svc *v1.Service) error {
 	a.populateFromExisting(pools)
 
 	// If the user asked for a specific IP, allocate that.
-	allocated, err := a.allocateSpecificIP(pools, svc)
+	allocated, err := a.allocateSpecificIP(st, svc)
 	if err != nil {
 		return err
 	}
@@ -508,17 +652,17 @@ func (a *Allocator) Allocate(pools map[string]Pool, svc *v1.Service) error {
 	// The user didn't ask for a specific IP so we can allocate one from
 	// a pool.
 	if !allocated {
-		// Start with the default pool name.
-		poolName := defaultPoolName
-
-		// If the user specified a desiredGroup, then use that.
-		if userPool, has := svc.Annotations[purelbv2.DesiredGroupAnnotation]; has {
-			poolName = userPool
+		pool, via, err := st.resolve(svc)
+		if err != nil {
+			return err
 		}
-
-		pool, has := pools[poolName]
-		if !has {
-			return fmt.Errorf("unknown pool %q", poolName)
+		if via == viaAmbiguous {
+			// Falling back to "default" because the namespace could not
+			// resolve one of its own. Nothing is denied, so without this the
+			// operator who most needs namespaceDefault -- the L2 + BGP tenant
+			// -- gets silence and Services quietly landing on another subnet.
+			a.client.Errorf(svc, "ConfigurationWarning", "%s; allocated from %q instead",
+				st.nsToPools[svc.Namespace].defErr, defaultPoolName)
 		}
 
 		// Multi-pool and balancePools are mutually exclusive
@@ -544,7 +688,8 @@ func (a *Allocator) Allocate(pools map[string]Pool, svc *v1.Service) error {
 // a specific address then the return values will be ("", nil). If an
 // address was allocated then the string return value will be
 // non-"". If an error happened then the error return will be non-nil.
-func (a *Allocator) allocateSpecificIP(pools map[string]Pool, svc *v1.Service) (bool, error) {
+func (a *Allocator) allocateSpecificIP(st *allocatorState, svc *v1.Service) (bool, error) {
+	pools := st.pools
 	poolNames := ""
 	var firstPool Pool // Track first pool for annotations
 
@@ -564,18 +709,34 @@ func (a *Allocator) allocateSpecificIP(pools map[string]Pool, svc *v1.Service) (
 		logging.Info(a.logger, "op", "allocateSpecificIP", "warning", "addresses annotation overrides service-group annotation")
 	}
 
-	// If the service had addresses before, release them.
-	if err := a.Unassign(pools, namespacedName(svc)); err != nil {
-		return false, err
-	}
-
-	for _, ip := range ips {
-
-		// Check that the address belongs to a pool
+	// Resolve and authorize every requested address BEFORE releasing
+	// anything. The Unassign below frees this Service's current addresses in
+	// pool accounting while .status still advertises them, so returning an
+	// error from inside the assign loop leaves a double-allocation window.
+	// Pinning a neighbour's address is a routine misconfiguration, not a rare
+	// one, so it must not reach that loop.
+	resolved := make([]Pool, len(ips))
+	for i, ip := range ips {
 		pool := poolFor(pools, ip)
 		if pool == nil {
 			return false, fmt.Errorf("%q does not belong to any group", ip)
 		}
+		// Same gate as the annotation path: an address is a way of naming a
+		// ServiceGroup, so pinning must not bypass the boundary that naming
+		// it would hit.
+		if _, err := st.checked(svc.Namespace, pool.String()); err != nil {
+			return false, fmt.Errorf("%s: %w", ip, err)
+		}
+		resolved[i] = pool
+	}
+
+	// If the service had addresses before, release them.
+	if err := a.Unassign(pools, namespacedName(svc), svc.Annotations[purelbv2.PoolAnnotation]); err != nil {
+		return false, err
+	}
+
+	for i, ip := range ips {
+		pool := resolved[i]
 
 		// Track the first pool for setting annotations
 		if firstPool == nil {
@@ -585,7 +746,10 @@ func (a *Allocator) allocateSpecificIP(pools map[string]Pool, svc *v1.Service) (
 		// Does the IP already have allocs? If so, needs to be the same
 		// sharing key, and have non-overlapping ports. If not, the proposed
 		// IP needs to be allowed by configuration.
-		if err := pool.Assign(context.Background(), ip, svc); err != nil {
+		ctx, cancel := a.poolContext()
+		err := pool.Assign(ctx, ip, svc)
+		cancel()
+		if err != nil {
 			return false, err
 		}
 
@@ -625,13 +789,29 @@ func (a *Allocator) allocateFromPool(pools map[string]Pool, svc *v1.Service, poo
 	// (e.g., SingleStack → DualStack) where we want to keep existing IPs
 	// and only allocate missing families.
 	if len(svc.Status.LoadBalancer.Ingress) == 0 {
-		if err := a.Unassign(pools, namespacedName(svc)); err != nil {
+		if err := a.Unassign(pools, namespacedName(svc), svc.Annotations[purelbv2.PoolAnnotation]); err != nil {
 			return err
 		}
 	}
 
-	if err := pool.AssignNext(context.Background(), svc); err != nil {
-		// Woops, no IPs :( Fail.
+	// AssignNext commits each family as it goes (assignFamily -> Assign ->
+	// addIngress + Notify) and returns on the first failure without
+	// unwinding. Left alone, a dual-stack Service against a single-family
+	// pool keeps the family that succeeded in .status -- which SetBalancer
+	// persists and the node agent announces, because it does not check the
+	// brand -- while BrandAnnotation is never set, since that happens only
+	// after a successful allocation. populateFromExisting then skips the
+	// Service, so after an allocator restart the address is handed out
+	// again: two Services, one VIP.
+	//
+	// Roll back only what this call added. Pre-existing addresses from an
+	// IP-family transition must survive, so this cannot be Unassign.
+	committed := len(svc.Status.LoadBalancer.Ingress)
+	ctx, cancel := a.poolContext()
+	err := pool.AssignNext(ctx, svc)
+	cancel()
+	if err != nil {
+		a.rollbackIngress(pool, svc, committed)
 		return err
 	}
 
@@ -653,6 +833,34 @@ func (a *Allocator) allocateFromPool(pools map[string]Pool, svc *v1.Service, poo
 	a.updateStats(pool)
 
 	return nil
+}
+
+// rollbackIngress releases every address added to svc beyond keep and
+// truncates .status back to that length, undoing a partial allocation.
+//
+// Truncating by index is safe because addIngress only ever appends and
+// nothing between the snapshot and here reorders the slice.
+func (a *Allocator) rollbackIngress(pool Pool, svc *v1.Service, keep int) {
+	ingress := svc.Status.LoadBalancer.Ingress
+	if keep >= len(ingress) {
+		return
+	}
+	for _, added := range ingress[keep:] {
+		ip := net.ParseIP(added.IP)
+		if ip == nil {
+			continue
+		}
+		ctx, cancel := a.poolContext()
+		err := pool.ReleaseIP(ctx, namespacedName(svc), ip)
+		cancel()
+		if err != nil {
+			logging.Info(a.logger, "op", "rollbackIngress", "error", err,
+				"svc", namespacedName(svc), "ip", added.IP)
+		}
+	}
+	logging.Info(a.logger, "op", "rollbackIngress", "svc", namespacedName(svc),
+		"released", len(ingress)-keep, "msg", "partial allocation rolled back")
+	svc.Status.LoadBalancer.Ingress = ingress[:keep]
 }
 
 // isMultiPool determines whether a service should use multi-pool allocation.
@@ -677,7 +885,7 @@ func (a *Allocator) allocateMultiPool(pools map[string]Pool, svc *v1.Service, po
 	}
 
 	// Release any existing allocations for this service
-	if err := a.Unassign(pools, namespacedName(svc)); err != nil {
+	if err := a.Unassign(pools, namespacedName(svc), svc.Annotations[purelbv2.PoolAnnotation]); err != nil {
 		return err
 	}
 	svc.Status.LoadBalancer.Ingress = nil
@@ -691,7 +899,10 @@ func (a *Allocator) allocateMultiPool(pools map[string]Pool, svc *v1.Service, po
 	logging.Info(a.logger, "op", "allocateMultiPool", "activeSubnets", strings.Join(activeSubnets, ","),
 		"svc", namespacedName(svc))
 
-	if err := pool.AssignNextPerRange(context.Background(), svc, activeSubnets); err != nil {
+	ctx, cancel := a.poolContext()
+	err = pool.AssignNextPerRange(ctx, svc, activeSubnets)
+	cancel()
+	if err != nil {
 		return err
 	}
 
@@ -713,19 +924,79 @@ func (a *Allocator) allocateMultiPool(pools map[string]Pool, svc *v1.Service, po
 	return nil
 }
 
+// poolHoldingAll returns the pool containing every one of svc's ingress
+// addresses. It answers the identity question — which pool does this Service
+// actually hold — from the addresses themselves rather than from
+// purelb.io/allocated-from, which lives on the Service and is therefore
+// editable by whoever owns it.
+//
+// SidecarPool.Contains is hardcoded false, so an external pool can never be
+// resolved this way. Callers must reject external pools explicitly; treating
+// a nil result as "must be external" would hand a free pass to any address
+// that belongs to no configured pool at all.
+func poolHoldingAll(pools map[string]Pool, svc *v1.Service) (Pool, error) {
+	var held Pool
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		ip := net.ParseIP(ingress.IP)
+		if ip == nil {
+			return nil, fmt.Errorf("unparseable ingress address %q", ingress.IP)
+		}
+		p := poolFor(pools, ip)
+		if p == nil {
+			return nil, fmt.Errorf("address %s does not belong to any pool", ingress.IP)
+		}
+		if held == nil {
+			held = p
+		} else if held.String() != p.String() {
+			return nil, fmt.Errorf("addresses span more than one pool (%s, %s)", held, p)
+		}
+	}
+	if held == nil {
+		return nil, fmt.Errorf("service has no ingress addresses")
+	}
+	return held, nil
+}
+
 // IncrementalMultiPool attempts to allocate additional IPs from newly
 // available ranges for an existing multi-pool service. It does NOT
 // release existing IPs — AssignNextPerRange skips ranges where the
 // service already has an IP. Returns true if new IPs were added.
-func (a *Allocator) IncrementalMultiPool(pools map[string]Pool, svc *v1.Service) (bool, error) {
-	poolName, ok := svc.Annotations[purelbv2.PoolAnnotation]
-	if !ok {
-		return false, fmt.Errorf("service missing %s annotation", purelbv2.PoolAnnotation)
+func (a *Allocator) IncrementalMultiPool(st *allocatorState, svc *v1.Service) (bool, error) {
+	pools := st.pools
+	// Resolve the pool from the addresses the Service holds, not from
+	// purelb.io/allocated-from. Trusting the annotation let anyone with
+	// patch on their own Service draw addresses from any pool in the
+	// cluster. Rewriting the annotation from the result below also
+	// repairs it if it had been tampered with.
+	pool, err := poolHoldingAll(pools, svc)
+	if err != nil {
+		// A constant label, never the annotation value: the annotation is
+		// user-supplied, so using it here would let a Service mint an
+		// unbounded number of Prometheus series.
+		allocationRejected.WithLabelValues("<unknown>", "multipool_pool_mismatch").Inc()
+		return false, err
 	}
-	pool, ok := pools[poolName]
-	if !ok {
-		return false, fmt.Errorf("unknown pool %q", poolName)
+
+	// External pools have no per-range concept: SidecarPool.AssignNextPerRange
+	// just calls AssignNext and addIngress never dedupes, so each call would
+	// append another address and the resulting Status write would re-enqueue
+	// the Service — one new address per work-queue turn, forever.
+	// SidecarPool.MultiPool() is false, so the annotation was the only way in.
+	// Repair the annotation if it disagrees with the addresses. A mismatch is
+	// either tampering or a stale value after a config change; correcting it
+	// is safe either way, and leaving it would mislead `kubectl purelb` and
+	// any operator inventory built on allocated-from.
+	if named := svc.Annotations[purelbv2.PoolAnnotation]; named != pool.String() {
+		logging.Info(a.logger, "op", "incrementalMultiPool", "msg", "correcting allocated-from",
+			"svc", namespacedName(svc), "claimed", named, "actual", pool.String())
+		svc.Annotations[purelbv2.PoolAnnotation] = pool.String()
 	}
+
+	if _, external := pool.(*SidecarPool); external {
+		allocationRejected.WithLabelValues(pool.String(), "multipool_refused").Inc()
+		return false, fmt.Errorf("multi-pool allocation is not supported for external pool %q", pool)
+	}
+
 	if a.activeSubnets == nil {
 		return false, fmt.Errorf("activeSubnets not configured")
 	}
@@ -737,7 +1008,10 @@ func (a *Allocator) IncrementalMultiPool(pools map[string]Pool, svc *v1.Service)
 
 	existingCount := len(svc.Status.LoadBalancer.Ingress)
 
-	if err := pool.AssignNextPerRange(context.Background(), svc, activeSubnets); err != nil {
+	ctx, cancel := a.poolContext()
+	err = pool.AssignNextPerRange(ctx, svc, activeSubnets)
+	cancel()
+	if err != nil {
 		return false, err
 	}
 
@@ -760,26 +1034,71 @@ func (a *Allocator) IncrementalMultiPool(pools map[string]Pool, svc *v1.Service)
 	return false, nil
 }
 
+// poolContext returns a bounded, cancellable context for a Pool mutating
+// operation.
+//
+// Pool methods take a context precisely so that implementations backed by
+// network I/O can be bounded; passing context.Background() defeated that.
+// The allocator's work queue is single-threaded, so an external IPAM
+// sidecar that accepts a connection and never replies would otherwise wedge
+// every Service reconcile, status write and release in the cluster.
+//
+// Prefers the client's API context, which shortens to 500ms during
+// shutdown; falls back to a fixed timeout when no client is wired (tests).
+// Callers MUST invoke the returned CancelFunc.
+func (a *Allocator) poolContext() (context.Context, context.CancelFunc) {
+	if a.sgStatusClient != nil {
+		return a.sgStatusClient.APIContext()
+	}
+	return context.WithTimeout(context.Background(), defaultPoolTimeout)
+}
+
 // Unassign frees the IP associated with service, if any.
-func (a *Allocator) Unassign(pools map[string]Pool, svc string) error {
-	var err error
+//
+// Release failures are returned, not discarded. LocalPool.Release cannot
+// fail, so in practice this reports only external-IPAM failures -- exactly
+// the case where dropping the error leaks an address in a system PureLB
+// does not own. Every pool is still attempted before returning, so one
+// unreachable sidecar cannot strand releases in the others.
+// namedPool is the ServiceGroup the Service says it was allocated from, or
+// "" when unknown. It is used only to skip external pools that demonstrably
+// did not hold the address: LocalPool.Release is an in-memory map walk, so
+// asking every local pool costs nothing and guards against a stale or
+// tampered annotation, whereas every SidecarPool asked is a gRPC round trip
+// to a separate IPAM system. A conforming sidecar scopes Release by the
+// request's pool field, so the spurious calls were harmless -- just work no
+// one needed.
+func (a *Allocator) Unassign(pools map[string]Pool, svc string, namedPool string) error {
+	var errs []error
 
 	// tell the pools that the address has been released. there might
 	// not be a pool, e.g., in the case of a config change that moves
 	// addresses from one pool to another
-	for _, p := range pools {
-		if err = p.Release(context.Background(), svc); err == nil {
-			a.updateStats(p) // This pool released the address
+	for name, p := range pools {
+		if _, external := p.(*SidecarPool); external && namedPool != "" && name != namedPool {
+			continue
 		}
+		ctx, cancel := a.poolContext()
+		err := p.Release(ctx, svc)
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			logging.Info(a.logger, "op", "unassign", "error", err, "pool", name, "svc", svc,
+				"msg", "pool failed to release the address")
+			continue
+		}
+		a.updateStats(p) // This pool released the address
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // ReleaseIPs releases specific IP addresses for a service. Used during
 // IP family transitions (e.g., DualStack → SingleStack) when only some
 // addresses need to be released.
-func (a *Allocator) ReleaseIPs(pools map[string]Pool, svc string, ips []string) error {
+func (a *Allocator) ReleaseIPs(pools map[string]Pool, svc string, ips []string, namedPool string) error {
+	var errs []error
+
 	for _, ipStr := range ips {
 		ip := net.ParseIP(ipStr)
 		if ip == nil {
@@ -790,18 +1109,39 @@ func (a *Allocator) ReleaseIPs(pools map[string]Pool, svc string, ips []string) 
 		// Find which pool contains this IP and release it
 		pool := poolFor(pools, ip)
 		if pool == nil {
+			// SidecarPool.Contains is hardcoded false, so an external pool can
+			// never be found by address and this path would silently drop the
+			// release -- the address vanishes from the Service while the
+			// external IPAM still holds it. Fall back to the pool the Service
+			// says it came from, but only when that pool is external: for any
+			// other pool poolFor is authoritative, and trusting a user-editable
+			// annotation there would let a Service free a neighbour's address.
+			if p, ok := pools[namedPool]; ok {
+				if _, external := p.(*SidecarPool); external {
+					pool = p
+				}
+			}
+		}
+		if pool == nil {
 			logging.Info(a.logger, "op", "releaseIPs", "warning", "no pool found for IP", "ip", ipStr)
 			continue
 		}
 
-		if err := pool.ReleaseIP(context.Background(), svc, ip); err != nil {
+		ctx, cancel := a.poolContext()
+		err := pool.ReleaseIP(ctx, svc, ip)
+		cancel()
+		if err != nil {
+			// Returned, not just logged: for an external pool this is a
+			// leaked address in a system PureLB does not own.
+			errs = append(errs, fmt.Errorf("%s: %w", ipStr, err))
 			logging.Info(a.logger, "op", "releaseIPs", "error", err, "ip", ipStr)
 			// Continue releasing other IPs even if one fails
+			continue
 		}
 		a.updateStats(pool)
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // poolFor returns the pool that owns the requested IP, or "" if none.
@@ -837,7 +1177,7 @@ func (a *Allocator) serviceAddresses(svc *v1.Service) ([]net.IP, error) {
 		logging.Info(a.logger, "op", "serviceAddresses", "svc", svc.Name, "deprecation", "Service.Spec.LoadBalancerIP is deprecated, use "+purelbv2.DesiredAddressAnnotation+" annotation")
 	}
 
-	for _, rawAddr := range(strings.Split(rawAddrs, ",")) {
+	for _, rawAddr := range strings.Split(rawAddrs, ",") {
 		ip := net.ParseIP(rawAddr)
 		if ip == nil {
 			return nil, fmt.Errorf("invalid user-specified address: \"%q\"", rawAddr)
@@ -908,8 +1248,12 @@ Group:
 		}
 
 		// Check that this pool doesn't overlap with any of the previous
-		// ones
-		for name, r := range pools {
+		// ones. Iterate in sorted order: with three or more overlapping
+		// ServiceGroups a map walk names a different partner each time, so
+		// the event text changes, the recorder cannot aggregate it, and a
+		// fresh Event appears on every resync forever.
+		for _, name := range slices.Sorted(maps.Keys(pools)) {
+			r := pools[name]
 			if pool.Overlaps(r) {
 				a.client.Errorf(group, "ParseFailed", "Pool overlaps with already defined pool \"%s\"", name)
 				logging.Info(a.logger, "op", "parseGroups", "error", "ServiceGroup overlaps", "group", group.Name, "overlaps", name)

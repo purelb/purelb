@@ -16,7 +16,6 @@
 package allocator
 
 import (
-	"os"
 	"sync/atomic"
 
 	v1 "k8s.io/api/core/v1"
@@ -29,34 +28,37 @@ import (
 	"github.com/go-kit/log"
 )
 
-const namespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
-
 // Controller provides an event-handling interface for the k8s client
 // to use.
 type Controller interface {
 	SetClient(*k8s.Client)
 	SetConfig(*purelbv2.Config) k8s.SyncState
 	SetBalancer(*v1.Service, []*discoveryv1.EndpointSlice) k8s.SyncState
-	DeleteBalancer(string) k8s.SyncState
+	DeleteBalancer(name, pool string) k8s.SyncState
 	MarkSynced()
 	Shutdown()
 }
 
 type controller struct {
-	client    k8s.ServiceEvent
-	synced    bool
-	ips       *Allocator
-	groupURL  *string
-	logger    log.Logger
-	isDefault atomic.Bool
+	client k8s.ServiceEvent
+	synced bool
+	ips    *Allocator
+	// installNamespace is the namespace PureLB runs in, resolved once by
+	// the caller so that this controller and the CR controller cannot
+	// disagree about it. Empty when it could not be determined.
+	installNamespace string
+	groupURL         *string
+	logger           log.Logger
+	isDefault        atomic.Bool
 }
 
 // NewController configures a new controller. If error is non-nil then
 // the controller object shouldn't be used.
-func NewController(l log.Logger, ips *Allocator) (Controller, error) {
+func NewController(l log.Logger, ips *Allocator, installNamespace string) (Controller, error) {
 	con := &controller{
-		logger: l,
-		ips:    ips,
+		logger:           l,
+		ips:              ips,
+		installNamespace: installNamespace,
 	}
 
 	return con, nil
@@ -69,23 +71,59 @@ func (c *controller) SetClient(client *k8s.Client) {
 	c.ips.SetListServices(client.ListServices)
 	client.SetPoolStatusPublisher(c.ips.PublishAllSGStatus)
 
-	data, err := os.ReadFile(namespacePath)
-	if err != nil {
-		logging.Info(c.logger, "op", "setClient", "error", err, "msg", "failed to read namespace, multi-pool allocation will not work")
+	if c.installNamespace == "" {
+		logging.Info(c.logger, "op", "setClient",
+			"msg", "install namespace unknown, multi-pool allocation will not work")
 		return
 	}
-	c.ips.SetActiveSubnets(client.ActiveSubnets, string(data))
+	c.ips.SetActiveSubnets(client.ActiveSubnets, c.installNamespace)
 }
 
-func (c *controller) DeleteBalancer(name string) k8s.SyncState {
+// DeleteBalancer releases a deleted Service's address. pool is the
+// ServiceGroup it was allocated from, or "" when that could not be
+// determined; see Unassign for what "" costs.
+func (c *controller) DeleteBalancer(name, pool string) k8s.SyncState {
 	pools := c.ips.Pools()
-	if err := c.ips.Unassign(pools, name); err != nil {
+	if err := c.ips.Unassign(pools, name, pool); err != nil {
 		logging.Info(c.logger, "op", "deleteBalancer", "error", err)
 		return k8s.SyncStateError
 	}
 
 	logging.Debug(c.logger, "op", "deleteBalancer", "msg", "service deleted successfully")
 	return k8s.SyncStateReprocessAll
+}
+
+// reportOutOfScope surfaces ServiceGroups that were listed but ignored
+// because they live outside the install namespace.
+//
+// This runs in the allocator only. The filtering happens in a code path both
+// binaries share, so emitting events there would produce one per node per
+// reconcile; the node agent logs its own copy locally instead.
+func (c *controller) reportOutOfScope(dropped []*purelbv2.ServiceGroup) {
+	serviceGroupsOutOfScope.Reset()
+	for _, g := range dropped {
+		kind := "local"
+		switch {
+		case g.Spec.Remote != nil:
+			kind = "remote"
+		case g.Spec.External != nil:
+			kind = "external"
+		}
+		serviceGroupsOutOfScope.WithLabelValues(g.Namespace, g.Name, kind).Set(1)
+
+		// A remote group vanishing withdraws addresses from every node; a
+		// local one only makes its pool unallocatable. Name the difference,
+		// because it decides how urgently an operator has to act.
+		impact := "its pool is not allocatable"
+		if kind == "remote" {
+			impact = "addresses allocated from it are withdrawn from every node"
+		}
+		c.client.Errorf(g, "ServiceGroupOutOfScope",
+			"Ignored: ServiceGroups are read only from the PureLB install namespace, and %s is not it. This group is %s, so %s. Move it: kubectl get servicegroup %s -n %s -o yaml | sed 's/namespace: %s/namespace: <install-namespace>/' | kubectl apply -f -",
+			g.Namespace, kind, impact, g.Name, g.Namespace, g.Namespace)
+		logging.Info(c.logger, "op", "setConfig", "event", "serviceGroupOutOfScope",
+			"sg", g.Namespace+"/"+g.Name, "type", kind, "msg", "ignored: not in the install namespace")
+	}
 }
 
 func (c *controller) SetConfig(cfg *purelbv2.Config) k8s.SyncState {
@@ -95,6 +133,8 @@ func (c *controller) SetConfig(cfg *purelbv2.Config) k8s.SyncState {
 		logging.Info(c.logger, "op", "setConfig", "error", "no PureLB configuration in cluster", "msg", "PureLB will not function")
 		return k8s.SyncStateError
 	}
+
+	c.reportOutOfScope(cfg.DroppedGroups)
 
 	if err := c.ips.SetPools(cfg.Groups); err != nil {
 		logging.Info(c.logger, "op", "setConfig", "error", err)

@@ -31,9 +31,19 @@ import (
 // LBNodeAgent sets one (matches the CRD default).
 const defaultDummyInterface = "kube-lb0"
 
-// Announcement configuration states for a node. These mirror the states the
-// node agent itself reports via purelb_lbnodeagent_selector_state, but are
-// derived from the API so the plugin needs no access to node metrics ports.
+// Announcement configuration states for a node, derived from the API so
+// the plugin needs no access to node metrics ports.
+//
+// These are deliberately FINER-GRAINED than the node agent's
+// purelb_lbnodeagent_selector_state, and the two sets are not
+// interchangeable. The agent reports default / configured / deselected /
+// invalid; its "default" covers both of the cases this file separates as
+// "remote" (an agent governs the node but has no local spec) and
+// "no-config" (no LBNodeAgent exists at all), because in both the agent
+// falls back to default-interface subnet detection.
+//
+// Read the metric when you want to know what the agent decided; read these
+// when you want to know why. Do not assume a one-to-one mapping.
 const (
 	// configStateConfigured: an LBNodeAgent with a local spec governs this node.
 	configStateConfigured = "configured"

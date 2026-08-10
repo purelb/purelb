@@ -25,13 +25,32 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 
+	"sync/atomic"
+
 	"purelb.io/internal/logging"
 	"purelb.io/internal/netutil"
 )
 
+// logThrottle remembers the last value reported at info level so that
+// unchanged repeats drop to debug.
+//
+// Atomic rather than a plain string: these are package-level and the
+// exported functions that use them are reachable from any goroutine. Today
+// the election's renewLoop is the only caller, but that is a property of
+// the caller, not of this package, and a plain global would make the next
+// caller a silent data race rather than a compile error.
+type logThrottle struct{ last atomic.Pointer[string] }
+
+// changed reports whether v differs from the previously recorded value,
+// recording v either way.
+func (t *logThrottle) changed(v string) bool {
+	prev := t.last.Swap(&v)
+	return prev == nil || *prev != v
+}
+
 // lastSubnets tracks the previous subnet detection result so we can
 // log at info level on first detection or change, debug on repeats.
-var lastSubnets string
+var lastSubnets logThrottle
 
 // SubnetsAnnotation is the annotation key used on leases to store
 // the node's local subnets.
@@ -42,7 +61,6 @@ const SubnetsAnnotation = "purelb.io/subnets"
 // the lease. This prevents race conditions during DaemonSet pod
 // recreation where an old pod might delete a new pod's lease.
 const InstanceAnnotation = "purelb.io/instance"
-
 
 // GetLocalSubnets returns all subnets from the specified interfaces.
 // If includeDefault is true, the interface with the default route is
@@ -122,8 +140,7 @@ func GetLocalSubnets(interfaces []string, includeDefault bool, logger log.Logger
 	// Log at info on first detection or change, debug on repeats.
 	if logger != nil {
 		formatted := FormatSubnetsAnnotation(result)
-		if formatted != lastSubnets {
-			lastSubnets = formatted
+		if lastSubnets.changed(formatted) {
 			logging.Info(logger, "op", "getLocalSubnets", "subnets", formatted,
 				"count", len(result), "msg", "subnet detection complete")
 		} else {
@@ -214,7 +231,6 @@ func networkAddress(ipnet *net.IPNet) string {
 	ones, _ := ipnet.Mask.Size()
 	return fmt.Sprintf("%s/%d", network.String(), ones)
 }
-
 
 // FormatSubnetsAnnotation formats a slice of subnets into the annotation
 // value format (comma-separated).

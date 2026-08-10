@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -73,10 +74,10 @@ type Client struct {
 	// API calls should use shorter timeouts to allow graceful shutdown.
 	shuttingDown atomic.Bool
 
-	svcIndexer       cache.Indexer
-	svcInformer      cache.Controller
-	epSliceIndexer   cache.Indexer
-	epSliceInformer  cache.Controller
+	svcIndexer      cache.Indexer
+	svcInformer     cache.Controller
+	epSliceIndexer  cache.Indexer
+	epSliceInformer cache.Controller
 
 	crInformerFactory externalversions.SharedInformerFactory
 	crController      Controller
@@ -84,7 +85,7 @@ type Client struct {
 	syncFuncs []cache.InformerSynced
 
 	serviceChanged func(*corev1.Service, []*discoveryv1.EndpointSlice) SyncState
-	serviceDeleted func(string) SyncState
+	serviceDeleted func(name, pool string) SyncState
 	configChanged  func(*purelbv2.Config) SyncState
 	synced         func()
 	shutdown       func()
@@ -218,9 +219,38 @@ const (
 	SyncStateReprocessAll
 )
 
+// saNamespacePath is where the ServiceAccount token projection puts the
+// namespace a Pod is running in.
+const saNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+// InstallNamespace determines the namespace PureLB is installed in. An
+// explicit flag or PURELB_NAMESPACE wins; otherwise it falls back to the
+// ServiceAccount projection, which keeps deployments working whose manifests
+// predate the downward-API env var.
+//
+// An empty result is deliberately not fatal. Both binaries derive config from
+// this value, and refusing to start on a missing namespace would turn a
+// cosmetic packaging gap into an outage; callers degrade instead. Whitespace
+// is trimmed because the projected file has no trailing newline guarantee.
+func InstallNamespace(logger log.Logger, flagValue string) string {
+	if ns := strings.TrimSpace(flagValue); ns != "" {
+		return ns
+	}
+	data, err := os.ReadFile(saNamespacePath)
+	if err != nil {
+		logger.Log("op", "startup", "error", err,
+			"msg", "could not determine install namespace; set --namespace or PURELB_NAMESPACE")
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
 // Config specifies the configuration of the Kubernetes
 // client/watcher.
 type Config struct {
+	// Namespace is the namespace PureLB is installed in, as resolved by
+	// InstallNamespace. May be empty if it could not be determined.
+	Namespace          string
 	ProcessName        string
 	NodeName           string
 	ReadEndpointSlices bool
@@ -228,7 +258,7 @@ type Config struct {
 	Kubeconfig         string
 
 	ServiceChanged func(*corev1.Service, []*discoveryv1.EndpointSlice) SyncState
-	ServiceDeleted func(string) SyncState
+	ServiceDeleted func(name, pool string) SyncState
 	ConfigChanged  func(*purelbv2.Config) SyncState
 	Synced         func()
 	Shutdown       func()
@@ -248,6 +278,26 @@ func (svcKey) isQueueItem() {}
 type synced string
 
 func (synced) isQueueItem() {}
+
+// svcDeleted carries a Service deletion together with the pool it was
+// allocated from.
+//
+// The pool cannot be recovered later: sync detects deletion by the object
+// being absent from the indexer, at which point its annotations are gone.
+// Capturing purelb.io/allocated-from here lets the consumer release from
+// the one pool that actually held the address instead of asking every
+// pool, which for external IPAM means a gRPC to every configured sidecar
+// on every deletion.
+//
+// pool is "" when it could not be determined (an un-annotated Service, or
+// a tombstone whose payload was lost); consumers must treat that as
+// "unknown" and fall back to asking every pool.
+type svcDeleted struct {
+	name string
+	pool string
+}
+
+func (svcDeleted) isQueueItem() {}
 
 // poolStatus asks the consumer to republish .status for every
 // configured address pool. A singleton: all instances compare equal, so
@@ -302,7 +352,7 @@ func New(cfg *Config) (*Client, error) {
 	// nodeSelector evaluation and gives config delivery a self-healing
 	// floor if a delivery was lost.
 	c.crInformerFactory = externalversions.NewSharedInformerFactory(crClient, time.Minute*10)
-	c.crController = *NewCRController(c.logger, cfg.ConfigChanged, c.ForceSync, c.EnqueuePoolStatus, clientset, crClient, c.crInformerFactory)
+	c.crController = *NewCRController(c.logger, cfg.Namespace, cfg.ConfigChanged, c.ForceSync, c.EnqueuePoolStatus, clientset, crClient, c.crInformerFactory)
 
 	// Service Watcher
 
@@ -333,9 +383,23 @@ func New(cfg *Config) (*Client, error) {
 		},
 		DeleteFunc: func(obj interface{}) {
 			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-			if err == nil {
-				c.queue.Add(svcKey(key))
+			if err != nil {
+				return
 			}
+			// Read the pool off the object while we still have it. A
+			// DeletedFinalStateUnknown tombstone still carries the last
+			// known Service, so unwrap it rather than losing the pool.
+			svc, ok := obj.(*corev1.Service)
+			if !ok {
+				if tombstone, isTombstone := obj.(cache.DeletedFinalStateUnknown); isTombstone {
+					svc, ok = tombstone.Obj.(*corev1.Service)
+				}
+			}
+			var pool string
+			if ok && svc != nil {
+				pool = svc.Annotations[purelbv2.PoolAnnotation]
+			}
+			c.queue.Add(svcDeleted{name: key, pool: pool})
 		},
 	}
 	svcWatcher := cache.NewListWatchFromClient(c.client.CoreV1().RESTClient(), "services", corev1.NamespaceAll, fields.Everything())
@@ -747,7 +811,7 @@ func (c *Client) sync(key queueItem) SyncState {
 		}
 		if !exists {
 			// l.Log("op", "getService", "msg", "doesn't exist")
-			return c.serviceDeleted(svcName)
+			return c.serviceDeleted(svcName, "")
 		}
 		// DeepCopy: svcIndexer returns the shared informer cache object.
 		// The announcer mutates the Service it is handed (annotations, and
@@ -799,6 +863,9 @@ func (c *Client) sync(key queueItem) SyncState {
 		// before this point.
 		c.EnqueuePoolStatus()
 		return SyncStateSuccess
+
+	case svcDeleted:
+		return c.serviceDeleted(k.name, k.pool)
 
 	case poolStatus:
 		if c.publishPoolStatus == nil {

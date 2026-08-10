@@ -168,9 +168,9 @@ func newMultiPoolController(t *testing.T, v4pools []purelbv2.AddressPool, v6pool
 	a.SetActiveSubnets(mockActiveSubnets(activeSubnets), "purelb")
 
 	c := &controller{
-		logger:    l,
-		ips:       a,
-		client:    k,
+		logger: l,
+		ips:    a,
+		client: k,
 	}
 	c.isDefault.Store(true)
 
@@ -205,9 +205,9 @@ func newMixedController(t *testing.T) (*controller, *testK8S) {
 	a.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24", "192.168.2.0/24"}), "purelb")
 
 	c := &controller{
-		logger:    l,
-		ips:       a,
-		client:    k,
+		logger: l,
+		ips:    a,
+		client: k,
 	}
 	c.isDefault.Store(true)
 
@@ -431,7 +431,7 @@ func TestMultiPoolDeleteRecycles(t *testing.T) {
 	assert.Empty(t, svc2.Status.LoadBalancer.Ingress, "pool exhausted, no IPs")
 
 	// Delete first service — should free both IPs
-	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer(namespacedName(svc1)))
+	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer(namespacedName(svc1), ""))
 
 	// Now second service should succeed
 	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc2, nil))
@@ -589,9 +589,9 @@ func TestMultiPoolConfigReprocess(t *testing.T) {
 	a.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24", "192.168.2.0/24"}), "purelb")
 
 	c := &controller{
-		logger:    l,
-		ips:       a,
-		client:    k,
+		logger: l,
+		ips:    a,
+		client: k,
 	}
 	c.isDefault.Store(true)
 
@@ -644,9 +644,9 @@ func TestMultiPoolExplicitLBClass(t *testing.T) {
 	a.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24", "192.168.2.0/24"}), "purelb")
 
 	c := &controller{
-		logger:    l,
-		ips:       a,
-		client:    k,
+		logger: l,
+		ips:    a,
+		client: k,
 		// isDefault defaults to false (not the default announcer)
 	}
 
@@ -688,9 +688,9 @@ func TestMultiPoolNotDefaultAnnouncer(t *testing.T) {
 	a.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24"}), "purelb")
 
 	c := &controller{
-		logger:    l,
-		ips:       a,
-		client:    k,
+		logger: l,
+		ips:    a,
+		client: k,
 		// isDefault defaults to false (not the default announcer)
 	}
 
@@ -786,7 +786,7 @@ func TestDeleteRecyclesIP(t *testing.T) {
 	k.reset()
 
 	// Deleting the first LB should tell us to reprocess all services.
-	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer(namespacedName(svc1)), "DeleteBalancer didn't tell us to reprocess all balancers")
+	assert.Equal(t, k8s.SyncStateReprocessAll, c.DeleteBalancer(namespacedName(svc1), ""), "DeleteBalancer didn't tell us to reprocess all balancers")
 
 	// Setting svc2 should now allocate correctly.
 	assert.Equal(t, k8s.SyncStateSuccess, c.SetBalancer(svc2, nil), "SetBalancer svc2 failed")
@@ -900,7 +900,7 @@ func TestConcurrentSetPoolsAndSetBalancer(t *testing.T) {
 		for i := 0; i < iterations; i++ {
 			svc := service(fmt.Sprintf("svc-%d", i), ports("tcp/80"), "")
 			c.SetBalancer(&svc, nil)
-			c.DeleteBalancer(fmt.Sprintf("default/svc-%d", i))
+			c.DeleteBalancer(fmt.Sprintf("default/svc-%d", i), "")
 		}
 	}()
 

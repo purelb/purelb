@@ -86,21 +86,21 @@ func analyzeIPFamilyTransition(svc *v1.Service) (missingFamilies []v1.IPFamily, 
 
 // isMultiPoolService determines if a service should use multi-pool allocation
 // by checking the service annotation first, then the pool's default.
-func (c *controller) isMultiPoolService(pools map[string]Pool, svc *v1.Service) bool {
+func (c *controller) isMultiPoolService(st *allocatorState, svc *v1.Service) bool {
 	// Check the annotation first - it overrides everything
 	if ann, ok := svc.Annotations[purelbv2.MultiPoolAnnotation]; ok {
 		return ann == "true"
 	}
 
-	// Look up the pool to check its default
-	poolName := defaultPoolName
-	if userPool, has := svc.Annotations[purelbv2.DesiredGroupAnnotation]; has {
-		poolName = userPool
+	// Resolve the pool the same way Allocate will, so the two cannot
+	// disagree about which ServiceGroup this Service belongs to. A denial
+	// here is not reported: Allocate reaches the same conclusion and owns
+	// the event.
+	pool, _, err := st.resolve(svc)
+	if err != nil {
+		return false
 	}
-	if pool, has := pools[poolName]; has {
-		return pool.MultiPool()
-	}
-	return false
+	return pool.MultiPool()
 }
 
 // SetBalancer is the main entry point that handles LoadBalancer
@@ -148,7 +148,8 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 	// Load pool snapshot once for this entire processing cycle.
 	// All allocator methods use this same snapshot, ensuring a
 	// consistent view even if G2 swaps pools mid-cycle.
-	pools := c.ips.Pools()
+	st := c.ips.Snapshot()
+	pools := st.pools
 
 	// If the service isn't a LoadBalancer then we might need to clean
 	// up. It might have been a load balancer before and the user might
@@ -162,7 +163,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 			if len(svc.Status.LoadBalancer.Ingress) > 0 {
 				logging.Info(l, "op", "unassign", "reason", "type is not LoadBalancer", "ingress", svc.Status.LoadBalancer.Ingress)
 				c.client.Infof(svc, "AddressReleased", fmt.Sprintf("Service is Type %s, not LoadBalancer", svc.Spec.Type))
-				if err := c.ips.Unassign(pools, nsName); err != nil {
+				if err := c.ips.Unassign(pools, nsName, svc.Annotations[purelbv2.PoolAnnotation]); err != nil {
 					logging.Info(l, "op", "unassign", "error", err)
 					return k8s.SyncStateError
 				}
@@ -189,7 +190,7 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 
 	// Determine if this is a multi-pool service. We need the pool to check,
 	// so look it up from the annotation or default.
-	multiPool := c.isMultiPoolService(pools, svc)
+	multiPool := c.isMultiPoolService(st, svc)
 
 	// Multi-pool services: if already allocated by us, notify existing IPs
 	// and try incremental allocation from any newly available ranges.
@@ -200,9 +201,13 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 			if err := c.ips.NotifyExisting(pools, svc); err != nil {
 				logging.Info(l, "op", "notifyExisting", "error", err, "ingress", svc.Status.LoadBalancer.Ingress)
 			}
-			added, err := c.ips.IncrementalMultiPool(pools, svc)
+			added, err := c.ips.IncrementalMultiPool(st, svc)
 			if err != nil {
+				// Surface the refusal. This path used to log only, which
+				// made a rejected multi-pool request indistinguishable from
+				// a steady-state no-op in both events and metrics.
 				logging.Info(l, "op", "incrementalMultiPool", "error", err)
+				c.client.Errorf(svc, "AllocationFailed", "Incremental multi-pool allocation refused for %q: %s", nsName, err)
 			}
 			if added {
 				logging.Info(l, "op", "incrementalMultiPool", "msg", "allocated from new ranges")
@@ -231,9 +236,15 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 			if len(excessIPs) > 0 {
 				logging.Info(l, "op", "ipFamilyTransition", "action", "releaseExcess", "excessIPs", excessIPs)
 
-				// Release the excess IPs from the pool
-				if err := c.ips.ReleaseIPs(pools, nsName, excessIPs); err != nil {
+				// Release the excess IPs from the pool. The pool named by the
+				// Service is passed as a fallback for external pools, whose
+				// addresses cannot be found by address (SidecarPool.Contains
+				// is false) -- without it the address would be dropped from
+				// .status while the external IPAM still held it.
+				if err := c.ips.ReleaseIPs(pools, nsName, excessIPs, svc.Annotations[purelbv2.PoolAnnotation]); err != nil {
 					logging.Info(l, "op", "releaseExcess", "error", err)
+					c.client.Errorf(svc, "ReleaseFailed",
+						"Failed to release addresses after IP family transition: %s", err)
 					// Continue anyway - we'll update the ingress to remove them
 				}
 
@@ -257,9 +268,24 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 		}
 	}
 
-	if err := c.ips.Allocate(pools, svc); err != nil {
+	if err := c.ips.Allocate(st, svc); err != nil {
 		logging.Info(l, "op", "allocateIP", "error", err, "msg", "IP allocation failed")
 		c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", nsName, err)
+		recordAllocationFailure(svc, err)
+
+		// Requeue only what retrying can fix. A pool that is exhausted, a
+		// namespace boundary, a sharing conflict or a malformed address will
+		// fail identically forever, and requeuing those spins the goroutine
+		// that allocates every address in the cluster. A sidecar that is
+		// down or timing out is the opposite: the Service is correct and
+		// only the moment was wrong, and without a requeue it stays pending
+		// until some unrelated event happens to re-enqueue it. The work
+		// queue's rate limiter caps the backoff, and Forget resets it on the
+		// next success, so even a permanently dead sidecar settles into
+		// occasional retries rather than a spin.
+		if isRetryableAllocationErr(err) {
+			return k8s.SyncStateError
+		}
 		return k8s.SyncStateSuccess
 	}
 

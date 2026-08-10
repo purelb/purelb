@@ -119,7 +119,7 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 
 	// Build service IP -> name map for cross-reference
 	svcList, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
-	svcByIP := map[string]string{}  // ip -> "namespace/name"
+	svcByIP := map[string]string{}   // ip -> "namespace/name"
 	etpLocalIPs := map[string]bool{} // IPs from ETP Local services
 	var remoteSvcIPs []string
 	if svcList != nil {

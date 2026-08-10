@@ -41,8 +41,8 @@ func TestEmptyPool(t *testing.T) {
 	var svc v1.Service
 	p := LocalPool{}
 	assert.Equal(t, uint64(0), p.Size(), "incorrect pool size")
-	assert.Error(t, p.assignFamily(nl.FAMILY_V6, &svc))
-	assert.Error(t, p.assignFamily(nl.FAMILY_V4, &svc))
+	assert.Error(t, p.assignFamily(context.Background(), nl.FAMILY_V6, &svc))
+	assert.Error(t, p.assignFamily(context.Background(), nl.FAMILY_V4, &svc))
 	assert.Error(t, p.AssignNext(context.Background(), &svc))
 }
 
@@ -892,4 +892,29 @@ func TestBalancePoolsWithSharingKeyBypass(t *testing.T) {
 	assert.NoError(t, p.AssignNext(context.Background(), &svc2))
 	ip2 := net.ParseIP(svc2.Status.LoadBalancer.Ingress[0].IP)
 	assert.True(t, ip1.Equal(ip2), "sharing key services must share the same IP")
+}
+
+// TestInUseByFamilyColonTest pins the assumption behind counting families
+// with a colon test instead of net.ParseIP: keys in addressesInUse come
+// from net.IP.String(), which renders IPv4 -- including the IPv4-mapped
+// 16-byte form -- as a dotted quad, and only IPv6 as colon-separated.
+func TestInUseByFamilyColonTest(t *testing.T) {
+	cases := []struct {
+		ip     net.IP
+		isIPv6 bool
+	}{
+		{net.ParseIP("192.168.1.1"), false},
+		{net.ParseIP("0.0.0.0"), false},
+		{net.ParseIP("255.255.255.255"), false},
+		{net.IPv4(10, 0, 0, 1), false},             // 16-byte IPv4-mapped
+		{net.ParseIP("::ffff:192.168.1.1"), false}, // explicit v4-mapped form
+		{net.ParseIP("2001:db8::1"), true},
+		{net.ParseIP("::1"), true},
+		{net.ParseIP("fe80::1"), true},
+	}
+	for _, c := range cases {
+		key := c.ip.String()
+		assert.Equal(t, c.isIPv6, strings.Contains(key, ":"),
+			"family test disagrees with net.IP for key %q", key)
+	}
 }

@@ -36,11 +36,20 @@ import (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Announce",type=string,JSONPath=`.status.announce`
 // +kubebuilder:printcolumn:name="IPAM",type=string,JSONPath=`.status.ipam`
-// +kubebuilder:printcolumn:name="Addresses",type=string,JSONPath=`.status.addresses`
-// +kubebuilder:printcolumn:name="Allocated-V4",type=integer,JSONPath=`.status.allocatedIPv4`,priority=1
-// +kubebuilder:printcolumn:name="Allocated-V6",type=integer,JSONPath=`.status.allocatedIPv6`,priority=1
+// Addresses is priority=1 despite being the most detailed field: it is a
+// list, and kubectl renders a non-scalar column as raw JSON, which for a
+// dual-stack multi-range pool is ~200 characters and wraps the default
+// table on any normal terminal. The allocation counts are scalars and fit,
+// so they carry the at-a-glance signal instead; `-o wide` still shows the
+// full address list.
+// +kubebuilder:printcolumn:name="Allocated-V4",type=integer,JSONPath=`.status.allocatedIPv4`
+// +kubebuilder:printcolumn:name="Allocated-V6",type=integer,JSONPath=`.status.allocatedIPv6`
+// +kubebuilder:printcolumn:name="Addresses",type=string,JSONPath=`.status.addresses`,priority=1
 // +kubebuilder:printcolumn:name="Available-V4",type=integer,JSONPath=`.status.availableIPv4`,priority=1
 // +kubebuilder:printcolumn:name="Available-V6",type=integer,JSONPath=`.status.availableIPv6`,priority=1
+// +kubebuilder:printcolumn:name="Namespaces",type=string,JSONPath=`.spec.namespaces`,priority=1
+// +kubebuilder:printcolumn:name="Enforced",type=boolean,JSONPath=`.spec.enforceNamespaces`,priority=1
+// +kubebuilder:printcolumn:name="Bound",type=string,JSONPath=`.status.boundNamespaces`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type ServiceGroup struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -59,6 +68,8 @@ type ServiceGroup struct {
 // - External: IP addresses managed by an external IPAM system reached via a sidecar process
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.local) ? 1 : 0) + (has(self.remote) ? 1 : 0) + (has(self.external) ? 1 : 0) == 1",message="exactly one of local, remote, or external must be specified"
+// +kubebuilder:validation:XValidation:rule="!self.enforceNamespaces || (has(self.namespaces) && size(self.namespaces) > 0)",message="enforceNamespaces requires a non-empty namespaces list, otherwise it silently enforces nothing"
+// +kubebuilder:validation:XValidation:rule="!self.namespaceDefault || (has(self.namespaces) && size(self.namespaces) > 0)",message="namespaceDefault requires a non-empty namespaces list, otherwise it defaults nothing"
 type ServiceGroupSpec struct {
 	// Local configures a pool of IP addresses that will be announced
 	// on the node's local interface (the interface with the default route).
@@ -78,6 +89,71 @@ type ServiceGroupSpec struct {
 	// where to dial.
 	// +optional
 	External *ServiceGroupExternalSpec `json:"external,omitempty"`
+
+	// Namespaces lists the Service namespaces this ServiceGroup serves. A
+	// Service in a listed namespace that carries no purelb.io/service-group
+	// annotation allocates from here. Empty or absent means every namespace,
+	// which is how every ServiceGroup behaved before this field existed.
+	//
+	// Several ServiceGroups may serve one namespace, and that is normal: a
+	// ServiceGroup is exactly one of local, remote or external, so a tenant
+	// wanting both L2 and BGP addresses needs two. The list therefore
+	// establishes eligibility, not ownership. Where more than one serves a
+	// namespace, NamespaceDefault picks which an unannotated Service gets.
+	//
+	// By itself this is a default, not a boundary: an annotation still
+	// overrides it in both directions. Set EnforceNamespaces to make it a
+	// boundary.
+	//
+	// A literal list rather than a label selector is deliberate. A boundary
+	// defined by labels widens the moment somebody labels a namespace,
+	// whereas a list can only widen by an explicit edit to this spec.
+	//
+	// +kubebuilder:validation:MaxItems=1024
+	// +kubebuilder:validation:items:MaxLength=63
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +optional
+	Namespaces []string `json:"namespaces,omitempty"`
+
+	// EnforceNamespaces turns Namespaces from a default into a boundary.
+	// When true, a Service outside the list cannot allocate from this group
+	// even by naming it in purelb.io/service-group or pinning one of its
+	// addresses; and a Service inside the list cannot allocate from any
+	// ServiceGroup that does not serve its namespace.
+	//
+	// Enforcement is a property of the NAMESPACE, not of a single
+	// ServiceGroup: setting this on any one of a namespace's ServiceGroups
+	// fences that namespace completely, in both directions. Otherwise
+	// fencing a tenant's L2 pool would leave its BGP pool reachable from
+	// everywhere.
+	//
+	// This is an allocation control, not RBAC. PureLB ships no admission
+	// webhook, so a refused Service is created and simply never gets an
+	// address. It is also not retroactive: addresses already held are never
+	// revoked, so enabling this enforces nothing that is already allocated.
+	//
+	// Off by default and opt-in per group, so a boundary can be adopted one
+	// namespace at a time.
+	//
+	// +kubebuilder:default=false
+	// +optional
+	EnforceNamespaces bool `json:"enforceNamespaces,omitempty"`
+
+	// NamespaceDefault marks this ServiceGroup as the one an unannotated
+	// Service gets, for every namespace in Namespaces.
+	//
+	// It matters only where two or more ServiceGroups serve the same
+	// namespace. Where only one does, it is the default and this field is
+	// ignored. Where several do and none or more than one is marked, an
+	// unannotated Service falls back to the "default" pool if the namespace
+	// is not enforcing, or is denied if it is; either way a warning names
+	// the candidates. There is deliberately no implicit tie-break: an
+	// operator running both an L2 and a BGP pool for a tenant must say which
+	// one an unannotated Service gets.
+	//
+	// +kubebuilder:default=false
+	// +optional
+	NamespaceDefault bool `json:"namespaceDefault,omitempty"`
 }
 
 // ServiceGroupLocalSpec configures a local IP address pool.
@@ -281,6 +357,22 @@ type AddressPool struct {
 // populated by the allocator as services are assigned and released.
 // Values may briefly lag the spec after a config change.
 type ServiceGroupStatus struct {
+	// BoundNamespaces is the namespace list the allocator parsed from this
+	// ServiceGroup. It confirms what PureLB actually read, which is not the
+	// same question as what the API server accepted.
+	//
+	// It is NOT a report of what is being enforced: it reflects neither
+	// EnforceNamespaces nor an unresolved NamespaceDefault, so a group can
+	// show a namespace here while unannotated Services in that namespace are
+	// being refused for ambiguity.
+	//
+	// Note it cannot detect a pruned CRD: spec.namespaces and this field ship
+	// in the same CRD, so a stale CRD removes both and the result is
+	// indistinguishable from a ServiceGroup that never set the field. Detect
+	// pruning by applying the field and reading the object back.
+	// +optional
+	BoundNamespaces []string `json:"boundNamespaces,omitempty"`
+
 	// Announce is the announcement mechanism: "Local" (IP added to the
 	// node's primary interface, for directly-attached subnets) or
 	// "Remote" (IP added to the kubelb0 dummy interface and advertised

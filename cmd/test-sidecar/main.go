@@ -52,9 +52,9 @@ func env(key, def string) string {
 
 // pool is a single in-memory IPv4 pool over a CIDR.
 type pool struct {
-	cidr     *net.IPNet
-	bySvc    map[string]net.IP // service -> allocated IP (idempotency)
-	inUse    map[string]string // ip string -> service
+	cidr  *net.IPNet
+	bySvc map[string]net.IP // service -> allocated IP (idempotency)
+	inUse map[string]string // ip string -> service
 }
 
 func newPool(cidr *net.IPNet) *pool {

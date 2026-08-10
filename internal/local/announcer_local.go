@@ -17,9 +17,11 @@ package local
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,26 +42,69 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-type announcer struct {
-	client       k8s.ServiceEvent
-	logger       log.Logger
-	myNode       string
-	config       *purelbv2.LBNodeAgentLocalSpec
+// announcerConfig is everything one SetConfig delivery produces, held as
+// an immutable unit.
+//
+// These five values used to be independent mutable fields on announcer,
+// written by SetConfig on the CR-controller goroutine and read by
+// SetBalancer's call tree on the service-sync goroutine with no
+// synchronization. That raced two ways: SetConfig blanked the spec
+// pointer before rebuilding it, so a reader between the nil-guard and any
+// later dereference took a nil-pointer panic; and groups/remoteGroups
+// were assigned empty and then filled, so a reader iterating them hit
+// "concurrent map iteration and map write" -- a Go runtime fatal error,
+// which no recover() can catch.
+//
+// Publishing them together as one immutable snapshot means a reader sees
+// generation N or N+1, never a mixture and never a half-built map. This
+// is the same discipline the allocator uses for allocatorState.
+//
+// Nothing in here may be mutated after the atomic Store that publishes
+// it. Build a fresh one instead; deliveries are rare (CR changes plus the
+// informer resync) and the snapshot is a handful of words.
+type announcerConfig struct {
+	// spec is the Local spec of the LBNodeAgent governing this node.
+	// Never nil in a published snapshot -- an absent or rejected config
+	// is represented by storing a nil *announcerConfig, not by a nil spec.
+	spec *purelbv2.LBNodeAgentLocalSpec
+
 	groups       map[string]*purelbv2.ServiceGroupLocalSpec  // groupName -> ServiceGroupLocalSpec
 	remoteGroups map[string]*purelbv2.ServiceGroupRemoteSpec // groupName -> ServiceGroupRemoteSpec
-	election     *election.Election
-	dummyInt     netlink.Link // for non-local announcements
+
+	// localNameRegex is the pattern that we use to determine if an
+	// interface is local or not. nil means "default interface".
+	localNameRegex *regexp.Regexp
+
+	// dummyInt is the interface carrying non-local announcements.
+	// addDummyInterface is idempotent and resolves by name, so a handle
+	// held by an in-flight reader across a config swap still refers to
+	// the same interface.
+	dummyInt netlink.Link
+}
+
+type announcer struct {
+	client   k8s.ServiceEvent
+	logger   log.Logger
+	myNode   string
+	election *election.Election
+
+	// cfg is the current configuration snapshot. A nil pointer means we
+	// are not configured and must not announce; see SetConfig. Loaded
+	// exactly once per SetBalancer cycle and threaded down, so a config
+	// swap mid-cycle cannot be observed halfway.
+	cfg atomic.Pointer[announcerConfig]
 
 	// svcIngresses is a map from svcName to that Service's
 	// Ingresses. Note that we may or may not advertise all of them
 	// because we might lose an election or not have any active
 	// endpoints, but in any case we need to ensure that we clean them
 	// up if the Service is deleted.
+	//
+	// Not synchronized, and does not need to be: it is written only by
+	// SetBalancer/DeleteBalancer on the service-sync goroutine, and read
+	// by WithdrawAll, which runs from Shutdown after Client.Run has
+	// returned and that goroutine has exited.
 	svcIngresses map[string][]v1.LoadBalancerIngress
-
-	// localNameRegex is the pattern that we use to determine if an
-	// interface is local or not.
-	localNameRegex *regexp.Regexp
 
 	// addressRenewals tracks addresses that need periodic renewal.
 	// Key format: "namespace/servicename:ip" to support shared IPs.
@@ -79,13 +124,31 @@ type announcer struct {
 
 // addressRenewal holds the state needed to periodically refresh an address
 // before its lifetime expires.
+//
+// timer is atomic because it is written by the renewal timer's own
+// goroutine (renewAddress re-arming itself) and read by the service-sync
+// goroutine (scheduleRenewal, cancelRenewal, WithdrawAll, all calling
+// Stop). The cancelled flag does not make a plain field safe: cancelRenewal
+// and WithdrawAll set it before Stop and renewAddress re-checks it before
+// re-arming, which narrows the window to the couple of instructions between
+// that check and the assignment but does not close it -- and scheduleRenewal
+// Stops the old timer without touching cancelled at all, leaving the window
+// wide open.
 type addressRenewal struct {
 	ipNet     net.IPNet
 	link      netlink.Link
 	opts      AddressOptions
-	timer     *time.Timer
+	timer     atomic.Pointer[time.Timer]
 	interval  time.Duration
 	cancelled atomic.Bool // Set when renewal is cancelled to prevent race with timer
+}
+
+// stopTimer stops this renewal's timer if one has been armed. Safe to call
+// from any goroutine and safe before the first arm.
+func (r *addressRenewal) stopTimer() {
+	if t := r.timer.Load(); t != nil {
+		t.Stop()
+	}
 }
 
 var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -113,15 +176,27 @@ func (a *announcer) SetClient(client *k8s.Client) {
 	a.client = client
 }
 
+// SetConfig applies a config delivery. It runs on the CR-controller
+// goroutine, concurrently with SetBalancer on the service-sync goroutine.
+//
+// Everything is built into locals first and published with a single
+// atomic Store, so readers never observe a partially-applied config. In
+// particular the previous snapshot stays live and usable for the whole
+// build: this deliberately does NOT blank the config on entry the way it
+// used to. That blanking was doing two jobs -- opening the race window,
+// and encoding "no agent means announce nothing" -- and only the second
+// is wanted. Every path that means "announce nothing" now stores nil
+// explicitly, and nothing else disturbs the live config.
 func (a *announcer) SetConfig(cfg *purelbv2.Config) error {
-
-	// the default is nil which means that we don't announce
-	a.config = nil
-
 	// The election selector uses the same helper, so both sides always
 	// choose the same agent (the coherence invariant).
 	agent := purelbv2.FirstLocalAgent(cfg.Agents)
 	if agent == nil {
+		// No agent governs this node: the LBNodeAgent was deleted, or a
+		// nodeSelector deselected us. Announce nothing. This store is what
+		// the old entry-point blanking used to do implicitly; without it a
+		// deselected node would keep announcing on its last config forever.
+		a.cfg.Store(nil)
 		logging.Info(a.logger, "event", "noConfig")
 		return nil
 	}
@@ -129,51 +204,62 @@ func (a *announcer) SetConfig(cfg *purelbv2.Config) error {
 	logging.Info(a.logger, "op", "setConfig", "spec", spec, "name", agent.Namespace+"/"+agent.Name)
 
 	// stash the local ServiceGroup configs
-	a.groups = map[string]*purelbv2.ServiceGroupLocalSpec{}
-	a.remoteGroups = map[string]*purelbv2.ServiceGroupRemoteSpec{}
+	groups := map[string]*purelbv2.ServiceGroupLocalSpec{}
+	remoteGroups := map[string]*purelbv2.ServiceGroupRemoteSpec{}
 	for _, group := range cfg.Groups {
 		if group.Spec.Local != nil {
-			a.groups[group.ObjectMeta.Name] = group.Spec.Local
+			groups[group.ObjectMeta.Name] = group.Spec.Local
 		}
 		if group.Spec.Remote != nil {
-			a.remoteGroups[group.ObjectMeta.Name] = group.Spec.Remote
+			remoteGroups[group.ObjectMeta.Name] = group.Spec.Remote
 		}
 	}
 
-	if err := a.applyLocalSpec(spec); err != nil {
+	localNameRegex, err := compileLocalInterface(spec)
+	if err != nil {
+		// An invalid config must not leave the previous one announcing:
+		// the node agent reports SyncStateError upward and its election
+		// selector is emptied to match, so the lease advertises nothing.
+		a.cfg.Store(nil)
 		return err
 	}
 
 	// now that we've got a config we can create the dummy interface
-	var err error
-	if a.dummyInt, err = addDummyInterface(spec.DummyInterface); err != nil {
+	dummyInt, err := addDummyInterface(spec.DummyInterface)
+	if err != nil {
+		a.cfg.Store(nil)
 		return fmt.Errorf("error adding interface \"%s\": %s", spec.DummyInterface, err.Error())
 	}
 
-	// The dummy interface is set up so we can set the config which
-	// will allow announcements to happen.
-	a.config = spec
+	// The dummy interface is set up so we can publish the config, which
+	// will allow announcements to happen. One store, everything at once.
+	a.cfg.Store(&announcerConfig{
+		spec:           spec,
+		groups:         groups,
+		remoteGroups:   remoteGroups,
+		localNameRegex: localNameRegex,
+		dummyInt:       dummyInt,
+	})
 
 	return nil
 }
 
-// applyLocalSpec applies the netlink-free part of a Local spec: regex
-// compilation. Extracted from SetConfig so it can be unit-tested
-// without CAP_NET_ADMIN. An empty LocalInterface is treated as
-// "default" — kubebuilder defaulting can be bypassed by programmatic
-// clients, and compiling "" would yield a match-everything regex. The
-// election's SelectorFromConfig applies the identical rule.
-func (a *announcer) applyLocalSpec(spec *purelbv2.LBNodeAgentLocalSpec) error {
+// compileLocalInterface compiles the netlink-free part of a Local spec:
+// the localInterface regex. Kept separate from SetConfig so it can be
+// unit-tested without CAP_NET_ADMIN. A nil return means "use the default
+// interface". An empty LocalInterface is treated as "default" —
+// kubebuilder defaulting can be bypassed by programmatic clients, and
+// compiling "" would yield a match-everything regex. The election's
+// SelectorFromConfig applies the identical rule.
+func compileLocalInterface(spec *purelbv2.LBNodeAgentLocalSpec) (*regexp.Regexp, error) {
 	if spec.LocalInterface == "default" || spec.LocalInterface == "" {
-		a.localNameRegex = nil
-		return nil
+		return nil, nil
 	}
 	regex, err := regexp.Compile(spec.LocalInterface)
 	if err != nil {
-		return fmt.Errorf("error compiling regex \"%s\": %s", spec.LocalInterface, err.Error())
+		return nil, fmt.Errorf("error compiling regex \"%s\": %s", spec.LocalInterface, err.Error())
 	}
-	a.localNameRegex = regex
-	return nil
+	return regex, nil
 }
 
 func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.EndpointSlice) error {
@@ -188,8 +274,13 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 	nsName := svc.Namespace + "/" + svc.Name
 	l := log.With(a.logger, "service", nsName)
 
+	// Take the config snapshot ONCE for this whole cycle and thread it
+	// down. Re-reading a.cfg per dereference is what allowed a concurrent
+	// SetConfig to nil the spec out from under an in-flight announcement.
+	cfg := a.cfg.Load()
+
 	// if we haven't been configured then we won't announce
-	if a.config == nil {
+	if cfg == nil {
 		logging.Info(l, "event", "noConfig")
 		// We are not announcing anything: withdraw any address we may
 		// still hold and drop any slot that still names us. nodeSelector
@@ -226,14 +317,14 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			continue
 		}
 
-		if a.localNameRegex != nil {
+		if cfg.localNameRegex != nil {
 			// The user specified an announcement interface regex so use it to
 			// try to find a local interface
-			lbIPNet, localif, err := findLocal(a.localNameRegex, a.config.DummyInterface, lbIP)
+			lbIPNet, localif, err := findLocal(cfg.localNameRegex, cfg.spec.DummyInterface, lbIP)
 			if err != nil {
 				// The regex didn't resolve; try the explicitly-configured
 				// extra interfaces (spec.interfaces) before falling through.
-				if xNet, xIf, xErr := a.tryExtraInterfaces(lbIP); xErr == nil {
+				if xNet, xIf, xErr := a.tryExtraInterfaces(cfg, lbIP); xErr == nil {
 					lbIPNet, localif, err = xNet, xIf, nil
 				} else if errors.Is(xErr, errIndeterminate) {
 					err = xErr
@@ -241,12 +332,12 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			}
 			if err == nil {
 				// We found a local interface, announce the address on it
-				if err := a.announceLocal(svc, preferred, localif, lbIP, lbIPNet); err != nil {
+				if err := a.announceLocal(cfg, svc, preferred, localif, lbIP, lbIPNet); err != nil {
 					retErr = err
 				}
-			} else if a.isRemotePool(lbIP) {
+			} else if a.isRemotePool(cfg, lbIP) {
 				// lbIP is from a remote pool, so add it to dummyInt
-				if err := a.announceRemote(svc, epSlices, a.dummyInt, lbIP); err != nil {
+				if err := a.announceRemote(cfg, svc, epSlices, lbIP); err != nil {
 					retErr = err
 				}
 			} else if errors.Is(err, errIndeterminate) {
@@ -275,7 +366,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			var localif netlink.Link
 			announceInt, err := netutil.DefaultInterface(purelbv2.AddrFamily(lbIP))
 			if err != nil {
-				if len(a.config.Interfaces) == 0 {
+				if len(cfg.spec.Interfaces) == 0 {
 					// No fallback interfaces configured: keep the historical
 					// hard-error path.
 					logging.Info(l, "event", "announceError", "err", err)
@@ -289,7 +380,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 				// The default interface didn't resolve; try the
 				// explicitly-configured extra interfaces (spec.interfaces)
 				// before falling through.
-				if xNet, xIf, xErr := a.tryExtraInterfaces(lbIP); xErr == nil {
+				if xNet, xIf, xErr := a.tryExtraInterfaces(cfg, lbIP); xErr == nil {
 					lbIPNet, localif, err = xNet, xIf, nil
 				} else if errors.Is(xErr, errIndeterminate) {
 					err = xErr
@@ -297,12 +388,12 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			}
 			if err == nil {
 				// We found a local interface, announce the address on it
-				if err := a.announceLocal(svc, preferred, localif, lbIP, lbIPNet); err != nil {
+				if err := a.announceLocal(cfg, svc, preferred, localif, lbIP, lbIPNet); err != nil {
 					retErr = err
 				}
-			} else if a.isRemotePool(lbIP) {
+			} else if a.isRemotePool(cfg, lbIP) {
 				// lbIP is from a remote pool, so add it to dummyInt
-				if err := a.announceRemote(svc, epSlices, a.dummyInt, lbIP); err != nil {
+				if err := a.announceRemote(cfg, svc, epSlices, lbIP); err != nil {
 					retErr = err
 				}
 			} else if errors.Is(err, errIndeterminate) {
@@ -340,10 +431,10 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 // errIndeterminate when a candidate's address dump was partial and
 // none succeeded, so the caller can avoid withdrawing on uncertain
 // evidence.
-func (a *announcer) tryExtraInterfaces(lbIP net.IP) (net.IPNet, netlink.Link, error) {
+func (a *announcer) tryExtraInterfaces(cfg *announcerConfig, lbIP net.IP) (net.IPNet, netlink.Link, error) {
 	indeterminate := false
-	for _, name := range a.config.Interfaces {
-		if name == "" || name == a.config.DummyInterface {
+	for _, name := range cfg.spec.Interfaces {
+		if name == "" || name == cfg.spec.DummyInterface {
 			continue
 		}
 		nlIntf, err := netlink.LinkByName(name)
@@ -366,7 +457,7 @@ func (a *announcer) tryExtraInterfaces(lbIP net.IP) (net.IPNet, netlink.Link, er
 	return net.IPNet{}, nil, fmt.Errorf("no extra interface matched")
 }
 
-func (a *announcer) announceLocal(svc *v1.Service, preferred []string, announceInt netlink.Link, lbIP net.IP, lbIPNet net.IPNet) error {
+func (a *announcer) announceLocal(cfg *announcerConfig, svc *v1.Service, preferred []string, announceInt netlink.Link, lbIP net.IP, lbIPNet net.IPNet) error {
 	l := log.With(a.logger, "service", svc.Name)
 	nsName := svc.Namespace + "/" + svc.Name
 
@@ -420,7 +511,7 @@ func (a *announcer) announceLocal(svc *v1.Service, preferred []string, announceI
 	logging.Info(l, "msg", "electionWon", "node", a.myNode, "service", nsName, "memberCount", a.election.MemberCount())
 	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
-	opts := a.getLocalAddressOptions()
+	opts := getLocalAddressOptions(cfg)
 	// IPv6 has no IFA_F_SECONDARY equivalent, so flannel can pick VIPs as the
 	// node's public IPv6 address, breaking overlay routing. Setting PreferedLft=0
 	// marks the address as deprecated (IFA_F_DEPRECATED), which flannel's
@@ -459,12 +550,16 @@ func (a *announcer) announceLocal(svc *v1.Service, preferred []string, announceI
 	// DAD, whose probes are sourced from :: and update no neighbor
 	// caches (and the skip-DAD annotation suppresses even those) — so
 	// without the NA a moved IPv6 VIP converges only via NUD timeouts.
-	a.sendGARPSequence(lbIP, announceInt.Attrs().Name)
+	a.sendGARPSequence(cfg, lbIP, announceInt.Attrs().Name)
 
 	return nil
 }
 
-func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.EndpointSlice, announceInt netlink.Link, lbIP net.IP) error {
+// The announcement interface is always cfg.dummyInt. It used to also be
+// passed in as a parameter that the body then ignored in favour of the
+// field -- exactly the kind of "which one is live?" ambiguity that made
+// the config race hard to see -- so the parameter is gone.
+func (a *announcer) announceRemote(cfg *announcerConfig, svc *v1.Service, epSlices []*discoveryv1.EndpointSlice, lbIP net.IP) error {
 	l := log.With(a.logger, "service", svc.Name)
 	nsName := svc.Namespace + "/" + svc.Name
 
@@ -501,25 +596,25 @@ func (a *announcer) announceRemote(svc *v1.Service, epSlices []*discoveryv1.Endp
 
 	// Find the group from which this address was allocated, which
 	// gives us the subnet and aggregation that we need.
-	groupName, group, err := a.poolFor(lbIP)
+	groupName, group, err := a.poolFor(cfg, lbIP)
 	if err != nil {
 		return err
 	}
 
-	logging.Info(l, "msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "interface", a.dummyInt.Attrs().Name, "group", groupName)
-	a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, a.dummyInt.Attrs().Name)
+	logging.Info(l, "msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "interface", cfg.dummyInt.Attrs().Name, "group", groupName)
+	a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, cfg.dummyInt.Attrs().Name)
 
 	// Add this address to the dummy interface so routing software
 	// (e.g., bird) will announce routes for it.
 	logging.Debug(l, "msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
-	opts := a.getDummyAddressOptions()
-	lbIPNet, err := addVirtualInt(lbIP, a.dummyInt, group.Subnet, group.Aggregation, opts)
+	opts := getDummyAddressOptions(cfg)
+	lbIPNet, err := addVirtualInt(lbIP, cfg.dummyInt, group.Subnet, group.Aggregation, opts)
 	if err != nil {
 		return err
 	}
 	RecordAddressAddition()
 	a.announced.Store(renewalKey(nsName, lbIP.String()), struct{}{})
-	a.scheduleRenewal(nsName, lbIPNet, a.dummyInt, opts)
+	a.scheduleRenewal(nsName, lbIPNet, cfg.dummyInt, opts)
 
 	// The announcing annotation for remote pools is derived by consumers
 	// from pool-type=remote + the LBNodeAgent CR's dummy interface name.
@@ -552,14 +647,21 @@ func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 	// delete this service from our announcement database
 	delete(a.svcIngresses, nsName)
 
+	// Every address is attempted before returning, and failures are
+	// reported: a swallowed error here leaves the VIP on the NIC after the
+	// Service is gone, with nothing left to trigger another withdrawal.
+	var errs []error
 	for _, ingress := range ingress {
 		lbIP := net.ParseIP(ingress.IP)
 		if lbIP == nil {
-			return fmt.Errorf("invalid LoadBalancer IP: %s, belongs to %s", ingress.IP, nsName)
+			errs = append(errs, fmt.Errorf("invalid LoadBalancer IP: %s, belongs to %s", ingress.IP, nsName))
+			continue
 		}
-		a.deleteAddress(nsName, reason, lbIP)
+		if err := a.deleteAddress(nsName, reason, lbIP); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // deleteAddress deletes the IP address associated with the
@@ -615,8 +717,12 @@ func (a *announcer) Shutdown() {
 	// Withdraw all announcements first
 	a.WithdrawAll()
 
-	// remove the "dummy" interface
-	removeInterface(a.dummyInt)
+	// remove the "dummy" interface. Guarded: if no config was ever
+	// accepted there is no interface to remove, and removeInterface would
+	// call Attrs() on a nil Link and panic on the way out.
+	if cfg := a.cfg.Load(); cfg != nil && cfg.dummyInt != nil {
+		removeInterface(cfg.dummyInt)
+	}
 }
 
 // WithdrawAll withdraws all announcements without removing the dummy interface.
@@ -626,7 +732,7 @@ func (a *announcer) WithdrawAll() {
 	a.addressRenewals.Range(func(key, val interface{}) bool {
 		renewal := val.(*addressRenewal)
 		renewal.cancelled.Store(true)
-		renewal.timer.Stop()
+		renewal.stopTimer()
 		return true
 	})
 
@@ -754,17 +860,26 @@ func addrFamilyName(lbIP net.IP) (lbIPFamily string) {
 // poolFor returns the name and AddressPool that contains lbIP.
 // It checks both local and remote ServiceGroups.
 // If error is not nil then no pool was found.
-func (a *announcer) poolFor(lbIP net.IP) (string, *purelbv2.AddressPool, error) {
+//
+// Group names are walked in sorted order rather than map order. The
+// allocator rejects overlapping ServiceGroups in parseGroups, but the
+// announcer builds its maps from the unfiltered config and applies no such
+// rule, so if two groups do overlap it is this function that decides which
+// subnet and aggregation a remote address is announced with. A Go map walk
+// would pick a different one per call, making the announced prefix flap
+// between reconciles on the same node. Sorted order makes the choice
+// arbitrary but stable, and identical on every node.
+func (a *announcer) poolFor(cfg *announcerConfig, lbIP net.IP) (string, *purelbv2.AddressPool, error) {
 	// Check local groups first
-	for groupName, group := range a.groups {
-		pool, err := group.PoolForAddress(lbIP)
+	for _, groupName := range slices.Sorted(maps.Keys(cfg.groups)) {
+		pool, err := cfg.groups[groupName].PoolForAddress(lbIP)
 		if err == nil {
 			return groupName, pool, nil
 		}
 	}
 	// Check remote groups
-	for groupName, group := range a.remoteGroups {
-		pool, err := group.PoolForAddress(lbIP)
+	for _, groupName := range slices.Sorted(maps.Keys(cfg.remoteGroups)) {
+		pool, err := cfg.remoteGroups[groupName].PoolForAddress(lbIP)
 		if err == nil {
 			return groupName, pool, nil
 		}
@@ -775,8 +890,8 @@ func (a *announcer) poolFor(lbIP net.IP) (string, *purelbv2.AddressPool, error) 
 // isRemotePool returns true if the IP address belongs to a remote pool.
 // Remote pools should be announced on kube-lb0, while local pools should
 // only be announced on matching local interfaces (or not at all if no match).
-func (a *announcer) isRemotePool(lbIP net.IP) bool {
-	for _, group := range a.remoteGroups {
+func (a *announcer) isRemotePool(cfg *announcerConfig, lbIP net.IP) bool {
+	for _, group := range cfg.remoteGroups {
 		_, err := group.PoolForAddress(lbIP)
 		if err == nil {
 			return true
@@ -945,14 +1060,19 @@ func (a *announcer) scheduleRenewal(svcName string, lbIPNet net.IPNet, link netl
 		interval: interval,
 	}
 
-	// Cancel existing timer if any
+	// Cancel existing timer if any. Mark it cancelled as well as stopping
+	// it: an in-flight renewAddress for the old renewal re-checks that flag
+	// before re-arming, so without this the superseded timer can arm itself
+	// again after being Stopped and go on firing untracked.
 	if old, loaded := a.addressRenewals.LoadAndDelete(key); loaded {
-		old.(*addressRenewal).timer.Stop()
+		oldRenewal := old.(*addressRenewal)
+		oldRenewal.cancelled.Store(true)
+		oldRenewal.stopTimer()
 	}
 
-	renewal.timer = time.AfterFunc(interval, func() {
+	renewal.timer.Store(time.AfterFunc(interval, func() {
 		a.renewAddress(key)
-	})
+	}))
 
 	a.addressRenewals.Store(key, renewal)
 	logging.Debug(a.logger, "op", "scheduleRenewal", "key", key, "interval", interval)
@@ -986,9 +1106,9 @@ func (a *announcer) renewAddress(key string) {
 	}
 
 	// Reschedule for next renewal
-	renewal.timer = time.AfterFunc(renewal.interval, func() {
+	renewal.timer.Store(time.AfterFunc(renewal.interval, func() {
 		a.renewAddress(key)
-	})
+	}))
 }
 
 // cancelRenewal stops the renewal timer for a specific service/IP combination.
@@ -999,7 +1119,7 @@ func (a *announcer) cancelRenewal(svcName, ip string) {
 		// Mark as cancelled first, then stop timer
 		// This prevents a race where timer fires between LoadAndDelete and Stop
 		renewal.cancelled.Store(true)
-		renewal.timer.Stop()
+		renewal.stopTimer()
 		logging.Debug(a.logger, "op", "cancelRenewal", "key", key)
 	}
 }
@@ -1007,15 +1127,15 @@ func (a *announcer) cancelRenewal(svcName, ip string) {
 // getLocalAddressOptions returns the AddressOptions for addresses added to
 // the local interface. Defaults to finite lifetime (300s) with NoPrefixRoute
 // to prevent CNI plugins like Flannel from selecting VIPs as node addresses.
-func (a *announcer) getLocalAddressOptions() AddressOptions {
+func getLocalAddressOptions(c *announcerConfig) AddressOptions {
 	opts := AddressOptions{
 		ValidLft:      300, // default 5 minutes
 		PreferedLft:   300,
 		NoPrefixRoute: true,
 	}
 
-	if a.config != nil && a.config.AddressConfig != nil && a.config.AddressConfig.LocalInterface != nil {
-		cfg := a.config.AddressConfig.LocalInterface
+	if c != nil && c.spec.AddressConfig != nil && c.spec.AddressConfig.LocalInterface != nil {
+		cfg := c.spec.AddressConfig.LocalInterface
 		if cfg.ValidLifetime != nil {
 			v := *cfg.ValidLifetime
 			// Enforce minimum 60s if non-zero to prevent DoS via tiny lifetime
@@ -1046,12 +1166,12 @@ func (a *announcer) getLocalAddressOptions() AddressOptions {
 // Advertisements for IPv6 (its protocol counterpart — same config
 // gate, delay, count, interval and verify-before-send semantics).
 // The sequence runs in a goroutine to avoid blocking the main announcement.
-func (a *announcer) sendGARPSequence(lbIP net.IP, ifName string) {
-	if a.config == nil || a.config.GARPConfig == nil {
+func (a *announcer) sendGARPSequence(c *announcerConfig, lbIP net.IP, ifName string) {
+	if c == nil || c.spec.GARPConfig == nil {
 		return // GARP not configured
 	}
 
-	cfg := a.config.GARPConfig
+	cfg := c.spec.GARPConfig
 
 	// Check if enabled (defaults to true when GARPConfig is set)
 	if cfg.Enabled != nil && !*cfg.Enabled {
@@ -1150,15 +1270,15 @@ func (a *announcer) sendGARPSequence(lbIP net.IP, ifName string) {
 // getDummyAddressOptions returns the AddressOptions for addresses added to
 // the dummy interface. Defaults to permanent (0) since these don't conflict
 // with CNI plugins and permanent addresses provide routing stability.
-func (a *announcer) getDummyAddressOptions() AddressOptions {
+func getDummyAddressOptions(c *announcerConfig) AddressOptions {
 	opts := AddressOptions{
 		ValidLft:      0, // default permanent
 		PreferedLft:   0,
 		NoPrefixRoute: false,
 	}
 
-	if a.config != nil && a.config.AddressConfig != nil && a.config.AddressConfig.DummyInterface != nil {
-		cfg := a.config.AddressConfig.DummyInterface
+	if c != nil && c.spec.AddressConfig != nil && c.spec.AddressConfig.DummyInterface != nil {
+		cfg := c.spec.AddressConfig.DummyInterface
 		if cfg.ValidLifetime != nil {
 			v := *cfg.ValidLifetime
 			// Enforce minimum 60s if non-zero

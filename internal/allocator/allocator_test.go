@@ -30,6 +30,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	ipamv1 "purelb.io/api/ipam/v1"
@@ -47,6 +48,7 @@ func TestNotifyExisting(t *testing.T) {
 		"default": mustLocalPool(t, "default", "192.168.1.2/31"),
 	}
 	alloc.state.Store(&allocatorState{pools: pools})
+	st := alloc.Snapshot()
 	ip1 := net.ParseIP("192.168.1.2")
 	ip2 := net.ParseIP("192.168.1.3")
 
@@ -60,7 +62,7 @@ func TestNotifyExisting(t *testing.T) {
 
 	// Allocate an address to svc2 - it should get ip2 since ip1 is in
 	// use by svc1
-	err := alloc.Allocate(pools, &svc2)
+	err := alloc.Allocate(st, &svc2)
 	assert.Nil(t, err, "Allocating an address failed")
 	assert.Equal(t, ip2.String(), svc2.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
 }
@@ -75,6 +77,7 @@ func TestAssignment(t *testing.T) {
 		"test3": mustLocalPool(t, "test3", "1000::4:0/120"),
 	}
 	alloc.state.Store(&allocatorState{pools: pools})
+	st := alloc.Snapshot()
 
 	tests := []struct {
 		desc       string
@@ -291,13 +294,13 @@ func TestAssignment(t *testing.T) {
 	for _, test := range tests {
 		service := service(test.svc, test.ports, test.sharingKey)
 		if test.ip == "" {
-			alloc.Unassign(pools, namespacedName(&service))
+			alloc.Unassign(pools, namespacedName(&service), "")
 			continue
 		}
 		ip := net.ParseIP(test.ip)
 		assert.NotNil(t, ip, "invalid IP %q in test %q", test.ip, test.desc)
 		service.Annotations[purelbv2.DesiredAddressAnnotation] = test.ip
-		_, err := alloc.allocateSpecificIP(pools, &service)
+		_, err := alloc.allocateSpecificIP(st, &service)
 		if test.wantErr {
 			assert.NotNil(t, err, "%q should have caused an error, but did not", test.desc)
 		} else {
@@ -319,6 +322,7 @@ func TestPoolAllocation(t *testing.T) {
 		"test2":        mustLocalPool(t, "test2", "10.20.30.0/24"),
 	}
 	alloc.state.Store(&allocatorState{pools: pools})
+	_ = alloc.Snapshot()
 
 	validIP4s := map[string]bool{
 		"1.2.3.4": true,
@@ -522,7 +526,7 @@ func TestPoolAllocation(t *testing.T) {
 	for _, test := range tests {
 		service := service(test.svc, test.ports, test.sharingKey)
 		if test.unassign {
-			alloc.Unassign(pools, namespacedName(&service))
+			alloc.Unassign(pools, namespacedName(&service), "")
 			continue
 		}
 		pool := "test"
@@ -554,11 +558,12 @@ func TestAllocate(t *testing.T) {
 		"test1V6": mustLocalPool(t, "test1V6", "1000::4/127"),
 	}
 	alloc.state.Store(&allocatorState{pools: pools})
+	st := alloc.Snapshot()
 
 	// Allocate specific IP succeeds
 	svc = service("t1", ports("tcp/80"), "")
 	svc.Annotations[purelbv2.DesiredAddressAnnotation] = "1000::4"
-	err := alloc.Allocate(pools, &svc)
+	err := alloc.Allocate(st, &svc)
 	assert.Nil(t, err, "specific IP allocation failed")
 	assert.Equal(t, "test1V6", svc.Annotations[purelbv2.PoolAnnotation], "IP allocated from wrong pool")
 	assert.Equal(t, "1000::4", svc.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
@@ -566,13 +571,13 @@ func TestAllocate(t *testing.T) {
 	// Allocate specific IP fails if IP is already assigned
 	svc = service("t2", ports("tcp/80"), "")
 	svc.Annotations[purelbv2.DesiredAddressAnnotation] = "1000::4"
-	err = alloc.Allocate(pools, &svc)
+	err = alloc.Allocate(st, &svc)
 	assert.Error(t, err, "specific IP allocation should have failed")
 
 	// Allocate from specific pool succeeds
 	svc = service("t3", ports("tcp/80"), "")
 	svc.Annotations[purelbv2.DesiredGroupAnnotation] = "test1V6"
-	err = alloc.Allocate(pools, &svc)
+	err = alloc.Allocate(st, &svc)
 	assert.Nil(t, err, "specific IP allocation failed")
 	assert.Equal(t, "test1V6", svc.Annotations[purelbv2.PoolAnnotation], "IP allocated from wrong pool")
 	assert.Equal(t, "1000::5", svc.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
@@ -580,22 +585,23 @@ func TestAllocate(t *testing.T) {
 	// Pool is empty so allocation fails
 	svc = service("t4", ports("tcp/80"), "")
 	svc.Annotations[purelbv2.DesiredGroupAnnotation] = "test1V6"
-	err = alloc.Allocate(pools, &svc)
+	err = alloc.Allocate(st, &svc)
 	assert.Error(t, err, "allocation from exhausted pool should have failed")
 
 	// There's no "default" pool so allocation fails if the pool isn't
 	// specified
 	svc = service("t5", ports("tcp/80"), "")
-	err = alloc.Allocate(pools, &svc)
+	err = alloc.Allocate(st, &svc)
 	assert.Error(t, err, "default pool IP allocation should have failed")
 
 	// Add a "default" pool
 	pools[defaultPoolName] = mustLocalPool(t, "default", "1.2.3.4/30")
 	alloc.state.Store(&allocatorState{pools: pools})
+	st = alloc.Snapshot()
 
 	// Now that there's a "default" pool, allocation succeeds
 	svc = service("t6", ports("tcp/80"), "")
-	err = alloc.Allocate(pools, &svc)
+	err = alloc.Allocate(st, &svc)
 	assert.Nil(t, err, "default pool IP allocation failed")
 	assert.Equal(t, defaultPoolName, svc.Annotations[purelbv2.PoolAnnotation], "IP allocated from wrong pool")
 	assert.Equal(t, "1.2.3.4", svc.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
@@ -618,7 +624,8 @@ func TestPoolMetrics(t *testing.T) {
 	alloc := New(allocatorTestLogger)
 	alloc.SetClient(&testK8S{t: t})
 	alloc.SetPools([]*purelbv2.ServiceGroup{&testSG})
-	pools := alloc.Pools()
+	st := alloc.Snapshot()
+	pools := st.pools
 
 	tests := []struct {
 		desc       string
@@ -700,13 +707,13 @@ func TestPoolMetrics(t *testing.T) {
 	for _, test := range tests {
 		service := service(test.svc, test.ports, test.sharingKey)
 		if test.ip == "" {
-			alloc.Unassign(pools, namespacedName(&service))
+			alloc.Unassign(pools, namespacedName(&service), "")
 			assert.Equal(t, test.ipsInUse, ptu.ToFloat64(poolActive.WithLabelValues(testSG.ObjectMeta.Name)), "incorrect pool active IP count after unassign")
 			continue
 		}
 
 		service.Annotations[purelbv2.DesiredAddressAnnotation] = test.ip
-		err := alloc.Allocate(pools, &service)
+		err := alloc.Allocate(st, &service)
 		assert.Nil(t, err, "%q: Assign(%q, %q)", test.desc, test.svc, test.ip)
 		assert.Equal(t, testSG.ObjectMeta.Name, service.Annotations[purelbv2.PoolAnnotation], "incorrect pool assigned")
 		assert.Equal(t, test.ipsInUse, ptu.ToFloat64(poolActive.WithLabelValues(testSG.ObjectMeta.Name)), "incorrect pool active IP count after allocation")
@@ -746,24 +753,24 @@ func TestSpecificAddress(t *testing.T) {
 	if alloc.SetPools(groups) != nil {
 		t.Fatal("SetConfig failed")
 	}
-	pools := alloc.Pools()
+	st := alloc.Snapshot()
 
 	// Fail to allocate a specific address that's not in the default
 	// pool
 	svc1 := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
-				purelbv2.DesiredGroupAnnotation: defaultPoolName,
+				purelbv2.DesiredGroupAnnotation:   defaultPoolName,
 				purelbv2.DesiredAddressAnnotation: "1.2.3.8",
 			},
 		},
 	}
-	err := alloc.Allocate(pools, svc1)
+	err := alloc.Allocate(st, svc1)
 	assert.Error(t, err, "address allocated but shouldn't be")
 
 	// Allocate a specific address in the default pool
 	svc1.Annotations[purelbv2.DesiredAddressAnnotation] = "1.2.3.0"
-	err = alloc.Allocate(pools, svc1)
+	err = alloc.Allocate(st, svc1)
 	assert.Nil(t, err, "error allocating address")
 	assert.Equal(t, defaultPoolName, svc1.Annotations[purelbv2.PoolAnnotation], "incorrect pool chosen")
 	assert.Equal(t, svc1.Annotations[purelbv2.DesiredAddressAnnotation], svc1.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
@@ -795,7 +802,7 @@ func TestSharingSimple(t *testing.T) {
 	if alloc.SetPools(groups) != nil {
 		t.Fatal("SetConfig failed")
 	}
-	pools := alloc.Pools()
+	st := alloc.Snapshot()
 
 	svc1 := &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -807,7 +814,7 @@ func TestSharingSimple(t *testing.T) {
 		},
 		Spec: spec,
 	}
-	err := alloc.Allocate(pools, svc1)
+	err := alloc.Allocate(st, svc1)
 	assert.Nil(t, err, "error allocating address")
 	assert.Equal(t, defaultPoolName, svc1.Annotations[purelbv2.PoolAnnotation], "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.0", svc1.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
@@ -823,7 +830,7 @@ func TestSharingSimple(t *testing.T) {
 		},
 		Spec: spec,
 	}
-	err = alloc.Allocate(pools, svc2)
+	err = alloc.Allocate(st, svc2)
 	assert.Nil(t, err, "error allocating address")
 	assert.Equal(t, defaultPoolName, svc2.Annotations[purelbv2.PoolAnnotation], "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.1", svc2.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
@@ -839,7 +846,7 @@ func TestSharingSimple(t *testing.T) {
 		},
 		Spec: spec,
 	}
-	err = alloc.Allocate(pools, svc3)
+	err = alloc.Allocate(st, svc3)
 	assert.Nil(t, err, "error allocating address")
 	assert.Equal(t, defaultPoolName, svc3.Annotations[purelbv2.PoolAnnotation], "incorrect pool chosen")
 	assert.Equal(t, "1.2.3.0", svc3.Status.LoadBalancer.Ingress[0].IP, "IP wasn't assigned to service ingress")
@@ -958,10 +965,10 @@ func TestServiceAddresses(t *testing.T) {
 	// Test the preferred way to assign a specific address (i.e., our
 	// annotation). This overrides LoadBalancerIP.
 	svc1.ObjectMeta = metav1.ObjectMeta{
-			Annotations: map[string]string{
-				purelbv2.DesiredAddressAnnotation: addr2,
-			},
-		}
+		Annotations: map[string]string{
+			purelbv2.DesiredAddressAnnotation: addr2,
+		},
+	}
 	ips, err = alloc.serviceAddresses(svc1)
 	assert.Nil(t, err)
 	assert.Equal(t, 1, len(ips))
@@ -969,10 +976,10 @@ func TestServiceAddresses(t *testing.T) {
 
 	// Test multiple addresses
 	svc1.ObjectMeta = metav1.ObjectMeta{
-			Annotations: map[string]string{
-				purelbv2.DesiredAddressAnnotation: addr1 + "," + addr2,
-			},
-		}
+		Annotations: map[string]string{
+			purelbv2.DesiredAddressAnnotation: addr1 + "," + addr2,
+		},
+	}
 	ips, err = alloc.serviceAddresses(svc1)
 	assert.Nil(t, err)
 	assert.Equal(t, 2, len(ips))
@@ -1100,12 +1107,12 @@ func TestAllocateMultiPool(t *testing.T) {
 		}),
 	}
 	assert.NoError(t, alloc.SetPools(groups))
-	pools := alloc.Pools()
+	st := alloc.Snapshot()
 
 	// Multi-pool allocation via pool default
 	svc := service("svc1", ports("tcp/80"), "")
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	err := alloc.Allocate(pools, &svc)
+	err := alloc.Allocate(st, &svc)
 	assert.NoError(t, err, "multi-pool allocation should succeed")
 	assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "should get 2 IPs")
 	assert.Equal(t, defaultPoolName, svc.Annotations[purelbv2.PoolAnnotation])
@@ -1131,13 +1138,13 @@ func TestAllocateMultiPoolAnnotationOverride(t *testing.T) {
 		},
 	}
 	assert.NoError(t, alloc.SetPools(groups))
-	pools := alloc.Pools()
+	st := alloc.Snapshot()
 
 	// Annotation triggers multi-pool even though pool doesn't have it
 	svc := service("svc1", ports("tcp/80"), "")
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
 	svc.Annotations[purelbv2.MultiPoolAnnotation] = "true"
-	err := alloc.Allocate(pools, &svc)
+	err := alloc.Allocate(st, &svc)
 	assert.NoError(t, err, "annotation-triggered multi-pool should succeed")
 	assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "should get 2 IPs via annotation override")
 }
@@ -1153,12 +1160,12 @@ func TestMultiPoolRejectsSharingKey(t *testing.T) {
 		}),
 	}
 	assert.NoError(t, alloc.SetPools(groups))
-	pools := alloc.Pools()
+	st := alloc.Snapshot()
 
 	// Multi-pool + sharing key should error
 	svc := service("svc1", ports("tcp/80"), "share-me")
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	err := alloc.Allocate(pools, &svc)
+	err := alloc.Allocate(st, &svc)
 	assert.Error(t, err, "multi-pool + sharing should be rejected")
 	assert.Contains(t, err.Error(), "sharing")
 }
@@ -1182,11 +1189,11 @@ func TestMultiPoolBackwardCompat(t *testing.T) {
 		},
 	}
 	assert.NoError(t, alloc.SetPools(groups))
-	pools := alloc.Pools()
+	st := alloc.Snapshot()
 
 	svc := service("svc1", ports("tcp/80"), "")
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	err := alloc.Allocate(pools, &svc)
+	err := alloc.Allocate(st, &svc)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress), "non-multi-pool should get exactly 1 IP")
 }
@@ -1210,19 +1217,19 @@ func TestBalancePoolsMultiPoolMutualExclusion(t *testing.T) {
 						{Pool: "10.0.0.1-10.0.0.5", Subnet: "10.0.0.0/24"},
 						{Pool: "10.0.1.1-10.0.1.5", Subnet: "10.0.1.0/24"},
 					},
-					MultiPool: true,
+					MultiPool:    true,
 					BalancePools: true,
 				},
 			},
 		},
 	}
 	assert.NoError(t, alloc.SetPools(groups))
-	pools := alloc.Pools()
+	st := alloc.Snapshot()
 
 	svc := service("svc1", ports("tcp/80"), "")
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
 
-	err := alloc.Allocate(pools, &svc)
+	err := alloc.Allocate(st, &svc)
 	assert.Error(t, err, "multi-pool and balancePools should be mutually exclusive")
 	assert.Contains(t, err.Error(), "mutually exclusive")
 }
@@ -1251,13 +1258,13 @@ func TestSkipIPv6DADAnnotation(t *testing.T) {
 		},
 	}
 	assert.NoError(t, alloc.SetPools(groups))
-	pools := alloc.Pools()
+	st := alloc.Snapshot()
 
 	// Allocate from pool with skipIPv6DAD=true — annotation should be set
 	svc := service("svc-dad", ports("tcp/80"), "")
 	svc.Annotations[purelbv2.DesiredGroupAnnotation] = "dad-skip"
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	err := alloc.Allocate(pools, &svc)
+	err := alloc.Allocate(st, &svc)
 	assert.NoError(t, err)
 	assert.Equal(t, "true", svc.Annotations[purelbv2.SkipIPv6DADAnnotation],
 		"skip-ipv6-dad annotation should be set when pool has skipIPv6DAD=true")
@@ -1266,7 +1273,7 @@ func TestSkipIPv6DADAnnotation(t *testing.T) {
 	svc2 := service("svc-no-dad", ports("tcp/80"), "")
 	svc2.Annotations[purelbv2.DesiredGroupAnnotation] = "no-dad-skip"
 	svc2.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	err = alloc.Allocate(pools, &svc2)
+	err = alloc.Allocate(st, &svc2)
 	assert.NoError(t, err)
 	_, hasAnnotation := svc2.Annotations[purelbv2.SkipIPv6DADAnnotation]
 	assert.False(t, hasAnnotation,
@@ -1288,17 +1295,17 @@ func TestIncrementalMultiPool(t *testing.T) {
 		}),
 	}
 	assert.NoError(t, alloc.SetPools(groups))
-	pools := alloc.Pools()
+	st := alloc.Snapshot()
 
 	// Initial allocation — gets 2 IPs (subnets 1 and 2 active)
 	svc := service("svc1", ports("tcp/80"), "")
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	err := alloc.Allocate(pools, &svc)
+	err := alloc.Allocate(st, &svc)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "initial: should get 2 IPs")
 
 	// IncrementalMultiPool with same subnets — no-op
-	added, err := alloc.IncrementalMultiPool(pools, &svc)
+	added, err := alloc.IncrementalMultiPool(st, &svc)
 	assert.NoError(t, err)
 	assert.False(t, added, "no new subnets, should be no-op")
 	assert.Equal(t, 2, len(svc.Status.LoadBalancer.Ingress), "still 2 IPs")
@@ -1307,7 +1314,7 @@ func TestIncrementalMultiPool(t *testing.T) {
 	alloc.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24", "192.168.2.0/24", "192.168.3.0/24"}), "purelb")
 
 	// IncrementalMultiPool should add a 3rd IP
-	added, err = alloc.IncrementalMultiPool(pools, &svc)
+	added, err = alloc.IncrementalMultiPool(st, &svc)
 	assert.NoError(t, err)
 	assert.True(t, added, "new subnet available, should add IP")
 	assert.Equal(t, 3, len(svc.Status.LoadBalancer.Ingress), "should now have 3 IPs")
@@ -1324,16 +1331,16 @@ func TestIncrementalMultiPoolNoOp(t *testing.T) {
 		}),
 	}
 	assert.NoError(t, alloc.SetPools(groups))
-	pools := alloc.Pools()
+	st := alloc.Snapshot()
 
 	// Allocate — gets 1 IP (only 1 range)
 	svc := service("svc1", ports("tcp/80"), "")
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	assert.NoError(t, alloc.Allocate(pools, &svc))
+	assert.NoError(t, alloc.Allocate(st, &svc))
 	assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress))
 
 	// IncrementalMultiPool with all ranges covered — no-op
-	added, err := alloc.IncrementalMultiPool(pools, &svc)
+	added, err := alloc.IncrementalMultiPool(st, &svc)
 	assert.NoError(t, err)
 	assert.False(t, added, "all ranges covered, should be no-op")
 	assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress))
@@ -1346,41 +1353,41 @@ func TestIncrementalMultiPoolNoOp(t *testing.T) {
 // fakeStatusPool implements just enough of Pool for buildStatus tests.
 // Each field is set per-case to exercise a specific buildStatus branch.
 type fakeStatusPool struct {
-	name              string
-	poolType          string
-	ipamSource        string
-	displayAddresses  []string
-	inUseV4           int
-	inUseV6           int
-	sizeV4            uint64
-	sizeV6            uint64
-	hasKnownCapacity  bool
+	name             string
+	poolType         string
+	ipamSource       string
+	displayAddresses []string
+	inUseV4          int
+	inUseV6          int
+	sizeV4           uint64
+	sizeV6           uint64
+	hasKnownCapacity bool
 }
 
-func (f *fakeStatusPool) String() string                                  { return f.name }
-func (f *fakeStatusPool) PoolType() string                                { return f.poolType }
-func (f *fakeStatusPool) IPAMSource() string                              { return f.ipamSource }
-func (f *fakeStatusPool) DisplayAddresses() []string                      { return f.displayAddresses }
-func (f *fakeStatusPool) InUseV4() int                                    { return f.inUseV4 }
-func (f *fakeStatusPool) InUseV6() int                                    { return f.inUseV6 }
-func (f *fakeStatusPool) SizeV4() uint64                                  { return f.sizeV4 }
-func (f *fakeStatusPool) SizeV6() uint64                                  { return f.sizeV6 }
-func (f *fakeStatusPool) HasKnownCapacity() bool                          { return f.hasKnownCapacity }
-func (f *fakeStatusPool) InUse() int                                      { return f.inUseV4 + f.inUseV6 }
-func (f *fakeStatusPool) Size() uint64                                    { return f.sizeV4 + f.sizeV6 }
-func (f *fakeStatusPool) Notify(context.Context, *v1.Service) error       { return nil }
+func (f *fakeStatusPool) String() string                                    { return f.name }
+func (f *fakeStatusPool) PoolType() string                                  { return f.poolType }
+func (f *fakeStatusPool) IPAMSource() string                                { return f.ipamSource }
+func (f *fakeStatusPool) DisplayAddresses() []string                        { return f.displayAddresses }
+func (f *fakeStatusPool) InUseV4() int                                      { return f.inUseV4 }
+func (f *fakeStatusPool) InUseV6() int                                      { return f.inUseV6 }
+func (f *fakeStatusPool) SizeV4() uint64                                    { return f.sizeV4 }
+func (f *fakeStatusPool) SizeV6() uint64                                    { return f.sizeV6 }
+func (f *fakeStatusPool) HasKnownCapacity() bool                            { return f.hasKnownCapacity }
+func (f *fakeStatusPool) InUse() int                                        { return f.inUseV4 + f.inUseV6 }
+func (f *fakeStatusPool) Size() uint64                                      { return f.sizeV4 + f.sizeV6 }
+func (f *fakeStatusPool) Notify(context.Context, *v1.Service) error         { return nil }
 func (f *fakeStatusPool) Assign(context.Context, net.IP, *v1.Service) error { return nil }
-func (f *fakeStatusPool) AssignNext(context.Context, *v1.Service) error   { return nil }
-func (f *fakeStatusPool) Release(context.Context, string) error           { return nil }
-func (f *fakeStatusPool) ReleaseIP(context.Context, string, net.IP) error { return nil }
+func (f *fakeStatusPool) AssignNext(context.Context, *v1.Service) error     { return nil }
+func (f *fakeStatusPool) Release(context.Context, string) error             { return nil }
+func (f *fakeStatusPool) ReleaseIP(context.Context, string, net.IP) error   { return nil }
 func (f *fakeStatusPool) AssignNextPerRange(context.Context, *v1.Service, []string) error {
 	return nil
 }
-func (f *fakeStatusPool) Overlaps(Pool) bool { return false }
+func (f *fakeStatusPool) Overlaps(Pool) bool   { return false }
 func (f *fakeStatusPool) Contains(net.IP) bool { return false }
-func (f *fakeStatusPool) SkipIPv6DAD() bool   { return false }
-func (f *fakeStatusPool) MultiPool() bool     { return false }
-func (f *fakeStatusPool) BalancePools() bool  { return false }
+func (f *fakeStatusPool) SkipIPv6DAD() bool    { return false }
+func (f *fakeStatusPool) MultiPool() bool      { return false }
+func (f *fakeStatusPool) BalancePools() bool   { return false }
 
 // ptrI64 returns a pointer to v. Used for inline expected-value
 // construction in table-driven tests.
@@ -1530,13 +1537,23 @@ func TestStatusEqual(t *testing.T) {
 		{
 			name: "Available* separate-allocation-same-value match (this is the key cache-elision case)",
 			a:    base,
-			b:    func() purelbv2.ServiceGroupStatus { c := base; v4, v6 := int64(251), int64(0); c.AvailableIPv4 = &v4; c.AvailableIPv6 = &v6; return c }(),
+			b: func() purelbv2.ServiceGroupStatus {
+				c := base
+				v4, v6 := int64(251), int64(0)
+				c.AvailableIPv4 = &v4
+				c.AvailableIPv6 = &v6
+				return c
+			}(),
 			want: true,
 		},
 		{
 			name: "Addresses length differs",
 			a:    base,
-			b:    func() purelbv2.ServiceGroupStatus { c := base; c.Addresses = []string{"192.168.1.0/24", "extra"}; return c }(),
+			b: func() purelbv2.ServiceGroupStatus {
+				c := base
+				c.Addresses = []string{"192.168.1.0/24", "extra"}
+				return c
+			}(),
 			want: false,
 		},
 		{
@@ -1947,4 +1964,173 @@ func TestPublishAllSGStatus_PoolWithoutServiceGroup(t *testing.T) {
 	})
 	assert.NoError(t, alloc.PublishAllSGStatus(context.Background()))
 	assert.Empty(t, writer.updates)
+}
+
+// TestIncrementalMultiPoolIgnoresTamperedAnnotation: purelb.io/allocated-from
+// lives on the Service, so its owner can point it at any pool in the cluster.
+// The pool must be resolved from the addresses the Service actually holds.
+func TestIncrementalMultiPoolIgnoresTamperedAnnotation(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
+	alloc.SetActiveSubnets(mockActiveSubnets([]string{"192.168.1.0/24", "192.168.2.0/24"}), "purelb")
+
+	groups := []*purelbv2.ServiceGroup{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
+			Spec: purelbv2.ServiceGroupSpec{Local: &purelbv2.ServiceGroupLocalSpec{
+				V4Pools: []purelbv2.AddressPool{{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"}},
+			}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "victim"},
+			Spec: purelbv2.ServiceGroupSpec{Local: &purelbv2.ServiceGroupLocalSpec{
+				MultiPool: true,
+				V4Pools: []purelbv2.AddressPool{
+					{Pool: "192.168.2.0/31", Subnet: "192.168.2.0/24"},
+					{Pool: "192.168.3.0/31", Subnet: "192.168.3.0/24"},
+				},
+			}},
+		},
+	}
+	require.NoError(t, alloc.SetPools(groups))
+	st := alloc.Snapshot()
+	pools := st.pools
+
+	// A Service legitimately holding an address from "default", with the
+	// annotation tampered to name the victim pool.
+	svc := service("tenant", ports("tcp/80"), "")
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	require.NoError(t, alloc.Allocate(st, &svc))
+	require.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress))
+	svc.Annotations[purelbv2.PoolAnnotation] = "victim"
+
+	added, err := alloc.IncrementalMultiPool(st, &svc)
+	assert.NoError(t, err, "resolving by containment lands on the pool actually held, which is a no-op")
+	assert.False(t, added)
+	assert.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress), "must not gain victim addresses")
+	assert.Equal(t, "192.168.1.0", svc.Status.LoadBalancer.Ingress[0].IP,
+		"the address held must be unchanged")
+	assert.Equal(t, defaultPoolName, svc.Annotations[purelbv2.PoolAnnotation],
+		"the tampered annotation must be corrected to the pool actually held")
+	assert.Equal(t, 0, pools["victim"].InUse(), "the victim pool must be untouched")
+}
+
+// TestAllocateFromPoolRollsBackPartialDualStack: AssignNext commits each
+// family as it goes and returns on the first failure. Without a rollback the
+// committed family stays in .status, gets persisted and announced, but is
+// never branded -- so populateFromExisting skips it and it is re-allocatable
+// after a restart. Family ORDER matters: [IPv4, IPv6] against a v4-only pool
+// is the leaking direction; the reverse aborts before committing anything.
+func TestAllocateFromPoolRollsBackPartialDualStack(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
+
+	groups := []*purelbv2.ServiceGroup{{
+		ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
+		Spec: purelbv2.ServiceGroupSpec{Local: &purelbv2.ServiceGroupLocalSpec{
+			V4Pools: []purelbv2.AddressPool{{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"}},
+		}},
+	}}
+	require.NoError(t, alloc.SetPools(groups))
+	st := alloc.Snapshot()
+	pools := st.pools
+	pool := pools[defaultPoolName]
+
+	svc := service("dual", ports("tcp/80"), "")
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol}
+
+	err := alloc.Allocate(st, &svc)
+	assert.Error(t, err, "v6 is unavailable in a v4-only pool")
+	assert.Empty(t, svc.Status.LoadBalancer.Ingress,
+		"the v4 committed before the v6 failed must be rolled back, not left announced and unbranded")
+	assert.Equal(t, 0, pool.InUse(), "the rolled-back address must be free for reuse")
+}
+
+// TestAllocateFromPoolRollbackKeepsPreExisting: the rollback must undo only
+// what this call added. A SingleStack->DualStack transition enters with an
+// address already held, and that address must survive a failed top-up.
+func TestAllocateFromPoolRollbackKeepsPreExisting(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.SetClient(&testK8S{t: t})
+
+	groups := []*purelbv2.ServiceGroup{{
+		ObjectMeta: metav1.ObjectMeta{Name: defaultPoolName},
+		Spec: purelbv2.ServiceGroupSpec{Local: &purelbv2.ServiceGroupLocalSpec{
+			V4Pools: []purelbv2.AddressPool{{Pool: "192.168.1.0/31", Subnet: "192.168.1.0/24"}},
+		}},
+	}}
+	require.NoError(t, alloc.SetPools(groups))
+	st := alloc.Snapshot()
+	pools := st.pools
+	pool := pools[defaultPoolName]
+
+	// Allocate v4 only, successfully.
+	svc := service("grow", ports("tcp/80"), "")
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	require.NoError(t, alloc.Allocate(st, &svc))
+	require.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress))
+	held := svc.Status.LoadBalancer.Ingress[0].IP
+
+	// Now ask for dual-stack from the same v4-only pool.
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol}
+	err := alloc.Allocate(st, &svc)
+	assert.Error(t, err)
+	require.Equal(t, 1, len(svc.Status.LoadBalancer.Ingress), "pre-existing address must survive")
+	assert.Equal(t, held, svc.Status.LoadBalancer.Ingress[0].IP)
+	assert.Equal(t, 1, pool.InUse(), "pre-existing address must stay registered")
+}
+
+// capturingK8S records Warning event messages so a test can assert on their
+// exact text, which testK8S only logs.
+type capturingK8S struct{ warnings []string }
+
+func (c *capturingK8S) Infof(_ runtime.Object, _, _ string, _ ...interface{}) {}
+func (c *capturingK8S) Errorf(_ runtime.Object, _, msg string, args ...interface{}) {
+	c.warnings = append(c.warnings, fmt.Sprintf(msg, args...))
+}
+func (c *capturingK8S) ForceSync() {}
+
+// TestParseGroupsOverlapMessageIsStable: when a ServiceGroup overlaps more
+// than one already-accepted pool, the rejection message must always name the
+// same partner. parseGroups used to walk the pools map to find it, so with
+// Go's randomised map iteration the text changed between reconciles -- the
+// event recorder could not aggregate it and a fresh Event appeared on every
+// resync, forever.
+func TestParseGroupsOverlapMessageIsStable(t *testing.T) {
+	groups := []*purelbv2.ServiceGroup{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "aaa"},
+			Spec: purelbv2.ServiceGroupSpec{Local: &purelbv2.ServiceGroupLocalSpec{
+				V4Pools: []purelbv2.AddressPool{{Pool: "192.168.1.0-192.168.1.10", Subnet: "192.168.0.0/16"}},
+			}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "bbb"},
+			Spec: purelbv2.ServiceGroupSpec{Local: &purelbv2.ServiceGroupLocalSpec{
+				V4Pools: []purelbv2.AddressPool{{Pool: "192.168.2.0-192.168.2.10", Subnet: "192.168.0.0/16"}},
+			}},
+		},
+		{
+			// Overlaps BOTH aaa and bbb, so there are two candidate partners
+			// and the map walk had something to be non-deterministic about.
+			ObjectMeta: metav1.ObjectMeta{Name: "ccc"},
+			Spec: purelbv2.ServiceGroupSpec{Local: &purelbv2.ServiceGroupLocalSpec{
+				V4Pools: []purelbv2.AddressPool{{Pool: "192.168.1.0-192.168.2.10", Subnet: "192.168.0.0/16"}},
+			}},
+		},
+	}
+
+	var seen []string
+	for i := 0; i < 20; i++ {
+		client := &capturingK8S{}
+		alloc := New(allocatorTestLogger)
+		alloc.SetClient(client)
+		require.NoError(t, alloc.SetPools(groups))
+		require.Len(t, client.warnings, 1, "exactly one group should be rejected")
+		seen = append(seen, client.warnings[0])
+	}
+	for i, msg := range seen {
+		assert.Equal(t, seen[0], msg, "overlap message differed on run %d", i)
+	}
+	assert.Contains(t, seen[0], `"aaa"`, "should name the lowest-sorting partner, not a random one")
 }

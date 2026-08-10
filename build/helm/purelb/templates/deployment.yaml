@@ -36,12 +36,10 @@ spec:
       {{- end }}
       containers:
       - env:
-        - name: NETBOX_USER_TOKEN
+        - name: PURELB_NAMESPACE
           valueFrom:
-            secretKeyRef:
-              name: netbox-client
-              key: user-token
-              optional: true
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: DEFAULT_ANNOUNCER
           value: "{{ .Values.defaultAnnouncer }}"
         image: "{{ .Values.image.repository }}/allocator:{{ .Values.image.tag }}"
