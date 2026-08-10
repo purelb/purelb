@@ -26,12 +26,10 @@ import (
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
-// lastSelectedInterfaces tracks the previously selected interface
-// names so we can log at info level on first selection or change,
-// debug on repeats. Like lastSubnets, it is safe only because the
-// election closure is the single caller (Start happens-before the
-// renewLoop goroutine).
-var lastSelectedInterfaces string
+// lastSelectedInterfaces tracks the previously selected interface names so
+// we can log at info level on first selection or change, debug on repeats.
+// See logThrottle in subnets.go for why this is atomic.
+var lastSelectedInterfaces logThrottle
 
 // InterfaceSelector describes which interfaces feed the election's
 // subnet detection. It is derived from the same LBNodeAgent Local spec
@@ -117,8 +115,7 @@ func GetSelectedSubnets(sel *InterfaceSelector, logger log.Logger) ([]string, er
 	// visible at info level.
 	if logger != nil {
 		formatted := fmt.Sprintf("%v(useDefault=%t)", names, sel.UseDefault)
-		if formatted != lastSelectedInterfaces {
-			lastSelectedInterfaces = formatted
+		if lastSelectedInterfaces.changed(formatted) {
 			logging.Info(logger, "op", "getSelectedSubnets", "interfaces", formatted,
 				"msg", "interface selection changed")
 		} else {

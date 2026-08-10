@@ -48,13 +48,6 @@ rules:
   verbs:
   - create
   - patch
-- apiGroups:
-  - ''
-  resources:
-  - namespaces
-  verbs:
-  - get
-  - list
 # Leases are used for leader election (subnet-aware election via K8s leases)
 - apiGroups:
   - coordination.k8s.io

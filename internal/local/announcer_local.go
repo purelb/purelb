@@ -17,9 +17,11 @@ package local
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -858,17 +860,26 @@ func addrFamilyName(lbIP net.IP) (lbIPFamily string) {
 // poolFor returns the name and AddressPool that contains lbIP.
 // It checks both local and remote ServiceGroups.
 // If error is not nil then no pool was found.
+//
+// Group names are walked in sorted order rather than map order. The
+// allocator rejects overlapping ServiceGroups in parseGroups, but the
+// announcer builds its maps from the unfiltered config and applies no such
+// rule, so if two groups do overlap it is this function that decides which
+// subnet and aggregation a remote address is announced with. A Go map walk
+// would pick a different one per call, making the announced prefix flap
+// between reconciles on the same node. Sorted order makes the choice
+// arbitrary but stable, and identical on every node.
 func (a *announcer) poolFor(cfg *announcerConfig, lbIP net.IP) (string, *purelbv2.AddressPool, error) {
 	// Check local groups first
-	for groupName, group := range cfg.groups {
-		pool, err := group.PoolForAddress(lbIP)
+	for _, groupName := range slices.Sorted(maps.Keys(cfg.groups)) {
+		pool, err := cfg.groups[groupName].PoolForAddress(lbIP)
 		if err == nil {
 			return groupName, pool, nil
 		}
 	}
 	// Check remote groups
-	for groupName, group := range cfg.remoteGroups {
-		pool, err := group.PoolForAddress(lbIP)
+	for _, groupName := range slices.Sorted(maps.Keys(cfg.remoteGroups)) {
+		pool, err := cfg.remoteGroups[groupName].PoolForAddress(lbIP)
 		if err == nil {
 			return groupName, pool, nil
 		}

@@ -61,13 +61,6 @@ rules:
   verbs:
   - create
   - patch
-- apiGroups:
-  - ''
-  resources:
-  - namespaces
-  verbs:
-  - get
-  - list
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -118,13 +111,6 @@ rules:
   verbs:
   - create
   - patch
-- apiGroups:
-  - ''
-  resources:
-  - namespaces
-  verbs:
-  - get
-  - list
 # Leases are used for leader election (subnet-aware election via K8s leases)
 - apiGroups:
   - coordination.k8s.io

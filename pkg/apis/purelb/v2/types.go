@@ -36,9 +36,15 @@ import (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Announce",type=string,JSONPath=`.status.announce`
 // +kubebuilder:printcolumn:name="IPAM",type=string,JSONPath=`.status.ipam`
-// +kubebuilder:printcolumn:name="Addresses",type=string,JSONPath=`.status.addresses`
-// +kubebuilder:printcolumn:name="Allocated-V4",type=integer,JSONPath=`.status.allocatedIPv4`,priority=1
-// +kubebuilder:printcolumn:name="Allocated-V6",type=integer,JSONPath=`.status.allocatedIPv6`,priority=1
+// Addresses is priority=1 despite being the most detailed field: it is a
+// list, and kubectl renders a non-scalar column as raw JSON, which for a
+// dual-stack multi-range pool is ~200 characters and wraps the default
+// table on any normal terminal. The allocation counts are scalars and fit,
+// so they carry the at-a-glance signal instead; `-o wide` still shows the
+// full address list.
+// +kubebuilder:printcolumn:name="Allocated-V4",type=integer,JSONPath=`.status.allocatedIPv4`
+// +kubebuilder:printcolumn:name="Allocated-V6",type=integer,JSONPath=`.status.allocatedIPv6`
+// +kubebuilder:printcolumn:name="Addresses",type=string,JSONPath=`.status.addresses`,priority=1
 // +kubebuilder:printcolumn:name="Available-V4",type=integer,JSONPath=`.status.availableIPv4`,priority=1
 // +kubebuilder:printcolumn:name="Available-V6",type=integer,JSONPath=`.status.availableIPv6`,priority=1
 // +kubebuilder:printcolumn:name="Namespaces",type=string,JSONPath=`.spec.namespaces`,priority=1
