@@ -145,6 +145,32 @@ def lease_has(cluster: Cluster, node: str, subnet: str) -> bool:
     return subnet in cluster.node_lease_subnets(node)
 
 
+def wait_for_settled_leases(cluster: Cluster, topo: topology.Topology) -> Dict[str, List[str]]:
+    """Every node advertising its own subnets, and nothing more.
+
+    A precondition, not an assertion. An agent that has just restarted --
+    which the failover tests leave behind when they run first -- has an
+    empty lease for a few seconds. Snapshotting that as "before" made the
+    scoping check compare [] against the correct value and report that a
+    CR scoped to another node had changed this one's lease: a real
+    assertion, failing on a garbage baseline.
+    """
+    def settled():
+        current = {}
+        for node in topo.node_ips:
+            subnets = set(cluster.node_lease_subnets(node))
+            expected = {s for s in (topo.subnet_of(node).v4, topo.subnet_of(node).v6) if s}
+            if subnets != expected:
+                return None
+            current[node] = sorted(subnets)
+        return current
+
+    return wait_until(
+        settled, timeout=120, interval=3.0,
+        description="every node's lease to settle on exactly its own subnets",
+    )
+
+
 # ------------------------------------------------------------- baseline
 
 
@@ -159,6 +185,7 @@ def test_second_nic_is_not_advertised_by_default(
     "gained it" assertions below would pass without the scoped CR doing
     anything.
     """
+    wait_for_settled_leases(cluster, topo)
     subnets = cluster.node_lease_subnets(dual_homed.node)
     primary = topo.subnet_of(dual_homed.node)
     assert primary.v4 in subnets, (
@@ -179,8 +206,9 @@ def test_scoped_agent_adds_the_second_nics_subnets(
 ):
     """A scoped LBNodeAgent widens exactly one node's lease."""
     node = dual_homed.node
+    settled = wait_for_settled_leases(cluster, topo)
     before = agent_metrics(node)
-    others = {n: cluster.node_lease_subnets(n) for n in topo.node_ips if n != node}
+    others = {n: v for n, v in settled.items() if n != node}
 
     scoped_agent(SCOPED_AGENT, node, [topo.node_iface[node], dual_homed.interface])
 
@@ -204,8 +232,9 @@ def test_scoped_agent_adds_the_second_nics_subnets(
     # node's lease may change. A selector that silently matched everything
     # would pass every assertion above.
     for other, subnets in others.items():
-        assert cluster.node_lease_subnets(other) == subnets, (
-            f"{other}'s lease changed after a CR scoped to {node}"
+        assert sorted(cluster.node_lease_subnets(other)) == subnets, (
+            f"{other}'s lease changed after a CR scoped to {node}: "
+            f"{subnets} -> {sorted(cluster.node_lease_subnets(other))}"
         )
 
     pod = cluster.pod_on_node(cluster.purelb_namespace, "component=lbnodeagent", node)
