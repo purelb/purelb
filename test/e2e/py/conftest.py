@@ -270,6 +270,74 @@ def lb_service(cluster: Cluster):
 
 
 @pytest.fixture
+def subnet_servicegroup(cluster: Cluster):
+    """A ServiceGroup with pools on ONE subnet, removed afterwards.
+
+    This is how a test pins an address to a subnet. The obvious
+    alternative -- purelb.io/addresses -- does not work for that:
+    serviceAddresses() runs each comma-separated value through
+    net.ParseIP, so it takes specific addresses and rejects a range
+    outright, leaving the Service with no address at all.
+
+    Uses the .230-.240 / b:: band, which does not overlap the default
+    pool. Overlapping ranges are rejected by the allocator, so the wrong
+    band fails in a way that reads as a product bug.
+    """
+    created: List[str] = []
+
+    def make(name: str, subnet) -> str:
+        spec: Dict[str, object] = {
+            "local": {
+                "v4pools": [
+                    {"aggregation": "default", "pool": subnet.test_pool, "subnet": subnet.v4}
+                ]
+            }
+        }
+        if subnet.v6:
+            spec["local"]["v6pools"] = [  # type: ignore[index]
+                {"aggregation": "default", "pool": subnet.test_pool_v6, "subnet": subnet.v6}
+            ]
+        cluster.apply_cr(
+            {
+                "apiVersion": "purelb.io/v2",
+                "kind": "ServiceGroup",
+                "metadata": {"name": name, "namespace": cluster.purelb_namespace},
+                "spec": spec,
+            }
+        )
+        created.append(name)
+        return name
+
+    yield make
+
+    for name in reversed(created):
+        cluster.delete_cr("servicegroup", name)
+
+
+@pytest.fixture
+def tainted_nodes(cluster: Cluster):
+    """Apply NoExecute taints and guarantee their removal.
+
+    This is the whole A9 problem solved structurally. The bash suite
+    applied `purelb-test=...:NoExecute` in three tests and had to untaint
+    at SIX inline sites, one before every `fail` on the path -- and a fail
+    raised inside a helper skipped them all, leaving a node permanently
+    unschedulable for every later test and every later run. Here the
+    teardown runs whatever the test does.
+    """
+    applied: List[tuple] = []
+
+    def taint(node: str, key: str = "purelb-test", value: str = "failover") -> None:
+        cluster.add_taint(node, key, value, "NoExecute")
+        applied.append((node, key))
+
+    yield taint
+
+    for node, key in reversed(applied):
+        cluster.remove_taint(node, key)
+
+
+@pytest.fixture
 def log_window() -> _dt.datetime:
     """Opens a log window at the start of the test.
 

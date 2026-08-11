@@ -33,11 +33,11 @@ from typing import Dict, List
 
 import pytest
 
-from purelb_e2e import metrics, nodes, topology
+from purelb_e2e import TEST_NAMESPACE, metrics, nodes, topology
 from purelb_e2e.cluster import Cluster
 from purelb_e2e.wait import wait_until, wait_while
 
-NAMESPACE = "test"
+NAMESPACE = TEST_NAMESPACE
 DUMMY_IFACE = "kube-lb0"
 
 ALLOCATED_BY = "purelb.io/allocated-by"
@@ -77,16 +77,8 @@ def assert_not_on_dummy(topo: topology.Topology, address: str) -> None:
 
 
 def curl_from_node(topo: topology.Topology, address: str, timeout: float = 30.0) -> str:
-    """HTTP GET the VIP from a cluster node.
-
-    From a node rather than the workstation: the workstation may have no
-    route to the VIP subnet, and the bash suite's workstation-side curl
-    silently exercised nothing when it did not.
-    """
-    host = ipaddress.ip_address(address)
-    url = f"http://[{address}]/" if host.version == 6 else f"http://{address}/"
-    node = sorted(topo.node_ips)[0]
-    return nodes.ssh(topo.node_ips[node], f"curl -s --max-time 5 {url}", timeout=timeout)
+    """HTTP GET the VIP from a cluster node. See nodes.curl_via_node."""
+    return nodes.curl_via_node(topo.node_ips, address, timeout=timeout)
 
 
 # ------------------------------------------------------------ allocation

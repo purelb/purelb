@@ -27,7 +27,7 @@ import textwrap
 
 import pytest
 
-from purelb_e2e import dualrun, metrics
+from purelb_e2e import announcing, dualrun, metrics
 from purelb_e2e.wait import WaitTimeout, wait_until
 
 SAMPLE = """\
@@ -158,6 +158,74 @@ def test_wait_until_surfaces_the_last_error():
 
     with pytest.raises(WaitTimeout, match="apiserver said no"):
         wait_until(broken, timeout=0.2, interval=0.05)
+
+
+# ------------------------------------------------------------ announcing
+#
+# This parser has to agree with ParseAnnouncements in
+# pkg/apis/purelb/v2/announcing.go. If it does not, a failing test means
+# the harness is wrong rather than the product -- the worst kind of test,
+# because the natural response is to "fix" the product.
+
+
+def test_announcing_splits_on_first_and_last_comma():
+    """Interface names may legally contain commas.
+
+    The product splits on the FIRST comma for the node and the LAST for
+    the IP, leaving everything between as the interface. A naive
+    split(",") would disagree, and disagree silently.
+    """
+    got = announcing.parse("node-a,eth0,192.0.2.10 node-b,br0,x,192.0.2.11")
+    assert [(a.node, a.interface, a.ip) for a in got] == [
+        ("node-a", "eth0", "192.0.2.10"),
+        ("node-b", "br0,x", "192.0.2.11"),
+    ]
+
+
+def test_announcing_drops_malformed_entries_rather_than_raising():
+    """Leniency is the product's behaviour, so it is the test's too.
+
+    A malformed annotation must not stall reconciliation, so the product
+    drops bad entries. The legacy one-field ("kube-lb0") and two-field
+    ("node,iface") forms are exactly what this drops on upgrade.
+    """
+    value = "kube-lb0 node,iface node-a,eth0,not-an-ip ,eth0,192.0.2.1 node-b,,192.0.2.2 good,eth0,192.0.2.3"
+    assert [a.node for a in announcing.parse(value)] == ["good"]
+    assert announcing.parse("") == []
+    assert announcing.parse(None) == []
+
+
+def test_announcing_is_keyed_by_ip():
+    """The IP is the slot key, which is the v0.17.0 fix.
+
+    by_ip collapsing shorter than parse is how a test detects that the
+    append-only bug has returned: entries accumulating for one address.
+    """
+    value = "node-a,eth0,192.0.2.10 node-b,eth0,192.0.2.11"
+    assert announcing.announcer_of(value, "192.0.2.10") == "node-a"
+    assert announcing.announcer_of(value, "192.0.2.11") == "node-b"
+    assert announcing.announcer_of(value, "192.0.2.99") is None
+
+    stale = "node-a,eth0,192.0.2.10 node-b,eth0,192.0.2.10"
+    assert len(announcing.parse(stale)) == 2
+    assert len(announcing.by_ip(stale)) == 1, "two entries for one IP must collapse"
+
+
+def test_announcing_has_node_is_entry_wise():
+    """Substring matching cannot tell purelb2-1 from purelb2-10."""
+    value = "purelb2-10,eth0,192.0.2.10"
+    assert announcing.has_node(value, "purelb2-10")
+    assert not announcing.has_node(value, "purelb2-1")
+
+
+def test_announcing_normalises_ipv6():
+    """Comparisons are on parsed addresses, not on text.
+
+    2001:DB8::0:1 and 2001:db8::1 are the same address, and an assertion
+    that compared strings would call a correct annotation wrong.
+    """
+    value = "node-a,eth0,2001:DB8::0:1"
+    assert announcing.announcer_of(value, "2001:db8::1") == "node-a"
 
 
 # --------------------------------------------------------------- dualrun

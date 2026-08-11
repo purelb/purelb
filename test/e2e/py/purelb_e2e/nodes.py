@@ -88,6 +88,24 @@ def interface_for_address(host: str, address: str) -> Optional[str]:
     return None
 
 
+def curl_via_node(node_ips: Dict[str, str], address: str, path: str = "/",
+                  timeout: float = 30.0) -> str:
+    """HTTP GET a VIP from a cluster node, returning the body.
+
+    From a node rather than from the workstation. The bash suite curled
+    from the workstation, which silently exercises nothing when the
+    workstation has no route to the VIP subnet -- and then reports the
+    empty result as a connectivity failure, or worse, skips the check.
+
+    IPv6 literals are bracketed, which the bash suite's IPv4-shaped URL
+    construction did not do.
+    """
+    host = ipaddress.ip_address(address)
+    url = f"http://[{address}]{path}" if host.version == 6 else f"http://{address}{path}"
+    node = sorted(node_ips)[0]
+    return ssh(node_ips[node], f"curl -s --max-time 5 {url}", timeout=timeout)
+
+
 def announcing_node(node_ips: Dict[str, str], address: str) -> Optional[Tuple[str, str]]:
     """The (node, interface) announcing `address`, or None.
 

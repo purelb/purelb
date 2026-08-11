@@ -80,6 +80,49 @@ class Cluster:
                     out[node.metadata.name] = addr.address
         return out
 
+    def add_taint(self, node: str, key: str, value: str, effect: str) -> None:
+        current = [t.to_dict() for t in (self.core.read_node(node).spec.taints or [])]
+        current = [t for t in current if t.get("key") != key]
+        current.append({"key": key, "value": value, "effect": effect})
+        self.core.patch_node(node, {"spec": {"taints": current}})
+
+    def remove_taint(self, node: str, key: str) -> None:
+        """Idempotent: removing an absent taint is not an error.
+
+        Teardown must tolerate a taint that was never applied, or a test
+        that fails before tainting turns one failure into two.
+        """
+        current = [t.to_dict() for t in (self.core.read_node(node).spec.taints or [])]
+        remaining = [t for t in current if t.get("key") != key]
+        if len(remaining) == len(current):
+            return
+        self.core.patch_node(node, {"spec": {"taints": remaining}})
+
+    def taint_keys(self, node: str) -> List[str]:
+        return [t.key for t in (self.core.read_node(node).spec.taints or [])]
+
+    # --------------------------------------------------------------- daemonset
+
+    def daemonset_ready(self, namespace: str, name: str, expect_nodes: Optional[int] = None) -> bool:
+        """Whether a DaemonSet is fully rolled out.
+
+        `expect_nodes` matters more than it looks, and omitting it is a
+        false pass. desiredNumberScheduled counts the nodes the DaemonSet
+        can currently schedule ON, so while a node carries a NoExecute
+        taint the DaemonSet is perfectly "ready" at 4/4 on a 5-node
+        cluster: internally consistent, and missing an agent. Asserting
+        recovery therefore has to compare against the NODE count, not
+        against the DaemonSet's own idea of how many it wanted.
+        """
+        ds = self.apps.read_namespaced_daemon_set(name, namespace)
+        st = ds.status
+        desired = st.desired_number_scheduled or 0
+        if (st.observed_generation or 0) < (ds.metadata.generation or 0):
+            return False
+        if desired <= 0 or (st.number_ready or 0) != desired:
+            return False
+        return expect_nodes is None or desired == expect_nodes
+
     # -------------------------------------------------------------- services
 
     def service(self, namespace: str, name: str) -> Optional[client.V1Service]:
@@ -183,6 +226,22 @@ class Cluster:
         return self.core.list_namespaced_pod(
             namespace, label_selector=label_selector
         ).items
+
+    def delete_pod(self, namespace: str, name: str, grace_seconds: int = 30) -> None:
+        """Delete a pod with a grace period.
+
+        The grace period is load-bearing for the failover tests: it is what
+        lets lbnodeagent withdraw its addresses on the way out instead of
+        orphaning them on the interface, where they linger until valid_lft
+        expires.
+        """
+        try:
+            self.core.delete_namespaced_pod(
+                name, namespace, grace_period_seconds=grace_seconds
+            )
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
 
     def pod_on_node(
         self, namespace: str, label_selector: str, node: str
