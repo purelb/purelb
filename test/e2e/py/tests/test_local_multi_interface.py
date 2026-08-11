@@ -286,9 +286,18 @@ def test_vip_on_the_second_subnet_announces_on_that_nic(
                 f"{dual_homed.interface} which faces {dual_homed.v4}"
             )
 
-        # NA/GARP is asserted in test_affinity_placed_address_announces_itself
-        # below, which is xfail: this address is affinity-placed, and
-        # affinity-placed addresses currently never send either.
+        # An unsolicited Neighbour Advertisement is the IPv6 counterpart
+        # of a gratuitous ARP: without it the upstream neighbour caches
+        # keep pointing at whoever held the address before. This address
+        # is affinity-placed, which is precisely the case that used to
+        # send nothing at all.
+        if dual_homed.v6:
+            wait_until(
+                lambda: agent_metrics(node).counter("purelb_lbnodeagent_na_sent_total")
+                > before.counter("purelb_lbnodeagent_na_sent_total") or None,
+                timeout=45, interval=3.0,
+                description="an unsolicited NA for the IPv6 VIP",
+            )
     finally:
         cluster.delete_service(NAMESPACE, "multi-if-lb")
         cluster.delete_cr("servicegroup", SCOPED_GROUP)
@@ -435,18 +444,6 @@ def test_a_deselected_node_advertises_nothing(
 # ------------------------------------------------- gratuitous announcement
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG: affinity-placed addresses never send GARP or unsolicited NA. "
-        "Placement uses election.WinnerWithPreference (announcer_local.go:491) "
-        "but sendGARPSequence's verify-before-send uses election.Winner "
-        "(announcer_local.go:1248). With purelb.io/node-affinity the two "
-        "disagree, so every packet is skipped with 'no longer winner'. "
-        "strict=True: when this is fixed the test fails until the marker is "
-        "removed, so the fix cannot land silently."
-    ),
-)
 def test_affinity_placed_address_announces_itself(
     cluster: Cluster, topo: topology.Topology, default_servicegroup: str,
     lb_service, pinned_backend, agent_metrics,
@@ -458,11 +455,13 @@ def test_affinity_placed_address_announces_itself(
     receiving no traffic until those caches age out -- minutes of
     blackhole for a failover that PureLB itself completed in seconds.
 
-    Verified by hand against this cluster:
-      - no affinity: announcer purelb2-2, garp_sent_total 0 -> 3
-      - with affinity: announcer purelb2-1, garp_sent_total stays 0, and
-        the agent logs "skipping announcement, no longer winner,
-        winner: purelb2-2"
+    This is the regression test for a bug this migration found: placement
+    used election.WinnerWithPreference but verify-before-send used plain
+    election.Winner, and those disagree exactly when a Service opts into
+    node-affinity -- so the node holding the address skipped every packet.
+    Measured before the fix: with affinity, garp_sent_total stayed 0 while
+    the agent logged "skipping announcement, no longer winner". Without
+    affinity the same setup sent 3.
     """
     # garpConfig is +optional with no struct-level default, so an agent
     # without the block sends nothing at all -- the counter is

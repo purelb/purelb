@@ -1337,3 +1337,82 @@ func TestBuildUnsolicitedNA(t *testing.T) {
 func TestSendUnsolicitedNARejectsIPv4(t *testing.T) {
 	assert.Error(t, sendUnsolicitedNA("lo", net.ParseIP("192.0.2.1")))
 }
+
+// fakeElection reproduces the one condition that mattered: the answer to
+// "who owns this address" differs depending on which question you ask.
+type fakeElection struct {
+	winner     string // what plain Winner would have said
+	preferred  string // what WinnerWithPreference says when preferred is non-empty
+	sawPreferr []string
+}
+
+func (f *fakeElection) WinnerWithPreference(_ string, preferred []string) string {
+	f.sawPreferr = preferred
+	if len(preferred) > 0 {
+		return f.preferred
+	}
+	return f.winner
+}
+
+func (f *fakeElection) MemberCount() int { return 3 }
+
+// TestSendGARPSequenceHonoursAffinityPreference is the regression test for
+// a bug the e2e migration found: affinity-placed addresses never sent a
+// gratuitous ARP or an unsolicited Neighbour Advertisement.
+//
+// The announce path chooses the node with election.WinnerWithPreference,
+// but verify-before-send used plain election.Winner. Those disagree
+// exactly when a Service opts into NodeAffinityAnnotation, so the node
+// that actually held the address decided it was "no longer winner" and
+// skipped every packet. A VIP that moved then received nothing until the
+// upstream ARP/ND caches aged out -- minutes of blackhole after a
+// failover PureLB itself completed in seconds.
+//
+// The assertion is "the sequence did not return early", not "a frame
+// reached the wire": there is no interface to send on under `go test`, so
+// the send fails and counts an error. Sent-or-errored proves the
+// ownership check passed; neither moving is the bug.
+func TestSendGARPSequenceHonoursAffinityPreference(t *testing.T) {
+	const me = "node-b"
+	enabled := true
+	count := 1
+
+	for _, tc := range []struct {
+		name      string
+		preferred []string
+	}{
+		// The bug: preference names this node, plain Winner names another.
+		{name: "affinity places it here", preferred: []string{me}},
+		// The control: no preference, this node wins outright. This path
+		// always worked, and must keep working.
+		{name: "no affinity, wins outright", preferred: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeElection{winner: me, preferred: me}
+			if len(tc.preferred) > 0 {
+				fake.winner = "node-a" // plain Winner would say someone else
+			}
+			a := &announcer{myNode: me, logger: log.NewNopLogger(), election: fake}
+			cfg := &announcerConfig{spec: &purelbv2.LBNodeAgentLocalSpec{
+				GARPConfig: &purelbv2.GARPConfig{
+					Enabled:      &enabled,
+					Count:        &count,
+					InitialDelay: "0s",
+				},
+			}}
+
+			before := ptu.ToFloat64(garpSent) + ptu.ToFloat64(garpErrors)
+			a.sendGARPSequence(cfg, net.ParseIP("192.168.1.100"),
+				"purelb-test-nonexistent", tc.preferred)
+
+			assert.Eventually(t, func() bool {
+				return ptu.ToFloat64(garpSent)+ptu.ToFloat64(garpErrors) > before
+			}, 5*time.Second, 20*time.Millisecond,
+				"the sequence skipped every packet: verify-before-send asked a "+
+					"different question than the announce path did")
+			assert.Equal(t, tc.preferred, fake.sawPreferr,
+				"verify-before-send must pass the same preferred set the "+
+					"announce path used")
+		})
+	}
+}

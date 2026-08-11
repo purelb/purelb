@@ -82,11 +82,25 @@ type announcerConfig struct {
 	dummyInt netlink.Link
 }
 
+// nodeElection is the slice of the election the announcer actually uses:
+// two methods, not the whole Election. Narrowed so the announcer can be
+// tested without standing up leases and informers -- which is why the
+// affinity/GARP bug had no unit test to catch it. Same pattern as the
+// nodeClient and configSetter interfaces in cmd/lbnodeagent.
+type nodeElection interface {
+	// WinnerWithPreference must be the ONLY ownership question the
+	// announcer asks. Plain Winner gives a different answer for
+	// affinity-placed addresses, and mixing the two is what made a node
+	// announce an address it then refused to advertise.
+	WinnerWithPreference(key string, preferred []string) string
+	MemberCount() int
+}
+
 type announcer struct {
 	client   k8s.ServiceEvent
 	logger   log.Logger
 	myNode   string
-	election *election.Election
+	election nodeElection
 
 	// cfg is the current configuration snapshot. A nil pointer means we
 	// are not configured and must not announce; see SetConfig. Loaded
@@ -550,7 +564,7 @@ func (a *announcer) announceLocal(cfg *announcerConfig, svc *v1.Service, preferr
 	// DAD, whose probes are sourced from :: and update no neighbor
 	// caches (and the skip-DAD annotation suppresses even those) — so
 	// without the NA a moved IPv6 VIP converges only via NUD timeouts.
-	a.sendGARPSequence(cfg, lbIP, announceInt.Attrs().Name)
+	a.sendGARPSequence(cfg, lbIP, announceInt.Attrs().Name, preferred)
 
 	return nil
 }
@@ -744,8 +758,15 @@ func (a *announcer) WithdrawAll() {
 	}
 }
 
-func (a *announcer) SetElection(election *election.Election) {
-	a.election = election
+func (a *announcer) SetElection(e *election.Election) {
+	// Explicit nil handling: assigning a typed nil pointer to an
+	// interface field yields a NON-nil interface, which would turn every
+	// `a.election != nil` guard into a nil-pointer dereference.
+	if e == nil {
+		a.election = nil
+		return
+	}
+	a.election = e
 }
 
 // buildPreferredNodes returns the unique node names that host a Ready
@@ -1166,7 +1187,12 @@ func getLocalAddressOptions(c *announcerConfig) AddressOptions {
 // Advertisements for IPv6 (its protocol counterpart — same config
 // gate, delay, count, interval and verify-before-send semantics).
 // The sequence runs in a goroutine to avoid blocking the main announcement.
-func (a *announcer) sendGARPSequence(c *announcerConfig, lbIP net.IP, ifName string) {
+// preferred is the same set the caller passed to WinnerWithPreference when
+// it decided to announce, so verify-before-send re-asks the identical
+// question. Passing nil here would make it fall back to plain-Winner
+// semantics and silently suppress announcements for affinity-placed
+// addresses.
+func (a *announcer) sendGARPSequence(c *announcerConfig, lbIP net.IP, ifName string, preferred []string) {
 	if c == nil || c.spec.GARPConfig == nil {
 		return // GARP not configured
 	}
@@ -1243,9 +1269,17 @@ func (a *announcer) sendGARPSequence(c *announcerConfig, lbIP net.IP, ifName str
 				time.Sleep(interval)
 			}
 
-			// Verify we still own this address before sending
+			// Verify we still own this address before sending. This must
+			// ask the election the SAME question that placed the address
+			// -- WinnerWithPreference, with the same preferred set -- not
+			// plain Winner. They differ exactly when a service opts into
+			// NodeAffinityAnnotation, and then the node holding the
+			// address is not the plain-Winner node, so every packet was
+			// skipped and an affinity-placed VIP never announced itself
+			// at all. The observable was a moved VIP receiving no traffic
+			// until the upstream ARP/ND caches aged out.
 			if verifyBeforeSend && a.election != nil {
-				winner := a.election.Winner(ipStr)
+				winner := a.election.WinnerWithPreference(ipStr, preferred)
 				if winner != a.myNode {
 					logging.Debug(a.logger, "op", op, "ip", ipStr, "packet", i+1, "of", count,
 						"msg", "skipping announcement, no longer winner", "winner", winner)
