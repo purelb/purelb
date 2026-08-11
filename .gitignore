@@ -19,5 +19,10 @@ pkg/apis/purelb/*/zz_generated.deepcopy.go
 /kubectl-purelb
 # Written to the repo root by `make test-coverage`.
 /coverage.out
+# pytest e2e harness: local virtualenv and editable-install metadata.
+test/e2e/py/.venv/
+test/e2e/py/*.egg-info/
+test/e2e/py/**/__pycache__/
+test/e2e/py/.pytest_cache/
 test/e2e/timing/timing-results-*.csv
 .claude/

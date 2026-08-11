@@ -1,0 +1,19 @@
+[project]
+name = "purelb-e2e"
+version = "0.1.0"
+description = "End-to-end tests for PureLB"
+requires-python = ">=3.11"
+dependencies = [
+    "pytest>=8",
+    "kubernetes>=31",
+    "prometheus_client>=0.20",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# --strict-markers so a typo in @pytest.mark.requires is an error rather
+# than a marker that silently never gates anything.
+addopts = "--strict-markers -ra"
+markers = [
+    "requires: capabilities a test needs (see conftest.CAPABILITIES)",
+]
