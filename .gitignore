@@ -19,6 +19,9 @@ pkg/apis/purelb/*/zz_generated.deepcopy.go
 /kubectl-purelb
 # Written to the repo root by `make test-coverage`.
 /coverage.out
+# `go build ./cmd/test-sidecar` drops the binary in the repo root. Same
+# root anchor as /kubectl-purelb above, for the same reason.
+/test-sidecar
 # pytest e2e harness: local virtualenv and editable-install metadata.
 test/e2e/py/.venv/
 test/e2e/py/*.egg-info/

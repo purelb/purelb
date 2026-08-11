@@ -61,6 +61,15 @@ image: generate ## Build executables and containers
 	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/allocator
 	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/lbnodeagent
 
+.PHONY: image-test-sidecar
+image-test-sidecar: ## Build/push the sample external-IPAM sidecar used by the ipam-external e2e
+	# Deliberately NOT part of `make image`: this is test scaffolding, not
+	# a shipped component. It has its own target because the e2e suite
+	# defaults to ghcr.io/purelb/purelb/test-sidecar:latest, and until
+	# this existed that image was published by nothing in this repo -- so
+	# the ipam-external suite could not run out of the box at all.
+	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/test-sidecar
+
 .PHONY: plugin
 plugin: ## Build kubectl-purelb plugin binary
 	CGO_ENABLED=0 go build -ldflags "-X main.version=$(SUFFIX) -X main.commit=$(shell git rev-parse --short HEAD)" -o kubectl-purelb ./cmd/kubectl-purelb
