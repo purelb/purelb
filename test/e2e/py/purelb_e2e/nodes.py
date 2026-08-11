@@ -88,6 +88,98 @@ def interface_for_address(host: str, address: str) -> Optional[str]:
     return None
 
 
+@dataclass(frozen=True)
+class AddressDetail:
+    """One configured address as `ip -o addr show` describes it.
+
+    The flags and lifetimes are the whole point of the address-lifetime
+    tests: PureLB gives a local VIP a FINITE lifetime so that an orphaned
+    address expires by itself if the agent dies without withdrawing it,
+    and `noprefixroute` so the kernel does not install a subnet route that
+    would blackhole the rest of the subnet.
+    """
+
+    interface: str
+    cidr: str
+    flags: Tuple[str, ...]
+    valid_lft: Optional[int]      # seconds; None means "forever"
+    preferred_lft: Optional[int]
+
+    @property
+    def permanent(self) -> bool:
+        return self.valid_lft is None
+
+    def has_flag(self, flag: str) -> bool:
+        return flag in self.flags
+
+
+def address_detail(host: str, address: str) -> Optional[AddressDetail]:
+    """Find `address` on `host` and describe it.
+
+    Parses `ip -o addr show`, whose one-line-per-address form keeps the
+    lifetimes on the same line as the address -- the multi-line form makes
+    them a separate record that shell parsers routinely mis-associate with
+    a neighbouring address.
+    """
+    want = ipaddress.ip_address(address)
+    out = ssh(host, "ip -o addr show")
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        iface = parts[1].split("@")[0]
+        try:
+            cidr = ipaddress.ip_interface(parts[3])
+        except ValueError:
+            continue
+        if cidr.ip != want:
+            continue
+
+        rest = parts[4:]
+        flags: List[str] = []
+        valid = preferred = None
+        i = 0
+        while i < len(rest):
+            token = rest[i]
+            # Key/value attributes, whose VALUE must not be mistaken for a
+            # flag. Real output carries "metric 100 brd 172.30.250.255",
+            # and treating those values as flags makes has_flag("100")
+            # true and the flag set meaningless.
+            if token in _ADDR_ATTRS:
+                if token == "valid_lft":
+                    valid = _lifetime(rest[i + 1]) if i + 1 < len(rest) else None
+                elif token == "preferred_lft":
+                    preferred = _lifetime(rest[i + 1]) if i + 1 < len(rest) else None
+                i += 2
+                continue
+            # ip(8) repeats the interface name at the end of the line,
+            # sometimes with the line-continuation backslash attached.
+            if token.rstrip("\\") in (iface, ""):
+                i += 1
+                continue
+            flags.append(token)
+            i += 1
+        return AddressDetail(
+            interface=iface, cidr=parts[3], flags=tuple(flags),
+            valid_lft=valid, preferred_lft=preferred,
+        )
+    return None
+
+
+# Attributes that take a value. Their value is not a flag.
+_ADDR_ATTRS = frozenset({
+    "valid_lft", "preferred_lft", "metric", "brd", "broadcast",
+    "scope", "proto", "label", "peer", "link-netnsid",
+})
+
+
+def _lifetime(token: str) -> Optional[int]:
+    """"60sec" -> 60; "forever" -> None."""
+    if token == "forever":
+        return None
+    return int(token.removesuffix("sec"))
+
+
 def curl_via_node(node_ips: Dict[str, str], address: str, path: str = "/",
                   timeout: float = 30.0) -> str:
     """HTTP GET a VIP from a cluster node, returning the body.

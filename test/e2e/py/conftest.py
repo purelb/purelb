@@ -270,6 +270,58 @@ def lb_service(cluster: Cluster):
 
 
 @pytest.fixture
+def short_address_lifetime(cluster: Cluster, node_ips: Dict[str, str]):
+    """Shorten the local address lifetime, then restore the default.
+
+    Renewal happens at ValidLft/2 with a floor of 30s
+    (announcer_local.go scheduleRenewal), so at the default 300s lifetime
+    the first renewal is 150 SECONDS after the address is added. A test
+    that waits less than that and concludes anything about renewal is
+    measuring nothing -- it would pass identically with the renewal timer
+    removed.
+
+    Setting validLifetime to 60 puts the interval at its 30s floor, which
+    is what makes a ~40s observation prove something. The bash suite
+    worked this out for the multi-interface tests and wrote it down; this
+    is the same lesson, applied where it belongs.
+
+    Returns the renewal interval in seconds so a test can size its wait.
+    """
+    def apply(valid_lifetime: int = 60) -> float:
+        cluster.apply_cr(
+            {
+                "apiVersion": "purelb.io/v2",
+                "kind": "LBNodeAgent",
+                "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
+                "spec": {
+                    "local": {
+                        "localInterface": "default",
+                        "dummyInterface": "kube-lb0",
+                        "addressConfig": {
+                            "localInterface": {
+                                "validLifetime": valid_lifetime,
+                                "preferredLifetime": valid_lifetime,
+                            }
+                        },
+                    }
+                },
+            }
+        )
+        return max(valid_lifetime / 2.0, 30.0)
+
+    yield apply
+
+    cluster.apply_cr(
+        {
+            "apiVersion": "purelb.io/v2",
+            "kind": "LBNodeAgent",
+            "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
+            "spec": {"local": {"localInterface": "default", "dummyInterface": "kube-lb0"}},
+        }
+    )
+
+
+@pytest.fixture
 def subnet_servicegroup(cluster: Cluster):
     """A ServiceGroup with pools on ONE subnet, removed afterwards.
 
