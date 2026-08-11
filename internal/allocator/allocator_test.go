@@ -2134,3 +2134,202 @@ func TestParseGroupsOverlapMessageIsStable(t *testing.T) {
 	}
 	assert.Contains(t, seen[0], `"aaa"`, "should name the lowest-sorting partner, not a random one")
 }
+
+// ---------------------------------------------------------------------
+// Release path: poolFor / poolHoldingAll / ReleaseIPs
+//
+// Commit 3b1883ec added a namedPool fallback to BOTH Unassign and
+// ReleaseIPs so an external pool -- whose Contains() is hardcoded false --
+// can still be reached. Only Unassign's copy was covered
+// (TestUnassignTargetsNamedExternalPool). These cover the ReleaseIPs half,
+// which is the one that runs on a dual-stack -> single-stack transition.
+// ---------------------------------------------------------------------
+
+// releaseSvc builds a Service and puts ip into pool, returning the
+// namespacedName key that ReleaseIP expects.
+func releaseSvc(t *testing.T, pool Pool, name string, ips ...net.IP) string {
+	t.Helper()
+	svc := &v1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name}}
+	for _, ip := range ips {
+		require.NoError(t, pool.Assign(context.Background(), ip, svc))
+	}
+	return namespacedName(svc)
+}
+
+func TestPoolFor(t *testing.T) {
+	v4 := mustLocalPool(t, "v4pool", "192.168.1.0/24")
+	v6 := mustLocalPool(t, "v6pool", "2001:db8::/120")
+	pools := map[string]Pool{"v4pool": v4, "v6pool": v6}
+
+	assert.Equal(t, "v4pool", poolFor(pools, net.ParseIP("192.168.1.5")).String())
+	assert.Equal(t, "v6pool", poolFor(pools, net.ParseIP("2001:db8::5")).String())
+	assert.Nil(t, poolFor(pools, net.ParseIP("10.0.0.1")), "address in no pool")
+	assert.Nil(t, poolFor(pools, net.ParseIP("2001:dead::1")), "v6 address in no pool")
+	assert.Nil(t, poolFor(map[string]Pool{}, net.ParseIP("192.168.1.5")), "empty pool map")
+}
+
+// TestPoolHoldingAll pins the error strings as well as the happy path:
+// IncrementalMultiPool surfaces them to operators, and the "spans more
+// than one pool" case is the guard that stops a tampered
+// purelb.io/allocated-from from drawing on a neighbour's pool.
+func TestPoolHoldingAll(t *testing.T) {
+	v4 := mustLocalPool(t, "v4pool", "192.168.1.0/24")
+	v6 := mustLocalPool(t, "v6pool", "2001:db8::/120")
+	other := mustLocalPool(t, "otherpool", "10.10.0.0/24")
+	pools := map[string]Pool{"v4pool": v4, "v6pool": v6, "otherpool": other}
+
+	svcWith := func(ips ...string) *v1.Service {
+		svc := &v1.Service{}
+		for _, ip := range ips {
+			svc.Status.LoadBalancer.Ingress = append(
+				svc.Status.LoadBalancer.Ingress, v1.LoadBalancerIngress{IP: ip})
+		}
+		return svc
+	}
+
+	t.Run("single address", func(t *testing.T) {
+		p, err := poolHoldingAll(pools, svcWith("192.168.1.5"))
+		require.NoError(t, err)
+		assert.Equal(t, "v4pool", p.String())
+	})
+
+	t.Run("two addresses in the same pool", func(t *testing.T) {
+		p, err := poolHoldingAll(pools, svcWith("192.168.1.5", "192.168.1.6"))
+		require.NoError(t, err)
+		assert.Equal(t, "v4pool", p.String())
+	})
+
+	t.Run("unparseable ingress", func(t *testing.T) {
+		_, err := poolHoldingAll(pools, svcWith("not-an-ip"))
+		assert.ErrorContains(t, err, `unparseable ingress address "not-an-ip"`)
+	})
+
+	t.Run("address in no pool", func(t *testing.T) {
+		_, err := poolHoldingAll(pools, svcWith("172.16.0.1"))
+		assert.ErrorContains(t, err, "address 172.16.0.1 does not belong to any pool")
+	})
+
+	t.Run("addresses span two pools", func(t *testing.T) {
+		_, err := poolHoldingAll(pools, svcWith("192.168.1.5", "10.10.0.5"))
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "addresses span more than one pool")
+		// Both pools must be named -- the operator needs to know which.
+		assert.ErrorContains(t, err, "v4pool")
+		assert.ErrorContains(t, err, "otherpool")
+	})
+
+	t.Run("dual-stack spans v4 and v6 pools", func(t *testing.T) {
+		// A dual-stack Service drawing from separate v4 and v6
+		// ServiceGroups is NOT a single holding pool.
+		_, err := poolHoldingAll(pools, svcWith("192.168.1.5", "2001:db8::5"))
+		assert.ErrorContains(t, err, "addresses span more than one pool")
+	})
+
+	t.Run("no ingress at all", func(t *testing.T) {
+		_, err := poolHoldingAll(pools, svcWith())
+		assert.ErrorContains(t, err, "service has no ingress addresses")
+	})
+}
+
+func TestReleaseIPs(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	v4 := mustLocalPool(t, "v4pool", "192.168.1.0/24")
+	v6 := mustLocalPool(t, "v6pool", "2001:db8::/120")
+	pools := map[string]Pool{"v4pool": v4, "v6pool": v6}
+
+	ip4, ip6 := net.ParseIP("192.168.1.5"), net.ParseIP("2001:db8::5")
+	svc := releaseSvc(t, v4, "svc1", ip4)
+	require.NoError(t, v6.Assign(context.Background(),
+		ip6, &v1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "svc1"}}))
+	require.Equal(t, 1, v4.InUse())
+	require.Equal(t, 1, v6.InUse())
+
+	// Each address is released from the pool that actually contains it,
+	// not from whichever pool happens to be iterated first.
+	require.NoError(t, alloc.ReleaseIPs(pools, svc, []string{ip4.String(), ip6.String()}, ""))
+	assert.Equal(t, 0, v4.InUse(), "v4 released")
+	assert.Equal(t, 0, v6.InUse(), "v6 released")
+}
+
+func TestReleaseIPsSkipsUnresolvable(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	v4 := mustLocalPool(t, "v4pool", "192.168.1.0/24")
+	pools := map[string]Pool{"v4pool": v4}
+	svc := releaseSvc(t, v4, "svc1", net.ParseIP("192.168.1.5"))
+
+	// An unparseable string and an address in no pool are both skipped
+	// without error, and neither disturbs the address that IS held.
+	require.NoError(t, alloc.ReleaseIPs(pools, svc, []string{"not-an-ip", "172.16.0.1"}, ""))
+	assert.Equal(t, 1, v4.InUse(), "the held address is untouched")
+}
+
+// TestReleaseIPsFallsBackToNamedExternalPool covers the 3b1883ec fallback:
+// SidecarPool.Contains is hardcoded false, so poolFor can never resolve an
+// external address. Without the fallback the release is silently dropped
+// and the address leaks in an IPAM system PureLB does not own.
+func TestReleaseIPsFallsBackToNamedExternalPool(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	var released []string
+	ext := newSidecarPoolForTest(t, &fakeIPAM{
+		releaseFunc: func(req *ipamv1.ReleaseRequest) (*ipamv1.ReleaseResponse, error) {
+			released = append(released, req.GetIp())
+			return &ipamv1.ReleaseResponse{}, nil
+		},
+	})
+	pools := map[string]Pool{"ext": ext, "v4pool": mustLocalPool(t, "v4pool", "192.168.1.0/24")}
+
+	require.NoError(t, alloc.ReleaseIPs(pools, "default/svc1", []string{"10.20.30.7"}, "ext"))
+	assert.Equal(t, []string{"10.20.30.7"}, released,
+		"external release must be issued via the named pool")
+}
+
+// TestReleaseIPsIgnoresNamedLocalPool is the other half of the same guard:
+// purelb.io/allocated-from lives on the Service and is editable by whoever
+// owns it, so the fallback must fire ONLY for external pools. poolFor stays
+// authoritative for everything else.
+func TestReleaseIPsIgnoresNamedLocalPool(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	holder := mustLocalPool(t, "holder", "192.168.1.0/24")
+	decoy := mustLocalPool(t, "decoy", "10.10.0.0/24")
+	pools := map[string]Pool{"holder": holder, "decoy": decoy}
+
+	ip := net.ParseIP("192.168.1.5")
+	svc := releaseSvc(t, holder, "svc1", ip)
+	releaseSvc(t, decoy, "victim", net.ParseIP("10.10.0.5"))
+	require.Equal(t, 1, decoy.InUse())
+
+	// namedPool points at a local pool that does NOT hold the address.
+	require.NoError(t, alloc.ReleaseIPs(pools, svc, []string{ip.String()}, "decoy"))
+	assert.Equal(t, 0, holder.InUse(), "released from the pool that held it")
+	assert.Equal(t, 1, decoy.InUse(), "the named local pool is untouched")
+
+	// A namedPool that does not exist at all is equally harmless.
+	svc2 := releaseSvc(t, holder, "svc2", ip)
+	require.NoError(t, alloc.ReleaseIPs(pools, svc2, []string{ip.String()}, "nonexistent"))
+	assert.Equal(t, 0, holder.InUse())
+}
+
+// TestReleaseIPsCollectsErrors: one pool failing must not abort the rest,
+// and the failure must be RETURNED, not merely logged -- for an external
+// pool a dropped error is a leaked address.
+func TestReleaseIPsCollectsErrors(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	ext := newSidecarPoolForTest(t, &fakeIPAM{
+		releaseFunc: func(_ *ipamv1.ReleaseRequest) (*ipamv1.ReleaseResponse, error) {
+			return nil, fmt.Errorf("sidecar exploded")
+		},
+	})
+	local := mustLocalPool(t, "v4pool", "192.168.1.0/24")
+	pools := map[string]Pool{"ext": ext, "v4pool": local}
+
+	ip := net.ParseIP("192.168.1.5")
+	svc := releaseSvc(t, local, "svc1", ip)
+
+	// 10.20.30.7 resolves only via the external namedPool and fails there;
+	// 192.168.1.5 is local and must still be released.
+	err := alloc.ReleaseIPs(pools, svc, []string{"10.20.30.7", ip.String()}, "ext")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "10.20.30.7")
+	assert.ErrorContains(t, err, "sidecar exploded")
+	assert.Equal(t, 0, local.InUse(), "the local release still happened")
+}

@@ -17,5 +17,7 @@ pkg/apis/purelb/*/zz_generated.deepcopy.go
 # Unanchored, this pattern also matched cmd/kubectl-purelb/, so new source
 # files in the plugin were silently untracked.
 /kubectl-purelb
+# Written to the repo root by `make test-coverage`.
+/coverage.out
 test/e2e/timing/timing-results-*.csv
 .claude/

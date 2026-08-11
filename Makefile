@@ -42,6 +42,11 @@ check: generate check-deps check-helm-rbac-source check-gofmt ## Run "short" tes
 	go vet ./...
 	go test -race -short ./...
 
+.PHONY: test-coverage
+test-coverage: ## Run tests with coverage and print the total
+	go test -short -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
+
 .PHONY: check-gofmt
 check-gofmt: ## Fail if any tracked Go source is not gofmt-clean
 	@unformatted=$$(gofmt -l ./api ./cmd ./internal ./pkg 2>/dev/null); \
