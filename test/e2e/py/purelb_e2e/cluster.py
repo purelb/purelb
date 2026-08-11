@@ -101,6 +101,24 @@ class Cluster:
     def taint_keys(self, node: str) -> List[str]:
         return [t.key for t in (self.core.read_node(node).spec.taints or [])]
 
+    def label_node(self, node: str, key: str, value: Optional[str]) -> None:
+        """Set or (with value=None) remove a node label."""
+        self.core.patch_node(node, {"metadata": {"labels": {key: value}}})
+
+    def node_lease_subnets(self, node: str) -> List[str]:
+        """The subnets a node's election lease advertises.
+
+        This is what the node tells the rest of the cluster it can
+        announce on, so it is the observable for interface selection --
+        an interface the agent did not accept never reaches the lease.
+        """
+        for lease in self.leases():
+            if lease.metadata.name != f"purelb-node-{node}":
+                continue
+            raw = (lease.metadata.annotations or {}).get("purelb.io/subnets", "")
+            return [s for s in raw.split(",") if s]
+        return []
+
     # --------------------------------------------------------------- daemonset
 
     def daemonset_ready(self, namespace: str, name: str, expect_nodes: Optional[int] = None) -> bool:

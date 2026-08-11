@@ -270,6 +270,57 @@ def lb_service(cluster: Cluster):
 
 
 @pytest.fixture
+def pinned_backend(cluster: Cluster):
+    """An nginx Deployment pinned to one node, removed afterwards.
+
+    Combined with purelb.io/node-affinity: service-endpoints, this is how
+    a test makes a SPECIFIC node the announcer. Without it the election
+    picks any node on the address's subnet, which is correct behaviour and
+    useless for asserting that a particular node announced.
+    """
+    created: List[tuple] = []
+
+    def make(name: str, node: str, namespace: str = "test") -> str:
+        labels = {"app": name}
+        cluster.apps.create_namespaced_deployment(
+            namespace,
+            {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {"name": name, "namespace": namespace},
+                "spec": {
+                    "replicas": 1,
+                    "selector": {"matchLabels": labels},
+                    "template": {
+                        "metadata": {"labels": labels},
+                        "spec": {
+                            "nodeName": node,
+                            "containers": [
+                                {
+                                    "name": "nginx",
+                                    "image": "nginx:alpine",
+                                    "ports": [{"containerPort": 80}],
+                                }
+                            ],
+                        },
+                    },
+                },
+            },
+        )
+        created.append((namespace, name))
+        cluster.wait_rollout(namespace, name, timeout=120)
+        return name
+
+    yield make
+
+    for namespace, name in reversed(created):
+        try:
+            cluster.apps.delete_namespaced_deployment(name, namespace)
+        except Exception:  # noqa: BLE001 - teardown must not mask a test failure
+            pass
+
+
+@pytest.fixture
 def short_address_lifetime(cluster: Cluster, node_ips: Dict[str, str]):
     """Shorten the local address lifetime, then restore the default.
 

@@ -94,11 +94,59 @@ class Subnet:
         return self.v6_band("b")
 
 
+@dataclass(frozen=True)
+class SecondaryInterface:
+    """A node NIC that is NOT the one carrying its InternalIP.
+
+    This is what the multi-interface tests need, and discovering it is
+    the point. The bash suite required SIX environment variables
+    (MULTI_IF_NODE, _IFACE, _SUBNET, _SUBNET6, _POOL_V4, _POOL_V6) to be
+    set by hand, so in practice nobody set them and the whole group --
+    including every selector_state assertion -- never ran.
+    """
+
+    node: str
+    interface: str
+    v4: str                        # network, e.g. "172.30.250.0/24"
+    v6: Optional[str] = None
+    v6_prefix: Optional[str] = None
+
+    @property
+    def v4_octets(self) -> str:
+        return ".".join(self.v4.split("/")[0].split(".")[:3])
+
+    @property
+    def pool_v4(self) -> str:
+        """The .244-.247 multi-interface band."""
+        return f"{self.v4_octets}.244-{self.v4_octets}.247"
+
+    @property
+    def pool_v6(self) -> Optional[str]:
+        if not self.v6_prefix:
+            return None
+        base = self.v6_prefix.rstrip(":")
+        return f"{base}:c::1-{base}:c::20"
+
+
 @dataclass
 class Topology:
     subnets: List[Subnet]
     node_ips: Dict[str, str]
     node_iface: Dict[str, str]
+    secondaries: List[SecondaryInterface] = field(default_factory=list)
+
+    @property
+    def dual_homed(self) -> Optional[SecondaryInterface]:
+        """A node with a second NIC on a subnet OTHER than its primary.
+
+        Requires a different subnet, not merely a second NIC: an extra
+        interface on the same subnet exercises none of the
+        subnet-discovery logic these tests exist to check.
+        """
+        for candidate in self.secondaries:
+            if candidate.v4 != self.subnet_of(candidate.node).v4:
+                return candidate
+        return None
 
     @property
     def has_ipv6(self) -> bool:
@@ -159,11 +207,61 @@ def discover(node_ips: Dict[str, str]) -> Topology:
                 net = ipaddress.ip_network(subnet.v6)
                 subnet.v6_prefix = ":".join(str(net.network_address).split(":")[:4]) + "::"
 
-    return Topology(
+    topo = Topology(
         subnets=[by_v4[k] for k in sorted(by_v4)],
         node_ips=dict(node_ips),
         node_iface=node_iface,
     )
+    topo.secondaries = _discover_secondaries(node_ips, node_iface)
+    return topo
+
+
+# Interfaces that are never a node's real NIC. kube-lb0 in particular is
+# PureLB's own dummy, and treating it as a second interface would have the
+# multi-interface tests "discover" the thing they are meant to avoid.
+_VIRTUAL_PREFIXES = ("lo", "kube-lb0", "flannel", "cni", "veth", "docker", "br-", "tunl", "dummy")
+
+
+def _discover_secondaries(
+    node_ips: Dict[str, str], node_iface: Dict[str, str]
+) -> List[SecondaryInterface]:
+    """Every physical NIC that is not the one carrying the InternalIP."""
+    found: List[SecondaryInterface] = []
+    for node, ip in sorted(node_ips.items()):
+        primary = node_iface.get(node)
+        out = ssh(ip, "ip -br addr show")
+        for line in out.splitlines():
+            parts = line.split()
+            if not parts:
+                continue
+            iface = parts[0].split("@")[0]
+            if iface == primary or iface.startswith(_VIRTUAL_PREFIXES):
+                continue
+            v4 = v6 = v6_prefix = None
+            for tok in parts[2:]:
+                try:
+                    candidate = ipaddress.ip_interface(tok)
+                except ValueError:
+                    continue
+                if candidate.version == 4 and v4 is None:
+                    v4 = str(candidate.network)
+                elif (
+                    candidate.version == 6
+                    and not candidate.ip.is_link_local
+                    and candidate.network.prefixlen == 64
+                    and v6 is None
+                ):
+                    v6 = str(candidate.network)
+                    v6_prefix = ":".join(
+                        str(candidate.network.network_address).split(":")[:4]
+                    ) + "::"
+            if v4:
+                found.append(
+                    SecondaryInterface(
+                        node=node, interface=iface, v4=v4, v6=v6, v6_prefix=v6_prefix
+                    )
+                )
+    return found
 
 
 def _iface_carrying(brief: str, ip: str):
