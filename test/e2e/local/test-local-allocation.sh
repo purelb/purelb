@@ -172,29 +172,21 @@ validate_prerequisites() {
     info "Checking allocator metrics endpoint..."
     local ALLOC_METRICS
     ALLOC_METRICS=$(scrape_allocator_metrics)
-    if [ -n "$ALLOC_METRICS" ]; then
-        assert_metric "$ALLOC_METRICS" "purelb_k8s_client_config_loaded_bool" "eq" "1"
-        print_allocator_metrics "$ALLOC_METRICS"
-        pass "Allocator metrics endpoint reachable, config loaded"
-    else
-        echo -e "${RED}✗ FAIL:${NC} Allocator metrics endpoint not reachable on port 7472"
-        FAILED=true
-    fi
+    require_metrics "$ALLOC_METRICS" "allocator"
+    assert_metric "$ALLOC_METRICS" "purelb_k8s_client_config_loaded_bool" "eq" "1"
+    print_allocator_metrics "$ALLOC_METRICS"
+    pass "Allocator metrics endpoint reachable, config loaded"
 
     info "Checking lbnodeagent metrics endpoint..."
     local AGENT_METRICS
     AGENT_METRICS=$(scrape_lbnodeagent_metrics)
-    if [ -n "$AGENT_METRICS" ]; then
-        assert_metric "$AGENT_METRICS" "purelb_election_lease_healthy" "eq" "1"
-        # Use first node name for display
-        local first_node
-        for first_node in $NODES; do break; done
-        print_lbnodeagent_metrics "$AGENT_METRICS" "$first_node"
-        pass "LBNodeAgent metrics endpoint reachable, lease healthy"
-    else
-        echo -e "${RED}✗ FAIL:${NC} LBNodeAgent metrics endpoint not reachable on port 7472"
-        FAILED=true
-    fi
+    require_metrics "$AGENT_METRICS" "lbnodeagent"
+    assert_metric "$AGENT_METRICS" "purelb_election_lease_healthy" "eq" "1"
+    # Use first node name for display
+    local first_node
+    for first_node in $NODES; do break; done
+    print_lbnodeagent_metrics "$AGENT_METRICS" "$first_node"
+    pass "LBNodeAgent metrics endpoint reachable, lease healthy"
 
     # Verify allocator logged successful startup
     info "Checking allocator startup logs..."
@@ -815,22 +807,30 @@ test_remote_pool() {
     [ "${SG_AVAIL_V6:-0}" -gt 0 ] || fail "Idle pool reports availableIPv6=$SG_AVAIL_V6, expected > 0"
     pass "Idle pool published status (ipam=$SG_IPAM addresses=$SG_ADDR v4avail=$SG_AVAIL_V4 v6avail=$SG_AVAIL_V6)"
 
-    assert_log_contains "allocator" "updateSGStatus" "ServiceGroup status write logged"
+    # Match a field unique to the SUCCESS branch. `"op":"updateSGStatus"`
+    # is logged on the error path as well
+    # ({"error":"servicegroups.purelb.io \"default\" not found",...}), so
+    # grepping the op alone asserted that the code ran, not that it worked.
+    assert_log_contains "allocator" '"allocatedV4"' "ServiceGroup status write succeeded"
 
     local SG_METRICS_AFTER SG_WRITES_AFTER SG_FORBIDDEN SG_OTHER
     SG_METRICS_AFTER=$(scrape_allocator_metrics)
-    if [ -n "$SG_METRICS_AFTER" ]; then
-        SG_WRITES_AFTER=$(extract_metric "$SG_METRICS_AFTER" 'purelb_allocator_sg_status_writes_total{outcome="success"}')
-        [ "${SG_WRITES_AFTER:-0}" -gt "$SG_WRITES_BEFORE" ] \
-            || fail "sg_status_writes_total{success} did not increase (${SG_WRITES_BEFORE} -> ${SG_WRITES_AFTER:-0})"
-        # Server-side apply removes the conflict class entirely, and a
-        # missing RBAC grant or CRD status subresource would show here.
-        SG_FORBIDDEN=$(extract_metric "$SG_METRICS_AFTER" 'purelb_allocator_sg_status_writes_total{outcome="forbidden"}')
-        SG_OTHER=$(extract_metric "$SG_METRICS_AFTER" 'purelb_allocator_sg_status_writes_total{outcome="other"}')
-        [ "${SG_FORBIDDEN:-0}" -eq 0 ] || fail "sg_status_writes_total{forbidden}=${SG_FORBIDDEN} (check servicegroups/status RBAC)"
-        [ "${SG_OTHER:-0}" -eq 0 ] || fail "sg_status_writes_total{other}=${SG_OTHER} (check the ServiceGroup CRD has a status subresource)"
-        pass "ServiceGroup status writes succeeded with no forbidden/other errors"
-    fi
+    require_metrics "$SG_METRICS_AFTER" "allocator (ServiceGroup status)"
+    SG_WRITES_AFTER=$(extract_metric "$SG_METRICS_AFTER" 'purelb_allocator_sg_status_writes_total{outcome="success"}')
+    [ "${SG_WRITES_AFTER:-0}" -gt "$SG_WRITES_BEFORE" ] \
+        || fail "sg_status_writes_total{success} did not increase (${SG_WRITES_BEFORE} -> ${SG_WRITES_AFTER:-0})"
+    # Server-side apply removes the conflict class entirely, and a
+    # missing RBAC grant or CRD status subresource would show here.
+    # Asserted as deltas, not as absolutes. These are cumulative counters:
+    # anything that ever incremented them -- including something entirely
+    # legitimate, like deleting a ServiceGroup so the next status write
+    # 404s -- made `== 0` fail on every subsequent run until the allocator
+    # was restarted.
+    assert_metric_not_increased "$SG_METRICS_BEFORE" "$SG_METRICS_AFTER" \
+        'purelb_allocator_sg_status_writes_total{outcome="forbidden"}'
+    assert_metric_not_increased "$SG_METRICS_BEFORE" "$SG_METRICS_AFTER" \
+        'purelb_allocator_sg_status_writes_total{outcome="other"}' 
+    pass "ServiceGroup status writes succeeded with no forbidden/other errors"
 
     # Create service requesting IP from remote pool
     info "Creating service requesting IP from remote-pool..."
@@ -944,6 +944,11 @@ show_election_logs() {
 # Enhanced with detailed debug output for troubleshooting
 #---------------------------------------------------------------------
 test_graceful_failover() {
+    # Counter baseline for every node. The winner is not known until
+    # after the action, so all nodes are captured up front; the
+    # assertions below then compare the winner against its OWN
+    # pre-action value. Previously `gt 0`, so a failover producing zero new wins passed.
+    snapshot_lbnodeagent_metrics
     echo ""
     echo "=========================================="
     echo "TEST: Graceful Failover (Lease-Based)"
@@ -1184,15 +1189,12 @@ test_graceful_failover() {
         info "Verifying metrics on new winner ($NEW_WINNER) after failover..."
         local FAILOVER_METRICS
         FAILOVER_METRICS=$(scrape_lbnodeagent_metrics "$NEW_WINNER")
-        if [ -n "$FAILOVER_METRICS" ]; then
-            print_lbnodeagent_metrics "$FAILOVER_METRICS" "$NEW_WINNER"
-            assert_metric "$FAILOVER_METRICS" "purelb_election_lease_healthy" "eq" "1"
-            assert_metric "$FAILOVER_METRICS" "purelb_lbnodeagent_election_wins_total" "gt" "0"
-            assert_metric "$FAILOVER_METRICS" "purelb_lbnodeagent_address_additions_total" "gt" "0"
-            pass "New winner $NEW_WINNER: metrics verified"
-        else
-            info "WARNING: Could not scrape metrics from new winner $NEW_WINNER"
-        fi
+        require_metrics "$FAILOVER_METRICS" "lbnodeagent on the new winner"
+        print_lbnodeagent_metrics "$FAILOVER_METRICS" "$NEW_WINNER"
+        assert_metric "$FAILOVER_METRICS" "purelb_election_lease_healthy" "eq" "1"
+        assert_node_metric_increased "$NEW_WINNER" "purelb_lbnodeagent_election_wins_total"
+        assert_node_metric_increased "$NEW_WINNER" "purelb_lbnodeagent_address_additions_total"
+        pass "New winner $NEW_WINNER: metrics verified"
 
         # Verify electionWon log on new winner
         echo -e "${CYAN}    ── Log Verification ───────────────────────────────────────${NC}"
@@ -1221,6 +1223,11 @@ test_graceful_failover() {
 # Test 1: IPv4 Single-Stack Service
 #---------------------------------------------------------------------
 test_ipv4_singlestack() {
+    # Counter baseline for every node. The winner is not known until
+    # after the action, so all nodes are captured up front; the
+    # assertions below then compare the winner against its OWN
+    # pre-action value. Previously `gt 0`, which any earlier test satisfied.
+    snapshot_lbnodeagent_metrics
     echo ""
     echo "=========================================="
     echo "TEST 1: IPv4 Single-Stack Service"
@@ -1293,31 +1300,25 @@ test_ipv4_singlestack() {
     info "Verifying allocator metrics after IPv4 allocation..."
     local ALLOC_METRICS
     ALLOC_METRICS=$(scrape_allocator_metrics)
-    if [ -n "$ALLOC_METRICS" ]; then
-        print_allocator_metrics "$ALLOC_METRICS"
-        assert_metric "$ALLOC_METRICS" 'purelb_address_pool_size{pool="default"}' "gt" "0"
-        assert_metric "$ALLOC_METRICS" 'purelb_address_pool_addresses_in_use{pool="default"}' "ge" "1"
-        pass "Allocator: pool metrics verified"
-    else
-        info "WARNING: Could not scrape allocator metrics"
-    fi
+    require_metrics "$ALLOC_METRICS" "allocator"
+    print_allocator_metrics "$ALLOC_METRICS"
+    assert_metric "$ALLOC_METRICS" 'purelb_address_pool_size{pool="default"}' "gt" "0"
+    assert_metric "$ALLOC_METRICS" 'purelb_address_pool_addresses_in_use{pool="default"}' "ge" "1"
+    pass "Allocator: pool metrics verified"
 
     if [ -n "$WINNER_NODE" ]; then
         info "Verifying lbnodeagent metrics on winner ($WINNER_NODE)..."
         local AGENT_METRICS
         AGENT_METRICS=$(scrape_lbnodeagent_metrics "$WINNER_NODE")
-        if [ -n "$AGENT_METRICS" ]; then
-            print_lbnodeagent_metrics "$AGENT_METRICS" "$WINNER_NODE"
-            assert_metric "$AGENT_METRICS" "purelb_lbnodeagent_election_wins_total" "gt" "0"
-            assert_metric "$AGENT_METRICS" "purelb_lbnodeagent_address_additions_total" "gt" "0"
-            # Verify announced gauge includes our service
-            local announced
-            announced=$(echo "$AGENT_METRICS" | grep "purelb_lbnodeagent_announced" | grep "nginx-lb-ipv4" || true)
-            [ -n "$announced" ] || fail "announced gauge missing nginx-lb-ipv4 on winner"
-            pass "Winner $WINNER_NODE: metrics verified, announced includes nginx-lb-ipv4"
-        else
-            info "WARNING: Could not scrape lbnodeagent metrics on $WINNER_NODE"
-        fi
+        require_metrics "$AGENT_METRICS" "lbnodeagent"
+        print_lbnodeagent_metrics "$AGENT_METRICS" "$WINNER_NODE"
+        assert_node_metric_increased "$WINNER_NODE" "purelb_lbnodeagent_election_wins_total"
+        assert_node_metric_increased "$WINNER_NODE" "purelb_lbnodeagent_address_additions_total"
+        # Verify announced gauge includes our service
+        local announced
+        announced=$(echo "$AGENT_METRICS" | grep "purelb_lbnodeagent_announced" | grep "nginx-lb-ipv4" || true)
+        [ -n "$announced" ] || fail "announced gauge missing nginx-lb-ipv4 on winner"
+        pass "Winner $WINNER_NODE: metrics verified, announced includes nginx-lb-ipv4"
 
         # --- Log verification ---
         echo -e "${CYAN}    ── Log Verification ───────────────────────────────────────${NC}"
@@ -1331,6 +1332,11 @@ test_ipv4_singlestack() {
 # Test 2: IPv6 Single-Stack Service
 #---------------------------------------------------------------------
 test_ipv6_singlestack() {
+    # Counter baseline for every node. The winner is not known until
+    # after the action, so all nodes are captured up front; the
+    # assertions below then compare the winner against its OWN
+    # pre-action value. Previously `gt 0`, which any earlier test satisfied.
+    snapshot_lbnodeagent_metrics
     echo ""
     echo "=========================================="
     echo "TEST 2: IPv6 Single-Stack Service"
@@ -1380,18 +1386,15 @@ test_ipv6_singlestack() {
         info "Verifying lbnodeagent metrics on IPv6 winner ($WINNER_NODE)..."
         local AGENT_METRICS
         AGENT_METRICS=$(scrape_lbnodeagent_metrics "$WINNER_NODE")
-        if [ -n "$AGENT_METRICS" ]; then
-            print_lbnodeagent_metrics "$AGENT_METRICS" "$WINNER_NODE"
-            assert_metric "$AGENT_METRICS" "purelb_lbnodeagent_election_wins_total" "gt" "0"
-            assert_metric "$AGENT_METRICS" "purelb_lbnodeagent_address_additions_total" "gt" "0"
-            # Verify announced gauge includes our IPv6 service
-            local announced
-            announced=$(echo "$AGENT_METRICS" | grep "purelb_lbnodeagent_announced" | grep "nginx-lb-ipv6" || true)
-            [ -n "$announced" ] || fail "announced gauge missing nginx-lb-ipv6 on winner"
-            pass "Winner $WINNER_NODE: metrics verified, announced includes nginx-lb-ipv6"
-        else
-            info "WARNING: Could not scrape lbnodeagent metrics on $WINNER_NODE"
-        fi
+        require_metrics "$AGENT_METRICS" "lbnodeagent"
+        print_lbnodeagent_metrics "$AGENT_METRICS" "$WINNER_NODE"
+        assert_node_metric_increased "$WINNER_NODE" "purelb_lbnodeagent_election_wins_total"
+        assert_node_metric_increased "$WINNER_NODE" "purelb_lbnodeagent_address_additions_total"
+        # Verify announced gauge includes our IPv6 service
+        local announced
+        announced=$(echo "$AGENT_METRICS" | grep "purelb_lbnodeagent_announced" | grep "nginx-lb-ipv6" || true)
+        [ -n "$announced" ] || fail "announced gauge missing nginx-lb-ipv6 on winner"
+        pass "Winner $WINNER_NODE: metrics verified, announced includes nginx-lb-ipv6"
 
         # --- Log verification ---
         echo -e "${CYAN}    ── Log Verification ───────────────────────────────────────${NC}"
@@ -1528,17 +1531,25 @@ test_leader_election() {
     info "Verifying election metrics on winner ($WINNER)..."
     local WINNER_METRICS
     WINNER_METRICS=$(scrape_lbnodeagent_metrics "$WINNER")
-    if [ -n "$WINNER_METRICS" ]; then
-        print_lbnodeagent_metrics "$WINNER_METRICS" "$WINNER"
-        assert_metric "$WINNER_METRICS" "purelb_election_lease_healthy" "eq" "1"
-        assert_metric "$WINNER_METRICS" "purelb_election_member_count" "ge" "1"
-        assert_metric "$WINNER_METRICS" "purelb_election_subnet_count" "ge" "1"
-        assert_metric "$WINNER_METRICS" "purelb_election_local_subnet_count" "ge" "1"
-        assert_metric "$WINNER_METRICS" "purelb_election_lease_renewals_total" "gt" "0"
-        pass "Winner $WINNER: election metrics verified"
-    else
-        info "WARNING: Could not scrape lbnodeagent metrics on $WINNER"
-    fi
+    require_metrics "$WINNER_METRICS" "lbnodeagent on the winner"
+    print_lbnodeagent_metrics "$WINNER_METRICS" "$WINNER"
+    assert_metric "$WINNER_METRICS" "purelb_election_lease_healthy" "eq" "1"
+    assert_metric "$WINNER_METRICS" "purelb_election_member_count" "ge" "1"
+    assert_metric "$WINNER_METRICS" "purelb_election_subnet_count" "ge" "1"
+    assert_metric "$WINNER_METRICS" "purelb_election_local_subnet_count" "ge" "1"
+    # Renewals must still be HAPPENING, not merely have happened once at
+    # startup. `gt 0` on a cumulative counter is true forever after the
+    # first renewal, so it could not distinguish a live lease from one
+    # whose renewal loop had died -- which is the failure that silently
+    # hands the VIP to nobody. PURELB_RETRY_PERIOD defaults to 2s, so a
+    # 6s window covers at least two attempts.
+    local WINNER_METRICS_LATER
+    sleep 6
+    WINNER_METRICS_LATER=$(scrape_lbnodeagent_metrics "$WINNER")
+    require_metrics "$WINNER_METRICS_LATER" "lbnodeagent on the winner (second sample)"
+    assert_metric_increased "$WINNER_METRICS" "$WINNER_METRICS_LATER" \
+        "purelb_election_lease_renewals_total"
+    pass "Winner $WINNER: election metrics verified, lease renewals still advancing"
 
     # Verify non-winner nodes also have healthy leases
     for node in $NODES; do
@@ -1546,11 +1557,10 @@ test_leader_election() {
             info "Checking lease health on non-winner $node..."
             local OTHER_METRICS
             OTHER_METRICS=$(scrape_lbnodeagent_metrics "$node")
-            if [ -n "$OTHER_METRICS" ]; then
-                print_lbnodeagent_metrics "$OTHER_METRICS" "$node"
-                assert_metric "$OTHER_METRICS" "purelb_election_lease_healthy" "eq" "1"
-                pass "Non-winner $node: lease healthy"
-            fi
+            require_metrics "$OTHER_METRICS" "lbnodeagent on the non-winner"
+            print_lbnodeagent_metrics "$OTHER_METRICS" "$node"
+            assert_metric "$OTHER_METRICS" "purelb_election_lease_healthy" "eq" "1"
+            pass "Non-winner $node: lease healthy"
             break  # check just one non-winner to keep test fast
         fi
     done
@@ -1650,9 +1660,8 @@ test_service_cleanup() {
     info "Verifying metrics reflect service deletion..."
     local ALLOC_METRICS_DEL
     ALLOC_METRICS_DEL=$(scrape_allocator_metrics)
-    if [ -n "$ALLOC_METRICS_DEL" ]; then
-        print_allocator_metrics "$ALLOC_METRICS_DEL"
-    fi
+    require_metrics "$ALLOC_METRICS_DEL" "allocator after delete"
+    print_allocator_metrics "$ALLOC_METRICS_DEL"
     local after_in_use
     after_in_use=$(extract_metric "${ALLOC_METRICS_DEL:-}" 'purelb_address_pool_addresses_in_use{pool="default"}')
     after_in_use=${after_in_use:-0}
@@ -1664,9 +1673,8 @@ test_service_cleanup() {
     if [ "$HOLDER_NODE" != "NONE" ]; then
         local AGENT_METRICS_DEL
         AGENT_METRICS_DEL=$(scrape_lbnodeagent_metrics "$HOLDER_NODE")
-        if [ -n "$AGENT_METRICS_DEL" ]; then
-            print_lbnodeagent_metrics "$AGENT_METRICS_DEL" "$HOLDER_NODE"
-        fi
+        require_metrics "$AGENT_METRICS_DEL" "lbnodeagent after delete"
+        print_lbnodeagent_metrics "$AGENT_METRICS_DEL" "$HOLDER_NODE"
         local after_withdrawals
         after_withdrawals=$(echo "$AGENT_METRICS_DEL" | grep "^purelb_lbnodeagent_address_withdrawals_total " | awk '{print $NF}')
         after_withdrawals=$(printf '%.0f' "${after_withdrawals:-0}")
@@ -2760,15 +2768,14 @@ test_address_renewal_timer() {
     info "Checking address renewal metric on $WINNER_NODE..."
     local RENEWAL_METRICS
     RENEWAL_METRICS=$(scrape_lbnodeagent_metrics "$WINNER_NODE")
-    if [ -n "$RENEWAL_METRICS" ]; then
-        print_lbnodeagent_metrics "$RENEWAL_METRICS" "$WINNER_NODE"
-        local renewal_count
-        renewal_count=$(echo "$RENEWAL_METRICS" | grep "^purelb_lbnodeagent_address_renewals_total " | awk '{print $NF}')
-        if [ -n "$renewal_count" ] && [ "$(printf '%.0f' "$renewal_count")" -gt 0 ]; then
-            pass "LBNodeAgent $WINNER_NODE: address_renewals_total = $renewal_count"
-        else
-            detail "address_renewals_total = ${renewal_count:-0} (renewal may not have fired yet)"
-        fi
+    require_metrics "$RENEWAL_METRICS" "lbnodeagent (address renewal)"
+    print_lbnodeagent_metrics "$RENEWAL_METRICS" "$WINNER_NODE"
+    local renewal_count
+    renewal_count=$(echo "$RENEWAL_METRICS" | grep "^purelb_lbnodeagent_address_renewals_total " | awk '{print $NF}')
+    if [ -n "$renewal_count" ] && [ "$(printf '%.0f' "$renewal_count")" -gt 0 ]; then
+        pass "LBNodeAgent $WINNER_NODE: address_renewals_total = $renewal_count"
+    else
+        detail "address_renewals_total = ${renewal_count:-0} (renewal may not have fired yet)"
     fi
 
     # Verify renewAddress log on the winner node
@@ -4857,9 +4864,8 @@ EOF
     info ""
     local ALLOC_METRICS_BAL
     ALLOC_METRICS_BAL=$(scrape_allocator_metrics)
-    if [ -n "$ALLOC_METRICS_BAL" ]; then
-        print_allocator_metrics "$ALLOC_METRICS_BAL" "balanced-test"
-    fi
+    require_metrics "$ALLOC_METRICS_BAL" "allocator (balanced allocation)"
+    print_allocator_metrics "$ALLOC_METRICS_BAL" "balanced-test"
     info "Verifying balanced allocation metrics..."
     local after_balance_pools
     after_balance_pools=$(extract_metric "${ALLOC_METRICS_BAL:-}" 'purelb_address_pool_balance_pools_allocations_total{pool="balanced-test"}')
@@ -4887,244 +4893,6 @@ EOF
     pass "BalancePools allocation tests completed"
 }
 
-#---------------------------------------------------------------------
-# Metrics & Logging Helpers
-#---------------------------------------------------------------------
-
-# scrape_metrics PORT_FORWARD_TARGET
-# Scrapes /metrics from a pod via kubectl port-forward.
-# Writes raw metrics to stdout. Caller should capture output.
-# Usage: OUTPUT=$(scrape_pod_metrics <pod-name>)
-scrape_pod_metrics() {
-    local pod=$1
-    local local_port=$((30000 + RANDOM % 5000))
-    # Start port-forward in background
-    kubectl port-forward -n purelb-system "$pod" ${local_port}:7472 >/dev/null 2>&1 &
-    local pf_pid=$!
-    # Retry curl until port-forward is ready (up to 5 attempts)
-    local metrics=""
-    local attempt
-    for attempt in 1 2 3 4 5; do
-        sleep 1
-        metrics=$(curl -s --connect-timeout 3 "http://127.0.0.1:${local_port}/metrics" 2>/dev/null || true)
-        if [ -n "$metrics" ]; then
-            break
-        fi
-    done
-    kill $pf_pid 2>/dev/null || true
-    wait $pf_pid 2>/dev/null || true
-    echo "$metrics"
-}
-
-# scrape_allocator_metrics
-# Scrapes metrics from the allocator deployment pod.
-scrape_allocator_metrics() {
-    local pod
-    pod=$(kubectl get pods -n purelb-system -l component=allocator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-    if [ -z "$pod" ]; then
-        echo ""
-        return
-    fi
-    scrape_pod_metrics "$pod"
-}
-
-# scrape_lbnodeagent_metrics [node]
-# Scrapes metrics from an lbnodeagent pod. LBNodeAgent uses hostPort 7472,
-# so we curl the node IP directly instead of using port-forward.
-# If node is specified, scrapes that node. Otherwise scrapes the first node.
-scrape_lbnodeagent_metrics() {
-    local node=${1:-}
-    local node_ip
-    if [ -n "$node" ]; then
-        node_ip="${NODE_IPS[$node]:-}"
-    else
-        # Use first node
-        for n in $NODES; do
-            node_ip="${NODE_IPS[$n]:-}"
-            break
-        done
-    fi
-    if [ -z "$node_ip" ]; then
-        echo ""
-        return
-    fi
-    curl -s --connect-timeout 5 "http://${node_ip}:7472/metrics" 2>/dev/null || true
-}
-
-# assert_metric METRICS_OUTPUT METRIC_NAME COMPARISON VALUE
-# Checks that a metric exists and satisfies the comparison.
-# COMPARISON: "ge" (>=), "gt" (>), "eq" (==), "exists" (just present)
-# For gauge/counter without labels, extracts the bare metric line.
-# For labeled metrics, pass the full metric name with labels.
-# Example: assert_metric "$OUT" "purelb_election_lease_healthy" "eq" "1"
-# Example: assert_metric "$OUT" 'purelb_address_pool_size{pool="default"}' "gt" "0"
-assert_metric() {
-    local metrics="$1"
-    local metric_name="$2"
-    local comparison="$3"
-    local expected="${4:-}"
-
-    # Extract the metric value - handle both labeled and unlabeled
-    local value
-    if echo "$metric_name" | grep -q '{'; then
-        # Labeled metric: use grep -F for fixed-string (literal) match
-        value=$(echo "$metrics" | grep -F "$metric_name" | head -1 | awk '{print $NF}')
-    else
-        # Unlabeled metric: match exactly (no labels)
-        value=$(echo "$metrics" | grep "^${metric_name} " | head -1 | awk '{print $NF}')
-    fi
-
-    if [ -z "$value" ]; then
-        if [ "$comparison" = "exists" ]; then
-            fail "Metric $metric_name not found in output"
-        fi
-        fail "Metric $metric_name not found in output"
-    fi
-
-    if [ "$comparison" = "exists" ]; then
-        return 0
-    fi
-
-    # Convert scientific notation and floats to integers for comparison
-    local int_value
-    int_value=$(printf '%.0f' "$value" 2>/dev/null || echo "0")
-    local int_expected
-    int_expected=$(printf '%.0f' "$expected" 2>/dev/null || echo "0")
-
-    case "$comparison" in
-        ge)
-            [ "$int_value" -ge "$int_expected" ] || fail "Metric $metric_name: expected >= $expected, got $value"
-            ;;
-        gt)
-            [ "$int_value" -gt "$int_expected" ] || fail "Metric $metric_name: expected > $expected, got $value"
-            ;;
-        eq)
-            [ "$int_value" -eq "$int_expected" ] || fail "Metric $metric_name: expected == $expected, got $value"
-            ;;
-        *)
-            fail "Unknown comparison: $comparison"
-            ;;
-    esac
-}
-
-# assert_log_contains COMPONENT PATTERN DESCRIPTION
-# Checks that recent logs from a component contain the given pattern.
-# COMPONENT: "allocator" or "lbnodeagent"
-# For lbnodeagent, checks ALL pods (any match counts as success).
-assert_log_contains() {
-    local component="$1"
-    local pattern="$2"
-    local description="$3"
-
-    if [ "$component" = "allocator" ]; then
-        if kubectl logs -n purelb-system deployment/allocator --tail=200 2>/dev/null | grep -q "$pattern"; then
-            return 0
-        fi
-        fail "Allocator logs missing: $description (pattern: $pattern)"
-    elif [ "$component" = "lbnodeagent" ]; then
-        local pods
-        pods=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
-        for pod in $pods; do
-            if kubectl logs -n purelb-system "$pod" -c lbnodeagent --tail=200 2>/dev/null | grep -q "$pattern"; then
-                return 0
-            fi
-        done
-        fail "LBNodeAgent logs missing on all pods: $description (pattern: $pattern)"
-    else
-        fail "Unknown component: $component"
-    fi
-}
-
-# assert_log_contains_on_node NODE PATTERN DESCRIPTION
-# Checks that the lbnodeagent pod on a specific node has the log pattern.
-assert_log_contains_on_node() {
-    local node="$1"
-    local pattern="$2"
-    local description="$3"
-
-    local pod
-    pod=$(kubectl get pods -n purelb-system -l component=lbnodeagent -o wide 2>/dev/null \
-        | grep "$node" | awk '{print $1}')
-    if [ -z "$pod" ]; then
-        fail "No lbnodeagent pod found on node $node"
-    fi
-    if kubectl logs -n purelb-system "$pod" -c lbnodeagent --tail=200 2>/dev/null | grep -q "$pattern"; then
-        return 0
-    fi
-    fail "LBNodeAgent logs on $node missing: $description (pattern: $pattern)"
-}
-
-# scrape_allocator_metric METRIC_NAME
-# Quick helper: scrapes allocator and returns just the value for one metric.
-scrape_allocator_metric() {
-    local metric_name="$1"
-    local metrics
-    metrics=$(scrape_allocator_metrics)
-    if echo "$metric_name" | grep -q '{'; then
-        echo "$metrics" | grep -F "$metric_name" | head -1 | awk '{print $NF}'
-    else
-        echo "$metrics" | grep "^${metric_name} " | head -1 | awk '{print $NF}'
-    fi
-}
-
-# extract_metric METRICS_TEXT METRIC_NAME
-# Extracts the numeric value of a metric from raw Prometheus text.
-# Returns empty string if not found.
-extract_metric() {
-    local metrics="$1"
-    local metric_name="$2"
-    local value
-    if echo "$metric_name" | grep -q '{'; then
-        value=$(echo "$metrics" | grep -F "$metric_name" | head -1 | awk '{print $NF}')
-    else
-        value=$(echo "$metrics" | grep "^${metric_name} " | head -1 | awk '{print $NF}')
-    fi
-    # Convert to integer for display (metrics are often floats like 3.0)
-    if [ -n "$value" ]; then
-        printf '%.0f' "$value" 2>/dev/null || echo "$value"
-    fi
-}
-
-# print_allocator_metrics METRICS_TEXT [POOL_NAME]
-# Displays key allocator metrics in a compact summary.
-# POOL_NAME defaults to "default".
-print_allocator_metrics() {
-    local metrics="$1"
-    local pool="${2:-default}"
-    if [ -z "$metrics" ]; then
-        detail "allocator metrics: (unavailable)"
-        return
-    fi
-    local pool_size in_use config_loaded
-    config_loaded=$(extract_metric "$metrics" "purelb_k8s_client_config_loaded_bool")
-    pool_size=$(extract_metric "$metrics" "purelb_address_pool_size{pool=\"${pool}\"}")
-    in_use=$(extract_metric "$metrics" "purelb_address_pool_addresses_in_use{pool=\"${pool}\"}")
-    echo -e "${CYAN}    ── Metrics ────────────────────────────────────────────────${NC}"
-    detail "allocator │ config_loaded=${config_loaded:-?}  pool_size(${pool})=${pool_size:-?}  in_use(${pool})=${in_use:-?}"
-}
-
-# print_lbnodeagent_metrics METRICS_TEXT NODE_NAME
-# Displays key lbnodeagent metrics in a compact summary.
-print_lbnodeagent_metrics() {
-    local metrics="$1"
-    local node="${2:-?}"
-    if [ -z "$metrics" ]; then
-        detail "lbnodeagent metrics on $node: (unavailable)"
-        return
-    fi
-    local lease_healthy member_count subnet_count wins adds withdrawals garp renewals
-    lease_healthy=$(extract_metric "$metrics" "purelb_election_lease_healthy")
-    member_count=$(extract_metric "$metrics" "purelb_election_member_count")
-    subnet_count=$(extract_metric "$metrics" "purelb_election_subnet_count")
-    wins=$(extract_metric "$metrics" "purelb_lbnodeagent_election_wins_total")
-    adds=$(extract_metric "$metrics" "purelb_lbnodeagent_address_additions_total")
-    withdrawals=$(extract_metric "$metrics" "purelb_lbnodeagent_address_withdrawals_total")
-    garp=$(extract_metric "$metrics" "purelb_lbnodeagent_garp_sent_total")
-    renewals=$(extract_metric "$metrics" "purelb_election_lease_renewals_total")
-    echo -e "${CYAN}    ── Metrics ────────────────────────────────────────────────${NC}"
-    detail "lbnodeagent($node) │ lease_healthy=${lease_healthy:-?}  members=${member_count:-?}  subnets=${subnet_count:-?}"
-    detail "  counters │ wins=${wins:-0}  adds=${adds:-0}  withdrawals=${withdrawals:-0}  garp=${garp:-0}  lease_renewals=${renewals:-0}"
-}
 
 #---------------------------------------------------------------------
 # Run All Tests
@@ -5291,6 +5059,12 @@ for iter in $(seq 1 $ITERATIONS); do
         # common.sh does not fire when fail() → exit 1 exits the subshell.
         # Explicitly delete all test ServiceGroups (keep only 'default').
         echo "Cleaning up after failed iteration..."
+        # NOTE: this deletes every non-'default' ServiceGroup and
+        # LBNodeAgent in purelb-system, including any a human created.
+        # Run scripts/reset-test-cluster.sh before the suite so there is
+        # nothing of yours here to lose. Scoping this to only the
+        # resources the run created needs every creation site
+        # instrumented, which is not done.
         kubectl delete svc -n $NAMESPACE --all 2>/dev/null || true
         kubectl get servicegroup -n purelb-system -o name 2>/dev/null \
             | grep -v '/default$' \
@@ -5300,6 +5074,13 @@ for iter in $(seq 1 $ITERATIONS); do
         kubectl get lbnodeagent -n purelb-system -o name 2>/dev/null \
             | grep -v '/default$' \
             | xargs -r kubectl delete -n purelb-system --ignore-not-found 2>/dev/null || true
+        # A9: taints applied by the failover/exhaustion tests survive a
+        # fail() raised from a helper, which skips the inline untaint on
+        # every path between. Sweep unconditionally -- a node left with
+        # purelb-test=...:NoExecute is evicted from every later test.
+        for _n in $NODES; do
+            kubectl taint node "$_n" purelb-test- 2>/dev/null || true
+        done
         kubectl label node --all purelb-test- 2>/dev/null || true
     fi
 done

@@ -18,19 +18,16 @@ NODE="purelb1"
 INTERFACE="enp1s0"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Shared helpers: colors, logging, kubectl wrapper, metric and log
+# assertions. lib.sh rather than common.sh -- common.sh performs
+# SSH-based discovery of every node at source time, which this suite
+# does not need and should not depend on.
+source "$SCRIPT_DIR/../lib.sh"
 
-pass() { echo -e "${GREEN}✓ PASS:${NC} $1"; }
-fail() { echo -e "${RED}✗ FAIL:${NC} $1"; dump_debug_state; exit 1; }
-info() { echo -e "${YELLOW}→${NC} $1"; }
+# Colors for output
+
 section() { echo -e "\n${BLUE}═══════════════════════════════════════════════════════════════${NC}"; echo -e "${BLUE}$1${NC}"; echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"; }
 
-kubectl() { command kubectl --context "$CONTEXT" "$@"; }
 
 #---------------------------------------------------------------------
 # Helper Functions

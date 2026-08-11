@@ -709,6 +709,10 @@ test_e3_election_reconvergence() {
 # Cleanup
 #---------------------------------------------------------------------
 cleanup() {
+    # Drain CLEANUP_SGS first. Setting a trap here REPLACES common.sh's
+    # `trap cleanup_servicegroups EXIT`, so every ServiceGroup registered by
+    # generate_single_subnet_servicegroup leaked when this suite exited.
+    cleanup_servicegroups 2>/dev/null || true
     info "Cleaning up timing test resources..."
     kubectl delete svc -n $NAMESPACE -l test-suite=timing --ignore-not-found 2>/dev/null || true
     kubectl delete svc timing-e1-stability timing-e3-reconverge \
@@ -776,4 +780,68 @@ main() {
     done
 }
 
+# =====================================================================
+# Verdicts
+#
+# This suite characterised latency and asserted nothing: a regression
+# from sub-second to multi-second VIP placement printed a larger number
+# and still exited 0. The ceilings below are deliberately generous --
+# they exist to catch order-of-magnitude regressions, not to police an
+# SLO, because a tight bound here would be flaky and would get ignored.
+# Override any of them from the environment to tighten or relax.
+# =====================================================================
+
+TIMING_MAX_B1_MS="${TIMING_MAX_B1_MS:-5000}"   # service create -> VIP on the NIC
+TIMING_MAX_B3_MS="${TIMING_MAX_B3_MS:-5000}"   # service delete -> VIP withdrawn
+TIMING_MAX_D1_MS="${TIMING_MAX_D1_MS:-5000}"   # VIP -> kube-proxy nftables ready
+TIMING_MAX_D3_MS="${TIMING_MAX_D3_MS:-15000}"  # service create -> first successful curl
+TIMING_MAX_E3_MS="${TIMING_MAX_E3_MS:-30000}"  # election re-convergence after node loss
+
+TIMING_FAILURES=0
+
+# assert_timing_ceiling TEST CEILING_MS
+# Reads the p95 recorded for TEST and compares it. Records rather than
+# exits so one slow measurement does not hide the rest of the report.
+assert_timing_ceiling() {
+    local test_id="$1" ceiling="$2"
+    local stats p95
+    stats=$(grep "^${test_id},summary," "$TIMING_LOG" 2>/dev/null | tail -1 | cut -d, -f3-)
+    if [ -z "$stats" ]; then
+        echo "  ${test_id}: no measurements recorded (skipped or all attempts failed)"
+        return 0
+    fi
+    p95=$(echo "$stats" | tr ',' '\n' | grep '^p95=' | cut -d= -f2)
+    if [ -z "$p95" ] || [ "$p95" = "N/A" ]; then
+        echo "  ${test_id}: no p95 available ($stats)"
+        return 0
+    fi
+    if [ "$p95" -gt "$ceiling" ]; then
+        echo -e "  ${RED}FAIL${NC} ${test_id}: p95=${p95}ms exceeds ceiling ${ceiling}ms"
+        TIMING_FAILURES=$((TIMING_FAILURES + 1))
+    else
+        echo -e "  ${GREEN}ok${NC}   ${test_id}: p95=${p95}ms (ceiling ${ceiling}ms)"
+    fi
+}
+
+check_timing_ceilings() {
+    echo ""
+    echo "=============================================="
+    echo "Timing Verdicts"
+    echo "=============================================="
+    assert_timing_ceiling B1 "$TIMING_MAX_B1_MS"
+    assert_timing_ceiling B3 "$TIMING_MAX_B3_MS"
+    assert_timing_ceiling D1 "$TIMING_MAX_D1_MS"
+    assert_timing_ceiling D3 "$TIMING_MAX_D3_MS"
+    assert_timing_ceiling E3 "$TIMING_MAX_E3_MS"
+    echo ""
+    if [ "$TIMING_FAILURES" -gt 0 ]; then
+        echo -e "${RED}$TIMING_FAILURES timing ceiling(s) exceeded${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}All timing ceilings met${NC}"
+    return 0
+}
+
 main "${1:-3}"
+check_timing_ceilings
+

@@ -28,6 +28,12 @@ CONTEXT="${CONTEXT:-$(command kubectl config current-context 2>/dev/null)}"
 NAMESPACE="test"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Shared helpers: colors, logging, kubectl wrapper, metric and log
+# assertions. lib.sh rather than common.sh -- common.sh performs
+# SSH-based discovery of every node at source time, which this suite
+# does not need and should not depend on.
+source "$SCRIPT_DIR/../lib.sh"
+
 # Optional configuration
 BGP_CONVERGE_TIMEOUT="${BGP_CONVERGE_TIMEOUT:-30}"
 ECMP_TEST_REQUESTS="${ECMP_TEST_REQUESTS:-100}"
@@ -51,19 +57,10 @@ SVC_NAME_IPV4_DEFAGGR="router-test-ipv4-defaggr"
 SVC_NAME_IPV6_DEFAGGR="router-test-ipv6-defaggr"
 
 # Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
 
-pass() { echo -e "${GREEN}PASS:${NC} $1"; }
-fail() { echo -e "${RED}FAIL:${NC} $1"; dump_debug_state; exit 1; }
-info() { echo -e "${YELLOW}INFO:${NC} $1"; }
 warn() { echo -e "${YELLOW}WARN:${NC} $1"; }
 section() { echo -e "\n${BLUE}==== $1 ====${NC}"; }
 
-kubectl() { command kubectl --context "$CONTEXT" "$@"; }
 
 # Get node list dynamically
 NODES=$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}')
@@ -100,85 +97,12 @@ verify_ssh() {
 # Metrics Functions
 #---------------------------------------------------------------------
 
-CYAN='\033[0;36m'
 
-scrape_pod_metrics() {
-    local pod=$1
-    local local_port=$((30000 + RANDOM % 5000))
-    kubectl port-forward -n purelb-system "$pod" ${local_port}:7472 >/dev/null 2>&1 &
-    local pf_pid=$!
-    local metrics=""
-    local attempt
-    for attempt in 1 2 3 4 5; do
-        sleep 1
-        metrics=$(curl -s --connect-timeout 3 "http://127.0.0.1:${local_port}/metrics" 2>/dev/null || true)
-        [ -n "$metrics" ] && break
-    done
-    kill $pf_pid 2>/dev/null || true
-    wait $pf_pid 2>/dev/null || true
-    echo "$metrics"
-}
 
-scrape_allocator_metrics() {
-    local pod
-    pod=$(kubectl get pods -n purelb-system -l component=allocator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-    [ -z "$pod" ] && { echo ""; return; }
-    scrape_pod_metrics "$pod"
-}
 
-scrape_lbnodeagent_metrics() {
-    local node=${1:-}
-    local node_ip
-    if [ -n "$node" ]; then
-        node_ip="${NODE_IPS[$node]:-}"
-    else
-        for n in $NODES; do node_ip="${NODE_IPS[$n]:-}"; break; done
-    fi
-    [ -z "$node_ip" ] && { echo ""; return; }
-    curl -s --connect-timeout 5 "http://${node_ip}:7472/metrics" 2>/dev/null || true
-}
 
-extract_metric() {
-    local metrics="$1"
-    local metric_name="$2"
-    local value
-    if echo "$metric_name" | grep -q '{'; then
-        value=$(echo "$metrics" | grep -F "$metric_name" | head -1 | awk '{print $NF}')
-    else
-        value=$(echo "$metrics" | grep "^${metric_name} " | head -1 | awk '{print $NF}')
-    fi
-    [ -n "$value" ] && printf '%.0f' "$value" 2>/dev/null || echo "$value"
-}
 
-print_allocator_metrics() {
-    local metrics="$1"
-    local pool="${2:-remote}"
-    [ -z "$metrics" ] && { info "allocator metrics: (unavailable)"; return; }
-    local config_loaded pool_size in_use
-    config_loaded=$(extract_metric "$metrics" "purelb_k8s_client_config_loaded_bool")
-    pool_size=$(extract_metric "$metrics" "purelb_address_pool_size{pool=\"${pool}\"}")
-    in_use=$(extract_metric "$metrics" "purelb_address_pool_addresses_in_use{pool=\"${pool}\"}")
-    echo -e "${CYAN}── Metrics ────────────────────────────────────────────────${NC}"
-    echo -e "     allocator │ config_loaded=${config_loaded:-?}  pool_size(${pool})=${pool_size:-?}  in_use(${pool})=${in_use:-?}"
-}
 
-print_lbnodeagent_metrics() {
-    local metrics="$1"
-    local node="${2:-?}"
-    [ -z "$metrics" ] && { info "lbnodeagent metrics on $node: (unavailable)"; return; }
-    local lease_healthy member_count subnet_count wins adds withdrawals garp renewals
-    lease_healthy=$(extract_metric "$metrics" "purelb_election_lease_healthy")
-    member_count=$(extract_metric "$metrics" "purelb_election_member_count")
-    subnet_count=$(extract_metric "$metrics" "purelb_election_subnet_count")
-    wins=$(extract_metric "$metrics" "purelb_lbnodeagent_election_wins_total")
-    adds=$(extract_metric "$metrics" "purelb_lbnodeagent_address_additions_total")
-    withdrawals=$(extract_metric "$metrics" "purelb_lbnodeagent_address_withdrawals_total")
-    garp=$(extract_metric "$metrics" "purelb_lbnodeagent_garp_sent_total")
-    renewals=$(extract_metric "$metrics" "purelb_election_lease_renewals_total")
-    echo -e "${CYAN}── Metrics ────────────────────────────────────────────────${NC}"
-    echo -e "     lbnodeagent(${node}) │ lease_healthy=${lease_healthy:-?}  members=${member_count:-?}  subnets=${subnet_count:-?}"
-    echo -e "       counters │ wins=${wins:-0}  adds=${adds:-0}  withdrawals=${withdrawals:-0}  garp=${garp:-0}  lease_renewals=${renewals:-0}"
-}
 
 #---------------------------------------------------------------------
 # Debug and Cleanup Functions

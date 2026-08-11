@@ -29,12 +29,6 @@ source "${SCRIPT_DIR}/../common.sh"
 # Generate unique test ID for this run (for test isolation)
 TEST_RUN_ID=$(date +%s)
 
-# Override fail() to dump debug state before exiting
-fail() {
-    echo -e "${RED}✗ FAIL:${NC} $1"
-    dump_debug_state
-    exit 1
-}
 
 # warn is not in common.sh; define it for non-fatal warnings
 warn() { echo -e "${YELLOW}! WARN:${NC} $1"; }
@@ -142,6 +136,10 @@ dump_debug_state() {
 }
 
 cleanup_on_exit() {
+    # Drain CLEANUP_SGS first. Setting a trap here REPLACES common.sh's
+    # `trap cleanup_servicegroups EXIT`, so every ServiceGroup registered by
+    # generate_single_subnet_servicegroup leaked when this suite exited.
+    cleanup_servicegroups 2>/dev/null || true
     info "Cleanup: removing taints, test services, and test pod..."
     # Remove any taints left by failover tests
     for node in $NODES; do
@@ -799,26 +797,20 @@ test_prerequisites() {
     info "Checking allocator metrics endpoint..."
     local ALLOC_METRICS
     ALLOC_METRICS=$(scrape_allocator_metrics)
-    if [ -n "$ALLOC_METRICS" ]; then
-        assert_metric "$ALLOC_METRICS" "purelb_k8s_client_config_loaded_bool" "eq" "1"
-        print_allocator_metrics "$ALLOC_METRICS"
-        pass "Allocator metrics endpoint reachable, config loaded"
-    else
-        info "WARNING: Allocator metrics endpoint not reachable (non-fatal)"
-    fi
+    require_metrics "$ALLOC_METRICS" "allocator"
+    assert_metric "$ALLOC_METRICS" "purelb_k8s_client_config_loaded_bool" "eq" "1"
+    print_allocator_metrics "$ALLOC_METRICS"
+    pass "Allocator metrics endpoint reachable, config loaded"
 
     info "Checking lbnodeagent metrics endpoint..."
     local AGENT_METRICS
     AGENT_METRICS=$(scrape_lbnodeagent_metrics)
-    if [ -n "$AGENT_METRICS" ]; then
-        assert_metric "$AGENT_METRICS" "purelb_election_lease_healthy" "eq" "1"
-        local first_node
-        for first_node in $NODES; do break; done
-        print_lbnodeagent_metrics "$AGENT_METRICS" "$first_node"
-        pass "LBNodeAgent metrics endpoint reachable, lease healthy"
-    else
-        info "WARNING: LBNodeAgent metrics endpoint not reachable (non-fatal)"
-    fi
+    require_metrics "$AGENT_METRICS" "lbnodeagent"
+    assert_metric "$AGENT_METRICS" "purelb_election_lease_healthy" "eq" "1"
+    local first_node
+    for first_node in $NODES; do break; done
+    print_lbnodeagent_metrics "$AGENT_METRICS" "$first_node"
+    pass "LBNodeAgent metrics endpoint reachable, lease healthy"
 
     pass "All prerequisites met"
 }
@@ -864,12 +856,11 @@ test_remote_ipv4() {
     # Metrics verification
     local ALLOC_METRICS
     ALLOC_METRICS=$(scrape_allocator_metrics)
-    if [ -n "$ALLOC_METRICS" ]; then
-        print_allocator_metrics "$ALLOC_METRICS"
-        assert_metric "$ALLOC_METRICS" 'purelb_address_pool_size{pool="remote"}' "gt" "0"
-        assert_metric "$ALLOC_METRICS" 'purelb_address_pool_addresses_in_use{pool="remote"}' "ge" "1"
-        pass "Allocator: pool metrics verified"
-    fi
+    require_metrics "$ALLOC_METRICS" "allocator"
+    print_allocator_metrics "$ALLOC_METRICS"
+    assert_metric "$ALLOC_METRICS" 'purelb_address_pool_size{pool="remote"}' "gt" "0"
+    assert_metric "$ALLOC_METRICS" 'purelb_address_pool_addresses_in_use{pool="remote"}' "ge" "1"
+    pass "Allocator: pool metrics verified"
 
     pass "Remote IPv4 test completed"
 }
@@ -2826,9 +2817,8 @@ EOF
     # Metrics
     local ALLOC_METRICS
     ALLOC_METRICS=$(scrape_allocator_metrics)
-    if [ -n "$ALLOC_METRICS" ]; then
-        print_allocator_metrics "$ALLOC_METRICS" "remote-multipool"
-    fi
+    require_metrics "$ALLOC_METRICS" "allocator"
+    print_allocator_metrics "$ALLOC_METRICS" "remote-multipool"
 
     # Cleanup
     kubectl delete svc nginx-remote-multipool -n $NAMESPACE --ignore-not-found 2>/dev/null || true
@@ -3029,139 +3019,12 @@ EOF
     pass "Re-evaluate annotation test completed (remote)"
 }
 
-#---------------------------------------------------------------------
-# Metrics & Logging Helpers
-#---------------------------------------------------------------------
 
-# scrape_pod_metrics POD_NAME
-# Scrapes /metrics from a pod via kubectl port-forward.
-scrape_pod_metrics() {
-    local pod=$1
-    local local_port=$((30000 + RANDOM % 5000))
-    kubectl port-forward -n purelb-system "$pod" ${local_port}:7472 >/dev/null 2>&1 &
-    local pf_pid=$!
-    local metrics=""
-    local attempt
-    for attempt in 1 2 3 4 5; do
-        sleep 1
-        metrics=$(curl -s --connect-timeout 3 "http://127.0.0.1:${local_port}/metrics" 2>/dev/null || true)
-        if [ -n "$metrics" ]; then
-            break
-        fi
-    done
-    kill $pf_pid 2>/dev/null || true
-    wait $pf_pid 2>/dev/null || true
-    echo "$metrics"
-}
 
-# scrape_allocator_metrics
-scrape_allocator_metrics() {
-    local pod
-    pod=$(kubectl get pods -n purelb-system -l component=allocator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-    if [ -z "$pod" ]; then
-        echo ""
-        return
-    fi
-    scrape_pod_metrics "$pod"
-}
 
-# scrape_lbnodeagent_metrics [node]
-# LBNodeAgent uses hostPort 7472, so curl the node IP directly.
-scrape_lbnodeagent_metrics() {
-    local node=${1:-}
-    local node_ip
-    if [ -n "$node" ]; then
-        node_ip="${NODE_IPS[$node]:-}"
-    else
-        for n in $NODES; do
-            node_ip="${NODE_IPS[$n]:-}"
-            break
-        done
-    fi
-    if [ -z "$node_ip" ]; then
-        echo ""
-        return
-    fi
-    curl -s --connect-timeout 5 "http://${node_ip}:7472/metrics" 2>/dev/null || true
-}
 
-# extract_metric METRICS_TEXT METRIC_NAME
-extract_metric() {
-    local metrics="$1"
-    local metric_name="$2"
-    local value
-    if echo "$metric_name" | grep -q '{'; then
-        value=$(echo "$metrics" | grep -F "$metric_name" | head -1 | awk '{print $NF}')
-    else
-        value=$(echo "$metrics" | grep "^${metric_name} " | head -1 | awk '{print $NF}')
-    fi
-    if [ -n "$value" ]; then
-        printf '%.0f' "$value" 2>/dev/null || echo "$value"
-    fi
-}
 
-# assert_metric METRICS_OUTPUT METRIC_NAME COMPARISON VALUE
-assert_metric() {
-    local metrics="$1"
-    local metric_name="$2"
-    local comparison="$3"
-    local expected="${4:-}"
-    local value
-    if echo "$metric_name" | grep -q '{'; then
-        value=$(echo "$metrics" | grep -F "$metric_name" | head -1 | awk '{print $NF}')
-    else
-        value=$(echo "$metrics" | grep "^${metric_name} " | head -1 | awk '{print $NF}')
-    fi
-    [ -n "$value" ] || fail "Metric $metric_name not found in output"
-    [ "$comparison" = "exists" ] && return 0
-    local int_value int_expected
-    int_value=$(printf '%.0f' "$value" 2>/dev/null || echo "0")
-    int_expected=$(printf '%.0f' "$expected" 2>/dev/null || echo "0")
-    case "$comparison" in
-        ge) [ "$int_value" -ge "$int_expected" ] || fail "Metric $metric_name: expected >= $expected, got $value" ;;
-        gt) [ "$int_value" -gt "$int_expected" ] || fail "Metric $metric_name: expected > $expected, got $value" ;;
-        eq) [ "$int_value" -eq "$int_expected" ] || fail "Metric $metric_name: expected == $expected, got $value" ;;
-        *) fail "Unknown comparison: $comparison" ;;
-    esac
-}
 
-# print_allocator_metrics METRICS_TEXT [POOL_NAME]
-print_allocator_metrics() {
-    local metrics="$1"
-    local pool="${2:-remote}"
-    if [ -z "$metrics" ]; then
-        detail "allocator metrics: (unavailable)"
-        return
-    fi
-    local config_loaded pool_size in_use
-    config_loaded=$(extract_metric "$metrics" "purelb_k8s_client_config_loaded_bool")
-    pool_size=$(extract_metric "$metrics" "purelb_address_pool_size{pool=\"${pool}\"}")
-    in_use=$(extract_metric "$metrics" "purelb_address_pool_addresses_in_use{pool=\"${pool}\"}")
-    echo -e "${CYAN}    ── Metrics ────────────────────────────────────────────────${NC}"
-    detail "allocator │ config_loaded=${config_loaded:-?}  pool_size(${pool})=${pool_size:-?}  in_use(${pool})=${in_use:-?}"
-}
-
-# print_lbnodeagent_metrics METRICS_TEXT NODE_NAME
-print_lbnodeagent_metrics() {
-    local metrics="$1"
-    local node="${2:-?}"
-    if [ -z "$metrics" ]; then
-        detail "lbnodeagent metrics on $node: (unavailable)"
-        return
-    fi
-    local lease_healthy member_count subnet_count wins adds withdrawals garp renewals
-    lease_healthy=$(extract_metric "$metrics" "purelb_election_lease_healthy")
-    member_count=$(extract_metric "$metrics" "purelb_election_member_count")
-    subnet_count=$(extract_metric "$metrics" "purelb_election_subnet_count")
-    wins=$(extract_metric "$metrics" "purelb_lbnodeagent_election_wins_total")
-    adds=$(extract_metric "$metrics" "purelb_lbnodeagent_address_additions_total")
-    withdrawals=$(extract_metric "$metrics" "purelb_lbnodeagent_address_withdrawals_total")
-    garp=$(extract_metric "$metrics" "purelb_lbnodeagent_garp_sent_total")
-    renewals=$(extract_metric "$metrics" "purelb_election_lease_renewals_total")
-    echo -e "${CYAN}    ── Metrics ────────────────────────────────────────────────${NC}"
-    detail "lbnodeagent($node) │ lease_healthy=${lease_healthy:-?}  members=${member_count:-?}  subnets=${subnet_count:-?}"
-    detail "  counters │ wins=${wins:-0}  adds=${adds:-0}  withdrawals=${withdrawals:-0}  garp=${garp:-0}  lease_renewals=${renewals:-0}"
-}
 
 #---------------------------------------------------------------------
 # Cleanup

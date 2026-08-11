@@ -59,28 +59,6 @@ done
 
 source "${SCRIPT_DIR}/../common.sh"
 
-# Metrics scrape (same pattern as the local/remote/router suites; not in
-# common.sh, so defined here).
-scrape_pod_metrics() {
-    local pod=$1
-    local local_port=$((30000 + RANDOM % 5000))
-    kubectl port-forward -n "$PURELB_NS" "$pod" ${local_port}:7472 >/dev/null 2>&1 &
-    local pf_pid=$! metrics="" attempt
-    for attempt in 1 2 3 4 5; do
-        sleep 1
-        metrics=$(curl -s --connect-timeout 3 "http://127.0.0.1:${local_port}/metrics" 2>/dev/null || true)
-        [ -n "$metrics" ] && break
-    done
-    kill $pf_pid 2>/dev/null || true
-    wait $pf_pid 2>/dev/null || true
-    echo "$metrics"
-}
-scrape_allocator_metrics() {
-    local pod
-    pod=$(kubectl get pods -n "$PURELB_NS" -l component=allocator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-    [ -z "$pod" ] && { echo ""; return; }
-    scrape_pod_metrics "$pod"
-}
 
 # ip_in_cidr_prefix: cheap membership check — the IP shares the CIDR's
 # /24 prefix and its last octet falls inside the CIDR's host range.
@@ -363,6 +341,10 @@ test_release() {
 # Cleanup
 #---------------------------------------------------------------------
 cleanup() {
+    # Drain CLEANUP_SGS first. Setting a trap here REPLACES common.sh's
+    # `trap cleanup_servicegroups EXIT`, so every ServiceGroup registered by
+    # generate_single_subnet_servicegroup leaked when this suite exited.
+    cleanup_servicegroups 2>/dev/null || true
     echo "=========================================="
     echo "Cleanup"
     echo "=========================================="

@@ -12,6 +12,38 @@ End-to-end functional tests for PureLB.
 | [timing/](timing/) | Tests for ETP Local timing behavior and latency characterization |
 | [address-lifetime/](address-lifetime/) | Tests for address lifetime/flags to prevent CNI conflicts (Flannel) |
 
+## Shared Code
+
+| File | Contents | Who sources it |
+|------|----------|----------------|
+| [lib.sh](lib.sh) | Colours, `pass`/`fail`/`info`, the `kubectl` context wrapper, and all metric and log assertions. **Nothing runs at source time.** | Everything, directly or via `common.sh` |
+| [common.sh](common.sh) | `lib.sh` plus SSH-based discovery of nodes, interfaces, subnets and IPv6, ServiceGroup generation and VIP helpers. **Sourcing it contacts every node.** | `local/`, `remote/`, `timing/`, `ipam-external/` |
+
+`router/` and `single-node/` source `lib.sh` only: they are driven from the
+workstation and should not depend on being able to SSH to every node.
+
+Add a new assertion to `lib.sh`, not to a suite. These helpers previously
+existed in up to five copies with four distinct implementations, so a fix
+applied in one suite silently left the others asserting the old way.
+
+To say something useful when your suite fails, override `dump_debug_state`
+after sourcing — `fail()` calls it just before exiting.
+
+## Resetting the cluster
+
+Run before any suite, so results are reproducible:
+
+```bash
+./scripts/reset-test-cluster.sh --context <name> [--yes]
+```
+
+It removes Gateways (whose controllers otherwise recreate their LoadBalancer
+Services within seconds), every LoadBalancer Service outside the install
+namespace, every ServiceGroup and LBNodeAgent, the scratch namespaces, and
+stale `purelb-test` taints — then verifies via SSH that no PureLB address is
+still configured on any node. It deliberately does **not** touch the `test`
+namespace, which holds the nginx backend the suites require but do not create.
+
 ## Running Tests
 
 Each test suite has its own README with specific instructions. Generally:

@@ -22,51 +22,11 @@ fi
 # =====================================================================
 # Colors and Logging
 # =====================================================================
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# Shared pure helpers: colors, logging, kubectl wrapper, metric and log
+# assertions. Sourced rather than duplicated -- these had drifted into up to
+# five copies before consolidation.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-pass() { echo -e "${GREEN}✓ PASS:${NC} $1"; }
-fail() { echo -e "${RED}✗ FAIL:${NC} $1"; exit 1; }
-info() { echo -e "${YELLOW}→${NC} $1"; }
-detail() { echo -e "${CYAN}     ${NC} $1"; }
-ts() { date '+%H:%M:%S.%3N'; }
-# Return "nodename (IP)" for human-readable display
-node_label() { local n=$1; echo "$n (${NODE_IPS[$n]})"; }
-
-# =====================================================================
-# Context and CLI Arguments
-# =====================================================================
-
-# Default context: use current kubectl context if not set by caller
-if [ -z "$CONTEXT" ]; then
-    CONTEXT=$(command kubectl config current-context 2>/dev/null)
-fi
-
-# Override kubectl to always use the configured context
-kubectl() { command kubectl --context "$CONTEXT" "$@"; }
-
-# Parse --context from remaining args (call from your script after sourcing)
-# Usage: parse_common_args "$@" ; set -- "${REMAINING_ARGS[@]}"
-REMAINING_ARGS=()
-parse_common_args() {
-    REMAINING_ARGS=()
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --context)
-                CONTEXT="$2"
-                shift 2
-                ;;
-            *)
-                REMAINING_ARGS+=("$1")
-                shift
-                ;;
-        esac
-    done
-}
 
 # =====================================================================
 # Node Discovery (no DNS needed)
@@ -521,7 +481,13 @@ cleanup_servicegroups() {
     done
 }
 
-# Register cleanup trap (scripts can add their own traps too)
+# Register cleanup trap.
+#
+# NOTE TO SUITE AUTHORS: bash keeps ONE EXIT trap. If your suite sets its
+# own, it silently replaces this one and every ServiceGroup registered via
+# generate_single_subnet_servicegroup leaks. Call cleanup_servicegroups as
+# the first line of your own handler -- remote/, timing/ and ipam-external/
+# all had this bug.
 trap cleanup_servicegroups EXIT
 
 # =====================================================================
@@ -802,7 +768,6 @@ pause_for_review() {
     fi
 }
 
-# =====================================================================
 # Auto-Discovery on Source
 # =====================================================================
 
