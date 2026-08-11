@@ -15,8 +15,13 @@
 #
 # Reset a PureLB test cluster to a known baseline before an e2e run.
 #
-# The e2e suites generate their own `default` ServiceGroup and LBNodeAgent,
-# so a full delete of both is correct and is what makes runs reproducible.
+# The e2e suites generate their own `default` ServiceGroup, so a full
+# delete of those is correct and is what makes runs reproducible. The
+# default LBNodeAgent is deleted too -- a suite may have left a drifted
+# one behind -- but it is then RESTORED to the shipped spec, because only
+# the local and single-node suites create one and the rest assume it
+# exists.
+#
 # Leftover fixtures are not merely untidy: a ServiceGroup whose ranges
 # overlap the ones a suite is about to create is rejected outright by the
 # allocator, and a stray LoadBalancer Service holding an address from the
@@ -50,7 +55,8 @@ Usage: reset-test-cluster.sh --context NAME [--yes] [--namespace NS]
 Removes, so an e2e run starts from a known baseline:
   - every Gateway (its controller would otherwise recreate the Service)
   - every LoadBalancer Service outside the PureLB install namespace
-  - every ServiceGroup and LBNodeAgent (the suites generate their own)
+  - every ServiceGroup (the suites generate their own)
+  - every LBNodeAgent, then restores the shipped `default` one
   - the e2e scratch namespaces (test-tenant, echo-test)
   - purelb-test NoExecute taints left by a failed failover test
 
@@ -168,6 +174,32 @@ if [ -n "$AGENTS" ]; then
         kubectl delete lbnodeagent "$name" -n "$ns" --ignore-not-found --timeout=60s >/dev/null
     done <<< "$AGENTS"
 fi
+
+# Restore the shipped default LBNodeAgent. Deleting every agent and
+# stopping there does not leave a baseline -- it leaves PureLB installed
+# and unable to announce anything, because an LBNodeAgent CR is what
+# configures the node agents at all. Only the local and single-node suites
+# create their own; ipam-external, remote and router all assume one
+# exists, so without this they allocate an address and then fail at
+# "not announced on any node".
+#
+# Spec matches deployments/purelb-v0.0.0-dev.yaml, so the baseline is what
+# PureLB actually ships rather than a definition invented here. A suite
+# that wants different settings applies its own over the top.
+info "restoring the default LBNodeAgent"
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: purelb.io/v2
+kind: LBNodeAgent
+metadata:
+  name: default
+  namespace: ${PURELB_NS}
+  labels:
+    app: purelb
+spec:
+  local:
+    dummyInterface: kube-lb0
+    localInterface: default
+EOF
 
 # A Gateway delete removes its Service asynchronously; sweep once more so
 # the post-condition check below is not racing a controller.
