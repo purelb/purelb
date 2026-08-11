@@ -166,12 +166,14 @@ def log_window() -> _dt.datetime:
     return utcnow()
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def allocator_metrics(cluster: Cluster):
     """Callable returning a fresh allocator scrape.
 
     Returns a function rather than a value so a test can take a before and
-    an after and assert on the delta.
+    an after and assert on the delta. Session-scoped for the same reason:
+    it holds no per-test state, and a module-scoped baseline fixture
+    cannot consume a function-scoped one.
     """
     def _scrape() -> metrics.Snapshot:
         pods = cluster.pods(cluster.purelb_namespace, "component=allocator")
@@ -186,7 +188,7 @@ def allocator_metrics(cluster: Cluster):
     return _scrape
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def agent_metrics(node_ips: Dict[str, str]):
     """Callable returning a fresh lbnodeagent scrape for a named node."""
     def _scrape(node: str) -> metrics.Snapshot:

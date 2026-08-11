@@ -8,16 +8,21 @@ End-to-end functional tests for PureLB.
 |-----------|-------------|
 | [local/](local/) | Tests for local IP allocation mode (addresses on physical NIC) |
 | [remote/](remote/) | Tests for remote IP allocation mode (addresses on kube-lb0) |
-| [ipam-external/](ipam-external/) | Tests for external (sidecar) IPAM — also the acceptance test when adding a new sidecar IPAM implementation |
+| [py/](py/) | **pytest** harness. External (sidecar) IPAM lives here — also the acceptance test when adding a new sidecar IPAM implementation. The bash suites are being migrated into it. |
 | [timing/](timing/) | Tests for ETP Local timing behavior and latency characterization |
 | [address-lifetime/](address-lifetime/) | Tests for address lifetime/flags to prevent CNI conflicts (Flannel) |
+
+Suites are being migrated to pytest under [py/](py/). A suite is only
+deleted once `scripts/e2e-dualrun.sh` reports every one of its bash
+assertions agreeing with a passing pytest counterpart; the mapping that
+enforces this is [dualrun-map.toml](dualrun-map.toml).
 
 ## Shared Code
 
 | File | Contents | Who sources it |
 |------|----------|----------------|
 | [lib.sh](lib.sh) | Colours, `pass`/`fail`/`info`, the `kubectl` context wrapper, and all metric and log assertions. **Nothing runs at source time.** | Everything, directly or via `common.sh` |
-| [common.sh](common.sh) | `lib.sh` plus SSH-based discovery of nodes, interfaces, subnets and IPv6, ServiceGroup generation and VIP helpers. **Sourcing it contacts every node.** | `local/`, `remote/`, `timing/`, `ipam-external/` |
+| [common.sh](common.sh) | `lib.sh` plus SSH-based discovery of nodes, interfaces, subnets and IPv6, ServiceGroup generation and VIP helpers. **Sourcing it contacts every node.** | `local/`, `remote/`, `timing/` |
 
 `router/` and `single-node/` source `lib.sh` only: they are driven from the
 workstation and should not depend on being able to SSH to every node.

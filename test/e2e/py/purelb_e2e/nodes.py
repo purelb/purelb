@@ -27,7 +27,7 @@ import shlex
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Tuple
 
 SSH_OPTS = [
     "-o", "BatchMode=yes",
@@ -86,6 +86,41 @@ def interface_for_address(host: str, address: str) -> Optional[str]:
             except ValueError:
                 continue
     return None
+
+
+def announcing_node(node_ips: Dict[str, str], address: str) -> Optional[Tuple[str, str]]:
+    """The (node, interface) announcing `address`, or None.
+
+    Asks every node rather than trusting the announcing annotation, which
+    is what makes this an independent check: the annotation is PureLB
+    reporting on itself, the interface is the thing that actually carries
+    traffic. A node we cannot reach is skipped rather than fatal, so a
+    single unreachable node degrades the search instead of failing it --
+    but see the caller, which must not read None as "correctly withdrawn"
+    when a node was skipped.
+    """
+    for name, ip in node_ips.items():
+        try:
+            iface = interface_for_address(ip, address)
+        except (SSHError, subprocess.SubprocessError, OSError):
+            continue
+        if iface:
+            return name, iface
+    return None
+
+
+def nodes_with_address(node_ips: Dict[str, str], address: str) -> List[str]:
+    """Every node carrying `address`. Unreachable nodes RAISE.
+
+    Withdrawal assertions need this rather than announcing_node: proving
+    an address is gone by asking nodes that did not answer proves nothing,
+    so an unreachable node has to be an error, not an empty result.
+    """
+    found: List[str] = []
+    for name, ip in sorted(node_ips.items()):
+        if has_address(ip, address):
+            found.append(name)
+    return found
 
 
 @dataclass

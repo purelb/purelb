@@ -39,6 +39,26 @@ from prometheus_client.parser import text_string_to_metric_families
 METRICS_PORT = 7472
 
 
+def _matches(key: str, name: str, labels: Mapping[str, str]) -> bool:
+    """Whether a sample key is `name` carrying at least `labels`.
+
+    Compares parsed label pairs rather than doing a substring test on the
+    rendered key: `pool="default"` is a substring of `pool="default-v6"`,
+    so the obvious `in` check would quietly aggregate unrelated series.
+    """
+    if not key.startswith(name):
+        return False
+    rest = key[len(name):]
+    if not rest:
+        return not labels
+    if not (rest.startswith("{") and rest.endswith("}")):
+        return False
+    present = dict(
+        pair.split("=", 1) for pair in rest[1:-1].split(",") if "=" in pair
+    )
+    return all(present.get(k) == f'"{v}"' for k, v in labels.items())
+
+
 class ScrapeError(AssertionError):
     """A /metrics endpoint could not be read.
 
@@ -90,13 +110,26 @@ class Snapshot:
         return got
 
     def counter(self, name: str, **labels: str) -> float:
-        """Value of a counter, treating absence as zero.
+        """Total of every sample of `name` whose labels INCLUDE `labels`.
+
+        Subset matching, unlike get/value which are exact. Two reasons:
 
         A counter that has never been incremented may not be exported at
         all, so for delta arithmetic absent and zero are the same thing.
+
+        And a test should not have to name labels it does not care about.
+        purelb_allocator_sidecar_rpc_total carries socket, method and code;
+        asking "how many Allocate calls succeeded" means summing over
+        sockets. Requiring the full set instead makes the assertion silently
+        match nothing the moment a label is added to the metric -- which is
+        indistinguishable from the counter not moving, and would have read
+        as "the RPC never happened".
         """
-        got = self.get(name, **labels)
-        return 0.0 if got is None else got
+        total = 0.0
+        for key, value in self.samples.items():
+            if _matches(key, name, labels):
+                total += value
+        return total
 
 
 def scrape_url(url: str, timeout: float = 5.0) -> Snapshot:

@@ -19,8 +19,8 @@
 # delete of those is correct and is what makes runs reproducible. The
 # default LBNodeAgent is deleted too -- a suite may have left a drifted
 # one behind -- but it is then RESTORED to the shipped spec, because only
-# the local and single-node suites create one and the rest assume it
-# exists.
+# the local and single-node suites create one; every other suite, and the
+# pytest harness, assume it already exists.
 #
 # Leftover fixtures are not merely untidy: a ServiceGroup whose ranges
 # overlap the ones a suite is about to create is rejected outright by the
@@ -33,6 +33,10 @@
 # and it prints everything it will remove before removing any of it.
 
 set -euo pipefail
+
+# Resolved from the script's own location so the manifests are found
+# regardless of the caller's working directory.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
 info()  { echo -e "${YELLOW}→${NC} $1"; }
@@ -179,9 +183,9 @@ fi
 # stopping there does not leave a baseline -- it leaves PureLB installed
 # and unable to announce anything, because an LBNodeAgent CR is what
 # configures the node agents at all. Only the local and single-node suites
-# create their own; ipam-external, remote and router all assume one
+# create their own; remote, router and the pytest harness all assume one
 # exists, so without this they allocate an address and then fail at
-# "not announced on any node".
+# "not announced on any node" -- which is how this was found.
 #
 # Spec matches deployments/purelb-v0.0.0-dev.yaml, so the baseline is what
 # PureLB actually ships rather than a definition invented here. A suite
@@ -278,15 +282,21 @@ echo "  LB Services:    $(kubectl get svc -A --no-headers 2>/dev/null | grep -c 
 echo "  PureLB pods:"
 kubectl get pods -n "$PURELB_NS" --no-headers 2>/dev/null | awk '{printf "    %-32s %s %s\n", $1, $2, $3}'
 
-# The suites require an nginx backend in the `test` namespace and do not
-# create it themselves, so a baseline without one is not runnable.
+# The suites require an nginx backend in the `test` namespace and none of
+# them creates it, so a baseline without one is not runnable. Restoring it
+# here rather than warning about it is also what makes suite ORDER stop
+# mattering: the retired bash ipam-external suite deleted the backend on
+# its way out, which silently removed a prerequisite for everything that
+# ran after it.
 BACKEND=$(kubectl get pods -n test -l app=nginx --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
-if [ "$BACKEND" -ge 1 ]; then
-    echo "  Backend pods:   $BACKEND running in namespace 'test'"
-else
-    echo -e "  Backend pods:   ${YELLOW}NONE${NC} -- suites will fail prerequisite validation."
-    echo "                  Fix with: kubectl --context $CONTEXT apply -f test/e2e/local/nginx-test.yaml"
+if [ "$BACKEND" -lt 1 ]; then
+    info "restoring the nginx backend in namespace 'test'"
+    kubectl apply -f "${REPO_ROOT}/test/e2e/local/nginx-test.yaml" >/dev/null
+    kubectl rollout status deployment/nginx -n test --timeout=120s >/dev/null \
+        || die "nginx backend did not become ready"
+    BACKEND=$(kubectl get pods -n test -l app=nginx --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
 fi
+echo "  Backend pods:   $BACKEND running in namespace 'test'"
 
 if [ "$STALE" -ne 0 ]; then
     die "$STALE stale address(es) remain; the cluster is NOT a clean baseline"

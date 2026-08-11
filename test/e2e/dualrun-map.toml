@@ -26,3 +26,9 @@
 # A suite gets its table in the same commit that ports it, and both the
 # table and the bash script are deleted in the commit that retires the
 # suite -- so this file is empty exactly when the migration is finished.
+#
+# Take the patterns from a REAL run's output, not by reading the script.
+# Assertions interpolate the values they observed, and some never print at
+# all in a passing run -- ipam-external had two such -- which reading alone
+# does not reveal.
+

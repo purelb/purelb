@@ -18,7 +18,7 @@
 # disagreements that are artefacts of the harness rather than the port.
 #
 # Usage:
-#   scripts/e2e-dualrun.sh --suite ipam-external --context prox-purelb2
+#   scripts/e2e-dualrun.sh --suite local --context prox-purelb2
 #
 # Options:
 #   --suite NAME      suite to compare (a table in dualrun-map.toml)

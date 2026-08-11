@@ -486,7 +486,7 @@ cleanup_servicegroups() {
 # NOTE TO SUITE AUTHORS: bash keeps ONE EXIT trap. If your suite sets its
 # own, it silently replaces this one and every ServiceGroup registered via
 # generate_single_subnet_servicegroup leaks. Call cleanup_servicegroups as
-# the first line of your own handler -- remote/, timing/ and ipam-external/
+# the first line of your own handler -- remote/ and timing/
 # all had this bug.
 trap cleanup_servicegroups EXIT
 

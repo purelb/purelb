@@ -106,6 +106,77 @@ class Cluster:
             return None
         return (svc.metadata.annotations or {}).get(key)
 
+    def apply_service(self, body: Dict[str, Any]) -> client.V1Service:
+        """Create the Service, replacing any existing one of that name."""
+        ns = body["metadata"]["namespace"]
+        name = body["metadata"]["name"]
+        if self.service(ns, name) is not None:
+            self.delete_service(ns, name)
+            # A LoadBalancer Service is not gone for the allocator until
+            # the object is, and recreating it while the old one is
+            # terminating gets the new one the old address -- which would
+            # make an "allocated a fresh address" assertion pass for the
+            # wrong reason.
+            self.wait_service_gone(ns, name)
+        return self.core.create_namespaced_service(ns, body)
+
+    def delete_service(self, namespace: str, name: str) -> None:
+        try:
+            self.core.delete_namespaced_service(name, namespace)
+        except ApiException as exc:
+            if exc.status != 404:
+                raise
+
+    def wait_service_gone(self, namespace: str, name: str, timeout: float = 60.0) -> None:
+        from .wait import wait_until
+
+        wait_until(
+            lambda: self.service(namespace, name) is None,
+            timeout=timeout,
+            description=f"Service {namespace}/{name} to disappear",
+        )
+
+    # ----------------------------------------------------------- deployments
+
+    def deployment(self, namespace: str, name: str) -> Optional[client.V1Deployment]:
+        try:
+            return self.apps.read_namespaced_deployment(name, namespace)
+        except ApiException as exc:
+            if exc.status == 404:
+                return None
+            raise
+
+    def patch_deployment(self, namespace: str, name: str, patch: Dict[str, Any]) -> None:
+        self.apps.patch_namespaced_deployment(name, namespace, patch)
+
+    def wait_rollout(self, namespace: str, name: str, timeout: float = 180.0) -> None:
+        """Wait for a Deployment to finish rolling out.
+
+        Checks observed_generation as well as the replica counts. Without
+        it, the very first poll can pass against the PREVIOUS generation's
+        status -- the deployment controller has not yet reacted to the
+        patch, so the old ReplicaSet still looks perfectly available. That
+        race is why the bash suite's rollout waits occasionally let a test
+        run against the pod it was trying to replace.
+        """
+        from .wait import wait_until
+
+        def ready() -> bool:
+            dep = self.deployment(namespace, name)
+            if dep is None or dep.status is None:
+                return False
+            want = dep.spec.replicas or 1
+            st = dep.status
+            return (
+                (st.observed_generation or 0) >= (dep.metadata.generation or 0)
+                and (st.updated_replicas or 0) == want
+                and (st.available_replicas or 0) == want
+                and (st.unavailable_replicas or 0) == 0
+            )
+
+        wait_until(ready, timeout=timeout, interval=2.0,
+                   description=f"Deployment {namespace}/{name} rollout")
+
     # ------------------------------------------------------------------ pods
 
     def pods(self, namespace: str, label_selector: str) -> List[client.V1Pod]:

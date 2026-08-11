@@ -65,6 +65,40 @@ def test_absent_and_zero_are_distinguishable():
         snap.value("purelb_absent_total")
 
 
+def test_counter_matches_a_label_subset():
+    """A test must not have to name labels it does not care about.
+
+    purelb_allocator_sidecar_rpc_total carries socket, method AND code.
+    Requiring the full set makes an assertion match nothing the moment a
+    label is added -- indistinguishable from the counter not moving, so it
+    reads as "the RPC never happened".
+    """
+    snap = metrics.Snapshot.parse(
+        'r_total{socket="/a.sock",method="Allocate",code="OK"} 3.0\n'
+        'r_total{socket="/b.sock",method="Allocate",code="OK"} 4.0\n'
+        'r_total{socket="/a.sock",method="Release",code="OK"} 1.0\n',
+        source="unit",
+    )
+    assert snap.counter("r_total", method="Allocate", code="OK") == 7.0
+    assert snap.counter("r_total", code="OK") == 8.0
+    assert snap.counter("r_total") == 8.0
+    assert snap.counter("r_total", method="Stats") == 0.0
+    # Exact lookups stay exact.
+    assert snap.get("r_total", method="Allocate") is None
+
+
+def test_counter_does_not_match_a_label_value_by_prefix():
+    """pool="default" must not aggregate pool="default-v6".
+
+    A substring test on the rendered key would, and the resulting
+    over-count looks exactly like a passing assertion.
+    """
+    snap = metrics.Snapshot.parse(
+        'p_total{pool="default"} 2.0\np_total{pool="default-v6"} 5.0\n', source="unit"
+    )
+    assert snap.counter("p_total", pool="default") == 2.0
+
+
 def test_increase_assertions():
     before = metrics.Snapshot.parse("purelb_x_total 5.0\n", source="before")
     after = metrics.Snapshot.parse("purelb_x_total 7.0\n", source="after")
