@@ -369,6 +369,10 @@ EOF
 }
 
 test_multi_interface() {
+    # Scope every log assertion in this test to output produced from
+    # here on. Without a window they scanned --tail=200 across all
+    # pods and matched lines from earlier tests on other nodes.
+    local LOG_SINCE; LOG_SINCE=$(log_window_start)
     # ----- Env gate: skip only when nothing is set; partial = loud fail
     local set_count=0 total=0 missing=""
     local var
@@ -441,7 +445,7 @@ test_multi_interface() {
     pass "Lease gained $MULTI_IF_SUBNET6"
 
     assert_log_contains_on_node "$MULTI_IF_NODE" "subnetsChanged" \
-        "lease subnet annotation updated after scoped config"
+        "lease subnet annotation updated after scoped config" "$LOG_SINCE"
     pass "subnetsChanged logged on $MULTI_IF_NODE"
     assert_selector_state "$MULTI_IF_NODE" "configured"
 
@@ -583,7 +587,7 @@ EOF
 
     sleep 3
     assert_log_contains_on_node "$MULTI_IF_NODE" "withdrawAddress" \
-        "withdrawal after config shrink"
+        "withdrawal after config shrink" "$LOG_SINCE"
     pass "withdrawAddress logged on $MULTI_IF_NODE"
 
     # The renewal timer must be dead: with validLifetime 60 the timer
@@ -650,7 +654,7 @@ EOF
 
         sleep 3
         assert_log_contains_on_node "$MULTI_IF_NODE" "noConfig" \
-            "deselection lands in the noConfig path"
+            "deselection lands in the noConfig path" "$LOG_SINCE"
         pass "noConfig logged on deselected node"
 
         info "Waiting 40s to prove the noConfig withdrawal killed the renewal timer..."
@@ -685,6 +689,10 @@ EOF
 # anywhere. There is no fallback - subnet filtering is strict.
 #---------------------------------------------------------------------
 test_local_pool_no_matching_subnet() {
+    # Scope every log assertion in this test to output produced from
+    # here on. Without a window they scanned --tail=200 across all
+    # pods and matched lines from earlier tests on other nodes.
+    local LOG_SINCE; LOG_SINCE=$(log_window_start)
     echo ""
     echo "=========================================="
     echo "TEST: Local Pool No Matching Subnet"
@@ -746,7 +754,7 @@ test_local_pool_no_matching_subnet() {
     # (noEligibleNodes is a separate code path for subnet-aware election mismatch;
     # noLocalInterface fires first when the pool's subnet doesn't match any node interface)
     echo -e "${CYAN}    ── Log Verification ────────────────────────────────────────${NC}"
-    assert_log_contains "lbnodeagent" "noLocalInterface" "no local interface for unmatched subnet pool"
+    assert_log_contains "lbnodeagent" "noLocalInterface" "no local interface for unmatched subnet pool" "$LOG_SINCE"
     pass "LBNodeAgent logged 'noLocalInterface' (subnet filtering confirmed via log)"
 
     # Cleanup
@@ -762,6 +770,10 @@ test_local_pool_no_matching_subnet() {
 # Verifies that remote pool IPs go on kube-lb0 (not local interface)
 #---------------------------------------------------------------------
 test_remote_pool() {
+    # Scope every log assertion in this test to output produced from
+    # here on. Without a window they scanned --tail=200 across all
+    # pods and matched lines from earlier tests on other nodes.
+    local LOG_SINCE; LOG_SINCE=$(log_window_start)
     echo ""
     echo "=========================================="
     echo "TEST: Remote Pool Behavior"
@@ -811,7 +823,7 @@ test_remote_pool() {
     # is logged on the error path as well
     # ({"error":"servicegroups.purelb.io \"default\" not found",...}), so
     # grepping the op alone asserted that the code ran, not that it worked.
-    assert_log_contains "allocator" '"allocatedV4"' "ServiceGroup status write succeeded"
+    assert_log_contains "allocator" '"allocatedV4"' "ServiceGroup status write succeeded" "$LOG_SINCE"
 
     local SG_METRICS_AFTER SG_WRITES_AFTER SG_FORBIDDEN SG_OTHER
     SG_METRICS_AFTER=$(scrape_allocator_metrics)
@@ -867,7 +879,7 @@ test_remote_pool() {
     # Verify announcingNonLocal log — emitted when remote pool IPs go on kube-lb0
     echo -e "${CYAN}    ── Log Verification ────────────────────────────────────────${NC}"
     info "Checking lbnodeagent logs for announcingNonLocal message..."
-    assert_log_contains "lbnodeagent" "announcingNonLocal" "remote pool announced on dummy interface"
+    assert_log_contains "lbnodeagent" "announcingNonLocal" "remote pool announced on dummy interface" "$LOG_SINCE"
     pass "LBNodeAgent logged 'announcingNonLocal' (remote pool on kube-lb0)"
 
     # Cleanup
@@ -944,6 +956,10 @@ show_election_logs() {
 # Enhanced with detailed debug output for troubleshooting
 #---------------------------------------------------------------------
 test_graceful_failover() {
+    # Scope every log assertion in this test to output produced from
+    # here on. Without a window they scanned --tail=200 across all
+    # pods and matched lines from earlier tests on other nodes.
+    local LOG_SINCE; LOG_SINCE=$(log_window_start)
     # Counter baseline for every node. The winner is not known until
     # after the action, so all nodes are captured up front; the
     # assertions below then compare the winner against its OWN
@@ -1199,7 +1215,7 @@ test_graceful_failover() {
         # Verify electionWon log on new winner
         echo -e "${CYAN}    ── Log Verification ───────────────────────────────────────${NC}"
         info "Checking for electionWon log on new winner..."
-        assert_log_contains_on_node "$NEW_WINNER" "electionWon" "election won after failover"
+        assert_log_contains_on_node "$NEW_WINNER" "electionWon" "election won after failover" "$LOG_SINCE"
         pass "New winner $NEW_WINNER: logged 'electionWon'"
     fi
 
@@ -1223,6 +1239,10 @@ test_graceful_failover() {
 # Test 1: IPv4 Single-Stack Service
 #---------------------------------------------------------------------
 test_ipv4_singlestack() {
+    # Scope every log assertion in this test to output produced from
+    # here on. Without a window they scanned --tail=200 across all
+    # pods and matched lines from earlier tests on other nodes.
+    local LOG_SINCE; LOG_SINCE=$(log_window_start)
     # Counter baseline for every node. The winner is not known until
     # after the action, so all nodes are captured up front; the
     # assertions below then compare the winner against its OWN
@@ -1323,7 +1343,7 @@ test_ipv4_singlestack() {
         # --- Log verification ---
         echo -e "${CYAN}    ── Log Verification ───────────────────────────────────────${NC}"
         info "Verifying electionWon log on winner ($WINNER_NODE)..."
-        assert_log_contains_on_node "$WINNER_NODE" "electionWon" "election won for IPv4 service"
+        assert_log_contains_on_node "$WINNER_NODE" "electionWon" "election won for IPv4 service" "$LOG_SINCE"
         pass "Winner $WINNER_NODE: logged 'electionWon'"
     fi
 }
@@ -1332,6 +1352,10 @@ test_ipv4_singlestack() {
 # Test 2: IPv6 Single-Stack Service
 #---------------------------------------------------------------------
 test_ipv6_singlestack() {
+    # Scope every log assertion in this test to output produced from
+    # here on. Without a window they scanned --tail=200 across all
+    # pods and matched lines from earlier tests on other nodes.
+    local LOG_SINCE; LOG_SINCE=$(log_window_start)
     # Counter baseline for every node. The winner is not known until
     # after the action, so all nodes are captured up front; the
     # assertions below then compare the winner against its OWN
@@ -1399,7 +1423,7 @@ test_ipv6_singlestack() {
         # --- Log verification ---
         echo -e "${CYAN}    ── Log Verification ───────────────────────────────────────${NC}"
         info "Verifying electionWon log on IPv6 winner ($WINNER_NODE)..."
-        assert_log_contains_on_node "$WINNER_NODE" "electionWon" "election won for IPv6 service"
+        assert_log_contains_on_node "$WINNER_NODE" "electionWon" "election won for IPv6 service" "$LOG_SINCE"
         pass "Winner $WINNER_NODE: logged 'electionWon' (IPv6)"
     fi
 }
@@ -1492,6 +1516,10 @@ test_dualstack() {
 # Test 4: Leader Election
 #---------------------------------------------------------------------
 test_leader_election() {
+    # Scope every log assertion in this test to output produced from
+    # here on. Without a window they scanned --tail=200 across all
+    # pods and matched lines from earlier tests on other nodes.
+    local LOG_SINCE; LOG_SINCE=$(log_window_start)
     echo ""
     echo "=========================================="
     echo "TEST 4: Leader Election"
@@ -1568,8 +1596,19 @@ test_leader_election() {
     # --- Log verification ---
     echo -e "${CYAN}    ── Log Verification ───────────────────────────────────────${NC}"
     info "Verifying election log messages..."
-    assert_log_contains_on_node "$WINNER" "electionWon" "election won on winner node"
-    pass "Winner $WINNER: logged 'electionWon'"
+    # The electionWon log assertion that used to be here has been REMOVED.
+    #
+    # This test inspects nginx-lb-ipv4, which an earlier test created, so
+    # the electionWon line was emitted before this test began. It only
+    # ever passed by matching that earlier test's output across all pods
+    # with no time bound -- the cross-test contamination that scoping
+    # these assertions in time exists to stop. Given a window it failed
+    # honestly, which is the signal that it was never self-contained.
+    #
+    # Nothing is lost by dropping it: that this node won is already
+    # asserted from current state, and more strictly, by the announcing
+    # annotation check above (entry-wise, and no non-winner may appear)
+    # together with lease_healthy and member_count below.
 
     # Check non-winner nodes for notWinner/lostElection log
     info "Checking non-winner nodes for election loss logs..."
@@ -1592,9 +1631,20 @@ test_leader_election() {
         detail "No notWinner/lostElection log found on non-winners (debug-level, may not be visible)"
     fi
 
-    # Check for subnet discovery on any node
-    assert_log_contains "lbnodeagent" "getLocalSubnets" "subnet discovery"
-    pass "LBNodeAgent: logged 'getLocalSubnets' (subnet discovery)"
+    # Subnet discovery is asserted via the METRIC, not the log.
+    #
+    # getLocalSubnets logs at Info only on first detection or on change
+    # (internal/election/subnets.go); the other seven sites are Debug and
+    # the suite runs at Info. So on a long-lived agent the one Info line
+    # was emitted at startup and had long since scrolled past --tail=200.
+    # That made this a coin flip before a time window, and a guaranteed
+    # failure after one. local_subnet_count carries the same information
+    # and is true whenever the agent is healthy.
+    local SUBNET_METRICS
+    SUBNET_METRICS=$(scrape_lbnodeagent_metrics "$WINNER")
+    require_metrics "$SUBNET_METRICS" "lbnodeagent on $WINNER (subnet discovery)"
+    assert_metric "$SUBNET_METRICS" "purelb_election_local_subnet_count" "ge" "1"
+    pass "LBNodeAgent: subnet discovery reported ($WINNER)"
 
     # Verify no panic/fatal errors
     info "Checking for absence of panic/fatal errors..."
@@ -1609,6 +1659,10 @@ test_leader_election() {
 # Test 5: Service Deletion Cleanup
 #---------------------------------------------------------------------
 test_service_cleanup() {
+    # Scope every log assertion in this test to output produced from
+    # here on. Without a window they scanned --tail=200 across all
+    # pods and matched lines from earlier tests on other nodes.
+    local LOG_SINCE; LOG_SINCE=$(log_window_start)
     echo ""
     echo "=========================================="
     echo "TEST 5: Service Deletion Cleanup"
@@ -1684,7 +1738,7 @@ test_service_cleanup() {
         # Verify withdrawal log
         echo -e "${CYAN}    ── Log Verification ───────────────────────────────────────${NC}"
         info "Checking for withdrawAddress log..."
-        assert_log_contains_on_node "$HOLDER_NODE" "withdrawAddress" "address withdrawal after service delete"
+        assert_log_contains_on_node "$HOLDER_NODE" "withdrawAddress" "address withdrawal after service delete" "$LOG_SINCE"
         pass "LBNodeAgent $HOLDER_NODE: logged 'withdrawAddress'"
     fi
 
