@@ -113,6 +113,40 @@ def test_increase_assertions():
         metrics.assert_increased(before, after, "purelb_x_total", min_delta=3)
 
 
+def test_increase_on_an_unknown_metric_name_is_a_typo_not_a_flat_counter():
+    """A metric name that exists nowhere must not read as "did not move".
+
+    Both render as 0 -> 0, and the difference matters: one means the
+    product did nothing, the other means the test asked the wrong
+    question. This cost real time -- an assertion on
+    purelb_allocator_allocation_rejected_total (the subsystem is
+    address_pool) reported a working feature as broken.
+    """
+    before = metrics.Snapshot.parse(
+        'purelb_address_pool_allocation_rejected_total{reason="x"} 1.0\n', source="b"
+    )
+    after = metrics.Snapshot.parse(
+        'purelb_address_pool_allocation_rejected_total{reason="x"} 1.0\n', source="a"
+    )
+    # Right name, genuinely flat: the ordinary delta failure.
+    with pytest.raises(AssertionError, match="advanced by 0"):
+        metrics.assert_increased(before, after, "purelb_address_pool_allocation_rejected_total")
+    # Wrong name: says so, and suggests the real one.
+    with pytest.raises(AssertionError, match="no metric named"):
+        metrics.assert_increased(before, after, "purelb_allocator_allocation_rejected_total")
+
+
+def test_nearest_names_help_find_a_renamed_metric():
+    snap = metrics.Snapshot.parse(
+        'purelb_address_pool_allocation_rejected_total{reason="x"} 1.0\n', source="s"
+    )
+    assert not snap.has_series("purelb_allocator_allocation_rejected_total")
+    assert snap.has_series("purelb_address_pool_allocation_rejected_total")
+    assert "purelb_address_pool_allocation_rejected_total" in snap.nearest(
+        "purelb_allocator_allocation_rejected_total"
+    )
+
+
 def test_not_increased_tolerates_history():
     """A pre-existing nonzero error count must not fail a later run.
 

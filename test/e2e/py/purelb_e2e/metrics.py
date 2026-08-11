@@ -109,6 +109,19 @@ class Snapshot:
             )
         return got
 
+    def has_series(self, name: str) -> bool:
+        """Whether any sample of this metric name exists, labels aside."""
+        return any(
+            key == name or key.startswith(name + "{") for key in self.samples
+        )
+
+    def nearest(self, name: str, limit: int = 3) -> list:
+        """Metric names closest to `name`, to make a typo obvious."""
+        import difflib
+
+        bare = {key.split("{", 1)[0] for key in self.samples}
+        return difflib.get_close_matches(name, sorted(bare), n=limit, cutoff=0.5)
+
     def counter(self, name: str, **labels: str) -> float:
         """Total of every sample of `name` whose labels INCLUDE `labels`.
 
@@ -188,6 +201,20 @@ def assert_increased(
     **labels: str,
 ) -> float:
     """Assert a counter advanced by at least `min_delta`, and return the delta."""
+    # A metric NAME that exists nowhere is almost always a typo or a
+    # renamed metric, and it is indistinguishable from a counter that did
+    # not move -- both read as 0 -> 0. That cost real time here:
+    # purelb_allocator_allocation_rejected_total does not exist (the
+    # subsystem is address_pool), so an assertion on it reported the
+    # feature as broken when it was working.
+    if not (before.has_series(name) or after.has_series(name)):
+        raise AssertionError(
+            f"no metric named {name!r} exists in {after.source}. This is a "
+            f"typo or a rename, not a counter that failed to move -- check "
+            f"the Prometheus subsystem. Nearest names: "
+            f"{', '.join(after.nearest(name)) or '(none)'}"
+        )
+
     b = before.counter(name, **labels)
     a = after.counter(name, **labels)
     delta = a - b

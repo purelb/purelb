@@ -242,7 +242,21 @@ def lb_service(cluster: Cluster):
             "metadata": {
                 "name": name,
                 "namespace": namespace,
-                "annotations": {"purelb.io/service-group": "default", **(annotations or {})},
+                # The service-group annotation is injected ONLY when the
+                # caller says nothing about annotations. Injecting it
+                # unconditionally made every Service explicitly name the
+                # "default" group, which silently defeats namespace
+                # binding -- an annotation outranks the namespace's
+                # default, so the namespace-scoping tests were measuring
+                # the annotation path while believing they were
+                # measuring the binding. Passing annotations={} now means
+                # exactly that: no annotations, so PureLB resolves the
+                # group itself.
+                "annotations": (
+                    {"purelb.io/service-group": "default"}
+                    if annotations is None
+                    else dict(annotations)
+                ),
             },
             "spec": {
                 "type": "LoadBalancer",

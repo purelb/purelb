@@ -93,6 +93,31 @@ class Subnet:
     def test_pool_v6(self) -> Optional[str]:
         return self.v6_band("b")
 
+    @property
+    def tenant_pool(self) -> str:
+        """The .248-.250 band, for namespace-scoped ServiceGroups."""
+        return self.band(248, 250)
+
+    @property
+    def tenant_pool_v6(self) -> Optional[str]:
+        return self.v6_band("d")
+
+    @property
+    def tenant_pool_b(self) -> str:
+        """A SECOND tenant band, for the two-groups-serve-one-namespace cases.
+
+        Namespace binding only becomes interesting when more than one
+        ServiceGroup serves a namespace -- that is what namespaceDefault
+        exists to disambiguate -- so those tests need two non-overlapping
+        pools. Overlapping ranges are rejected by the allocator outright,
+        which would read as the feature being broken.
+        """
+        return self.band(251, 253)
+
+    @property
+    def tenant_pool_b_v6(self) -> Optional[str]:
+        return self.v6_band("e", first=0x30, last=0x50)
+
 
 @dataclass(frozen=True)
 class SecondaryInterface:
