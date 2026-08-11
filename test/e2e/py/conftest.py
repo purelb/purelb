@@ -31,13 +31,14 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
-from typing import Dict, Iterator, List
+from typing import Dict, Iterator, List, Optional, Sequence
 
 import pytest
 
-from purelb_e2e import metrics
+from purelb_e2e import metrics, topology
 from purelb_e2e.cluster import Cluster, utcnow
 from purelb_e2e.nodes import Router, ssh
+from purelb_e2e.wait import wait_until
 
 CAPABILITIES = ("multi-subnet", "ipv6", "dual-homed", "router", "multi-node")
 
@@ -153,6 +154,119 @@ def _capability_gate(request: pytest.FixtureRequest) -> None:
                 f"cluster does not have it, so this test cannot run"
             )
         pytest.skip(f"cluster lacks capability: {cap}")
+
+
+@pytest.fixture(scope="session")
+def topo(cluster: Cluster, node_ips: Dict[str, str]) -> topology.Topology:
+    """Which nodes are on which subnets, and their IPv6 prefixes.
+
+    Session-scoped: it costs one SSH per node and the answer cannot change
+    during a run.
+    """
+    return topology.discover(node_ips)
+
+
+@pytest.fixture(scope="session")
+def lbnodeagent(cluster: Cluster) -> str:
+    """The default LBNodeAgent, in local mode on the detected interface.
+
+    Applied rather than assumed. reset-test-cluster.sh restores one, but a
+    suite that depends on an object it did not assert the shape of will
+    eventually run against a drifted one -- which is how the multi-interface
+    tests left a `default` agent behind that pinned a single interface.
+    """
+    cluster.apply_cr(
+        {
+            "apiVersion": "purelb.io/v2",
+            "kind": "LBNodeAgent",
+            "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
+            "spec": {"local": {"localInterface": "default", "dummyInterface": "kube-lb0"}},
+        }
+    )
+    return "default"
+
+
+@pytest.fixture(scope="session")
+def default_servicegroup(cluster: Cluster, topo: topology.Topology, lbnodeagent: str) -> str:
+    """The `default` ServiceGroup: one pool per subnet, per family.
+
+    Built from discovered topology rather than checked in, because the
+    pool has to sit inside a real node subnet to be announceable.
+    """
+    v4pools = [
+        {"aggregation": "default", "pool": s.default_pool, "subnet": s.v4}
+        for s in topo.subnets
+    ]
+    v6pools = [
+        {"aggregation": "default", "pool": s.default_pool_v6, "subnet": s.v6}
+        for s in topo.subnets
+        if s.v6
+    ]
+    spec: Dict[str, object] = {"local": {"v4pools": v4pools}}
+    if v6pools:
+        spec["local"]["v6pools"] = v6pools  # type: ignore[index]
+    cluster.apply_cr(
+        {
+            "apiVersion": "purelb.io/v2",
+            "kind": "ServiceGroup",
+            "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
+            "spec": spec,
+        }
+    )
+    return "default"
+
+
+@pytest.fixture
+def lb_service(cluster: Cluster):
+    """Factory for LoadBalancer Services, cleaned up in reverse order.
+
+    Returns the allocated addresses, so the common "create it and find out
+    what it got" is one call. Waiting is a predicate, not a sleep.
+    """
+    created: List[tuple] = []
+
+    def make(
+        name: str,
+        families: Sequence[str] = ("IPv4",),
+        namespace: str = "test",
+        annotations: Optional[Dict[str, str]] = None,
+        selector: Optional[Dict[str, str]] = None,
+        policy: Optional[str] = None,
+        wait: bool = True,
+        timeout: float = 45.0,
+        **spec_extra: object,
+    ) -> List[str]:
+        body = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "annotations": {"purelb.io/service-group": "default", **(annotations or {})},
+            },
+            "spec": {
+                "type": "LoadBalancer",
+                "ipFamilyPolicy": policy or ("RequireDualStack" if len(families) > 1 else "SingleStack"),
+                "ipFamilies": list(families),
+                "selector": selector or {"app": "nginx"},
+                "ports": [{"port": 80, "targetPort": 80}],
+                **spec_extra,
+            },
+        }
+        cluster.apply_service(body)
+        created.append((namespace, name))
+        if not wait:
+            return []
+        return wait_until(
+            lambda: cluster.service_ingress_ips(namespace, name) or None,
+            timeout=timeout,
+            description=f"{namespace}/{name} to be allocated {'+'.join(families)}",
+        )
+
+    yield make
+
+    for namespace, name in reversed(created):
+        cluster.delete_service(namespace, name)
 
 
 @pytest.fixture
