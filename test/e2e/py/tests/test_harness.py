@@ -23,9 +23,11 @@ The parse/assertion cases need no cluster; the rest do.
 
 from __future__ import annotations
 
+import textwrap
+
 import pytest
 
-from purelb_e2e import metrics
+from purelb_e2e import dualrun, metrics
 from purelb_e2e.wait import WaitTimeout, wait_until
 
 SAMPLE = """\
@@ -122,6 +124,158 @@ def test_wait_until_surfaces_the_last_error():
 
     with pytest.raises(WaitTimeout, match="apiserver said no"):
         wait_until(broken, timeout=0.2, interval=0.05)
+
+
+# --------------------------------------------------------------- dualrun
+#
+# The dual-run comparison is what licenses deleting a bash suite, so it is
+# tested harder than the thing it compares. Each case below is a way the
+# port could lose coverage while every harness still reported success.
+
+
+BASH_LOG = (
+    "\x1b[0;33m→\x1b[0m starting\n"
+    "\x1b[0;32m✓ PASS:\x1b[0m allocator has servicegroups/status RBAC\n"
+    "\x1b[0;32m✓ PASS:\x1b[0m service allocated 172.30.250.201\n"
+    "\x1b[0;36m     \x1b[0m some detail line\n"
+)
+
+JUNIT = textwrap.dedent("""\
+    <?xml version="1.0" encoding="utf-8"?>
+    <testsuites><testsuite name="pytest" tests="4">
+      <testcase classname="tests.test_ipam" name="test_rbac" time="0.1"/>
+      <testcase classname="tests.test_ipam" name="test_allocates" time="0.2"/>
+      <testcase classname="tests.test_ipam" name="test_skipped" time="0.0">
+        <skipped type="pytest.skip" message="cluster lacks capability: ipv6"/>
+      </testcase>
+      <testcase classname="tests.test_ipam.TestGrouped" name="test_in_class" time="0.1"/>
+    </testsuite></testsuites>
+""")
+
+
+def _write_map(tmp_path, assertions: str):
+    path = tmp_path / "map.toml"
+    path.write_text(
+        '[ipam]\nscript = "test/e2e/ipam-external/test-ipam-external.sh"\n'
+        "[ipam.assertions]\n" + assertions
+    )
+    return dualrun.load_map(path)["ipam"]
+
+
+def test_dualrun_strips_ansi_and_separates_verdicts():
+    run = dualrun.parse_bash_output(
+        BASH_LOG + "\x1b[0;31m✗ FAIL:\x1b[0m VIP unreachable\n", exit_code=1
+    )
+    assert run.passed == (
+        "allocator has servicegroups/status RBAC",
+        "service allocated 172.30.250.201",
+    )
+    assert run.failed == ("VIP unreachable",)
+    assert not run.completed
+
+
+def test_dualrun_junit_node_ids_include_classes(tmp_path):
+    path = tmp_path / "j.xml"
+    path.write_text(JUNIT)
+    verdicts = dualrun.parse_junit(path)
+    assert verdicts["tests/test_ipam.py::test_rbac"] == "passed"
+    assert verdicts["tests/test_ipam.py::test_skipped"] == "skipped"
+    # A capitalised trailing part is a class, not a directory. Getting this
+    # wrong would report a mapped test as "did not run".
+    assert verdicts["tests/test_ipam.py::TestGrouped::test_in_class"] == "passed"
+
+
+def test_dualrun_agrees_when_both_pass(tmp_path):
+    suite = _write_map(
+        tmp_path,
+        '"allocator has * RBAC" = "tests/test_ipam.py::test_rbac"\n'
+        '"service allocated *" = "tests/test_ipam.py::test_allocates"\n',
+    )
+    j = tmp_path / "j.xml"
+    j.write_text(JUNIT)
+    rep = dualrun.compare(suite, dualrun.parse_bash_output(BASH_LOG, 0), dualrun.parse_junit(j))
+    assert rep.clean, dualrun.format_report(rep)
+    assert len(rep.agreed) == 2
+    # Not an error, but surfaced: tests bash never had.
+    assert any("test_skipped" in p for p in rep.pytest_only)
+
+
+def test_dualrun_unmapped_bash_assertion_fails(tmp_path):
+    """The guarantee that makes the port safe.
+
+    Deleting a bash assertion's pytest counterpart -- or never writing it
+    -- must not be able to produce a clean run.
+    """
+    suite = _write_map(tmp_path, '"allocator has * RBAC" = "tests/test_ipam.py::test_rbac"\n')
+    j = tmp_path / "j.xml"
+    j.write_text(JUNIT)
+    rep = dualrun.compare(suite, dualrun.parse_bash_output(BASH_LOG, 0), dualrun.parse_junit(j))
+    assert not rep.clean
+    assert rep.unmapped == ["service allocated 172.30.250.201"]
+
+
+def test_dualrun_skip_is_not_agreement(tmp_path):
+    """A pytest skip means the assertion was not made.
+
+    bash passing while its replacement skipped is a coverage regression.
+    Folding skip into success is how the bash suite's 17 untallied
+    conditional skips went unnoticed for so long.
+    """
+    suite = _write_map(
+        tmp_path,
+        '"allocator has * RBAC" = "tests/test_ipam.py::test_rbac"\n'
+        '"service allocated *" = "tests/test_ipam.py::test_skipped"\n',
+    )
+    j = tmp_path / "j.xml"
+    j.write_text(JUNIT)
+    rep = dualrun.compare(suite, dualrun.parse_bash_output(BASH_LOG, 0), dualrun.parse_junit(j))
+    assert not rep.clean
+    assert any("test_skipped skipped" in d for d in rep.disagreed)
+
+
+def test_dualrun_mapped_test_that_never_ran_fails(tmp_path):
+    suite = _write_map(
+        tmp_path,
+        '"allocator has * RBAC" = "tests/test_ipam.py::test_rbac"\n'
+        '"service allocated *" = "tests/test_ipam.py::test_typo"\n',
+    )
+    j = tmp_path / "j.xml"
+    j.write_text(JUNIT)
+    rep = dualrun.compare(suite, dualrun.parse_bash_output(BASH_LOG, 0), dualrun.parse_junit(j))
+    assert not rep.clean
+    assert any("test_typo" in m for m in rep.missing_nodes)
+
+
+def test_dualrun_incomplete_bash_run_is_fatal(tmp_path):
+    """An aborted bash run cannot be partially interpreted.
+
+    fail() exits, so the assertions after it are silent rather than
+    failing. Comparing against that silence would report a flood of
+    disagreements that say nothing about the port.
+    """
+    suite = _write_map(tmp_path, '"allocator has * RBAC" = "tests/test_ipam.py::test_rbac"\n')
+    j = tmp_path / "j.xml"
+    j.write_text(JUNIT)
+    bash = dualrun.parse_bash_output(BASH_LOG, exit_code=1)
+    rep = dualrun.compare(suite, bash, dualrun.parse_junit(j))
+    assert not rep.clean
+    assert rep.fatal and "did not complete" in rep.fatal[0]
+
+
+def test_dualrun_first_matching_pattern_wins(tmp_path):
+    suite = _write_map(
+        tmp_path,
+        '"service allocated 172.30.250.*" = "tests/test_ipam.py::test_allocates"\n'
+        '"service allocated *" = "tests/test_ipam.py::test_rbac"\n',
+    )
+    entry = dualrun.match_entry("service allocated 172.30.250.201", suite.entries)
+    assert entry is not None and entry.nodes == ("tests/test_ipam.py::test_allocates",)
+
+
+def test_dualrun_rejects_a_mapping_to_nothing(tmp_path):
+    """Mapping an assertion to [] would silently retire it."""
+    with pytest.raises(dualrun.MappingError, match="maps to nothing"):
+        _write_map(tmp_path, '"allocator has * RBAC" = []\n')
 
 
 # --------------------------------------------------------------- cluster
