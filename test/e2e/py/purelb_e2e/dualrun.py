@@ -37,11 +37,12 @@ from __future__ import annotations
 import fnmatch
 import re
 import sys
-import tomllib
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
+
+import yaml
 
 # `pass()` writes "${GREEN}✓ PASS:${NC} message"; fail() writes "✗ FAIL:".
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -154,30 +155,51 @@ class SuiteMap:
 
 
 def load_map(path: Path) -> Dict[str, SuiteMap]:
-    with path.open("rb") as fh:
-        raw = tomllib.load(fh)
+    """Parse the mapping file.
+
+    YAML because everything else a contributor reads in this repo is YAML
+    -- manifests, CRDs, CI, test fixtures. safe_load, not load: the file
+    is data, and nothing here should be able to construct Python objects.
+    Insertion order is preserved (dicts are ordered, and PyYAML builds
+    them in document order), which the first-match-wins rule relies on.
+    """
+    with path.open("r", encoding="utf-8") as fh:
+        raw = yaml.safe_load(fh)
+    if raw is None:  # an empty file is a valid empty mapping
+        return {}
+    if not isinstance(raw, dict):
+        raise MappingError(f"{path} must contain a mapping of suite name to suite")
+
     suites: Dict[str, SuiteMap] = {}
     for name, body in raw.items():
         if not isinstance(body, dict):
-            raise MappingError(f"[{name}] must be a table")
+            raise MappingError(f"{name}: must be a mapping")
         script = body.get("script")
         if not script:
-            raise MappingError(f"[{name}] has no `script` key")
-        assertions = body.get("assertions", {})
+            raise MappingError(f"{name}: has no `script` key")
+        assertions = body.get("assertions") or {}
         if not isinstance(assertions, dict):
-            raise MappingError(f"[{name}.assertions] must be a table")
+            raise MappingError(f"{name}.assertions: must be a mapping")
         entries = []
         for pattern, nodes in assertions.items():
+            if not isinstance(pattern, str):
+                # An unquoted glob can parse as a non-string -- `*` alone
+                # is invalid, and a pattern with a colon splits. Catch it
+                # here rather than failing to match at comparison time.
+                raise MappingError(
+                    f"{name}.assertions: pattern {pattern!r} is {type(pattern).__name__}, "
+                    f"not a string. Quote it."
+                )
             if isinstance(nodes, str):
                 nodes = [nodes]
             if not isinstance(nodes, list) or not all(isinstance(n, str) for n in nodes):
                 raise MappingError(
-                    f"[{name}.assertions] {pattern!r} must map to a node id "
+                    f"{name}.assertions: {pattern!r} must map to a node id "
                     f"or a list of node ids"
                 )
             if not nodes:
                 raise MappingError(
-                    f"[{name}.assertions] {pattern!r} maps to nothing. To drop "
+                    f"{name}.assertions: {pattern!r} maps to nothing. To drop "
                     f"an assertion deliberately, delete it from the bash suite "
                     f"in the same commit and remove this line."
                 )
@@ -301,7 +323,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Compare a bash e2e suite's verdicts against its pytest port.",
     )
     ap.add_argument("--suite", required=True, help="suite name, a table in the mapping file")
-    ap.add_argument("--map", required=True, type=Path, help="path to dualrun-map.toml")
+    ap.add_argument("--map", required=True, type=Path, help="path to dualrun-map.yaml")
     ap.add_argument("--bash-log", type=Path, help="captured bash suite output")
     ap.add_argument("--bash-exit", type=int, help="bash suite exit code")
     ap.add_argument("--junit", type=Path, help="pytest --junitxml output")
@@ -318,7 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # stderr: the --print-* modes are consumed by command
         # substitution, so an error on stdout would be swallowed into
         # the caller's variable and vanish.
-        print(f"no [{args.suite}] table in {args.map}; "
+        print(f"no `{args.suite}` entry in {args.map}; "
               f"known: {', '.join(sorted(suites)) or '(none)'}", file=sys.stderr)
         return 2
 

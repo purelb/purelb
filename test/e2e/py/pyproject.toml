@@ -7,6 +7,9 @@ dependencies = [
     "pytest>=8",
     "kubernetes>=31",
     "prometheus_client>=0.20",
+    # Already arrives via the kubernetes client, but the dual-run
+    # mapping depends on it directly, so declare it directly.
+    "PyYAML>=6",
 ]
 
 [tool.pytest.ini_options]

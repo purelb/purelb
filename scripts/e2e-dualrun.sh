@@ -8,7 +8,7 @@
 # than the thing it replaces, because 5000 lines of bash collapse into a
 # few hundred lines of parametrized Python and no amount of reading tells
 # you reliably whether an assertion went missing. So each bash assertion
-# must name the pytest test that replaces it in test/e2e/dualrun-map.toml,
+# must name the pytest test that replaces it in test/e2e/dualrun-map.yaml,
 # and an unmapped one is an error: deleting bash code alone can never make
 # this run clean.
 #
@@ -21,7 +21,7 @@
 #   scripts/e2e-dualrun.sh --suite local --context prox-purelb2
 #
 # Options:
-#   --suite NAME      suite to compare (a table in dualrun-map.toml)
+#   --suite NAME      suite to compare (an entry in dualrun-map.yaml)
 #   --context NAME    kubectl context (required, no default)
 #   --no-reset        skip the cluster reset between the two runs
 #   --keep-logs       do not delete the run directory on success
@@ -32,7 +32,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY_DIR="${REPO_ROOT}/test/e2e/py"
-MAP="${REPO_ROOT}/test/e2e/dualrun-map.toml"
+MAP="${REPO_ROOT}/test/e2e/dualrun-map.yaml"
 
 SUITE=""
 CONTEXT=""

@@ -8,12 +8,13 @@
 #
 # Format:
 #
-#   [suite-name]
-#   script = "test/e2e/<dir>/<script>.sh"     # repo-relative
-#
-#   [suite-name.assertions]
-#   "<glob matching the pass message>" = "tests/test_x.py::test_y"
-#   "<glob>" = ["tests/test_x.py::test_a", "tests/test_x.py::test_b"]
+#   suite-name:
+#     script: test/e2e/<dir>/<script>.sh      # repo-relative
+#     assertions:
+#       "<glob matching the pass message>": tests/test_x.py::test_y
+#       "<glob>":
+#         - tests/test_x.py::test_a
+#         - tests/test_x.py::test_b
 #
 # Patterns are globs (fnmatch), not literals, because bash assertion
 # messages interpolate the values they just observed -- "service allocated
@@ -21,14 +22,18 @@
 # addresses the pool happened to hand out.
 #
 # Order matters: the first matching pattern wins, so put specific patterns
-# above the general ones that would also match them.
+# above the general ones that would also match them. YAML preserves
+# mapping order, and the loader relies on it.
 #
-# A suite gets its table in the same commit that ports it, and both the
-# table and the bash script are deleted in the commit that retires the
+# Quote every pattern. An unquoted key containing `:` or starting with `*`
+# is a YAML syntax error or, worse, parses as something else -- and
+# assertion messages contain both.
+#
+# A suite gets its entry in the same commit that ports it, and both the
+# entry and the bash script are deleted in the commit that retires the
 # suite -- so this file is empty exactly when the migration is finished.
 #
 # Take the patterns from a REAL run's output, not by reading the script.
 # Assertions interpolate the values they observed, and some never print at
 # all in a passing run -- ipam-external had two such -- which reading alone
 # does not reveal.
-

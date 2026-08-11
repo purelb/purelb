@@ -188,10 +188,11 @@ JUNIT = textwrap.dedent("""\
 
 
 def _write_map(tmp_path, assertions: str):
-    path = tmp_path / "map.toml"
+    path = tmp_path / "map.yaml"
     path.write_text(
-        '[ipam]\nscript = "test/e2e/ipam-external/test-ipam-external.sh"\n'
-        "[ipam.assertions]\n" + assertions
+        "ipam:\n"
+        "  script: test/e2e/ipam-external/test-ipam-external.sh\n"
+        "  assertions:\n" + assertions
     )
     return dualrun.load_map(path)["ipam"]
 
@@ -222,8 +223,8 @@ def test_dualrun_junit_node_ids_include_classes(tmp_path):
 def test_dualrun_agrees_when_both_pass(tmp_path):
     suite = _write_map(
         tmp_path,
-        '"allocator has * RBAC" = "tests/test_ipam.py::test_rbac"\n'
-        '"service allocated *" = "tests/test_ipam.py::test_allocates"\n',
+        '    "allocator has * RBAC": tests/test_ipam.py::test_rbac\n'
+        '    "service allocated *": tests/test_ipam.py::test_allocates\n',
     )
     j = tmp_path / "j.xml"
     j.write_text(JUNIT)
@@ -240,7 +241,7 @@ def test_dualrun_unmapped_bash_assertion_fails(tmp_path):
     Deleting a bash assertion's pytest counterpart -- or never writing it
     -- must not be able to produce a clean run.
     """
-    suite = _write_map(tmp_path, '"allocator has * RBAC" = "tests/test_ipam.py::test_rbac"\n')
+    suite = _write_map(tmp_path, '    "allocator has * RBAC": tests/test_ipam.py::test_rbac\n')
     j = tmp_path / "j.xml"
     j.write_text(JUNIT)
     rep = dualrun.compare(suite, dualrun.parse_bash_output(BASH_LOG, 0), dualrun.parse_junit(j))
@@ -257,8 +258,8 @@ def test_dualrun_skip_is_not_agreement(tmp_path):
     """
     suite = _write_map(
         tmp_path,
-        '"allocator has * RBAC" = "tests/test_ipam.py::test_rbac"\n'
-        '"service allocated *" = "tests/test_ipam.py::test_skipped"\n',
+        '    "allocator has * RBAC": tests/test_ipam.py::test_rbac\n'
+        '    "service allocated *": tests/test_ipam.py::test_skipped\n',
     )
     j = tmp_path / "j.xml"
     j.write_text(JUNIT)
@@ -270,8 +271,8 @@ def test_dualrun_skip_is_not_agreement(tmp_path):
 def test_dualrun_mapped_test_that_never_ran_fails(tmp_path):
     suite = _write_map(
         tmp_path,
-        '"allocator has * RBAC" = "tests/test_ipam.py::test_rbac"\n'
-        '"service allocated *" = "tests/test_ipam.py::test_typo"\n',
+        '    "allocator has * RBAC": tests/test_ipam.py::test_rbac\n'
+        '    "service allocated *": tests/test_ipam.py::test_typo\n',
     )
     j = tmp_path / "j.xml"
     j.write_text(JUNIT)
@@ -287,7 +288,7 @@ def test_dualrun_incomplete_bash_run_is_fatal(tmp_path):
     failing. Comparing against that silence would report a flood of
     disagreements that say nothing about the port.
     """
-    suite = _write_map(tmp_path, '"allocator has * RBAC" = "tests/test_ipam.py::test_rbac"\n')
+    suite = _write_map(tmp_path, '    "allocator has * RBAC": tests/test_ipam.py::test_rbac\n')
     j = tmp_path / "j.xml"
     j.write_text(JUNIT)
     bash = dualrun.parse_bash_output(BASH_LOG, exit_code=1)
@@ -299,8 +300,8 @@ def test_dualrun_incomplete_bash_run_is_fatal(tmp_path):
 def test_dualrun_first_matching_pattern_wins(tmp_path):
     suite = _write_map(
         tmp_path,
-        '"service allocated 172.30.250.*" = "tests/test_ipam.py::test_allocates"\n'
-        '"service allocated *" = "tests/test_ipam.py::test_rbac"\n',
+        '    "service allocated 172.30.250.*": tests/test_ipam.py::test_allocates\n'
+        '    "service allocated *": tests/test_ipam.py::test_rbac\n',
     )
     entry = dualrun.match_entry("service allocated 172.30.250.201", suite.entries)
     assert entry is not None and entry.nodes == ("tests/test_ipam.py::test_allocates",)
@@ -309,7 +310,20 @@ def test_dualrun_first_matching_pattern_wins(tmp_path):
 def test_dualrun_rejects_a_mapping_to_nothing(tmp_path):
     """Mapping an assertion to [] would silently retire it."""
     with pytest.raises(dualrun.MappingError, match="maps to nothing"):
-        _write_map(tmp_path, '"allocator has * RBAC" = []\n')
+        _write_map(tmp_path, '    "allocator has * RBAC": []\n')
+
+
+def test_dualrun_rejects_an_unquoted_non_string_pattern(tmp_path):
+    """Patterns must be strings, and the file says to quote them.
+
+    YAML catches the two dangerous cases itself -- an unquoted glob
+    starting with `*` is an alias reference, and an unquoted pattern
+    containing `: ` splits into a nested mapping -- both loudly. What it
+    does NOT catch is a pattern that happens to parse as a scalar of
+    another type, which would then never match any assertion message.
+    """
+    with pytest.raises(dualrun.MappingError, match="not a string"):
+        _write_map(tmp_path, "    12345: tests/test_ipam.py::test_rbac\n")
 
 
 # --------------------------------------------------------------- cluster

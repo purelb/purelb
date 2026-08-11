@@ -15,7 +15,7 @@ End-to-end functional tests for PureLB.
 Suites are being migrated to pytest under [py/](py/). A suite is only
 deleted once `scripts/e2e-dualrun.sh` reports every one of its bash
 assertions agreeing with a passing pytest counterpart; the mapping that
-enforces this is [dualrun-map.toml](dualrun-map.toml).
+enforces this is [dualrun-map.yaml](dualrun-map.yaml).
 
 ## Shared Code
 
