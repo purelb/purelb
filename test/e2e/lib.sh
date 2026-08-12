@@ -3,7 +3,7 @@
 # Pure, side-effect-free helpers shared by every PureLB e2e suite.
 #
 # Split out of common.sh so the suites that do NOT want cluster discovery
-# (router/) can still share one definition of the logging and
+# (none remain) could still share one definition of the logging and
 # assertion helpers. common.sh sources this file and adds SSH-based node,
 # subnet and IPv6 discovery on top; sourcing common.sh therefore reaches out
 # to every node, which is why the workstation-driven suites source lib.sh
@@ -43,7 +43,7 @@ pass() { echo -e "${GREEN}✓ PASS:${NC} $1"; }
 # dump_debug_state is called by fail() just before exiting. This default is
 # a no-op; a suite that can say something useful about why it failed
 # overrides it after sourcing. Reconciled here because the copies had
-# diverged: remote/ and router/ dumped state on failure
+# diverged: the retired remote/ and router/ suites dumped state on failure
 # while common.sh -- used by the flagship local suite -- did not, so the
 # most-run suite produced the least diagnostic output.
 dump_debug_state() { :; }

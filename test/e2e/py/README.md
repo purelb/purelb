@@ -77,6 +77,65 @@ counters stay at their last value until the next allocate/release, because
 `SidecarPool.Contains` returns false so `populateFromExisting` does not
 re-map existing external allocations. The data plane is unaffected.
 
+## BGP route verification
+
+`tests/test_router_bgp.py` is the only module that asks what the upstream
+ROUTER learned. Everything else asserts that PureLB put an address on an
+interface; an address can be perfectly placed on `kube-lb0` on every node
+and advertise nothing.
+
+    .venv/bin/pytest tests/test_router_bgp.py \
+        --context <ctx> --router-host <frr-host>
+
+Without `--router-host` the whole module skips, visibly. It needs SSH to a
+router running FRR with `vtysh` (sudo is used if a plain call fails).
+
+```
+This host (workstation)
+    |  curl to VIPs  -- the only end-to-end proof in the suite
+    v
+FRR router  <-- --router-host
+    |  BGP routes, ECMP over every node
+    v
+Cluster nodes running gobgpd
+```
+
+Routes are read as JSON (`show ip route <prefix> json`), not scraped, and
+next-hops count only those FRR reports as active or fib -- a route can
+list next-hops it has not installed, and those forward nothing.
+
+The fixtures create their own ServiceGroups, so nothing needs applying by
+hand. Two shapes matter, and the tests assert both the prefix that IS
+advertised and the one that is NOT:
+
+| `aggregation` | advertises |
+|---|---|
+| `/32`, `/128` | host routes -- one prefix per address |
+| `default` | the pool's subnet -- `/24`, `/64` |
+
+Note the LEADING SLASH. `addVirtualInt` builds the mask with
+`net.ParseCIDR("0.0.0.0" + aggregation)`, so `"32"` becomes `"0.0.0.032"`
+and fails; a CRD Pattern now rejects it at admission.
+
+Example FRR configuration for peering with the nodes, with ECMP enabled
+so a VIP gets one next-hop per node:
+
+```
+router bgp 64514
+ bgp router-id 172.30.255.10
+ no bgp ebgp-requires-policy
+ neighbor <node> remote-as 64515
+ address-family ipv4 unicast
+  neighbor <node> activate
+  maximum-paths 8          ! without this there is no ECMP to assert
+ exit-address-family
+```
+
+Useful by hand:
+
+    ssh $ROUTER "sudo vtysh -c 'show bgp summary'"
+    ssh $ROUTER "sudo vtysh -c 'show ip route 10.255.0.0/24 longer-prefixes'"
+
 ## Why the harness looks like this
 
 Each of these is a bug the bash suite actually had, designed out rather

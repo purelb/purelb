@@ -5,16 +5,6 @@ migrated to pytest: see [../py/tests/test_remote.py](../py/tests/test_remote.py)
 It was removed only after `scripts/e2e-dualrun.sh --suite remote` reported
 every one of its 162 assertions agreeing with a passing pytest counterpart.
 
-What remains here are the two ServiceGroup manifests the **router** suites
-still use:
-
-| File | Used by |
-|------|---------|
-| `servicegroup-remote.yaml` | `router/test-router-connectivity*.sh` |
-| `servicegroup-remote-default-aggr.yaml` | `router/test-router-connectivity*.sh` |
-
-They will move or go when the router suites are ported.
-
 ## Running the migrated suite
 
     cd ../py
