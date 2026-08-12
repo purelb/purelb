@@ -39,3 +39,104 @@
 # does not reveal.
 
 
+
+router-frr:
+  script: test/e2e/router/test-router-connectivity-frr.sh
+  assertions:
+    # --- prerequisites -------------------------------------------------
+    "*SSH*": "tests/test_harness.py::test_connects_and_sees_nodes"
+    "*BGP session*": "tests/test_router_bgp.py::test_the_router_is_peered_with_every_node"
+    "*BGP*established*": "tests/test_router_bgp.py::test_the_router_is_peered_with_every_node"
+    "*peer*": "tests/test_router_bgp.py::test_the_router_is_peered_with_every_node"
+    "vtysh*": "tests/test_router_bgp.py::test_the_router_is_peered_with_every_node"
+    "FRR*available*": "tests/test_router_bgp.py::test_the_router_is_peered_with_every_node"
+    "Allocator is running": "tests/test_harness.py::test_allocator_metrics_scrape"
+    "LBNodeAgent*": "tests/test_harness.py::test_pod_resolution_is_exact"
+    "nginx*ready": "tests/test_harness.py::test_connects_and_sees_nodes"
+    "*ServiceGroup applied": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "*prerequisites*": "tests/test_harness.py::test_connects_and_sees_nodes"
+    "*metrics endpoint reachable*": "tests/test_harness.py::test_allocator_metrics_scrape"
+    "Router * reachable*": "tests/test_harness.py::test_router_reachable_and_faces_the_pool_subnet"
+
+    # --- route presence, next-hops, aggregation --------------------------
+    "VIP announced on * nodes": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "Route to * found in FRR RIB": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "Route has valid next-hops": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "Route has correct * aggregation": "tests/test_router_bgp.py::test_the_advertised_prefix_length_matches_the_aggregation"
+    "*aggregation correct*": "tests/test_router_bgp.py::test_the_advertised_prefix_length_matches_the_aggregation"
+    "*aggregation verified*": "tests/test_router_bgp.py::test_the_advertised_prefix_length_matches_the_aggregation"
+    "*Aggregation*": "tests/test_router_bgp.py::test_the_advertised_prefix_length_matches_the_aggregation"
+    "*aggregation*": "tests/test_router_bgp.py::test_the_advertised_prefix_length_matches_the_aggregation"
+    "ECMP*": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "*next-hop count*": "tests/test_router_bgp.py::test_etp_local_next_hops_track_the_endpoint_count"
+    "*next-hops*": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "Traffic distributed across*": "tests/test_local_policy.py::test_traffic_reaches_pods_on_nodes_other_than_the_announcer"
+    "IPv6 route*": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "IPv6*RIB*": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+
+    # --- external connectivity -------------------------------------------
+    "External connectivity successful": "tests/test_router_bgp.py::test_the_vip_is_reachable_from_outside_the_cluster"
+    "*connectivity working*": "tests/test_router_bgp.py::test_the_vip_is_reachable_from_outside_the_cluster"
+    "*connectivity restored*": "tests/test_router_bgp.py::test_the_vip_is_reachable_from_outside_the_cluster"
+    "*connectivity successful*": "tests/test_router_bgp.py::test_the_vip_is_reachable_from_outside_the_cluster"
+    "*IPv6 connectivity*": "tests/test_router_bgp.py::test_the_vip_is_reachable_from_outside_the_cluster"
+    "*connectivity*completed": "tests/test_router_bgp.py::test_the_vip_is_reachable_from_outside_the_cluster"
+
+    # --- withdrawal and node failure ---------------------------------------
+    "VIP removed from * after *": "tests/test_router_bgp.py::test_losing_a_node_drops_only_its_next_hop"
+    "*route withdrawn*": "tests/test_router_bgp.py::test_deleting_the_service_withdraws_the_route"
+    "*Route withdrawn*": "tests/test_router_bgp.py::test_deleting_the_service_withdraws_the_route"
+    "*withdrawal*": "tests/test_router_bgp.py::test_deleting_the_service_withdraws_the_route"
+    "*route removed*": "tests/test_router_bgp.py::test_deleting_the_service_withdraws_the_route"
+    "Route*gone*": "tests/test_router_bgp.py::test_deleting_the_service_withdraws_the_route"
+    "*deletion*": "tests/test_router_bgp.py::test_deleting_the_service_withdraws_the_route"
+    "Node failure*": "tests/test_router_bgp.py::test_losing_a_node_drops_only_its_next_hop"
+    "*node failure*": "tests/test_router_bgp.py::test_losing_a_node_drops_only_its_next_hop"
+
+    # --- ETP Local ----------------------------------------------------------
+    "*: VIP present (endpoint node)": "tests/test_router_bgp.py::test_etp_local_narrows_the_next_hops_to_endpoint_nodes"
+    "*: no VIP (no endpoint)": "tests/test_router_bgp.py::test_etp_local_narrows_the_next_hops_to_endpoint_nodes"
+    "Phase *: next-hop*": "tests/test_router_bgp.py::test_etp_local_next_hops_track_the_endpoint_count"
+    "Phase *: VIP removed*": "tests/test_router_bgp.py::test_etp_local_next_hops_track_the_endpoint_count"
+    "Phase *: FRR *next-hops = 0*": "tests/test_router_bgp.py::test_etp_local_next_hops_track_the_endpoint_count"
+    "Phase *: route restored*": "tests/test_router_bgp.py::test_etp_local_next_hops_track_the_endpoint_count"
+    "Phase *: VIP on endpoint node *": "tests/test_router_bgp.py::test_etp_local_next_hops_track_the_endpoint_count"
+    "Phase *: IPv6*": "tests/test_router_bgp.py::test_etp_local_next_hops_track_the_endpoint_count"
+    "Phase *": "tests/test_router_bgp.py::test_etp_local_next_hops_track_the_endpoint_count"
+    "ETP Local*": "tests/test_router_bgp.py::test_etp_local_narrows_the_next_hops_to_endpoint_nodes"
+    "*ETP*": "tests/test_router_bgp.py::test_etp_local_narrows_the_next_hops_to_endpoint_nodes"
+
+    # --- dual-stack and sharing ---------------------------------------------
+    "*Dual-Stack*": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "*dual-stack*": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "*shared*": "tests/test_router_bgp.py::test_two_services_sharing_an_address_produce_one_route"
+    "*Shared*": "tests/test_router_bgp.py::test_two_services_sharing_an_address_produce_one_route"
+    "*sharing*": "tests/test_router_bgp.py::test_two_services_sharing_an_address_produce_one_route"
+
+    # --- catch-alls for section completions ---------------------------------
+    "*completed": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "*verification*": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+
+    # --- absence and recovery assertions, added when the mapping found them
+    "No /32 host route*": "tests/test_router_bgp.py::test_aggregation_advertises_one_prefix_and_not_the_other"
+    "No /128 host route*": "tests/test_router_bgp.py::test_aggregation_advertises_one_prefix_and_not_the_other"
+    "No unwanted /24 aggregate route": "tests/test_router_bgp.py::test_aggregation_advertises_one_prefix_and_not_the_other"
+    "No unwanted /64 aggregate route": "tests/test_router_bgp.py::test_aggregation_advertises_one_prefix_and_not_the_other"
+    "/24 aggregate route*": "tests/test_router_bgp.py::test_an_aggregate_route_survives_losing_one_of_its_services"
+    "/64 aggregate route*": "tests/test_router_bgp.py::test_an_aggregate_route_survives_losing_one_of_its_services"
+    "/24 route persists after deleting*": "tests/test_router_bgp.py::test_an_aggregate_route_survives_losing_one_of_its_services"
+    "/64 route persists after deleting*": "tests/test_router_bgp.py::test_an_aggregate_route_survives_losing_one_of_its_services"
+    "*no longer reachable": "tests/test_router_bgp.py::test_a_withdrawn_vip_stops_serving_from_outside"
+    "Next-hop count restored*": "tests/test_router_bgp.py::test_next_hops_are_restored_when_a_node_comes_back"
+    "Route still exists in FRR*": "tests/test_router_bgp.py::test_losing_a_node_drops_only_its_next_hop"
+    "Connectivity maintained": "tests/test_router_bgp.py::test_losing_a_node_drops_only_its_next_hop"
+    "IPv4 route found in FRR": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "IPv6 VIP announced on * nodes": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "IPv6 VIP removed from all nodes*": "tests/test_router_bgp.py::test_deleting_the_service_withdraws_the_route"
+    "*service running, route in FRR*": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "Service running, route in FRR*": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "IPv6 service running, route in FRR*": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "ServiceGroup '*' exists": "tests/test_router_bgp.py::test_the_router_learns_a_host_route_via_every_node"
+    "Allocator running": "tests/test_harness.py::test_allocator_metrics_scrape"
+    "FRR vtysh accessible": "tests/test_router_bgp.py::test_the_router_is_peered_with_every_node"
+    "Test pods running*": "tests/test_harness.py::test_connects_and_sees_nodes"

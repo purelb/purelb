@@ -347,3 +347,271 @@ def test_two_services_sharing_an_address_produce_one_route(
             f"{prefix} was withdrawn from the router while router-share-b "
             f"still holds the address"
         )
+
+
+# -------------------------------------------------- external connectivity
+
+
+def curl_external(address: str, timeout: float = 10.0) -> str:
+    """GET the VIP from THIS machine, off-cluster.
+
+    The whole point of BGP is that something outside the cluster can
+    reach the address, and this is the only assertion in the suite that
+    proves it end to end: the workstation has no special knowledge, it
+    just follows the route the router learned.
+    """
+    import subprocess
+
+    host = ipaddress.ip_address(address)
+    url = f"http://[{address}]/" if host.version == 6 else f"http://{address}/"
+    proc = subprocess.run(  # noqa: S603
+        ["curl", "-s", "--connect-timeout", str(int(timeout)), url],
+        capture_output=True, text=True, timeout=timeout + 10,
+    )
+    return proc.stdout
+
+
+@pytest.mark.parametrize("family", ["IPv4", "IPv6"])
+def test_the_vip_is_reachable_from_outside_the_cluster(
+    cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service,
+    family: str,
+):
+    """Traffic from off-cluster follows the advertised route to a pod.
+
+    Every other assertion here inspects state -- the RIB, the next-hops,
+    the interfaces. This one is the only end-to-end proof that the state
+    adds up to a working load balancer, and it is the reason the router
+    tests exist at all.
+    """
+    if family == "IPv6" and not topo.has_ipv6:
+        pytest.skip("cluster has no IPv6")
+
+    group = bgp_group()
+    vip = lb_service(
+        f"router-external-{family.lower()}", [family],
+        annotations={SERVICE_GROUP: group}, timeout=90,
+    )[0]
+    wait_for_route(router, host_prefix(vip))
+
+    body = wait_until(
+        lambda: curl_external(vip) or None,
+        timeout=60, interval=5.0,
+        description=f"{vip} to answer from off-cluster",
+    )
+    assert "Pod:" in body, (
+        f"the router has a route to {vip} but it serves nothing from "
+        f"off-cluster; got {body[:200]!r}"
+    )
+
+
+# ------------------------------------------------ ETP Local, full cycle
+
+
+def test_etp_local_next_hops_track_the_endpoint_count(
+    cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service,
+):
+    """Scale the backend and the router's next-hops follow.
+
+    The sharp phase is ZERO endpoints: the route must be withdrawn
+    entirely, not left with no next-hops. A route present with nothing
+    behind it is a blackhole that looks healthy in the RIB, and it is
+    exactly what ETP Local is supposed to prevent.
+    """
+    group = bgp_group()
+    vip = lb_service(
+        "router-etp-cycle", ["IPv4"], annotations={SERVICE_GROUP: group},
+        externalTrafficPolicy="Local", timeout=90,
+    )[0]
+    prefix = host_prefix(vip)
+
+    def scale(replicas: int) -> None:
+        cluster.apps.patch_namespaced_deployment_scale(
+            "nginx", NAMESPACE, {"spec": {"replicas": replicas}}
+        )
+
+    original = cluster.deployment(NAMESPACE, "nginx").spec.replicas or 1
+    try:
+        # Two endpoints on (at most) two nodes.
+        scale(2)
+        cluster.wait_rollout(NAMESPACE, "nginx", timeout=180)
+        endpoint_nodes = wait_until(
+            lambda: {p.spec.node_name for p in cluster.pods(NAMESPACE, "app=nginx")
+                     if p.status.phase == "Running"} or None,
+            timeout=120, interval=3.0, description="endpoint nodes",
+        )
+        hops = wait_until(
+            lambda: (lambda got: got if len(got) == len(endpoint_nodes) else None)(
+                router.nexthops(prefix)
+            ),
+            timeout=120, interval=3.0,
+            description=f"{prefix} next-hops to match {len(endpoint_nodes)} endpoint node(s)",
+        )
+        assert len(hops) == len(endpoint_nodes), (hops, endpoint_nodes)
+
+        # Zero endpoints: the route goes away entirely.
+        scale(0)
+        wait_until(
+            lambda: (not cluster.pods(NAMESPACE, "app=nginx")) or None,
+            timeout=120, interval=3.0, description="every backend pod to go",
+        )
+        wait_for_withdrawal(router, prefix, timeout=120)
+
+        # And comes back.
+        scale(1)
+        cluster.wait_rollout(NAMESPACE, "nginx", timeout=180)
+        restored = wait_until(
+            lambda: router.nexthops(prefix) or None,
+            timeout=120, interval=3.0,
+            description=f"{prefix} to be re-advertised once an endpoint exists",
+        )
+        assert len(restored) == 1, (
+            f"one endpoint should give one next-hop, got {restored}"
+        )
+    finally:
+        scale(original)
+        cluster.wait_rollout(NAMESPACE, "nginx", timeout=180)
+
+
+# ------------------------------------------------ aggregation exclusivity
+
+
+@pytest.mark.parametrize(
+    "aggregation,wanted,unwanted",
+    [("/32", 32, 24), ("default", 24, 32)],
+    ids=["host-route-only", "aggregate-only"],
+)
+def test_aggregation_advertises_one_prefix_and_not_the_other(
+    cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service,
+    aggregation: str, wanted: int, unwanted: int,
+):
+    """The prefix that was asked for, and NOT the one that was not.
+
+    Presence alone is only half the assertion and the weaker half. A build
+    that advertised both a /32 and a /24 would pass every "route found"
+    check while claiming an entire subnet it was never given -- addresses
+    belonging to other systems, blackholed at this cluster. The absence is
+    the property that actually protects the network.
+    """
+    group = bgp_group(f"router-excl-{wanted}", aggregation=aggregation)
+    vip = lb_service(
+        f"router-excl-{wanted}", ["IPv4"],
+        annotations={SERVICE_GROUP: group}, timeout=90,
+    )[0]
+
+    want_prefix = str(ipaddress.ip_network(f"{vip}/{wanted}", strict=False))
+    unwanted_prefix = str(ipaddress.ip_network(f"{vip}/{unwanted}", strict=False))
+    wait_for_route(router, want_prefix)
+
+    # Give the wrong one every chance to appear before concluding it did not.
+    for _ in range(5):
+        time.sleep(2)
+        assert router.route(unwanted_prefix) is None, (
+            f"aggregation {aggregation!r} advertised {want_prefix} as asked, but "
+            f"ALSO {unwanted_prefix}. The extra prefix covers addresses this "
+            f"cluster was never given."
+        )
+
+
+def test_an_aggregate_route_survives_losing_one_of_its_services(
+    cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service
+):
+    """With default aggregation, two services share one /24 route.
+
+    The aggregate is derived from the pool, not from any one Service, so
+    deleting one of two holders must leave it standing. Withdrawing it
+    would take the surviving service off the network -- and because the
+    route covers the whole pool, everything else in that pool too.
+    """
+    group = bgp_group("router-aggr-shared", aggregation="default")
+    first = lb_service("router-aggr-a", ["IPv4"],
+                       annotations={SERVICE_GROUP: group}, timeout=90)[0]
+    second = lb_service("router-aggr-b", ["IPv4"],
+                        annotations={SERVICE_GROUP: group}, timeout=90)[0]
+    assert first != second, f"two services got the same address: {first}"
+
+    aggregate = str(ipaddress.ip_network(f"{first}/24", strict=False))
+    wait_for_route(router, aggregate)
+
+    cluster.delete_service(NAMESPACE, "router-aggr-a")
+    cluster.wait_service_gone(NAMESPACE, "router-aggr-a")
+    for _ in range(6):
+        time.sleep(3)
+        assert router.route(aggregate) is not None, (
+            f"{aggregate} was withdrawn when router-aggr-a went away, while "
+            f"router-aggr-b still holds {second} inside it"
+        )
+
+
+def test_a_withdrawn_vip_stops_serving_from_outside(
+    cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service
+):
+    """Withdrawal has to actually stop traffic, not just tidy the RIB.
+
+    The positive connectivity test proves the route works. This proves
+    the withdrawal does, which is the half that matters during an
+    outage: a route removed from the RIB while the address still answers
+    means something else is carrying it.
+    """
+    group = bgp_group()
+    vip = lb_service("router-unreach", ["IPv4"],
+                     annotations={SERVICE_GROUP: group}, timeout=90)[0]
+    prefix = host_prefix(vip)
+    wait_for_route(router, prefix)
+    assert "Pod:" in wait_until(
+        lambda: curl_external(vip) or None,
+        timeout=60, interval=5.0, description=f"{vip} to answer before withdrawal",
+    )
+
+    cluster.delete_service(NAMESPACE, "router-unreach")
+    wait_for_withdrawal(router, prefix)
+    wait_until(
+        lambda: ("Pod:" not in curl_external(vip, timeout=5.0)) or None,
+        timeout=60, interval=5.0,
+        description=f"{vip} to stop answering once its route is withdrawn",
+    )
+
+
+@pytest.mark.requires("multi-node")
+def test_next_hops_are_restored_when_a_node_comes_back(
+    cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service,
+    tainted_nodes,
+):
+    """Recovery, not just failure.
+
+    A node that returns must be advertised again. If it were not, every
+    node failure would permanently shrink the ECMP set and the cluster
+    would quietly lose capacity with each incident.
+    """
+    group = bgp_group()
+    vip = lb_service("router-recover", ["IPv4"],
+                     annotations={SERVICE_GROUP: group}, timeout=90)[0]
+    prefix = host_prefix(vip)
+    full = len(topo.node_ips)
+    wait_until(
+        lambda: (lambda got: got if len(got) == full else None)(router.nexthops(prefix)),
+        timeout=CONVERGE, interval=3.0, description=f"{prefix} with all {full} next-hops",
+    )
+
+    victim = sorted(topo.node_ips)[-1]
+    tainted_nodes(victim)
+    pod = cluster.pod_on_node(cluster.purelb_namespace, "component=lbnodeagent", victim)
+    if pod is not None:
+        cluster.delete_pod(cluster.purelb_namespace, pod.metadata.name, grace_seconds=10)
+    wait_until(
+        lambda: (lambda got: got if len(got) < full else None)(router.nexthops(prefix)),
+        timeout=90, interval=3.0, description=f"{prefix} to lose {victim}",
+    )
+
+    cluster.remove_taint(victim, "purelb-test")
+    wait_until(
+        lambda: cluster.daemonset_ready(
+            cluster.purelb_namespace, "lbnodeagent", expect_nodes=full
+        ) or None,
+        timeout=180, interval=3.0, description="the DaemonSet to be whole again",
+    )
+    restored = wait_until(
+        lambda: (lambda got: got if len(got) == full else None)(router.nexthops(prefix)),
+        timeout=120, interval=3.0,
+        description=f"{prefix} to regain {victim} as a next-hop",
+    )
+    assert len(restored) == full, restored
