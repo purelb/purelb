@@ -348,7 +348,7 @@ def test_external_servicegroup_is_accepted(cluster: Cluster, external_sg: str):
 def test_backend_is_ready(cluster: Cluster):
     dep = cluster.deployment(NAMESPACE, "nginx")
     assert dep is not None, (
-        f"no nginx Deployment in {NAMESPACE}; apply test/e2e/local/nginx-test.yaml"
+        f"no nginx Deployment in {NAMESPACE}; apply test/e2e/nginx-test.yaml"
     )
     assert (dep.status.available_replicas or 0) >= 1, "nginx backend has no ready replica"
 

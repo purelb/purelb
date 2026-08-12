@@ -41,20 +41,3 @@
 
 
 
-# The timing suite reports its ceilings as "ok"/"FAIL" lines rather than
-# through pass(), so only its 9 pass() assertions appear here. The
-# ceilings themselves are carried across as real pytest assertions in
-# tests/test_timing.py -- a dual-run cannot see them on either side, which
-# is worth stating rather than leaving the low assertion count to imply
-# the suite did little.
-timing:
-  script: test/e2e/timing/test-timing-behavior.sh
-  assertions:
-    "ServiceGroup '*' applied": "tests/test_timing.py::test_b1_service_creation_to_vip_on_the_interface"
-    "Replicas=*: VIP on * subnet-matching node*": "tests/test_local_multipool.py::test_default_group_places_each_vip_on_its_own_subnet"
-    "VIP remained stable on correct subnet node*": "tests/test_local_multipool.py::test_default_group_places_each_vip_on_its_own_subnet"
-
-stress-failover:
-  script: test/e2e/local/stress-failover.sh
-  assertions:
-    "Default ServiceGroup applied": "tests/test_stress_failover.py::test_repeated_failover_never_strands_or_duplicates_the_address"

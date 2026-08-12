@@ -103,8 +103,9 @@ BASH_EXIT=0
 # reports it as fatal, because a suite that exits early leaves its
 # remaining assertions silent rather than failing.
 # CONTEXT is passed in the ENVIRONMENT, not as --context. Every suite
-# honours it (lib.sh defaults CONTEXT from it) but not all of them parse
-# a --context flag, and one that does not prints "Unknown option", exits
+# honoured it (the retired lib.sh defaulted CONTEXT from it) but not
+# all of them parsed a --context flag, and one that does not prints
+# "Unknown option", exits
 # 0 and asserts nothing -- which the comparison then had to be taught not
 # to call CLEAN.
 # shellcheck disable=SC2086  # BASH_ARGS is a deliberate word-split passthrough

@@ -48,7 +48,7 @@ CONTEXT=""
 PURELB_NS="purelb-system"
 ASSUME_YES=0
 # Scratch namespaces only. NOT "test": it holds the nginx backend the
-# suites require but do not create (test/e2e/local/nginx-test.yaml), so
+# suites require but do not create (test/e2e/nginx-test.yaml), so
 # deleting it makes every suite fail prerequisite validation. Its
 # LoadBalancer Services are removed above like any other.
 EXTRA_NS=("test-tenant" "echo-test")
@@ -292,7 +292,7 @@ kubectl get pods -n "$PURELB_NS" --no-headers 2>/dev/null | awk '{printf "    %-
 BACKEND=$(kubectl get pods -n test -l app=nginx --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
 if [ "$BACKEND" -lt 1 ]; then
     info "restoring the nginx backend in namespace 'test'"
-    kubectl apply -f "${REPO_ROOT}/test/e2e/local/nginx-test.yaml" >/dev/null
+    kubectl apply -f "${REPO_ROOT}/test/e2e/nginx-test.yaml" >/dev/null
     kubectl rollout status deployment/nginx -n test --timeout=120s >/dev/null \
         || die "nginx backend did not become ready"
     BACKEND=$(kubectl get pods -n test -l app=nginx --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
