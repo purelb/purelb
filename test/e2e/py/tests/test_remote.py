@@ -935,63 +935,48 @@ def test_remote_service_picks_up_a_range_added_later(
         cluster.delete_cr("servicegroup", name)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG: PureLB reports announcing an address it failed to announce. "
-        "announceNonLocal emits the AnnouncingNonLocal Event "
-        "(announcer_local.go:619) BEFORE addVirtualInt (:625) adds the "
-        "address, so any failure there leaves the Service's event stream "
-        "claiming success. Reproduced with aggregation \"32\": the field's "
-        "doc says \"an integer in the range 8-128\", the CRD validates "
-        "nothing, and addVirtualInt needs \"/32\" because it builds "
-        "net.ParseCIDR(\"0.0.0.0\" + aggregation). The agent logs "
-        "'invalid CIDR address: 0.0.0.032' and the Service says "
-        "'Announcing 10.255.8.1 from node purelb2-4' while the address is "
-        "on zero nodes. strict=True so a fix cannot land silently."
-    ),
-)
-def test_a_malformed_aggregation_is_not_reported_as_announced(
-    cluster: Cluster, topo: topology.Topology, lb_service
+def test_a_malformed_aggregation_is_rejected_at_admission(
+    cluster: Cluster, topo: topology.Topology
 ):
-    """An announcement that failed must not be evented as a success.
+    """The API server refuses an aggregation the announcer cannot parse.
 
-    This is worse than the malformed value itself. `kubectl describe svc`
-    is where an operator looks first, and it currently says the address is
-    being announced from named nodes when it is on none of them -- so the
-    obvious diagnostic actively points away from the problem. The
-    aggregation typo is merely the easiest way to trigger it; any
-    addVirtualInt failure does the same.
+    This is the first half of a two-part fix for a bug this port found.
+    addVirtualInt builds the mask with net.ParseCIDR("0.0.0.0" +
+    aggregation), so the value needs its leading slash -- but the field's
+    doc comment said "an integer in the range 8-128" and nothing
+    validated it. Following the documentation produced a ServiceGroup the
+    API server stored happily, whose addresses were then never announced,
+    while the Service reported that they were.
+
+    The second half is that an announcement which fails is no longer
+    evented as a success; that ordering is asserted by
+    TestAggregationRequiresALeadingSlash in internal/local plus the
+    AnnouncementFailed event the announcer now emits.
     """
-    name = "remote-bad-aggregation"
-    cluster.apply_cr(
-        {
-            "apiVersion": "purelb.io/v2",
-            "kind": "ServiceGroup",
-            "metadata": {"name": name, "namespace": cluster.purelb_namespace},
-            "spec": {
-                "remote": {
-                    "v4pools": [
-                        # No leading slash: accepted by the CRD, rejected by
-                        # net.ParseCIDR at announcement time.
-                        {"pool": "10.255.8.1-10.255.8.10", "subnet": "10.255.8.0/24",
-                         "aggregation": "32"}
-                    ]
-                }
-            },
-        }
-    )
+    from kubernetes.client.rest import ApiException
+
+    body = {
+        "apiVersion": "purelb.io/v2",
+        "kind": "ServiceGroup",
+        "metadata": {"name": "remote-bad-aggregation", "namespace": cluster.purelb_namespace},
+        "spec": {
+            "remote": {
+                "v4pools": [
+                    {"pool": "10.255.8.1-10.255.8.10", "subnet": "10.255.8.0/24",
+                     "aggregation": "32"}
+                ]
+            }
+        },
+    }
+    with pytest.raises(ApiException) as caught:
+        cluster.apply_cr(body)
+    assert caught.value.status in (400, 422), caught.value.status
+    assert "aggregation" in str(caught.value.body), caught.value.body
+
+    # The documented form is accepted, so the rule rejects the mistake
+    # rather than the feature.
+    body["spec"]["remote"]["v4pools"][0]["aggregation"] = "/32"
     try:
-        vip = lb_service(name, ["IPv4"], annotations={SERVICE_GROUP: name})[0]
-        time.sleep(20)
-        holders = nodes_announcing(topo, vip)
-        claimed = [m for m in events_for(cluster, name) if "Announcing" in m]
-        if holders:
-            pytest.skip("the malformed aggregation was accepted; nothing to assert")
-        assert not claimed, (
-            f"{vip} is announced by NO node, but the Service reports "
-            f"{len(claimed)} announcement event(s): {claimed[:2]}"
-        )
+        cluster.apply_cr(body)
     finally:
-        cluster.delete_service(NAMESPACE, name)
-        cluster.delete_cr("servicegroup", name)
+        cluster.delete_cr("servicegroup", "remote-bad-aggregation")

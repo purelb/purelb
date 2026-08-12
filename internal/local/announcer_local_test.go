@@ -16,9 +16,11 @@ package local
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +29,7 @@ import (
 	"github.com/mdlayher/ndp"
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -1413,6 +1416,75 @@ func TestSendGARPSequenceHonoursAffinityPreference(t *testing.T) {
 			assert.Equal(t, tc.preferred, fake.sawPreferr,
 				"verify-before-send must pass the same preferred set the "+
 					"announce path used")
+		})
+	}
+}
+
+// recordingServiceEvent captures the events emitted on a Service so a test
+// can assert what an operator would see in `kubectl describe svc`.
+type recordingServiceEvent struct {
+	mu     sync.Mutex
+	events []string // "reason: message"
+}
+
+func (r *recordingServiceEvent) record(reason, format string, args ...interface{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, reason+": "+fmt.Sprintf(format, args...))
+}
+
+func (r *recordingServiceEvent) Infof(_ runtime.Object, reason, format string, args ...interface{}) {
+	r.record(reason, format, args...)
+}
+
+func (r *recordingServiceEvent) Errorf(_ runtime.Object, reason, format string, args ...interface{}) {
+	r.record(reason, format, args...)
+}
+
+func (r *recordingServiceEvent) ForceSync() {}
+
+func (r *recordingServiceEvent) reasons() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.events))
+	for _, e := range r.events {
+		out = append(out, strings.SplitN(e, ":", 2)[0])
+	}
+	return out
+}
+
+// TestAggregationRequiresALeadingSlash pins the parsing rule that made an
+// announcement fail silently on a real cluster.
+//
+// addVirtualInt builds the mask with net.ParseCIDR("0.0.0.0" + aggregation),
+// so the value must carry the slash. The field's own doc comment says "an
+// integer in the range 8-128" and the CRD validates nothing, so following the
+// documentation produces "0.0.0.032", the announcement fails, and -- before
+// the fix in this commit -- the Service still reported that it was being
+// announced.
+//
+// The event ORDERING itself is asserted end to end in
+// test/e2e/py/tests/test_remote.py, where a real announcement can actually be
+// made and then observed to be absent; a unit test here could only check that
+// the fake it was handed got called.
+func TestAggregationRequiresALeadingSlash(t *testing.T) {
+	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "kube-lb0-test"}}
+
+	for _, tc := range []struct {
+		name        string
+		aggregation string
+		wantErr     string
+	}{
+		{name: "no slash, as the doc comment describes", aggregation: "32",
+			wantErr: "invalid CIDR address"},
+		{name: "no slash, IPv6", aggregation: "128", wantErr: "invalid CIDR address"},
+		{name: "garbage", aggregation: "/not-a-number", wantErr: "invalid CIDR address"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := addVirtualInt(net.ParseIP("10.255.8.1"), link,
+				"10.255.8.0/24", tc.aggregation, AddressOptions{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
 }

@@ -521,9 +521,12 @@ func (a *announcer) announceLocal(cfg *announcerConfig, svc *v1.Service, preferr
 	// We won the election so we'll add the service address to our
 	// node's default interface so linux will respond to ARP
 	// requests for it.
+	// Winning the election is true as soon as it happens, so it is
+	// recorded here. Claiming to ANNOUNCE is not true until the address
+	// is on the interface, so that event is emitted after the add
+	// succeeds -- see below.
 	RecordElectionWin()
 	logging.Info(l, "msg", "electionWon", "node", a.myNode, "service", nsName, "memberCount", a.election.MemberCount())
-	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
 	opts := getLocalAddressOptions(cfg)
 	// IPv6 has no IFA_F_SECONDARY equivalent, so flannel can pick VIPs as the
@@ -539,10 +542,18 @@ func (a *announcer) announceLocal(cfg *announcerConfig, svc *v1.Service, preferr
 	}
 	if err := addNetworkWithOptions(lbIPNet, announceInt, opts); err != nil {
 		// We won but could not configure the address, so we are not
-		// announcing it: drop any slot that still names us.
+		// announcing it: drop any slot that still names us, and say so
+		// on the Service. Clearing the slot alone left the event stream
+		// claiming this node was announcing an address it had failed to
+		// add, and `kubectl describe svc` is where an operator looks
+		// first.
 		a.clearOwnAnnounceSlot(svc, lbIP)
+		a.client.Errorf(svc, "AnnouncementFailed",
+			"Node %s could not announce %s on interface %s: %s",
+			a.myNode, lbIP, announceInt.Attrs().Name, err)
 		return err
 	}
+	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 	RecordAddressAddition()
 	a.announced.Store(renewalKey(nsName, lbIP.String()), struct{}{})
 	a.scheduleRenewal(nsName, lbIPNet, announceInt, opts)
@@ -615,17 +626,31 @@ func (a *announcer) announceRemote(cfg *announcerConfig, svc *v1.Service, epSlic
 		return err
 	}
 
-	logging.Info(l, "msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "interface", cfg.dummyInt.Attrs().Name, "group", groupName)
-	a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, cfg.dummyInt.Attrs().Name)
-
 	// Add this address to the dummy interface so routing software
 	// (e.g., bird) will announce routes for it.
 	logging.Debug(l, "msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
 	opts := getDummyAddressOptions(cfg)
 	lbIPNet, err := addVirtualInt(lbIP, cfg.dummyInt, group.Subnet, group.Aggregation, opts)
 	if err != nil {
+		// Report the failure on the Service. Returning the error alone
+		// logs it on the agent, but an operator reads `kubectl describe
+		// svc` first and would otherwise see nothing at all here.
+		a.client.Errorf(svc, "AnnouncementFailed",
+			"Node %s could not announce %s on interface %s: %s",
+			a.myNode, lbIP, cfg.dummyInt.Attrs().Name, err)
 		return err
 	}
+
+	// Announce only AFTER the address is actually on the interface. This
+	// event used to be emitted before addVirtualInt, so any failure there
+	// -- a malformed aggregation, a netlink error -- left the Service
+	// saying "Announcing <ip> from node <n>" for an address that was on
+	// no node at all. The log carried the failure, but the event stream
+	// is where an operator looks first, and it pointed away from the
+	// problem.
+	logging.Info(l, "msg", "announcingNonLocal", "node", a.myNode, "service", nsName, "interface", cfg.dummyInt.Attrs().Name, "group", groupName)
+	a.client.Infof(svc, "AnnouncingNonLocal", "Announcing %s from node %s interface %s", lbIP, a.myNode, cfg.dummyInt.Attrs().Name)
+
 	RecordAddressAddition()
 	a.announced.Store(renewalKey(nsName, lbIP.String()), struct{}{})
 	a.scheduleRenewal(nsName, lbIPNet, cfg.dummyInt, opts)
