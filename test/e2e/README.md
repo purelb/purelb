@@ -24,8 +24,8 @@ enforces this is [dualrun-map.yaml](dualrun-map.yaml).
 | [lib.sh](lib.sh) | Colours, `pass`/`fail`/`info`, the `kubectl` context wrapper, and all metric and log assertions. **Nothing runs at source time.** | Everything, directly or via `common.sh` |
 | [common.sh](common.sh) | `lib.sh` plus SSH-based discovery of nodes, interfaces, subnets and IPv6, ServiceGroup generation and VIP helpers. **Sourcing it contacts every node.** | `local/`, `remote/`, `timing/` |
 
-`router/` and `single-node/` source `lib.sh` only: they are driven from the
-workstation and should not depend on being able to SSH to every node.
+`router/` sources `lib.sh` only: it is driven from the workstation and should
+not depend on being able to SSH to every node.
 
 Add a new assertion to `lib.sh`, not to a suite. These helpers previously
 existed in up to five copies with four distinct implementations, so a fix

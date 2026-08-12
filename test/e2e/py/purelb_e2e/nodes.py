@@ -250,6 +250,79 @@ class Router:
         except (SSHError, subprocess.SubprocessError, OSError):
             return False
 
+    # ------------------------------------------------------------ FRR
+
+    def vtysh(self, command: str) -> str:
+        """Run a vtysh command, preferring sudo only if needed."""
+        try:
+            return ssh(self.host, f"vtysh -c {shlex.quote(command)}", timeout=30)
+        except SSHError:
+            return ssh(self.host, f"sudo vtysh -c {shlex.quote(command)}", timeout=30)
+
+    def vtysh_json(self, command: str) -> dict:
+        """Run a vtysh command with `json` appended and parse the result.
+
+        FRR speaks JSON for every show command that matters here, which
+        replaces the bash suite's `grep -oP '\\*\\s+\\K[0-9.]+'`
+        next-hop scraping. That regex depends on vtysh's column layout
+        and on which next-hop FRR marks with an asterisk; both are
+        presentation details that change between FRR releases and would
+        silently start matching nothing.
+        """
+        raw = self.vtysh(f"{command} json").strip()
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise AssertionError(
+                f"vtysh {command!r} did not return JSON: {raw[:200]!r}"
+            ) from exc
+
+    def route(self, prefix: str) -> Optional[dict]:
+        """The RIB entry for `prefix`, or None if the router has no route.
+
+        `prefix` must carry its length ("10.255.0.100/32"). FRR keys the
+        response by prefix, and asking for a bare address returns the
+        covering route -- which would make a /24 aggregate look like a
+        successfully advertised host route.
+        """
+        family = "ipv6" if ":" in prefix else "ip"
+        got = self.vtysh_json(f"show {family} route {prefix}")
+        if not got:
+            return None
+        entries = got.get(prefix) or next(iter(got.values()), None)
+        if not entries:
+            return None
+        return entries[0] if isinstance(entries, list) else entries
+
+    def nexthops(self, prefix: str) -> List[str]:
+        """Active next-hop addresses for `prefix`.
+
+        Only next-hops FRR reports as fib/active count: a route can list
+        next-hops it has not installed, and those forward nothing.
+        """
+        entry = self.route(prefix)
+        if not entry:
+            return []
+        out: List[str] = []
+        for hop in entry.get("nexthops", []):
+            if hop.get("active") or hop.get("fib"):
+                address = hop.get("ip") or hop.get("ipv6")
+                if address:
+                    out.append(address)
+        return sorted(set(out))
+
+    def bgp_peers(self) -> Dict[str, dict]:
+        """Established BGP peers, keyed by peer address."""
+        out: Dict[str, dict] = {}
+        for family in ("ipv4Unicast", "ipv6Unicast"):
+            summary = self.vtysh_json("show bgp summary").get(family, {})
+            for addr, peer in (summary.get("peers") or {}).items():
+                if peer.get("state") == "Established" or peer.get("peerState") == "Established":
+                    out[addr] = peer
+        return out
+
     def interface_for_subnet(self, address: str) -> str:
         """Which router interface faces the subnet containing `address`."""
         want = ipaddress.ip_address(address)

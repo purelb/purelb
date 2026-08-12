@@ -18,9 +18,10 @@
 # The e2e suites generate their own `default` ServiceGroup, so a full
 # delete of those is correct and is what makes runs reproducible. The
 # default LBNodeAgent is deleted too -- a suite may have left a drifted
-# one behind -- but it is then RESTORED to the shipped spec, because only
-# the local and single-node suites create one; every other suite, and the
-# pytest harness, assume it already exists.
+# one behind -- but it is then RESTORED to the shipped spec, because
+# nothing else creates it: the pytest harness's `lbnodeagent` fixture
+# applies its own over the top, and the remaining bash suites assume one
+# is already there.
 #
 # Leftover fixtures are not merely untidy: a ServiceGroup whose ranges
 # overlap the ones a suite is about to create is rejected outright by the
@@ -182,10 +183,10 @@ fi
 # Restore the shipped default LBNodeAgent. Deleting every agent and
 # stopping there does not leave a baseline -- it leaves PureLB installed
 # and unable to announce anything, because an LBNodeAgent CR is what
-# configures the node agents at all. Only the local and single-node suites
-# create their own; remote, router and the pytest harness all assume one
-# exists, so without this they allocate an address and then fail at
-# "not announced on any node" -- which is how this was found.
+# configures the node agents at all. The pytest harness applies its own
+# over the top; the remaining bash suites assume one is already there, so
+# without this they allocate an address and then fail at "not announced
+# on any node" -- which is how this was found.
 #
 # Spec matches deployments/purelb-v0.0.0-dev.yaml, so the baseline is what
 # PureLB actually ships rather than a definition invented here. A suite
