@@ -102,8 +102,13 @@ BASH_EXIT=0
 # is data for the comparison, not a reason to stop. The comparison then
 # reports it as fatal, because a suite that exits early leaves its
 # remaining assertions silent rather than failing.
+# CONTEXT is passed in the ENVIRONMENT, not as --context. Every suite
+# honours it (lib.sh defaults CONTEXT from it) but not all of them parse
+# a --context flag, and one that does not prints "Unknown option", exits
+# 0 and asserts nothing -- which the comparison then had to be taught not
+# to call CLEAN.
 # shellcheck disable=SC2086  # BASH_ARGS is a deliberate word-split passthrough
-"$BASH_SCRIPT" --context "$CONTEXT" $BASH_ARGS 2>&1 | tee "$BASH_LOG" || true
+CONTEXT="$CONTEXT" "$BASH_SCRIPT" $BASH_ARGS 2>&1 | tee "$BASH_LOG" || true
 BASH_EXIT=${PIPESTATUS[0]}
 echo "→ bash exited ${BASH_EXIT}"
 

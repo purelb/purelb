@@ -434,6 +434,26 @@ def test_dualrun_mapped_test_that_never_ran_fails(tmp_path):
     assert any("test_typo" in m for m in rep.missing_nodes)
 
 
+def test_dualrun_a_run_with_no_assertions_is_fatal(tmp_path):
+    """Zero assertions is not unanimous agreement.
+
+    This reported CLEAN in a real run: the router suite rejected
+    --context, printed a usage error, exited 0, and asserted nothing --
+    so there was nothing to disagree with and the gate waved through a
+    port it had verified nothing about. The tool whose entire purpose is
+    catching assertions that pass without observing anything must not do
+    it itself.
+    """
+    suite = _write_map(tmp_path, '    "allocator has * RBAC": tests/test_ipam.py::test_rbac\n')
+    j = tmp_path / "j.xml"
+    j.write_text(JUNIT)
+    empty = dualrun.parse_bash_output("Unknown option: --context\n", exit_code=0)
+    assert empty.completed, "exit 0 with no failures looks complete, which is the trap"
+    rep = dualrun.compare(suite, empty, dualrun.parse_junit(j))
+    assert not rep.clean
+    assert rep.fatal and "NO assertions" in rep.fatal[0]
+
+
 def test_dualrun_incomplete_bash_run_is_fatal(tmp_path):
     """An aborted bash run cannot be partially interpreted.
 

@@ -273,6 +273,21 @@ def compare(
         )
         return rep
 
+    # A run that asserted NOTHING is not a run that agreed with everything.
+    # This reported CLEAN once: the suite rejected an argument, printed a
+    # usage error, exited 0, and produced no assertions -- so there was
+    # nothing to disagree with and the gate waved through a port it had
+    # verified nothing about. That is the exact failure this tool exists
+    # to catch, so it must not be possible here of all places.
+    if not bash.passed:
+        rep.fatal.append(
+            "the bash run produced NO assertions at all. It exited 0, so it "
+            "did not fail -- it never ran. Check the invocation: a suite that "
+            "rejects an argument prints a usage error and exits cleanly. "
+            "Nothing to compare is not the same as everything agreeing."
+        )
+        return rep
+
     seen_nodes: set[str] = set()
     for message in bash.passed:
         entry = match_entry(message, suite.entries)
