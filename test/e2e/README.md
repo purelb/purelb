@@ -58,32 +58,30 @@ cd <test-directory>
 ./<test-script>.sh
 ```
 
-### Multi-interface test (gated)
+### Multi-interface test (no longer gated)
 
-`test_multi_interface` in the local suite exercises nodeSelector-scoped
-LBNodeAgent CRs and multi-NIC announcement on a dual-homed node. It only
-runs when the `MULTI_IF_*` environment variables are set (all six are
-required together — a partial set fails loudly rather than silently
-skipping). One-command invocation for the prox-purelb2 profile
-(purelb2-3 is dual-homed: eth1 on the 251 subnet, eth0 on the 250
-subnet; nodes 1-2 provide the other-node-on-subnet the migration
-assertion needs):
+The multi-interface tests exercise nodeSelector-scoped LBNodeAgent CRs and
+multi-NIC announcement on a dual-homed node. They live in
+[py/tests/test_local_multi_interface.py](py/tests/test_local_multi_interface.py)
+and need no configuration: `topology.dual_homed` discovers the node, its
+second interface and both subnets, and the tests skip visibly when no node
+has a second NIC on a different subnet.
 
-The pool ranges must not overlap the suite's generated default
-ServiceGroup (`.200-.220` and `:a::1-:a::20` per subnet) or the per-test
-ranges (`.230-.240`, `:b::1-:b::20`) — the allocator rejects overlapping
-ServiceGroups outright.
+The bash version required six `MULTI_IF_*` environment variables set by hand
+and skipped itself otherwise, so in practice it never ran -- every assertion
+in it, including all the `selector_state` coverage, was dead code.
 
-```bash
-cd local
-MULTI_IF_NODE=purelb2-3 \
-MULTI_IF_IFACE=eth0 \
-MULTI_IF_SUBNET=172.30.250.0/24 \
-MULTI_IF_SUBNET6=2001:470:b8f3:250::/64 \
-MULTI_IF_POOL_V4=172.30.250.244-172.30.250.247 \
-MULTI_IF_POOL_V6=2001:470:b8f3:250:c::1-2001:470:b8f3:250:c::10 \
-./test-local-allocation.sh
-```
+The pool bands are chosen so they cannot overlap; the allocator rejects
+overlapping ServiceGroups outright. See `purelb_e2e/topology.py`, which
+defines them in one place:
+
+| Band | Used by |
+|------|---------|
+| `.200-.220`, `a::1-a::20` | the generated `default` ServiceGroup |
+| `.230-.240`, `b::1-b::20` | per-test ServiceGroups |
+| `.244-.247`, `c::1-c::20` | multi-interface |
+| `.248-.250`, `d::`/`e::`   | namespace-scoped tenants |
+| `.224/28`, `e::/120`       | external (sidecar) IPAM |
 
 ## Testing Methodology
 

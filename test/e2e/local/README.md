@@ -1,45 +1,22 @@
 # PureLB Local Allocation E2E Tests
 
-End-to-end tests for PureLB's local IP allocation mode, including functional
-tests and failover stress testing.
+Failover stress testing for PureLB's local IP allocation mode.
+
+The functional suite that used to live here (`test-local-allocation.sh`) has
+been migrated to pytest under [../py/](../py/) -- see `test_local_*.py`. It was
+removed only after `scripts/e2e-dualrun.sh --suite local` reported every one of
+its 220 assertions agreeing with a passing pytest counterpart.
 
 ## Prerequisites
 
 - A Kubernetes cluster with PureLB deployed (tested on a 5-node proxmox cluster)
-- `kubectl` configured with the `proxmox` context
-- SSH access to cluster nodes (`purelb1`–`purelb5`) for verifying VIP placement
+- `kubectl` configured for your cluster (pass `--context`)
+- SSH access to the nodes' InternalIPs, for verifying VIP placement
 - A `test` namespace with an nginx deployment
 
 ## Test Scripts
 
-### test-local-allocation.sh
-
-Comprehensive functional test suite covering IP allocation, election, failover,
-connectivity, and CNI compatibility.
-
-```bash
-./test-local-allocation.sh                # Single run
-./test-local-allocation.sh -n 5           # Run 5 iterations
-./test-local-allocation.sh -i             # Interactive mode (pause between groups)
-./test-local-allocation.sh -i -n 3        # Both
-```
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `-i`, `--interactive` | Pause after each test group for manual review |
-| `-n`, `--iterations N` | Run the full suite N times (default: 1) |
-| `--context NAME` | Kubernetes context to use (default: current context) |
-| `-h`, `--help` | Show help |
-
-**Log output:** `/tmp/test-local-<timestamp>/output.log`
-
-Each iteration runs in a subshell so a failure in one iteration does not abort
-the remaining iterations. A pass/fail summary is printed at the end of
-multi-iteration runs.
-
-#### Tests Included
+### Tests Included
 
 **Subnet-Aware Election**
 
@@ -152,7 +129,6 @@ spec:
 
 | File | Purpose |
 |------|---------|
-| `test-local-allocation.sh` | Functional test suite |
 | `stress-failover.sh` | Failover stress test |
 | `servicegroup.yaml` | ServiceGroup for the local pool |
 | `servicegroup-no-match.yaml` | ServiceGroup with a subnet matching no node (for negative testing) |

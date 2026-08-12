@@ -145,7 +145,8 @@ Every cleanup test verifies:
 
 ## Critical Files Reference
 
-- `test/e2e/local/test-local-allocation.sh` - Pattern followed by this test
+- `test/e2e/py/tests/test_local_*.py` - the migrated local suite, whose
+  structure this test should follow when it is ported
 - `internal/local/announcer_local.go:269-308` - announceRemote() logic
 - `internal/local/network.go:223-285` - addVirtualInt() aggregation handling
 - `pkg/apis/purelb/v1/types.go:206-222` - ServiceGroupAddressPool structure
