@@ -39,7 +39,7 @@ from typing import Dict, List
 
 import pytest
 
-from purelb_e2e import TEST_NAMESPACE, announcing, nodes, topology
+from purelb_e2e import TEST_NAMESPACE, announcing, metrics, nodes, topology
 from purelb_e2e.cluster import Cluster
 from purelb_e2e.wait import wait_until, wait_while
 
@@ -58,10 +58,13 @@ def test_vip_fails_over_when_its_announcer_is_evicted(
     default_servicegroup: str,
     lb_service,
     tainted_nodes,
+    agent_metrics,
+    log_window,
 ):
     """Evict the announcing agent; the VIP moves and keeps serving."""
     name = "nginx-lb-failover"
     vip = lb_service(name, ["IPv4"])[0]
+    agent_before = {n: agent_metrics(n) for n in topo.node_ips}
 
     original, _ = wait_until(
         lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
@@ -116,6 +119,21 @@ def test_vip_fails_over_when_its_announcer_is_evicted(
     assert not announcing.has_node(value, original), (
         f"announcing-IPv4 still lists the downed node {original}: {value!r}"
     )
+    # The new winner must have won on its OWN terms: its counters moved
+    # and it logged the win. Asserting only that the address moved would
+    # be satisfied by an address that drifted there without an election.
+    metrics.assert_increased(
+        agent_before[new_winner], agent_metrics(new_winner),
+        "purelb_lbnodeagent_election_wins_total",
+    )
+    pod = cluster.pod_on_node(cluster.purelb_namespace, AGENT_SELECTOR, new_winner)
+    assert pod is not None
+    logs = cluster.pod_logs(cluster.purelb_namespace, pod.metadata.name, log_window,
+                            container="lbnodeagent")
+    assert "electionWon" in logs, (
+        f"{new_winner} took over {vip} without logging electionWon"
+    )
+
     slots = announcing.parse(value)
     assert len(slots) == len(announcing.by_ip(value)), (
         f"announcing-IPv4 has more entries than allocated IPs, so slots are "

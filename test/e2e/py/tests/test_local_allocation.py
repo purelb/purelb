@@ -188,13 +188,15 @@ def test_allocates_announces_and_serves(
 
 def test_release_withdraws_the_address(
     cluster: Cluster, topo: topology.Topology, default_servicegroup: str, lb_service,
-    allocator_metrics,
+    allocator_metrics, agent_metrics, log_window,
 ):
     """Deleting the Service frees the address and takes it off the node."""
     before = allocator_metrics()
     ips = lb_service("nginx-lb-cleanup", ["IPv4"])
     vip = ips[0]
-    wait_until(lambda: announced_on(topo, vip), timeout=45, description=f"{vip} announced")
+    holder, _ = wait_until(lambda: announced_on(topo, vip), timeout=45,
+                           description=f"{vip} announced")
+    agent_before = agent_metrics(holder)
 
     in_use = allocator_metrics().counter("purelb_address_pool_addresses_in_use", pool="default")
     cluster.delete_service(NAMESPACE, "nginx-lb-cleanup")
@@ -213,6 +215,20 @@ def test_release_withdraws_the_address(
         ) < in_use,
         timeout=30,
         description="the pool's in-use count to drop",
+    )
+
+    # The agent must record the withdrawal, not merely stop announcing.
+    # An address that disappears without a withdrawal is the shape of a
+    # crash, and it looks identical from the outside.
+    holder_metrics = agent_metrics(holder)
+    metrics.assert_increased(
+        agent_before, holder_metrics, "purelb_lbnodeagent_address_withdrawals_total"
+    )
+    pod = cluster.pod_on_node(cluster.purelb_namespace, "component=lbnodeagent", holder)
+    logs = cluster.pod_logs(cluster.purelb_namespace, pod.metadata.name, log_window,
+                            container="lbnodeagent")
+    assert "withdrawAddress" in logs, (
+        f"{holder} dropped {vip} without logging withdrawAddress"
     )
 
 
@@ -296,6 +312,29 @@ def test_shared_ip_puts_two_services_on_one_address(
                        description=f"{vip} to be announced")
     assert found is not None
 
+    # Sharing is legal only while the services do not COLLIDE, and PureLB
+    # is what enforces that. This has to run while nginx-shared-http still
+    # exists: my first version checked it after the delete, when port 80
+    # was genuinely free, so the allocation correctly succeeded and the
+    # test failed for the one reason that was not a bug.
+    lb_service("nginx-shared-conflict", ["IPv4"],
+               annotations={SHARING: "webservers"}, wait=False)
+    import time
+    for _ in range(8):
+        time.sleep(2)
+        assert not cluster.service_ingress_ips(NAMESPACE, "nginx-shared-conflict"), (
+            "a service sharing a key AND port 80 with nginx-shared-http was "
+            "allocated anyway; both would answer on the same address and port"
+        )
+    conflict = [
+        e.message for e in cluster.core.list_namespaced_event(
+            NAMESPACE, field_selector="involvedObject.name=nginx-shared-conflict"
+        ).items if e.message
+    ]
+    assert any("already in use" in m for m in conflict), (
+        f"no event explaining the port conflict: {conflict}"
+    )
+
     # Deleting one holder must NOT withdraw the address: the other still
     # has it. Getting this wrong is a withdrawal-refcount bug, and it
     # takes down a live service.
@@ -304,6 +343,15 @@ def test_shared_ip_puts_two_services_on_one_address(
     still = wait_until(lambda: announced_on(topo, vip), timeout=20,
                        description=f"{vip} to remain announced for the surviving service")
     assert still is not None, f"{vip} was withdrawn while nginx-shared-https still holds it"
+
+    # A DIFFERENT key must not share. Sharing every service that asked to
+    # share anything would be a far worse bug than not sharing at all.
+    other = lb_service("nginx-shared-other", ["IPv4"],
+                       annotations={SHARING: "other-key"})
+    assert other != first, (
+        f"services with different sharing keys both got {other}"
+    )
+
 
 
 def test_multiple_services_get_distinct_addresses(

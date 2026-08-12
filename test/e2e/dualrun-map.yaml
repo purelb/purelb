@@ -37,3 +37,225 @@
 # Assertions interpolate the values they observed, and some never print at
 # all in a passing run -- ipam-external had two such -- which reading alone
 # does not reveal.
+
+local:
+  script: test/e2e/local/test-local-allocation.sh
+  assertions:
+    # --- prerequisites -------------------------------------------------
+    # The harness self-checks cover reachability and health; forwarding
+    # and DNS are cluster properties the pytest suite asserts by USING
+    # them -- a VIP that serves traffic proves forwarding works, and the
+    # cross-subnet and pod-to-VIP tests prove it in both directions.
+    "IPv4 forwarding enabled on *": "tests/test_local_policy.py::test_traffic_reaches_pods_on_nodes_other_than_the_announcer"
+    "IPv6 forwarding enabled on *": "tests/test_local_policy.py::test_ipv6_vip_serves_traffic"
+    "kube-proxy is running*": "tests/test_harness.py::test_connects_and_sees_nodes"
+    "Test pods are running*": "tests/test_harness.py::test_connects_and_sees_nodes"
+    "Pod DNS is functional": "tests/test_local_remaining.py::test_a_pod_can_reach_a_vip"
+    "Allocator is running": "tests/test_harness.py::test_allocator_metrics_scrape"
+    "LBNodeAgent is running*": "tests/test_harness.py::test_pod_resolution_is_exact"
+    "Allocator metrics endpoint reachable*": "tests/test_harness.py::test_allocator_metrics_scrape"
+    "LBNodeAgent metrics endpoint reachable*": "tests/test_harness.py::test_agent_metrics_scrape"
+    "Allocator logged 'markSynced'*": "tests/test_harness.py::test_logs_are_windowed"
+    "All infrastructure prerequisites validated": "tests/test_harness.py::test_connects_and_sees_nodes"
+    "LBNodeAgent configuration applied": "tests/test_local_multi_interface.py::test_second_nic_is_not_advertised_by_default"
+    "Default ServiceGroup applied": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+
+    # --- subnet-aware election -----------------------------------------
+    "Lease exists for *": "tests/test_local_multipool.py::test_leases_carry_the_subnet_of_their_node"
+    "* subnets: *": "tests/test_local_multipool.py::test_leases_carry_the_subnet_of_their_node"
+    "* has expected * subnet": "tests/test_local_multipool.py::test_leases_carry_the_subnet_of_their_node"
+    "Lease-based election verified": "tests/test_local_multipool.py::test_leases_carry_the_subnet_of_their_node"
+    "Node * lease contains expected subnet *": "tests/test_local_multipool.py::test_leases_carry_the_subnet_of_their_node"
+    "All node leases have correct subnet annotations": "tests/test_local_multipool.py::test_leases_carry_the_subnet_of_their_node"
+    "Lease subnets match node IPs*": "tests/test_local_multipool.py::test_leases_carry_the_subnet_of_their_node"
+
+    # --- a pool no node can announce ------------------------------------
+    "*no-match*": "tests/test_local_policy.py::test_pool_with_no_matching_subnet_allocates_but_announces_nowhere"
+    "IP allocated but not announced*": "tests/test_local_policy.py::test_pool_with_no_matching_subnet_allocates_but_announces_nowhere"
+    "No node announced*": "tests/test_local_policy.py::test_pool_with_no_matching_subnet_allocates_but_announces_nowhere"
+    "Subnet-aware election correctly*": "tests/test_local_policy.py::test_pool_with_no_matching_subnet_allocates_but_announces_nowhere"
+
+    # --- remote pools ----------------------------------------------------
+    "Idle pool published status*": ["tests/test_local_policy.py::test_idle_servicegroup_publishes_status", "tests/test_local_remaining.py::test_idle_remote_pool_publishes_status_for_both_families"]
+    "ServiceGroup status writes succeeded*": "tests/test_local_policy.py::test_idle_servicegroup_publishes_status"
+    "Remote IP * on kube-lb0 on *": "tests/test_local_remaining.py::test_remote_address_lands_on_the_dummy_interface_on_every_node"
+    "LBNodeAgent logged 'announcingNonLocal'*": "tests/test_local_remaining.py::test_remote_address_lands_on_the_dummy_interface_on_every_node"
+    "Remote pool behavior test completed": "tests/test_local_remaining.py::test_remote_address_lands_on_the_dummy_interface_on_every_node"
+
+    # --- core allocation, one parametrized test per family --------------
+    "IPv4 allocated from correct pool": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "IPv6 allocated from correct pool": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "IP allocated from correct pool": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "Both IPv4 and IPv6 allocated": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "IPv4 * is on local interface on *": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "IPv6 * is on local interface on *": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "IPv4 on local interface on *": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "IPv6 on local interface on *": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "VIP holder * is on correct subnet for *": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "IPv4 service is reachable": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "IPv6 service is reachable": "tests/test_local_policy.py::test_ipv6_vip_serves_traffic"
+    "IPv4 reachable": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "IPv6 reachable": "tests/test_local_policy.py::test_ipv6_vip_serves_traffic"
+    "PureLB annotations correctly set*": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "ipMode correctly set to VIP": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "Allocator: pool metrics verified": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "Winner *: metrics verified, announced includes *": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "Winner *: logged 'electionWon'*": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+
+    # --- leader election -------------------------------------------------
+    "Only * is announcing *": "tests/test_local_remaining.py::test_losers_report_losing_and_nothing_panics"
+    "Announcing annotation correctly set to *": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "Winner *: election metrics verified*": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "Non-winner *: lease healthy": "tests/test_local_remaining.py::test_losers_report_losing_and_nothing_panics"
+    "Non-winner *: logged *": "tests/test_local_remaining.py::test_losers_report_losing_and_nothing_panics"
+    "LBNodeAgent: subnet discovery reported*": "tests/test_local_multi_interface.py::test_scoped_agent_adds_the_second_nics_subnets"
+    "No panic or fatal errors*": "tests/test_local_remaining.py::test_losers_report_losing_and_nothing_panics"
+
+    # --- deletion, sharing, specific IP, multi-pod, LBClass -------------
+    "*cleanup*": "tests/test_local_allocation.py::test_release_withdraws_the_address"
+    "*withdrawn*": "tests/test_local_allocation.py::test_release_withdraws_the_address"
+    "Service deleted*": "tests/test_local_allocation.py::test_release_withdraws_the_address"
+    "IP * released back to pool*": "tests/test_local_allocation.py::test_release_withdraws_the_address"
+    "Both services share the same IP*": "tests/test_local_allocation.py::test_shared_ip_puts_two_services_on_one_address"
+    "Shared IP*": "tests/test_local_allocation.py::test_shared_ip_puts_two_services_on_one_address"
+    "Port * is reachable": "tests/test_local_allocation.py::test_shared_ip_puts_two_services_on_one_address"
+    "IP sharing test completed*": "tests/test_local_allocation.py::test_shared_ip_puts_two_services_on_one_address"
+    "Specific IP*": "tests/test_local_allocation.py::test_specific_ip_request_is_honoured"
+    "Requested IP*": "tests/test_local_allocation.py::test_specific_ip_request_is_honoured"
+    "Load balancing working*": "tests/test_local_remaining.py::test_one_vip_spreads_across_backend_pods"
+    "Multi-node load balancing*": "tests/test_local_policy.py::test_traffic_reaches_pods_on_nodes_other_than_the_announcer"
+    "Multi-pod load balancing test completed": "tests/test_local_remaining.py::test_one_vip_spreads_across_backend_pods"
+    "Foreign LoadBalancerClass correctly ignored*": "tests/test_local_allocation.py::test_foreign_loadbalancer_class_is_ignored"
+    "Explicit PureLB LBClass correctly allocates*": "tests/test_local_allocation.py::test_explicit_purelb_loadbalancer_class_allocates"
+    "PureLB LBClass service is reachable": "tests/test_local_allocation.py::test_explicit_purelb_loadbalancer_class_allocates"
+    "LoadBalancerClass filtering test completed*": "tests/test_local_allocation.py::test_foreign_loadbalancer_class_is_ignored"
+    "Re-evaluate annotation was cleared*": "tests/test_local_policy.py::test_re_evaluate_annotation_is_consumed"
+    "Service still has IP after re-evaluate*": "tests/test_local_policy.py::test_re_evaluate_annotation_is_consumed"
+
+    # --- failover --------------------------------------------------------
+    "Service reachable before failover": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "IP successfully withdrawn from *": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "Failover successful*": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "Failover winner * is on correct subnet*": "tests/test_local_failover.py::test_failover_stays_within_the_addresss_subnet"
+    "Service still reachable after failover": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "announcing-IPv4 converged to * while * down*": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "announcing-IPv4 converged to * (no stale entry*": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "All * lbnodeagent pods recovered*": "tests/test_local_failover.py::test_agents_recover_after_the_taint_is_removed"
+    "Node failover test completed*": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "Current VIP holder: *": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "Service reachable - Pod: *": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "Lease deleted after *": "tests/test_local_policy.py::test_graceful_shutdown_releases_the_lease"
+    "VIP moved from * to * in *": "tests/test_local_policy.py::test_graceful_shutdown_releases_the_lease"
+    "Graceful failover*": "tests/test_local_policy.py::test_graceful_shutdown_releases_the_lease"
+    "*lease*renew*": "tests/test_local_policy.py::test_graceful_shutdown_releases_the_lease"
+    "Service reachable after graceful*": "tests/test_local_policy.py::test_graceful_shutdown_releases_the_lease"
+
+    # --- ETP, duplicates -------------------------------------------------
+    "ETP Local was overridden to Cluster*": "tests/test_local_policy.py::test_etp_local_is_overridden_for_a_local_pool"
+    "IP * on eth* on * (election working)": "tests/test_local_policy.py::test_etp_local_is_overridden_for_a_local_pool"
+    "Service reachable with overridden ETP": "tests/test_local_policy.py::test_etp_local_is_overridden_for_a_local_pool"
+    "Allow-local annotation recognized*": "tests/test_local_policy.py::test_allow_local_annotation_preserves_etp_local"
+    "ETP Local*preserved*": "tests/test_local_policy.py::test_allow_local_annotation_preserves_etp_local"
+    "ETP*test completed*": "tests/test_local_policy.py::test_etp_local_is_overridden_for_a_local_pool"
+    "VIP * on exactly * node: *": "tests/test_local_allocation.py::test_no_duplicate_vips_across_nodes"
+    "No duplicate VIPs*": "tests/test_local_allocation.py::test_no_duplicate_vips_across_nodes"
+    "No split-brain*": "tests/test_local_allocation.py::test_no_duplicate_vips_across_nodes"
+
+    # --- address flags, DAD, renewal, CNI --------------------------------
+    "Local VIP has finite lifetime*": "tests/test_local_address_lifetime.py::test_local_vip_has_a_finite_lifetime"
+    "Lifetime is within expected range*": "tests/test_local_address_lifetime.py::test_local_vip_has_a_finite_lifetime"
+    "Local VIP has noprefixroute*": "tests/test_local_address_lifetime.py::test_local_vip_has_noprefixroute"
+    "Local VIP has secondary flag": "tests/test_local_address_lifetime.py::test_local_vip_has_noprefixroute"
+    "VIP has deprecated flag*": "tests/test_local_address_lifetime.py::test_cni_does_not_adopt_a_vip_as_the_node_address"
+    "IPv6 VIP: skip-ipv6-dad annotation correctly absent*": "tests/test_local_address_lifetime.py::test_ipv6_vip_does_dad_unless_told_otherwise"
+    "IPv6 VIP correctly does NOT have nodad flag*": "tests/test_local_address_lifetime.py::test_ipv6_vip_does_dad_unless_told_otherwise"
+    "skip-ipv6-dad annotation is set*": "tests/test_local_address_lifetime.py::test_skip_ipv6_dad_sets_nodad_when_enabled"
+    "IPv6 VIP has nodad flag*": "tests/test_local_address_lifetime.py::test_skip_ipv6_dad_sets_nodad_when_enabled"
+    "Address was renewed*": "tests/test_local_address_lifetime.py::test_address_lifetime_is_renewed_rather_than_expiring"
+    "Lifetime countdown is working*": "tests/test_local_address_lifetime.py::test_address_lifetime_is_renewed_rather_than_expiring"
+    "VIP still present on interface": "tests/test_local_address_lifetime.py::test_address_lifetime_is_renewed_rather_than_expiring"
+    "LBNodeAgent *: address_renewals_total*": "tests/test_local_address_lifetime.py::test_address_lifetime_is_renewed_rather_than_expiring"
+    "LBNodeAgent *: logged 'renewAddress'*": "tests/test_local_address_lifetime.py::test_address_lifetime_is_renewed_rather_than_expiring"
+    "Flannel correctly selected non-VIP*": "tests/test_local_address_lifetime.py::test_cni_does_not_adopt_a_vip_as_the_node_address"
+    "Flannel selected a permanent address*": "tests/test_local_address_lifetime.py::test_cni_does_not_adopt_a_vip_as_the_node_address"
+    "Flannel *IPv6*": "tests/test_local_address_lifetime.py::test_cni_does_not_adopt_a_vip_as_the_node_address"
+    "IPv6 connectivity verified after flannel restart": "tests/test_local_policy.py::test_ipv6_vip_serves_traffic"
+    "Test skipped (not Flannel)": "tests/test_local_address_lifetime.py::test_cni_does_not_adopt_a_vip_as_the_node_address"
+    "Test skipped (Flannel annotation not present)": "tests/test_local_address_lifetime.py::test_cni_does_not_adopt_a_vip_as_the_node_address"
+
+    # --- connectivity ----------------------------------------------------
+    "Request * reached pod on * (different from VIP node *": "tests/test_local_policy.py::test_traffic_reaches_pods_on_nodes_other_than_the_announcer"
+    "Cross-node connectivity verified*": "tests/test_local_policy.py::test_traffic_reaches_pods_on_nodes_other_than_the_announcer"
+    "Connectivity from pod successful*": "tests/test_local_remaining.py::test_a_pod_can_reach_a_vip"
+    "Pod-based connectivity test completed": "tests/test_local_remaining.py::test_a_pod_can_reach_a_vip"
+    "Cross-subnet connectivity works*": "tests/test_local_remaining.py::test_a_node_can_reach_a_vip_on_the_other_subnet"
+
+    # --- multi-subnet placement and multi-pool ---------------------------
+    "VIP * correctly placed on * (subnet *": "tests/test_local_multipool.py::test_default_group_places_each_vip_on_its_own_subnet"
+    "IPv6 VIP * correctly placed on * (subnet *": "tests/test_local_multipool.py::test_ipv6_vips_are_placed_on_their_own_subnet"
+    "Subnet-specific VIP placement correct*": "tests/test_local_multipool.py::test_default_group_places_each_vip_on_its_own_subnet"
+    "IPv6 multi-subnet placement correct": "tests/test_local_multipool.py::test_ipv6_vips_are_placed_on_their_own_subnet"
+    "VIP * is from a valid pool": "tests/test_local_multipool.py::test_default_group_places_each_vip_on_its_own_subnet"
+    "VIP * on * — subnet match confirmed": "tests/test_local_multipool.py::test_default_group_places_each_vip_on_its_own_subnet"
+    "Failover stayed in subnet*": "tests/test_local_failover.py::test_failover_stays_within_the_addresss_subnet"
+    "VIP moved to * on same subnet*": "tests/test_local_failover.py::test_failover_stays_within_the_addresss_subnet"
+    "SG multi-pool IPv4: * IPs for * subnets": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+    "SG multi-pool IPv6: * IPs for * subnets": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+    "SG multi-pool * IPs for * subnets": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+    "SG multi-pool VIP * on * — subnet match": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+    "SG multi-pool VIP * reachable": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+    "SG multi-pool IPv* VIP * announced": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+    "SG multi-pool IPv* VIP * reachable": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+    "SG multi-pool dual-stack*": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+    "Annotation multi-pool IPv4: * IPs from default SG": "tests/test_local_multipool.py::test_multipool_annotation_enables_it_on_a_single_pool_group"
+    "Annotation multi-pool VIP * reachable": "tests/test_local_multipool.py::test_multipool_annotation_enables_it_on_a_single_pool_group"
+    "Annotation override: multi-pool=false*": "tests/test_local_multipool.py::test_multipool_annotation_overrides_the_group_and_turns_it_off"
+    "Multi-pool allocation test*": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+    "Initial allocation: * from * pool range": "tests/test_local_remaining.py::test_a_service_picks_up_a_range_added_later"
+    "Incremental multi-pool*": "tests/test_local_remaining.py::test_a_service_picks_up_a_range_added_later"
+    "Dual-stack multi-pool VIP * reachable": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+    "Dual-stack multi-subnet test completed": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+
+    # --- balanced allocation ---------------------------------------------
+    "Balanced IPv4: range * got * IPs*": "tests/test_local_balanced.py::test_allocations_are_spread_evenly_across_ranges"
+    "Balanced IPv6: range * got * IPs*": "tests/test_local_balanced.py::test_allocations_are_spread_evenly_across_ranges"
+    "Balanced DS IPv*: range * got * IPs": "tests/test_local_balanced.py::test_allocations_are_spread_evenly_across_ranges"
+    "Balanced IPv4 VIP * reachable": "tests/test_local_balanced.py::test_balanced_addresses_are_announced_and_serve"
+    "Balanced+MultiPool correctly rejected*": "tests/test_local_balanced.py::test_balance_pools_and_multi_pool_together_are_refused"
+    "Multi-pool annotation on balancePools SG correctly rejected*": "tests/test_local_balanced.py::test_multi_pool_annotation_on_a_balanced_group_is_refused"
+    "Non-existent SG correctly rejected*": "tests/test_local_balanced.py::test_naming_a_servicegroup_that_does_not_exist_is_refused"
+    "Allocator: balance_pools_allocations_total increased*": "tests/test_local_balanced.py::test_allocations_are_spread_evenly_across_ranges"
+    "Allocator: logged 'assignFamilyBalancePools'*": "tests/test_local_balanced.py::test_allocations_are_spread_evenly_across_ranges"
+    "BalancePools allocation tests completed": "tests/test_local_balanced.py::test_allocations_are_spread_evenly_across_ranges"
+
+    # --- exhaustion ------------------------------------------------------
+    "VIP moved to last node on *": "tests/test_local_multipool.py::test_vip_has_no_home_when_its_subnet_runs_out_of_nodes"
+    "VIP correctly has no home after all subnet nodes exhausted": "tests/test_local_multipool.py::test_vip_has_no_home_when_its_subnet_runs_out_of_nodes"
+    "Small subnet exhaustion test*": "tests/test_local_multipool.py::test_vip_has_no_home_when_its_subnet_runs_out_of_nodes"
+
+    # --- fixtures the suite creates as it goes ---------------------------
+    "ServiceGroup '*' applied": "tests/test_local_multipool.py::test_servicegroup_multipool_gives_one_address_per_subnet"
+    "IP announced on a node": "tests/test_local_allocation.py::test_allocates_announces_and_serves"
+    "Test services cleaned up": "tests/test_local_allocation.py::test_release_withdraws_the_address"
+
+    # --- assertions whose pytest counterparts were added inline when the
+    # --- mapping exposed them as unmapped
+    "Allocator: addresses_in_use decreased*": "tests/test_local_allocation.py::test_release_withdraws_the_address"
+    "IP * removed from all nodes*": "tests/test_local_allocation.py::test_release_withdraws_the_address"
+    "LBNodeAgent *: address_withdrawals_total increased*": "tests/test_local_allocation.py::test_release_withdraws_the_address"
+    "LBNodeAgent *: logged 'withdrawAddress'": "tests/test_local_allocation.py::test_release_withdraws_the_address"
+    "Different sharing keys correctly got different IPs": "tests/test_local_allocation.py::test_shared_ip_puts_two_services_on_one_address"
+    "Port conflict correctly detected*": "tests/test_local_allocation.py::test_shared_ip_puts_two_services_on_one_address"
+    "IP * on local interface on *": "tests/test_local_allocation.py::test_shared_ip_puts_two_services_on_one_address"
+    "Got requested IP: *": "tests/test_local_allocation.py::test_specific_ip_request_is_honoured"
+    "Found noLocalInterface message*": "tests/test_local_policy.py::test_pool_with_no_matching_subnet_allocates_but_announces_nowhere"
+    "LBNodeAgent logged 'noLocalInterface'*": "tests/test_local_policy.py::test_pool_with_no_matching_subnet_allocates_but_announces_nowhere"
+    "IP correctly NOT on kube-lb0 on any node*": "tests/test_local_policy.py::test_pool_with_no_matching_subnet_allocates_but_announces_nowhere"
+    "IP correctly NOT on local interface on any node": "tests/test_local_policy.py::test_pool_with_no_matching_subnet_allocates_but_announces_nowhere"
+    "New winner *: logged 'electionWon'": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "New winner *: metrics verified": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "Service still reachable after failover - Pod: *": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "announcing annotations have exactly one slot per allocated IP*": "tests/test_local_failover.py::test_vip_fails_over_when_its_announcer_is_evicted"
+    "Failover stayed within subnet *": "tests/test_local_failover.py::test_failover_stays_within_the_addresss_subnet"
+    "Both VIPs on correct subnet *": "tests/test_local_multipool.py::test_default_group_places_each_vip_on_its_own_subnet"
+    "Captured shutdown logs contain withdrawal*": "tests/test_local_policy.py::test_graceful_shutdown_releases_the_lease"

@@ -54,7 +54,7 @@ AGENT_SELECTOR = "component=lbnodeagent"
 
 
 def test_pool_with_no_matching_subnet_allocates_but_announces_nowhere(
-    cluster: Cluster, topo: topology.Topology, lb_service
+    cluster: Cluster, topo: topology.Topology, lb_service, log_window
 ):
     """Subnet-aware election with no candidate must not fall back.
 
@@ -100,6 +100,15 @@ def test_pool_with_no_matching_subnet_allocates_but_announces_nowhere(
                 f"{vip} is from {unmatched}, which no node is on, but "
                 f"{holders} announced it anyway"
             )
+
+        # Silence is the right behaviour but a poor diagnostic, so the
+        # agents say why. Without this the test cannot tell "correctly
+        # declined" from "never saw the Service at all".
+        logs = cluster.component_logs("lbnodeagent", log_window)
+        assert any("noLocalInterface" in text for text in logs.values()), (
+            "no agent logged noLocalInterface; the address was not announced, "
+            "but nothing shows that subnet filtering is the reason"
+        )
     finally:
         cluster.delete_service(NAMESPACE, "nginx-lb-no-match")
         cluster.delete_cr("servicegroup", "no-match-subnet")
@@ -237,6 +246,7 @@ def test_re_evaluate_annotation_is_consumed(
 @pytest.mark.requires("multi-node")
 def test_graceful_shutdown_releases_the_lease(
     cluster: Cluster, topo: topology.Topology, default_servicegroup: str, lb_service,
+    log_window,
 ):
     """An agent stopped cleanly gives its lease up rather than expiring.
 
@@ -252,9 +262,30 @@ def test_graceful_shutdown_releases_the_lease(
 
     pod = cluster.pod_on_node(cluster.purelb_namespace, AGENT_SELECTOR, holder)
     assert pod is not None
+    departing = pod.metadata.name
+    # Capture the departing agent's log BEFORE it goes: once the pod is
+    # gone its logs go with it, so a shutdown assertion has to read them
+    # while the container is still terminating.
+    shutdown_log = ""
+
     # No taint: the DaemonSet reschedules immediately, which is what a
     # rolling restart or a node drain looks like.
-    cluster.delete_pod(cluster.purelb_namespace, pod.metadata.name, grace_seconds=30)
+    cluster.delete_pod(cluster.purelb_namespace, departing, grace_seconds=30)
+    for _ in range(20):
+        try:
+            shutdown_log = cluster.pod_logs(
+                cluster.purelb_namespace, departing, log_window, container="lbnodeagent"
+            )
+        except Exception:  # noqa: BLE001 - the pod is on its way out
+            break
+        if "withdrawAddress" in shutdown_log or "ForceSync" in shutdown_log:
+            break
+        import time
+        time.sleep(1)
+    assert "withdrawAddress" in shutdown_log or "ForceSync" in shutdown_log, (
+        f"the agent on {holder} exited without logging a withdrawal; a "
+        f"graceful stop must give the address up rather than abandoning it"
+    )
 
     moved = wait_until(
         lambda: (lambda f: f if f and f[0] != holder else None)(
