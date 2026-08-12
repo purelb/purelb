@@ -139,7 +139,46 @@ class Cluster:
             return False
         if desired <= 0 or (st.number_ready or 0) != desired:
             return False
+        # updatedNumberScheduled is what makes this usable after a restart.
+        # A rolling update replaces pods one at a time, so at the moment it
+        # begins every OLD pod is still ready and number_ready already
+        # equals desired -- this returned True before a single pod had been
+        # replaced. Callers then scraped agents that were about to go away
+        # and got connection refused partway through a test, which reads as
+        # a broken node rather than as a rollout still in flight.
+        if (st.updated_number_scheduled or 0) != desired:
+            return False
         return expect_nodes is None or desired == expect_nodes
+
+    def restart_daemonset(self, namespace: str, name: str) -> None:
+        """Force a rollout so a changed CR is definitely in effect.
+
+        The CR controller pushes new config into a running announcer, but
+        nothing the agent exports says WHICH generation is live. A test
+        that changed an LBNodeAgent and carried straight on would be
+        racing an informer, and would fail in the shape of "the feature
+        does not work" rather than "the config had not landed yet".
+        Restarting replaces that race with a condition that can be waited
+        on -- at the cost of a rollout, which is the right trade for a
+        test whose whole subject is packets sent at announcement time.
+        """
+        self.apps.patch_namespaced_daemon_set(
+            name,
+            namespace,
+            {
+                "spec": {
+                    "template": {
+                        "metadata": {
+                            "annotations": {
+                                "purelb.io/e2e-restarted-at": _dt.datetime.now(
+                                    _dt.timezone.utc
+                                ).isoformat()
+                            }
+                        }
+                    }
+                }
+            },
+        )
 
     # -------------------------------------------------------------- services
 

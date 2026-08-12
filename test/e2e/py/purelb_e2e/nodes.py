@@ -89,6 +89,25 @@ def interface_for_address(host: str, address: str) -> Optional[str]:
     return None
 
 
+def mac_for_address(host: str, address: str) -> Optional[str]:
+    """The MAC of the interface holding `address`.
+
+    Gratuitous announcements carry the announcing node's MAC -- that is
+    their entire payload, the "this address now lives behind me" claim.
+    Checking it is what distinguishes a real announcement from the frame
+    count merely being non-zero because some other node on the segment
+    was talking about the same address.
+    """
+    iface = interface_for_address(host, address)
+    if iface is None:
+        return None
+    for line in ssh(host, "ip -br link show").splitlines():
+        parts = line.split()
+        if parts and parts[0].split("@")[0] == iface and len(parts) >= 3:
+            return parts[2].lower()
+    return None
+
+
 @dataclass(frozen=True)
 class AddressDetail:
     """One configured address as `ip -o addr show` describes it.
@@ -341,17 +360,32 @@ class Router:
         raise AssertionError(f"no router interface faces {address}")
 
     @contextlib.contextmanager
-    def capture(self, iface: str, bpf: str, settle: float = 1.0) -> Iterator["Capture"]:
+    def capture(self, iface: str, bpf: str, settle: float = 1.0,
+                seconds: int = 120) -> Iterator["Capture"]:
         """Run tcpdump for the duration of the block.
 
         Waits `settle` seconds after starting so the trigger inside the
         block cannot race the sniffer coming up -- the single most likely
         way for a wire assertion to be flaky.
+
+        `seconds` caps how long tcpdump lives, so a crashed test cannot
+        leave a sniffer running on the router. It MUST exceed everything
+        the block waits for: a block that waits 180s for a failover under
+        a 120s capture stops recording partway through and reports an
+        empty capture, which reads as "the product announced nothing"
+        rather than "the sniffer had already exited".
         """
         path = f"/tmp/purelb-capture-{int(time.time() * 1000)}.txt"
+        # -e prints the ethernet header. Gratuitous announcements are only
+        # meaningful with their source MAC: it is what proves the frame came
+        # from the node that won the election rather than from the previous
+        # holder still shouting about an address it has given up.
+        #
+        # The PID goes to a file so teardown can kill exactly this tcpdump.
+        # `pkill -f <pattern>` cannot be used: the ssh command line carrying
+        # the pattern matches the pattern, so pkill kills its own shell.
         cmd = (
-            f"sudo nohup timeout 120 tcpdump -l -n -i {shlex.quote(iface)} "
-            f"{shlex.quote(bpf)} > {path} 2>/dev/null & echo started"
+            f"sudo sh -c {shlex.quote(f'nohup timeout {seconds} tcpdump -l -n -e -i {shlex.quote(iface)} {shlex.quote(bpf)} > {path} 2>/dev/null & echo $! > {path}.pid')}"
         )
         ssh(self.host, cmd)
         time.sleep(settle)
@@ -359,9 +393,13 @@ class Router:
         try:
             yield cap
         finally:
-            ssh(self.host, "sudo pkill -f 'tcpdump -l -n -i' || true", check=False)
+            # timeout(1) forwards the signal to tcpdump, and tcpdump flushes
+            # on exit -- so read the file only after it has gone.
+            ssh(self.host,
+                f"sudo sh -c 'kill $(cat {path}.pid) 2>/dev/null; sleep 1' || true",
+                check=False)
             cap.text = ssh(self.host, f"cat {path} 2>/dev/null || true", check=False)
-            ssh(self.host, f"sudo rm -f {path}", check=False)
+            ssh(self.host, f"sudo rm -f {path} {path}.pid", check=False)
 
 
 @dataclass

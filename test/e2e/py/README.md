@@ -77,18 +77,30 @@ counters stay at their last value until the next allocate/release, because
 `SidecarPool.Contains` returns false so `populateFromExisting` does not
 re-map existing external allocations. The data plane is unaffected.
 
-## BGP route verification
+## What the router sees
 
-`tests/test_router_bgp.py` is the only module that asks what the upstream
-ROUTER learned. Everything else asserts that PureLB put an address on an
-interface; an address can be perfectly placed on `kube-lb0` on every node
-and advertise nothing.
+Two modules ask the upstream ROUTER rather than the cluster. Everything
+else asserts that PureLB put an address on an interface, and an address
+can be perfectly placed on `kube-lb0` on every node and advertise
+nothing to anyone.
 
-    .venv/bin/pytest tests/test_router_bgp.py \
+`tests/test_router_bgp.py` asks what the router LEARNED — the routes,
+their next hops, and that withdrawn prefixes actually disappear.
+
+`tests/test_local_garp.py` captures frames with `tcpdump` and asserts
+what PureLB SENT: gratuitous ARP for IPv4, unsolicited Neighbor
+Advertisements for IPv6, each carrying the announcing node's MAC. The
+counters cannot stand in for this — they increment when the send call
+returns, so a frame that never leaves the host is indistinguishable from
+one that worked. It also needs `garpConfig` on the LBNodeAgent, which
+the fixture sets and restores, because the sequence is off by default.
+
+    .venv/bin/pytest tests/test_router_bgp.py tests/test_local_garp.py \
         --context <ctx> --router-host <frr-host>
 
-Without `--router-host` the whole module skips, visibly. It needs SSH to a
-router running FRR with `vtysh` (sudo is used if a plain call fails).
+Without `--router-host` both modules skip, visibly. They need SSH to a
+router running FRR with `vtysh` and `tcpdump`, and passwordless `sudo`
+for the capture (sudo is used for `vtysh` if a plain call fails).
 
 ```
 This host (workstation)
