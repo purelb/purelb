@@ -683,33 +683,53 @@ def test_remote_multi_pool_allocates_from_every_range(
     """multiPool works for remote groups too, and is not subnet-gated.
 
     A remote pool has no node on its subnet by construction, so if
-    multi-pool filtered ranges by active nodes the way local mode does,
-    a remote group would produce nothing at all.
+    multi-pool filtered ranges by active nodes the way local mode does, a
+    remote group would produce nothing at all.
+
+    Both families, because they are balanced independently: an
+    implementation that handled v4 ranges and ignored v6 ones would give
+    a dual-stack Service one v4 per range and a single v6, which looks
+    almost right.
     """
     name = "remote-multipool"
+    spec = {
+        "multiPool": True,
+        "v4pools": [
+            {"pool": "10.255.2.1-10.255.2.10", "subnet": "10.255.2.0/24"},
+            {"pool": "10.255.3.1-10.255.3.10", "subnet": "10.255.3.0/24"},
+        ],
+    }
+    families = ["IPv4"]
+    if topo.has_ipv6:
+        spec["v6pools"] = [
+            {"pool": "fd00:10:2::1-fd00:10:2::10", "subnet": "fd00:10:2::/64"},
+            {"pool": "fd00:10:3::1-fd00:10:3::10", "subnet": "fd00:10:3::/64"},
+        ]
+        families.append("IPv6")
     cluster.apply_cr(
         {
             "apiVersion": "purelb.io/v2",
             "kind": "ServiceGroup",
             "metadata": {"name": name, "namespace": cluster.purelb_namespace},
-            "spec": {
-                "remote": {
-                    "multiPool": True,
-                    "v4pools": [
-                        {"pool": "10.255.2.1-10.255.2.10", "subnet": "10.255.2.0/24"},
-                        {"pool": "10.255.3.1-10.255.3.10", "subnet": "10.255.3.0/24"},
-                    ],
-                }
-            },
+            "spec": {"remote": spec},
         }
     )
     try:
         ips = lb_service(
-            "remote-mp", ["IPv4"], annotations={SERVICE_GROUP: name}, timeout=90
+            "remote-mp", families, annotations={SERVICE_GROUP: name}, timeout=120
         )
-        assert len(ips) == 2, f"expected one address per range, got {ips}"
-        ranges = {str(ipaddress.ip_network(f"{a}/24", strict=False)) for a in ips}
-        assert ranges == {"10.255.2.0/24", "10.255.3.0/24"}, ranges
+        assert len(ips) == 2 * len(families), (
+            f"expected one address per range per family, got {ips}"
+        )
+        v4 = {str(ipaddress.ip_network(f"{a}/24", strict=False))
+              for a in ips if ipaddress.ip_address(a).version == 4}
+        assert v4 == {"10.255.2.0/24", "10.255.3.0/24"}, v4
+        if "IPv6" in families:
+            v6 = {str(ipaddress.ip_network(f"{a}/64", strict=False))
+                  for a in ips if ipaddress.ip_address(a).version == 6}
+            assert v6 == {"fd00:10:2::/64", "fd00:10:3::/64"}, (
+                f"IPv6 ranges used: {v6}; multi-pool must cover v6 ranges too"
+            )
     finally:
         cluster.delete_service(NAMESPACE, "remote-mp")
         cluster.delete_cr("servicegroup", name)
@@ -980,3 +1000,120 @@ def test_a_malformed_aggregation_is_rejected_at_admission(
         cluster.apply_cr(body)
     finally:
         cluster.delete_cr("servicegroup", "remote-bad-aggregation")
+
+
+def test_a_remote_vip_serves_traffic_from_a_pod(
+    cluster: Cluster, topo: topology.Topology, remote_group, lb_service
+):
+    """Reachability for a remote VIP is tested from a POD, not a node.
+
+    A remote address is routed, and this cluster has no route to
+    10.255.1.0/24 -- that is the point of the pool being outside every
+    node subnet. So a node cannot reach it and a node-sourced curl proves
+    nothing. From inside the pod network kube-proxy DNATs the VIP to an
+    endpoint, which exercises the part PureLB is responsible for: the
+    address exists, the Service is programmed, and traffic to it lands on
+    a backend.
+
+    Without this the module asserts placement everywhere and function
+    nowhere.
+    """
+    group = remote_group()
+    vip = lb_service("remote-reach", ["IPv4"], annotations={SERVICE_GROUP: group})[0]
+    wait_until(
+        lambda: (lambda got: got if len(got) == len(topo.node_ips) else None)(
+            nodes_announcing(topo, vip)
+        ),
+        timeout=90, interval=3.0, description=f"{vip} on every node",
+    )
+
+    name = "remote-vip-client"
+    cluster.core.create_namespaced_pod(
+        NAMESPACE,
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": name, "namespace": NAMESPACE},
+            "spec": {
+                "restartPolicy": "Never",
+                "containers": [
+                    {
+                        "name": "client",
+                        "image": "curlimages/curl:latest",
+                        "command": ["sh", "-c",
+                                    f"for i in 1 2 3 4 5; do "
+                                    f"curl -s --max-time 10 http://{vip}/ && break; "
+                                    f"sleep 3; done"],
+                    }
+                ],
+            },
+        },
+    )
+    try:
+        wait_until(
+            lambda: cluster.core.read_namespaced_pod(name, NAMESPACE).status.phase
+            in ("Succeeded", "Failed") or None,
+            timeout=180, interval=3.0, description="the client pod to finish",
+        )
+        body = cluster.core.read_namespaced_pod_log(name=name, namespace=NAMESPACE)
+        assert "Pod:" in body, (
+            f"a pod could not reach remote VIP {vip}; the address is on kube-lb0 "
+            f"on every node, so this is the Service programming rather than the "
+            f"announcement. Got {body[:200]!r}"
+        )
+    finally:
+        cluster.core.delete_namespaced_pod(name, NAMESPACE, grace_period_seconds=0)
+
+
+@pytest.mark.requires("ipv6")
+def test_a_remote_ipv6_vip_serves_traffic_from_a_pod(
+    cluster: Cluster, topo: topology.Topology, remote_group, lb_service
+):
+    """Same for IPv6, which fails independently.
+
+    Forwarding and Service programming are per-family, so an IPv6 remote
+    VIP can be placed perfectly on every node and still carry nothing.
+    """
+    group = remote_group()
+    vip = lb_service("remote-reach-v6", ["IPv6"], annotations={SERVICE_GROUP: group})[0]
+    wait_until(
+        lambda: (lambda got: got if len(got) == len(topo.node_ips) else None)(
+            nodes_announcing(topo, vip)
+        ),
+        timeout=90, interval=3.0, description=f"{vip} on every node",
+    )
+
+    name = "remote-vip-client-v6"
+    cluster.core.create_namespaced_pod(
+        NAMESPACE,
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": name, "namespace": NAMESPACE},
+            "spec": {
+                "restartPolicy": "Never",
+                "containers": [
+                    {
+                        "name": "client",
+                        "image": "curlimages/curl:latest",
+                        "command": ["sh", "-c",
+                                    f"for i in 1 2 3 4 5; do "
+                                    f"curl -s --max-time 10 http://[{vip}]/ && break; "
+                                    f"sleep 3; done"],
+                    }
+                ],
+            },
+        },
+    )
+    try:
+        wait_until(
+            lambda: cluster.core.read_namespaced_pod(name, NAMESPACE).status.phase
+            in ("Succeeded", "Failed") or None,
+            timeout=180, interval=3.0, description="the client pod to finish",
+        )
+        body = cluster.core.read_namespaced_pod_log(name=name, namespace=NAMESPACE)
+        assert "Pod:" in body, (
+            f"a pod could not reach remote IPv6 VIP {vip}; got {body[:200]!r}"
+        )
+    finally:
+        cluster.core.delete_namespaced_pod(name, NAMESPACE, grace_period_seconds=0)

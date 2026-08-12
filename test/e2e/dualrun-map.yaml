@@ -38,3 +38,156 @@
 # all in a passing run -- ipam-external had two such -- which reading alone
 # does not reveal.
 
+
+remote:
+  script: test/e2e/remote/test-remote-allocation.sh
+  assertions:
+    # --- prerequisites -------------------------------------------------
+    # Reachability and health are the harness's own self-checks; forwarding
+    # is asserted by USING it (a VIP that serves traffic proves it), and
+    # per family, since it is a per-family sysctl.
+    "All * nodes reachable via SSH": "tests/test_harness.py::test_connects_and_sees_nodes"
+    "IPv4 forwarding enabled on *": "tests/test_remote.py::test_a_remote_vip_serves_traffic_from_a_pod"
+    "IPv6 forwarding enabled on *": "tests/test_remote.py::test_a_remote_ipv6_vip_serves_traffic_from_a_pod"
+    "IP forwarding enabled on all nodes": "tests/test_remote.py::test_a_remote_vip_serves_traffic_from_a_pod"
+    "kube-proxy running in nftables mode": "tests/test_remote.py::test_a_remote_vip_serves_traffic_from_a_pod"
+    "Clean state verified": "tests/test_harness.py::test_connects_and_sees_nodes"
+    "Allocator is running": "tests/test_harness.py::test_allocator_metrics_scrape"
+    "LBNodeAgent running on all * nodes": "tests/test_harness.py::test_pod_resolution_is_exact"
+    "nginx deployment is ready": "tests/test_harness.py::test_connects_and_sees_nodes"
+    "Remote ServiceGroup applied": "tests/test_remote.py::test_every_node_announces_on_the_dummy_interface"
+    "Allocator metrics endpoint reachable*": "tests/test_harness.py::test_allocator_metrics_scrape"
+    "LBNodeAgent metrics endpoint reachable*": "tests/test_harness.py::test_agent_metrics_scrape"
+    "All prerequisites met": "tests/test_harness.py::test_connects_and_sees_nodes"
+
+    # --- placement -------------------------------------------------------
+    "IPv4 allocated from correct remote pool": "tests/test_remote.py::test_every_node_announces_on_the_dummy_interface"
+    "IPv6 allocated from correct remote pool": "tests/test_remote.py::test_ipv6_only_remote_allocation"
+    "* correctly placed on kube-lb0 (not local interface) on all nodes": "tests/test_remote.py::test_every_node_announces_on_the_dummy_interface"
+    "IPv6 correctly placed on kube-lb0 on all nodes": "tests/test_remote.py::test_ipv6_only_remote_allocation"
+    "Both IPv4 and IPv6 allocated": "tests/test_remote.py::test_dual_stack_remote_allocation"
+    "Both addresses correctly placed on kube-lb0": "tests/test_remote.py::test_dual_stack_remote_allocation"
+    "All * nodes are announcing *": "tests/test_remote.py::test_every_node_announces_on_the_dummy_interface"
+    "All-nodes-announce test completed": "tests/test_remote.py::test_every_node_announces_on_the_dummy_interface"
+    "PureLB annotations correctly set": "tests/test_remote.py::test_every_node_announces_on_the_dummy_interface"
+    "Allocator: pool metrics verified": "tests/test_remote.py::test_every_node_announces_on_the_dummy_interface"
+    "Remote IPv4 test completed": "tests/test_remote.py::test_every_node_announces_on_the_dummy_interface"
+    "Remote IPv6 test completed": "tests/test_remote.py::test_ipv6_only_remote_allocation"
+    "Remote dual-stack test completed": "tests/test_remote.py::test_dual_stack_remote_allocation"
+
+    # --- aggregation -----------------------------------------------------
+    "IPv4 has correct /32 aggregation": "tests/test_remote.py::test_aggregation_sets_the_configured_prefix_on_every_node"
+    "IPv6 has correct /128 aggregation": "tests/test_remote.py::test_aggregation_sets_the_configured_prefix_on_every_node"
+    "Both have correct aggregation prefixes": "tests/test_remote.py::test_aggregation_sets_the_configured_prefix_on_every_node"
+    "Aggregation prefix * is stable on all nodes": "tests/test_remote.py::test_aggregation_sets_the_configured_prefix_on_every_node"
+    "IPv4 aggregation /32 verified*": "tests/test_remote.py::test_aggregation_sets_the_configured_prefix_on_every_node"
+    "IPv6 aggregation /128 verified*": "tests/test_remote.py::test_aggregation_sets_the_configured_prefix_on_every_node"
+    "IPv4 default aggregation /24 verified*": "tests/test_remote.py::test_aggregation_sets_the_configured_prefix_on_every_node"
+    "IPv6 default aggregation /64 verified*": "tests/test_remote.py::test_aggregation_sets_the_configured_prefix_on_every_node"
+    "Default aggregation IP on all nodes": "tests/test_remote.py::test_aggregation_sets_the_configured_prefix_on_every_node"
+    "Default aggregation IPv6 on all nodes": "tests/test_remote.py::test_aggregation_sets_the_configured_prefix_on_every_node"
+
+    # --- reachability ----------------------------------------------------
+    "nftables rules fully programmed for [[]*": "tests/test_remote.py::test_a_remote_ipv6_vip_serves_traffic_from_a_pod"
+    "nftables rules fully programmed for *": "tests/test_remote.py::test_a_remote_vip_serves_traffic_from_a_pod"
+    "curl-test pod ready": "tests/test_remote.py::test_a_remote_vip_serves_traffic_from_a_pod"
+    "IPv6 VIP * reachable from pod network": "tests/test_remote.py::test_a_remote_ipv6_vip_serves_traffic_from_a_pod"
+    "VIP * reachable from pod network": "tests/test_remote.py::test_a_remote_vip_serves_traffic_from_a_pod"
+    "Request *: pod on * reached backend on *": "tests/test_local_policy.py::test_traffic_reaches_pods_on_nodes_other_than_the_announcer"
+    "Cross-node connectivity validation completed": "tests/test_local_policy.py::test_traffic_reaches_pods_on_nodes_other_than_the_announcer"
+
+    # --- ETP Local -------------------------------------------------------
+    "IP on * (has endpoint) - correct": "tests/test_remote.py::test_etp_local_restricts_announcement_to_endpoint_nodes"
+    "IP NOT on * (no endpoint) - correct": "tests/test_remote.py::test_etp_local_restricts_announcement_to_endpoint_nodes"
+    "ETP Local*basic*": "tests/test_remote.py::test_etp_local_restricts_announcement_to_endpoint_nodes"
+    "ETP Local basic test completed": "tests/test_remote.py::test_etp_local_restricts_announcement_to_endpoint_nodes"
+    "*endpoint migration*": "tests/test_remote.py::test_etp_local_follows_the_endpoint_to_another_node"
+    "IP moved to *": "tests/test_remote.py::test_etp_local_follows_the_endpoint_to_another_node"
+    "IP removed from all nodes (0 endpoints)": "tests/test_remote.py::test_etp_local_withdraws_when_the_last_endpoint_goes"
+    "IP reappeared on *": ["tests/test_remote.py::test_etp_local_withdraws_when_the_last_endpoint_goes", "tests/test_remote.py::test_a_remote_address_survives_losing_one_node"]
+    "IP only on endpoint node": "tests/test_remote.py::test_etp_local_withdraws_when_the_last_endpoint_goes"
+    "ETP Local zero endpoints test completed": "tests/test_remote.py::test_etp_local_withdraws_when_the_last_endpoint_goes"
+    "IP on all * nodes with ETP Cluster": "tests/test_remote.py::test_switching_a_service_to_etp_local_narrows_the_announcement"
+    "IP correctly adjusted after ETP transition": "tests/test_remote.py::test_switching_a_service_to_etp_local_narrows_the_announcement"
+    "ETP transition test completed": "tests/test_remote.py::test_switching_a_service_to_etp_local_narrows_the_announcement"
+
+    # --- deletion, sharing, specific IP ----------------------------------
+    "IP * removed from all nodes": "tests/test_remote.py::test_deleting_a_remote_service_withdraws_it_from_every_node"
+    "nftables rules removed for *": "tests/test_remote.py::test_deleting_a_remote_service_withdraws_it_from_every_node"
+    "Allocator: addresses_in_use decreased*": "tests/test_remote.py::test_deleting_a_remote_service_withdraws_it_from_every_node"
+    "Service deletion cleanup test completed": "tests/test_remote.py::test_deleting_a_remote_service_withdraws_it_from_every_node"
+    "Both services share the same IP*": "tests/test_remote.py::test_remote_addresses_can_be_shared"
+    "Shared IP on all nodes": "tests/test_remote.py::test_remote_addresses_can_be_shared"
+    "Port conflict correctly prevented allocation": "tests/test_local_allocation.py::test_shared_ip_puts_two_services_on_one_address"
+    "IP sharing test completed": "tests/test_remote.py::test_remote_addresses_can_be_shared"
+    "Got exact requested IP: *": "tests/test_remote.py::test_a_specific_remote_address_can_be_requested"
+    "Specific IP request test completed": "tests/test_remote.py::test_a_specific_remote_address_can_be_requested"
+    "Services correctly got different IPs*": "tests/test_remote.py::test_sharing_key_added_to_a_live_service"
+    "Services now correctly share the same IP*": "tests/test_remote.py::test_sharing_key_added_to_a_live_service"
+    "Add sharing annotation test completed": "tests/test_remote.py::test_sharing_key_added_to_a_live_service"
+
+    # --- mixed / contamination -------------------------------------------
+    "Mixed test skipped*": "tests/test_remote.py::test_local_and_remote_pools_do_not_contaminate_each_other"
+    "Mixed local and remote*": "tests/test_remote.py::test_local_and_remote_pools_do_not_contaminate_each_other"
+    "No remote IPs on local interface": "tests/test_remote.py::test_local_and_remote_pools_do_not_contaminate_each_other"
+    "No local IPs on kube-lb0": "tests/test_remote.py::test_local_and_remote_pools_do_not_contaminate_each_other"
+    "No cross-contamination detected": "tests/test_remote.py::test_local_and_remote_pools_do_not_contaminate_each_other"
+
+    # --- resilience -------------------------------------------------------
+    "IP removed from * (took *": "tests/test_remote.py::test_a_remote_address_survives_losing_one_node"
+    "IP still on * remaining nodes": "tests/test_remote.py::test_a_remote_address_survives_losing_one_node"
+    "Node failure test completed": "tests/test_remote.py::test_a_remote_address_survives_losing_one_node"
+    "IP restored on * after agent restart*": "tests/test_remote.py::test_a_restarted_agent_re_announces"
+    "No duplicate IPs after restart": "tests/test_remote.py::test_a_restarted_agent_re_announces"
+    "LBNodeAgent restart recovery test completed": "tests/test_remote.py::test_a_restarted_agent_re_announces"
+    "*restart*ETP Local*": "tests/test_remote.py::test_an_agent_restart_during_etp_local_restores_the_narrow_set"
+    "ETP Local*restart*": "tests/test_remote.py::test_an_agent_restart_during_etp_local_restores_the_narrow_set"
+    "IP still only on endpoint node after restart": "tests/test_remote.py::test_an_agent_restart_during_etp_local_restores_the_narrow_set"
+
+    # --- rejections -------------------------------------------------------
+    "Pool exhaustion handled": "tests/test_remote.py::test_pool_exhaustion_is_reported"
+    "Pool exhaustion correctly reported*": "tests/test_remote.py::test_pool_exhaustion_is_reported"
+    "IP reuse verified*": "tests/test_remote.py::test_pool_exhaustion_is_reported"
+    "Pool exhaustion test completed": "tests/test_remote.py::test_pool_exhaustion_is_reported"
+    "Out-of-pool request correctly rejected*": "tests/test_remote.py::test_requesting_an_address_outside_the_pool_is_refused"
+    "Out-of-pool IP request*": "tests/test_remote.py::test_requesting_an_address_outside_the_pool_is_refused"
+    "Already-in-use IP request correctly rejected": "tests/test_remote.py::test_requesting_an_address_already_in_use_is_refused"
+    "Specific IP in use test completed": "tests/test_remote.py::test_requesting_an_address_already_in_use_is_refused"
+
+    # --- transitions ------------------------------------------------------
+    "IPv4 on all nodes": "tests/test_remote.py::test_single_stack_service_upgraded_to_dual_stack"
+    "No IPv6 assigned (SingleStack)": "tests/test_remote.py::test_single_stack_service_upgraded_to_dual_stack"
+    "IPv6 allocated after transition": "tests/test_remote.py::test_single_stack_service_upgraded_to_dual_stack"
+    "IPv4 unchanged: *": "tests/test_remote.py::test_single_stack_service_upgraded_to_dual_stack"
+    "IPv6 on all nodes": "tests/test_remote.py::test_single_stack_service_upgraded_to_dual_stack"
+    "SingleStack to DualStack transition test completed": "tests/test_remote.py::test_single_stack_service_upgraded_to_dual_stack"
+
+    # --- flags, multi-pool, re-evaluate ------------------------------------
+    "Remote VIP has permanent lifetime*": "tests/test_remote.py::test_remote_address_flags_on_the_dummy_interface"
+    "Remote VIP has /32 host route aggregation": "tests/test_remote.py::test_aggregation_sets_the_configured_prefix_on_every_node"
+    "Remote VIP address flags test completed": "tests/test_remote.py::test_remote_address_flags_on_the_dummy_interface"
+    "*multi-pool*": "tests/test_remote.py::test_remote_multi_pool_allocates_from_every_range"
+    "*Multi-Pool*": "tests/test_remote.py::test_remote_multi_pool_allocates_from_every_range"
+    "*Incremental*": "tests/test_remote.py::test_remote_service_picks_up_a_range_added_later"
+    "*incremental*": "tests/test_remote.py::test_remote_service_picks_up_a_range_added_later"
+    "*re-evaluate*": "tests/test_remote.py::test_re_evaluate_on_a_remote_service"
+    "*Re-evaluate*": "tests/test_remote.py::test_re_evaluate_on_a_remote_service"
+
+    # --- final validation --------------------------------------------------
+    "All invariants verified": "tests/test_remote.py::test_every_node_announces_on_the_dummy_interface"
+    "*: IP * on all * nodes": "tests/test_remote.py::test_every_node_announces_on_the_dummy_interface"
+    "Final validation completed": "tests/test_remote.py::test_every_node_announces_on_the_dummy_interface"
+
+    # --- patterns the first pass missed ------------------------------------
+    "* nodes have VIP * (should match endpoint count)": "tests/test_remote.py::test_etp_local_restricts_announcement_to_endpoint_nodes"
+    "ETP Local migration test completed": "tests/test_remote.py::test_etp_local_follows_the_endpoint_to_another_node"
+    "IP on initial node *": "tests/test_remote.py::test_etp_local_follows_the_endpoint_to_another_node"
+    "IP added to *": "tests/test_remote.py::test_etp_local_follows_the_endpoint_to_another_node"
+    "IP correctly NOT added to non-endpoint node * after restart": "tests/test_remote.py::test_an_agent_restart_during_etp_local_restores_the_narrow_set"
+    "IP returned to endpoint node * after restart": "tests/test_remote.py::test_an_agent_restart_during_etp_local_restores_the_narrow_set"
+    "IP not on local interface on any node": "tests/test_remote.py::test_local_and_remote_pools_do_not_contaminate_each_other"
+    "IPv4 IPs from both remote ranges": "tests/test_remote.py::test_remote_multi_pool_allocates_from_every_range"
+    "Multi-pool: * IPv4 IPs allocated (one per range)": "tests/test_remote.py::test_remote_multi_pool_allocates_from_every_range"
+    "Multi-pool: * IPv6 IPs allocated (one per range)": "tests/test_remote.py::test_remote_multi_pool_allocates_from_every_range"
+    "Initial allocation: * IP from * pool range": "tests/test_remote.py::test_remote_service_picks_up_a_range_added_later"
+    "Test services cleaned up": "tests/test_remote.py::test_deleting_a_remote_service_withdraws_it_from_every_node"
