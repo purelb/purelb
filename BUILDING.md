@@ -132,3 +132,47 @@ sudo mv kubectl-purelb /usr/local/bin/
 
 See the [README](README.md#kubectl-purelb-plugin-optional) for the
 pre-built binary download instructions.
+
+## Testing
+
+### Unit tests
+
+```shell
+make check           # go vet + race tests (also regenerates client stubs)
+make test-coverage   # coverage profile plus a per-package summary
+```
+
+### End-to-end tests
+
+The e2e suite is pytest, in [test/e2e/py/](test/e2e/py/). It runs against a
+real cluster — it allocates addresses, taints nodes, restarts agents and
+captures packets, so point it at a test cluster, never a production one.
+
+```shell
+cd test/e2e/py
+python3 -m venv .venv && .venv/bin/pip install -e .
+
+# Start from a known baseline. The suite asserts on deltas, so leftover
+# Services and ServiceGroups from a previous run skew them.
+../../../scripts/reset-test-cluster.sh --context <ctx> --yes
+
+.venv/bin/pytest --context <ctx> [--router-host <frr-host>]
+```
+
+Tests declare what they need with `@pytest.mark.requires(...)` — `multi-node`,
+`multi-subnet`, `ipv6`, `dual-homed`, `router` — and skip when the cluster
+lacks it. Skips are counted and printed in the summary, so "green" and "green
+having tested everything" stay distinguishable. Use `--require ipv6,router` to
+turn a skip of those capabilities into a failure, which is what CI should do.
+
+A few need more than a cluster:
+
+| Capability | What it needs |
+|---|---|
+| `router` | SSH to an FRR host with passwordless `sudo` and `tcpdump`. Without it the BGP and on-the-wire announcement tests skip. |
+| `ipv6` | Nodes with global IPv6 addresses. Every module covers both families; without this half of each is skipped. |
+| upgrade tests | `PURELB_TEST_UPGRADE=1`. They temporarily remove the ServiceGroup CRD's status subresource, which degrades status reporting cluster-wide while they run, so they are opt-in. |
+
+See [test/e2e/README.md](test/e2e/README.md) and
+[test/e2e/py/README.md](test/e2e/py/README.md) for the options and how the
+harness is put together.
