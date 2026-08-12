@@ -22,6 +22,7 @@ of the harness never constructs a command line.
 from __future__ import annotations
 
 import contextlib
+import json
 import ipaddress
 import shlex
 import subprocess
