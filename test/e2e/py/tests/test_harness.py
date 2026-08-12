@@ -337,6 +337,57 @@ def test_dualrun_agrees_when_both_pass(tmp_path):
     assert any("test_skipped" in p for p in rep.pytest_only)
 
 
+def test_dualrun_maps_a_base_name_onto_every_parametrization(tmp_path):
+    """`test_x` in the mapping means the test, not one of its cases.
+
+    pytest reports a parametrized test only as `test_x[v4]`, so a mapping
+    written against the readable name resolved to nothing and the
+    dual-run reported 59 tests as "did not run" while they had all
+    passed. ALL parametrizations must pass: "any of them" would let an
+    IPv6 case cover an IPv4 assertion.
+    """
+    j = tmp_path / "j.xml"
+    j.write_text(textwrap.dedent("""\
+        <?xml version="1.0" encoding="utf-8"?>
+        <testsuites><testsuite name="pytest">
+          <testcase classname="tests.test_ipam" name="test_rbac"/>
+          <testcase classname="tests.test_ipam" name="test_allocates[v4]"/>
+          <testcase classname="tests.test_ipam" name="test_allocates[v6]"/>
+        </testsuite></testsuites>
+    """))
+    suite = _write_map(
+        tmp_path,
+        '    "allocator has * RBAC": tests/test_ipam.py::test_rbac\n'
+        '    "service allocated *": tests/test_ipam.py::test_allocates\n',
+    )
+    rep = dualrun.compare(suite, dualrun.parse_bash_output(BASH_LOG, 0), dualrun.parse_junit(j))
+    assert rep.clean, dualrun.format_report(rep)
+    # Neither parametrization counts as unmapped "new coverage".
+    assert not rep.pytest_only, rep.pytest_only
+
+
+def test_dualrun_base_name_requires_every_parametrization_to_pass(tmp_path):
+    j = tmp_path / "j.xml"
+    j.write_text(textwrap.dedent("""\
+        <?xml version="1.0" encoding="utf-8"?>
+        <testsuites><testsuite name="pytest">
+          <testcase classname="tests.test_ipam" name="test_rbac"/>
+          <testcase classname="tests.test_ipam" name="test_allocates[v4]"/>
+          <testcase classname="tests.test_ipam" name="test_allocates[v6]">
+            <failure message="boom"/>
+          </testcase>
+        </testsuite></testsuites>
+    """))
+    suite = _write_map(
+        tmp_path,
+        '    "allocator has * RBAC": tests/test_ipam.py::test_rbac\n'
+        '    "service allocated *": tests/test_ipam.py::test_allocates\n',
+    )
+    rep = dualrun.compare(suite, dualrun.parse_bash_output(BASH_LOG, 0), dualrun.parse_junit(j))
+    assert not rep.clean
+    assert any("test_allocates[v6] failed" in d for d in rep.disagreed), rep.disagreed
+
+
 def test_dualrun_unmapped_bash_assertion_fails(tmp_path):
     """The guarantee that makes the port safe.
 

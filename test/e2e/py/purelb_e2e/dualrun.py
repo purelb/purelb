@@ -225,6 +225,22 @@ def match_entry(message: str, entries: Sequence[Entry]) -> Entry | None:
 # ------------------------------------------------------------ comparison
 
 
+def resolve_node(node: str, verdicts: Dict[str, str]) -> List[str]:
+    """The node ids a mapping entry refers to.
+
+    An exact id matches itself. A BASE name -- one without a [param]
+    suffix -- matches every parametrization of that test, because
+    `test_x` in the mapping means the test, not one of its cases. pytest
+    reports parametrized tests only as `test_x[v4]`, so without this a
+    mapping written against the readable name resolves to nothing and the
+    dual-run reports 59 tests that "did not run" while they all passed.
+    """
+    if node in verdicts:
+        return [node]
+    prefix = node + "["
+    return sorted(n for n in verdicts if n.startswith(prefix))
+
+
 @dataclass
 class Report:
     suite: str
@@ -264,21 +280,31 @@ def compare(
             rep.unmapped.append(message)
             continue
         for node in entry.nodes:
-            seen_nodes.add(node)
-            verdict = pytest_verdicts.get(node)
-            if verdict is None:
+            matched = resolve_node(node, pytest_verdicts)
+            seen_nodes.update(matched)
+            if not matched:
                 rep.missing_nodes.append(f"{message!r} -> {node} (no such pytest test ran)")
-            elif verdict == "passed":
-                rep.agreed.append((message, node))
-            else:
+                continue
+            # A base name standing for a parametrized test requires EVERY
+            # parametrization to have passed. "Any of them passed" would
+            # let an IPv6 case cover an IPv4 assertion, which is precisely
+            # the coverage this migration keeps almost losing.
+            bad = {n: pytest_verdicts[n] for n in matched if pytest_verdicts[n] != "passed"}
+            if bad:
                 rep.disagreed.append(
-                    f"bash passed {message!r} but {node} {verdict}"
+                    f"bash passed {message!r} but " +
+                    ", ".join(f"{n} {v}" for n, v in sorted(bad.items()))
                 )
+            else:
+                rep.agreed.append((message, node))
 
     # Anything pytest ran that no mapping entry names. Not an error --
     # commit 10 adds coverage bash never had -- but it is listed so the
     # difference between "new" and "accidentally orphaned" stays visible.
-    mapped = {node for entry in suite.entries for node in entry.nodes}
+    mapped = set()
+    for entry in suite.entries:
+        for node in entry.nodes:
+            mapped.update(resolve_node(node, pytest_verdicts) or [node])
     for node, verdict in sorted(pytest_verdicts.items()):
         if node not in mapped:
             rep.pytest_only.append(f"{node} ({verdict})")
