@@ -502,7 +502,29 @@ def test_aggregation_advertises_one_prefix_and_not_the_other(
     unwanted_prefix = str(ipaddress.ip_network(f"{vip}/{unwanted}", strict=False))
     wait_for_route(router, want_prefix)
 
-    # Give the wrong one every chance to appear before concluding it did not.
+    # Let the table settle before holding it to the absence assertion.
+    # The other parametrization of this test runs first, allocates from
+    # the SAME pool, and so usually gets the SAME address -- with the
+    # other aggregation. Its Service is deleted by then, but BGP
+    # withdrawal is not instant, and its prefix can still be in the table
+    # when this one starts asserting. That failed a full-suite run while
+    # passing in isolation.
+    #
+    # This does NOT weaken the assertion: the route being waited on
+    # belongs to a Service that no longer exists, so it goes. A build
+    # that really advertises both keeps re-advertising this prefix, never
+    # settles, and fails here instead.
+    try:
+        wait_for_withdrawal(router, unwanted_prefix, timeout=CONVERGE)
+    except Exception as exc:  # noqa: BLE001 - re-raised with the meaning
+        raise AssertionError(
+            f"aggregation {aggregation!r} is advertising {unwanted_prefix} and "
+            f"will not stop. Either this Service advertises both prefixes, or "
+            f"a withdrawn one is stuck in the table. Either way the cluster is "
+            f"claiming addresses it was never given."
+        ) from exc
+
+    # Give the wrong one every chance to (re)appear before concluding it did not.
     for _ in range(5):
         time.sleep(2)
         assert router.route(unwanted_prefix) is None, (
