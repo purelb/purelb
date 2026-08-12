@@ -488,8 +488,16 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 		}
 	}
 
+	// The exit code is the same regardless of output format. It used to be
+	// computed only on the table path, below the early return here, so
+	// `validate -o json` reported "fail": N and exited 0 -- and JSON is
+	// precisely what a pipeline consumes, so the gate did not gate for the
+	// people most likely to be relying on it.
 	if format != outputTable {
-		return printStructured(format, summary)
+		if err := printStructured(format, summary); err != nil {
+			return err
+		}
+		return validateExitError(summary, strict)
 	}
 
 	// Table output
@@ -509,13 +517,20 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 
 	fmt.Printf("\nResult: %d FAIL, %d WARN, %d PASS\n", summary.Fail, summary.Warn, summary.Pass)
 
+	return validateExitError(summary, strict)
+}
+
+// validateExitError turns a summary into the command's error, and so into
+// its exit code. Shared by every output format: which format a caller
+// asked for says how they want to READ the result, not whether a failure
+// counts.
+func validateExitError(summary validateSummary, strict bool) error {
 	if strict && (summary.Fail > 0 || summary.Warn > 0) {
 		return fmt.Errorf("validation failed (strict mode): %d failures, %d warnings", summary.Fail, summary.Warn)
 	}
 	if summary.Fail > 0 {
 		return fmt.Errorf("validation failed: %d failures", summary.Fail)
 	}
-
 	return nil
 }
 
