@@ -36,9 +36,12 @@ is exactly the shape of a race, and averaging is how you hide one.
 
 from __future__ import annotations
 
+import datetime as _dt
+import math
 import os
 import time
-from typing import Callable, Dict, List, Optional
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple
 
 import pytest
 
@@ -47,6 +50,16 @@ from purelb_e2e.cluster import Cluster
 from purelb_e2e.wait import wait_until, wait_while
 
 NAMESPACE = TEST_NAMESPACE
+
+# Where the series lives. The bash suite wrote here and nine baselines going
+# back to 2026-01-21 are committed alongside; the migration deleted them and
+# emitted nothing in their place, which is how a characterisation suite stops
+# characterising without anyone noticing. `test/e2e/timing/` is now a data
+# directory -- no bash remains.
+RESULTS_DIR = Path(__file__).resolve().parents[2] / "timing"
+
+# Collected by assert_within, written once on teardown.
+_rows: List[Tuple[str, str, str]] = []
 
 # Ceilings in seconds, overridable for a slower cluster. Same values and
 # same names as the bash suite's TIMING_MAX_*_MS.
@@ -65,6 +78,31 @@ def measure(action: Callable[[], None]) -> float:
     return time.monotonic() - start
 
 
+def _record(label: str, samples: List[float]) -> None:
+    """Append this measurement to the series, in the bash suite's format.
+
+    Milliseconds as integers, because that is what the nine committed
+    baselines contain and a series is only worth keeping if the new rows
+    are comparable to the old ones. The summary row deliberately carries
+    commas inside its value field -- the original wrote
+    `echo "$TEST,$EVENT,$VALUE"` with VALUE holding `count=..,min=..`, so a
+    strict three-column reader would already choke on the historical files.
+    Matching it exactly beats tidying it and breaking continuity.
+    """
+    ms = [int(round(s * 1000)) for s in samples]
+    for i, value in enumerate(ms, start=1):
+        _rows.append((label, f"iteration_{i}", str(value)))
+    ordered = sorted(ms)
+    # Nearest-rank p95, which reproduces the historical rows: for two
+    # samples it is the maximum.
+    p95 = ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
+    _rows.append((
+        label, "summary",
+        f"count={len(ms)},min={min(ms)},max={max(ms)},"
+        f"avg={int(round(sum(ms) / len(ms)))},p95={p95}",
+    ))
+
+
 def assert_within(label: str, samples: List[float]) -> None:
     """Judge on the worst sample, and say what was measured either way.
 
@@ -72,6 +110,11 @@ def assert_within(label: str, samples: List[float]) -> None:
     table was genuinely useful for spotting drift, and a ceiling that only
     speaks when it fails throws that away.
     """
+    # Record BEFORE asserting. The run where a ceiling is tripped is the
+    # one whose numbers are most worth keeping, and an assert here would
+    # discard them.
+    _record(label, samples)
+
     ceiling = CEILING[label]
     worst = max(samples)
     formatted = ", ".join(f"{s:.2f}s" for s in samples)
@@ -82,6 +125,27 @@ def assert_within(label: str, samples: List[float]) -> None:
         f"cluster is having a slow day."
     )
     print(f"\n{label}: worst {worst:.2f}s of {len(samples)} (ceiling {ceiling:.0f}s) [{formatted}]")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def timing_results() -> object:
+    """Write the run's measurements to the series on teardown.
+
+    Module-scoped and autouse so it cannot be forgotten by a new test, and
+    so a partial run (one module, `-k`, a failure part way) still emits
+    what it managed to measure.
+    """
+    yield
+    if not _rows:
+        return  # every test skipped; an empty file would pollute the series
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = RESULTS_DIR / f"timing-results-{stamp}.csv"
+    with path.open("w", encoding="utf-8") as fh:
+        fh.write("test,event,value\n")
+        for test, event, value in _rows:
+            fh.write(f"{test},{event},{value}\n")
+    print(f"\ntiming results: {path}")
 
 
 def test_b1_service_creation_to_vip_on_the_interface(
