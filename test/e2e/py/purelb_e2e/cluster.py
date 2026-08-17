@@ -265,7 +265,14 @@ class Cluster:
             dep = self.deployment(namespace, name)
             if dep is None or dep.status is None:
                 return False
-            want = dep.spec.replicas or 1
+            # `or 1` was wrong at exactly one value: 0 is falsy, so scaling
+            # to ZERO made this wait for one replica that would never
+            # arrive and the rollout timed out instead of succeeding at
+            # once. An UNSET replicas really does default to 1, which is
+            # why the idiom looked right; only the explicit zero is wrong.
+            # Nothing caught it because no test scaled a Deployment to zero
+            # and then waited for the rollout until E1 did.
+            want = 1 if dep.spec.replicas is None else dep.spec.replicas
             st = dep.status
             return (
                 (st.observed_generation or 0) >= (dep.metadata.generation or 0)

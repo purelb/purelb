@@ -331,3 +331,140 @@ def test_e3_election_reconvergence_after_losing_a_node(
         )
 
     assert_within("E3", [measure(evict_and_reconverge)])
+
+
+@pytest.mark.parametrize(
+    "family,label",
+    [
+        ("IPv4", "D1"),
+        pytest.param("IPv6", "D1v6", marks=pytest.mark.requires("ipv6")),
+    ],
+)
+def test_d1_vip_on_the_interface_to_kube_proxy_rules(
+    cluster: Cluster, topo: topology.Topology, default_servicegroup: str, lb_service,
+    family: str, label: str,
+):
+    """From the VIP reaching a NIC to kube-proxy being able to forward it.
+
+    Restores the D1 case, which the migration dropped and nothing else
+    covers. It measures the OTHER half of a working VIP: PureLB puts the
+    address on an interface, and kube-proxy programs the rules that
+    actually forward it. Between those two moments the address is up and
+    answers nothing, and every other assertion in the suite still passes
+    -- B1 sees it on the NIC, the announcing annotation names a node, the
+    election metrics move. Only a request notices, and D3 measures that
+    end to end without saying which half was slow.
+
+    Both families, unlike the cases inherited from bash: the v4 and v6
+    kube-proxy tables are separate, so v6 rules can lag or be missing
+    entirely without the v4 measurement noticing.
+    """
+    probe_node = sorted(topo.node_ips)[0]
+    probe_ip = topo.node_ips[probe_node]
+    if not nodes.kube_proxy_uses_nftables(probe_ip):
+        pytest.skip(f"kube-proxy on {probe_node} is not in nftables mode")
+
+    samples: List[float] = []
+    for i in range(SAMPLES):
+        name = f"timing-d1-{family.lower()}-{i}"
+        vip = lb_service(name, [family], interval=ALLOC_POLL)[0]
+        wait_until(
+            lambda: nodes.announcing_node(topo.node_ips, vip),
+            timeout=CEILING["B1"] * 3, interval=0.2,
+            description=f"{vip} on an interface",
+        )
+
+        # The clock starts once the address is on a NIC, so this is the
+        # kube-proxy half alone and not a second copy of B1.
+        def wait_for_rules() -> None:
+            wait_until(
+                lambda: nodes.nftables_has_service(probe_ip, vip) or None,
+                timeout=CEILING["D1"] * 3, interval=0.1,
+                description=f"kube-proxy rules for {vip} on {probe_node}",
+            )
+
+        samples.append(measure(wait_for_rules))
+    assert_within(label, samples)
+
+
+@pytest.mark.requires("multi-node")
+def test_e1_vip_stays_on_one_correct_node_across_scaling(
+    cluster: Cluster, topo: topology.Topology, default_servicegroup: str, lb_service,
+):
+    """The VIP survives the backend scaling to zero and back, on ONE node.
+
+    Restores the E1 case, dropped in the migration and recorded nowhere.
+    Nothing else covers it: several tests scale the backend up and two
+    scale it to zero, but none walks a sequence asserting where the
+    address is at every step.
+
+    A local-pool VIP belongs to the Service, not to its endpoints, so it
+    must stay put through all of this. Two failures are being watched
+    for, and they are opposite: the address being WITHDRAWN when the last
+    endpoint goes (it should not be -- that is ETP Local's behaviour, and
+    this Service is Cluster), and the address appearing on MORE than one
+    node, which is a split brain that serves traffic from a node that
+    does not own it. Both are invisible to a test that only checks the
+    address exists somewhere.
+
+    Dual-stack, and each family is judged separately: they elect
+    independently, so v6 can split while v4 is perfectly stable.
+    """
+    families = ["IPv4", "IPv6"] if topo.has_ipv6 else ["IPv4"]
+    vips = lb_service("echo-e1-stability", families, interval=ALLOC_POLL)
+    for vip in vips:
+        wait_until(lambda: nodes.announcing_node(topo.node_ips, vip),
+                   timeout=45, description=f"{vip} announced")
+
+    eligible = {}
+    for vip in vips:
+        subnet = topo.subnet_holding(vip)
+        eligible[vip] = set(subnet.nodes) if subnet else set(topo.node_ips)
+
+    # The bash sequence, kept exactly: it crosses zero twice, which is
+    # where withdrawal bugs live, and steps up to 3 so endpoints land on
+    # nodes that are not the announcer.
+    sequence = [0, 2, 0, 1, 3, 1, 0]
+    problems: List[str] = []
+    samples: List[float] = []
+    try:
+        for replicas in sequence:
+            start = time.monotonic()
+            cluster.apps.patch_namespaced_deployment_scale(
+                "echo", NAMESPACE, {"spec": {"replicas": replicas}}
+            )
+            cluster.wait_rollout(NAMESPACE, "echo", timeout=120)
+            samples.append(time.monotonic() - start)
+
+            for vip in vips:
+                holders = set(nodes.nodes_with_address(topo.node_ips, vip))
+                if not holders:
+                    problems.append(
+                        f"replicas={replicas}: {vip} is on NO node. A local-pool "
+                        f"address belongs to the Service, not its endpoints, so "
+                        f"scaling the backend must not withdraw it."
+                    )
+                elif len(holders) > 1:
+                    problems.append(
+                        f"replicas={replicas}: {vip} is on {sorted(holders)} -- "
+                        f"split brain. More than one node answers for it and only "
+                        f"one owns it."
+                    )
+                elif not holders <= eligible[vip]:
+                    problems.append(
+                        f"replicas={replicas}: {vip} is on {sorted(holders)}, which "
+                        f"is not on the address's subnet {sorted(eligible[vip])}. "
+                        f"Traffic to it cannot arrive."
+                    )
+    finally:
+        cluster.apps.patch_namespaced_deployment_scale(
+            "echo", NAMESPACE, {"spec": {"replicas": 1}}
+        )
+        cluster.wait_rollout(NAMESPACE, "echo", timeout=180)
+
+    _record("E1", samples)
+    assert not problems, (
+        "the VIP did not stay on exactly one correct node across "
+        + " -> ".join(str(r) for r in sequence)
+        + ":\n  " + "\n  ".join(problems)
+    )

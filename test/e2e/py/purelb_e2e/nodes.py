@@ -76,6 +76,41 @@ def has_address(host: str, address: str) -> bool:
     return False
 
 
+def nftables_has_service(host: str, address: str, port: int = 80) -> bool:
+    """Whether kube-proxy has programmed `address:port` on `host`.
+
+    The other half of "the VIP works": PureLB puts the address on an
+    interface, and kube-proxy has to program the rules that actually
+    forward it. A VIP on a NIC with no rule behind it answers nothing,
+    and every other assertion in the suite would still pass.
+
+    Reads the kube-proxy service-ips map, which in nftables mode holds
+    ClusterIP, ExternalIP and LoadBalancer addresses as
+
+        172.30.250.200 . tcp . 80 : goto external-DS7QVQMK-test/svc/tcp/
+
+    The v4 and v6 tables are separate (`ip` and `ip6`), so the family is
+    chosen from the address. Requires nftables mode -- the caller should
+    treat "map missing" as "cannot tell" rather than "not programmed",
+    which is why a missing table yields False here and the callers gate
+    on the probe succeeding at all.
+    """
+    table = "ip6" if ipaddress.ip_address(address).version == 6 else "ip"
+    out = ssh(
+        host,
+        f"sudo nft list map {table} kube-proxy service-ips 2>/dev/null || true",
+        timeout=30,
+        check=False,
+    )
+    return f"{address} . tcp . {port}" in out
+
+
+def kube_proxy_uses_nftables(host: str) -> bool:
+    """Whether the kube-proxy nftables tables exist at all on `host`."""
+    out = ssh(host, "sudo nft list tables 2>/dev/null || true", timeout=30, check=False)
+    return "kube-proxy" in out
+
+
 def interface_for_address(host: str, address: str) -> Optional[str]:
     want = ipaddress.ip_address(address)
     for line in ssh(host, "ip -br addr show").splitlines():
