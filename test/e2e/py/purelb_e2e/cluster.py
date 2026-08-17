@@ -319,6 +319,47 @@ class Cluster:
 
     # ------------------------------------------------------------------ logs
 
+    def pod_log_text(
+        self,
+        namespace: str,
+        pod: str,
+        container: Optional[str] = None,
+        since_seconds: Optional[int] = None,
+    ) -> str:
+        """A pod's log, byte-for-byte as the pod wrote it.
+
+        Every log read goes through here, because the obvious call does
+        not return what the pod printed. `read_namespaced_pod_log` is
+        declared as returning `str`, and the client's deserializer runs
+        `json.loads` on the body before honouring that: when the log
+        happens to BE valid JSON, it decodes to a dict and is then handed
+        back as `str(dict)` -- a Python repr, with single quotes, `None`
+        and `True`. The pod wrote `{"a": 1, "b": null}` and the caller
+        receives `{'a': 1, 'b': None}`.
+
+        Plain-text logs are unaffected, which is why this stayed hidden
+        while the backend was nginx and appeared the moment it started
+        answering in JSON. It cost three tests and a misdiagnosis: the
+        corrupted body was read as evidence that the pod was serving
+        stale code, which it was not.
+
+        `_preload_content=False` skips the deserializer and gives us the
+        raw response, which is all a log ever needed.
+        """
+        try:
+            resp = self.core.read_namespaced_pod_log(
+                name=pod,
+                namespace=namespace,
+                container=container,
+                since_seconds=since_seconds,
+                _preload_content=False,
+            )
+        except ApiException as exc:
+            if exc.status == 404:
+                return ""
+            raise
+        return resp.data.decode("utf-8", errors="replace")
+
     def pod_logs(
         self,
         namespace: str,
@@ -331,17 +372,9 @@ class Cluster:
         `since` is required. See the module docstring.
         """
         seconds = max(1, int((utcnow() - since).total_seconds()) + 1)
-        try:
-            return self.core.read_namespaced_pod_log(
-                name=pod,
-                namespace=namespace,
-                container=container,
-                since_seconds=seconds,
-            )
-        except ApiException as exc:
-            if exc.status == 404:
-                return ""
-            raise
+        return self.pod_log_text(
+            namespace, pod, container=container, since_seconds=seconds
+        )
 
     def component_logs(
         self, component: str, since: _dt.datetime

@@ -1050,7 +1050,7 @@ def test_a_remote_vip_serves_traffic_from_a_pod(
             in ("Succeeded", "Failed") or None,
             timeout=180, interval=3.0, description="the client pod to finish",
         )
-        body = cluster.core.read_namespaced_pod_log(name=name, namespace=NAMESPACE)
+        body = cluster.pod_log_text(NAMESPACE, name)
         assert json.loads(body)["pod"], (
             f"a pod could not reach remote VIP {vip}; the address is on kube-lb0 "
             f"on every node, so this is the Service programming rather than the "
@@ -1106,7 +1106,7 @@ def test_a_remote_ipv6_vip_serves_traffic_from_a_pod(
             in ("Succeeded", "Failed") or None,
             timeout=180, interval=3.0, description="the client pod to finish",
         )
-        body = cluster.core.read_namespaced_pod_log(name=name, namespace=NAMESPACE)
+        body = cluster.pod_log_text(NAMESPACE, name)
         assert json.loads(body)["pod"], (
             f"a pod could not reach remote IPv6 VIP {vip}; got {body[:200]!r}"
         )

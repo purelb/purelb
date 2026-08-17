@@ -261,7 +261,7 @@ def test_a_pod_can_reach_a_vip(
             timeout=180, interval=3.0,
             description="the client pod to finish",
         )
-        body = cluster.core.read_namespaced_pod_log(name=name, namespace=NAMESPACE)
+        body = cluster.pod_log_text(NAMESPACE, name)
         assert json.loads(body)["pod"], (
             f"a pod could not reach VIP {vip} (got {body[:200]!r}); node-to-VIP "
             f"works, so this is the CNI path rather than the announcement"
