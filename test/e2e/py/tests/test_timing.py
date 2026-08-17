@@ -304,11 +304,38 @@ def test_e3_election_reconvergence_after_losing_a_node(
 ):
     """From an announcer disappearing to another node holding the address.
 
-    The number that matters in an outage, and the only one here bounded
-    by the lease duration rather than by how fast a controller reacts.
     Measured once: it taints a node and waits out an election, so
-    repeating it three times would triple the slowest test in the suite
-    for a sample that is dominated by a constant.
+    repeating it would triple the slowest test in the suite.
+
+    WHAT THIS NUMBER IS, measured over 14 trials rather than assumed.
+    Election leases are per node with a 10s duration, so the survivors
+    can only re-elect once the departing node leaves the member set.
+    Timing the lease DELETION alongside the failover:
+
+        lease deleted 2.11s -> failover 2.39s     (+0.28)
+        lease deleted 2.13s -> failover 2.42s     (+0.29)
+        lease deleted 3.52s -> failover 3.80s     (+0.28)
+
+    PureLB's part is the +0.28s, and it is the same every time. Everything
+    else is how long the dying agent takes to delete its lease, which is
+    pod termination and belongs to Kubernetes. The 14 trials spanned
+    2.21-6.72s -- a 3x spread, essentially all of it in that term. Read
+    this as "failover after a graceful eviction", not as the election
+    being slow or variable.
+
+    The taint is load-bearing, not decoration. Without it the DaemonSet
+    reschedules an agent onto the same node within seconds and it
+    reclaims the address, so the VIP never moves and there is nothing to
+    measure. That was verified by removing it.
+
+    One 11.89s sample is on record (20260817-130729) and did NOT
+    reproduce in 14 attempts. The obvious explanation -- that the agent
+    was killed before releasing its lease, leaving the survivors to wait
+    the full 10s duration -- is NOT supported: the lease was explicitly
+    deleted in every trial, never left to expire. So the outlier is
+    unexplained rather than understood, and is recorded here so the next
+    person meets it as a known open question instead of a fresh surprise.
+    The 30s ceiling holds either way.
     """
     vip = lb_service("timing-e3", ["IPv4"])[0]
     original, _ = wait_until(
