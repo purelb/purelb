@@ -326,8 +326,22 @@ kubectl -n test patch deployment echo --type=merge \
 
 kubectl rollout status deployment/echo -n test --timeout=180s >/dev/null \
     || die "echo backend did not become ready"
+
+# Ask the RUNNING process what it loaded, and refuse to hand over a cluster
+# where it disagrees with the tree.
+#
+# The checksum above is the template's opinion; this is the process's. They can
+# disagree in the ordinary case where server.py was edited and the pods were
+# never rolled, and nothing else in the setup would say so. A reset that cannot
+# certify which code is answering is not a baseline, so this is a die, not a
+# warning. Uses the pod's own python -- the image has no curl.
+RUNNING=$(kubectl exec deploy/echo -n test -- python3 -c \
+    "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8080/version').read().decode().strip())" \
+    2>/dev/null) || die "could not read /version from the echo backend"
+[ "$RUNNING" = "$SUM" ] || die "echo backend is running server.py $RUNNING but the tree has $SUM; the pod did not pick up the new code"
+
 BACKEND=$(kubectl get pods -n test -l app=echo --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
-echo "  Backend pods:   $BACKEND running in namespace 'test' (server.py $SUM)"
+echo "  Backend pods:   $BACKEND running in namespace 'test' (server.py $SUM, verified live)"
 
 if [ "$STALE" -ne 0 ]; then
     die "$STALE stale address(es) remain; the cluster is NOT a clean baseline"

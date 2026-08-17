@@ -30,6 +30,8 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional, Tuple
 
+from purelb_e2e import backend
+
 SSH_OPTS = [
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
@@ -245,7 +247,35 @@ def echo_json(node_ips: Dict[str, str], address: str, path: str = "/",
         ) from exc
     if "pod" not in parsed:
         raise AssertionError(f"{address} returned JSON without a pod field: {parsed}")
+    _assert_current_code(parsed, address)
     return parsed
+
+
+def _assert_current_code(parsed: dict, address: str) -> None:
+    """Refuse a response from a backend running code that is not in the tree.
+
+    The server is mounted from a ConfigMap, so there is no image tag to
+    pin it and a running interpreter never re-reads its source. The pod
+    template carries a checksum, but that only proves the TEMPLATE
+    changed. Edit server.py, run pytest without re-running
+    reset-test-cluster.sh, and the pods serve the old code while the
+    tree, the mount and the annotation all agree -- so the suite reports
+    on a server that is not the one under review.
+
+    Checked on every response rather than once at session start, because
+    the backend can be rolled mid-run and the cost is a dict lookup.
+    """
+    expected = backend.server_checksum()
+    actual = parsed.get("server_checksum")
+    if actual == expected:
+        return
+    raise AssertionError(
+        f"{address} was served by a backend running server.py "
+        f"{actual or '<older than this check>'}, but the tree has {expected}. "
+        f"The pod did not pick up the current code -- re-run "
+        f"scripts/reset-test-cluster.sh. Any result from this run is about "
+        f"code that is not in the tree."
+    )
 
 
 def announcing_node(node_ips: Dict[str, str], address: str) -> Optional[Tuple[str, str]]:

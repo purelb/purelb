@@ -8,7 +8,27 @@
 # in via a ConfigMap (see README.md).
 
 import http.server, socket, os, ipaddress, threading, signal
-import json, urllib.parse
+import hashlib, json, urllib.parse
+
+# Hash of the source THIS PROCESS loaded, computed once at import.
+#
+# The server is fed in from a ConfigMap, and a ConfigMap has no tag. The pod
+# template carries a checksum of server.py so an edit forces a rollout, but that
+# only proves the template changed -- a running interpreter never re-reads its
+# source. The reachable mistake is ordinary: edit this file, run pytest without
+# re-running scripts/reset-test-cluster.sh, and the pods keep executing the old
+# code while the tree, the mounted file and the annotation all agree with each
+# other. Nothing else in the setup can tell you that.
+#
+# This is the only value that describes the code actually executing. It is
+# served at /version and carried in the JSON payload, so the mismatch surfaces
+# as a named assertion rather than as whatever the older code happens to do.
+#
+# Honest scope: this has not yet caused a bad run. It was added while chasing a
+# failure that looked exactly like it and turned out to be something else -- the
+# Kubernetes client corrupting JSON pod logs, see Cluster.pod_log_text. The
+# hazard is real and cheap to close; the incident was not this one.
+SELF = hashlib.sha256(open(__file__, "rb").read()).hexdigest()[:16]
 
 # Exit immediately on SIGTERM so a rescheduled/deleted pod terminates fast
 # (default is to run until SIGKILL after terminationGracePeriodSeconds). This
@@ -62,6 +82,7 @@ def collect(handler, n, peer, loc):
     pa = ipaddress.ip_address(praw)
     return {
         "request_count": n,
+        "server_checksum": SELF,
         "pod": POD, "node": NODE, "node_ip": NODEIP, "pod_ip": PODIP,
         "tcp_peer_src":  {"ip": unmap(praw), "port": peer[1]},
         "tcp_local_dst": {"ip": unmap(lraw), "port": loc[1]},
@@ -96,9 +117,16 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         # Compare the parsed path, not the raw one, so /healthz?x=y is
         # still the probe rather than a counted request.
-        if urllib.parse.urlparse(self.path).path == "/healthz":
+        route = urllib.parse.urlparse(self.path).path
+        if route == "/healthz":
             self.send_response(200); self.send_header("Content-Length", "3")
             self.end_headers(); self.wfile.write(b"ok\n"); return
+        # Uncounted like /healthz: reset-test-cluster.sh asks for this on every
+        # provision, and it should not show up as request traffic in a test.
+        if route == "/version":
+            v = (SELF + "\n").encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(v)))
+            self.end_headers(); self.wfile.write(v); return
         n = next_count()
         peer = self.connection.getpeername()   # kernel: packet SOURCE addr/port
         loc  = self.connection.getsockname()   # kernel: local (pod-side) addr/port
@@ -116,6 +144,7 @@ class H(http.server.BaseHTTPRequestHandler):
         lines = [
           "# source: this pod process (in-memory, resets on pod restart/reschedule)",
           "request_count        = {:<28} [# requests served by THIS pod instance]".format(n),
+          "server_checksum      = {:<28} [sha256 of the server.py THIS process loaded; also at /version]".format(SELF),
           "",
           "# source: Kubernetes downward API (pod env)",
           "pod                  = {:<28} [env POD_NAME  <- fieldRef metadata.name]".format(POD),
