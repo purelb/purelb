@@ -25,8 +25,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
@@ -72,6 +75,164 @@ func parseDurationEnv(envVar string, defaultVal time.Duration) time.Duration {
 		return defaultVal
 	}
 	return d
+}
+
+// nodeClient is the subset of *k8s.Client that config delivery uses.
+// Narrowed to an interface so the delivery logic can be exercised without
+// a live API server.
+type nodeClient interface {
+	Clientset() kubernetes.Interface
+	Errorf(obj runtime.Object, kind, msg string, args ...interface{})
+}
+
+// configSetter is the subset of *controller that config delivery uses.
+type configSetter interface {
+	SetConfig(cfg *purelbv2.Config) k8s.SyncState
+}
+
+// newConfigChanged builds the ConfigChanged callback. It wraps
+// ctrl.SetConfig with nodeSelector evaluation and keeps the election
+// selector coherent with the announcer: the lease must never advertise a
+// subnet the announcer cannot announce on. Convergence after a config
+// change is two-wave: wave 1 reprocesses services against the stale lease
+// subnets; wave 2 follows the next lease renewal (<=2.5s) plus informer
+// propagation.
+//
+// getClient is a getter rather than the client itself because main builds
+// the k8s client with this callback already in hand -- the client variable
+// is still nil at construction time. That is safe because deliveries only
+// happen from inside client.Run(), which happens-after the assignment.
+func newConfigChanged(
+	logger log.Logger,
+	getClient func() nodeClient,
+	ctrl configSetter,
+	myNode string,
+	selector *atomic.Pointer[election.InterfaceSelector],
+) func(*purelbv2.Config) k8s.SyncState {
+	return func(cfg *purelbv2.Config) k8s.SyncState {
+		client := getClient()
+
+		// Fetch our Node's labels fresh per delivery — no stored label
+		// state. Like a Pod's nodeSelector, label changes take effect
+		// when config is next delivered (CR event, informer resync, or
+		// pod restart), not continuously.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		node, err := client.Clientset().CoreV1().Nodes().Get(ctx, myNode, metav1.GetOptions{})
+		cancel()
+		if err != nil {
+			// SyncStateError makes the CR controller requeue this
+			// delivery with backoff; config is not applied.
+			logging.Info(logger, "op", "configChanged", "error", err,
+				"msg", "failed to get node for nodeSelector evaluation, delivery will be retried")
+			return k8s.SyncStateError
+		}
+
+		// Log locally as well as in the allocator. An operator debugging a
+		// VIP that stopped being announced looks at the node agent, and a
+		// dropped `remote` group is exactly why it would have stopped.
+		for _, g := range cfg.DroppedGroups {
+			logging.Info(logger, "op", "configChanged", "event", "serviceGroupOutOfScope",
+				"sg", g.Namespace+"/"+g.Name, "isRemote", fmt.Sprintf("%t", g.Spec.Remote != nil),
+				"msg", "ignored: ServiceGroups are read only from the PureLB install namespace")
+		}
+
+		for _, agent := range cfg.Agents {
+			logging.Debug(logger, "op", "configChanged", "agent", agent.Namespace+"/"+agent.Name,
+				"hasNodeSelector", fmt.Sprintf("%t", agent.Spec.NodeSelector != nil))
+		}
+
+		// AgentsForNode drops agents whose selector will not convert, and
+		// documents that reporting them is the caller's job. Do that here:
+		// otherwise a typo in matchExpressions removes an LBNodeAgent from
+		// consideration with no log, no event and no metric, which looks
+		// exactly like the CR not existing.
+		preFilter := len(cfg.Agents)
+		for _, agent := range cfg.Agents {
+			if purelbv2.IsCatchAll(agent.Spec.NodeSelector) {
+				continue
+			}
+			if _, err := metav1.LabelSelectorAsSelector(agent.Spec.NodeSelector); err != nil {
+				logging.Info(logger, "op", "configChanged", "event", "invalidNodeSelector",
+					"agent", agent.Namespace+"/"+agent.Name, "error", err,
+					"msg", "nodeSelector could not be evaluated; this LBNodeAgent matches no node")
+				client.Errorf(agent, "InvalidNodeSelector",
+					"nodeSelector could not be evaluated (%s); this LBNodeAgent applies to no node", err)
+			}
+		}
+
+		cfg.Agents = purelbv2.AgentsForNode(cfg.Agents, node.Labels)
+
+		// Report the agent whose configuration is actually applied, which is
+		// the first one with a Local spec, not simply the highest-precedence
+		// match. The announcer and the election selector both resolve through
+		// FirstLocalAgent, so an LBNodeAgent carrying only a nodeSelector
+		// sorts to the front, gets skipped, and naming it here would event
+		// "ignored" against the CR that is genuinely in force.
+		if len(cfg.Agents) > 1 {
+			winner := purelbv2.FirstLocalAgent(cfg.Agents)
+			if winner == nil {
+				logging.Info(logger, "op", "configChanged", "event", "noLocalSpec", "node", myNode,
+					"matching", fmt.Sprintf("%d", len(cfg.Agents)),
+					"msg", "LBNodeAgents match this node but none has a local spec; announcing nothing")
+			}
+			for _, ignored := range cfg.Agents {
+				if winner == nil || ignored == winner {
+					continue
+				}
+				logging.Info(logger, "op", "configChanged", "msg", "multiple LBNodeAgents match this node, using highest precedence with a local spec",
+					"node", myNode, "using", winner.Namespace+"/"+winner.Name, "ignoring", ignored.Namespace+"/"+ignored.Name)
+				client.Errorf(ignored, "ConfigIgnored",
+					"LBNodeAgent %s/%s takes precedence on node %s", winner.Namespace, winner.Name, myNode)
+			}
+		}
+
+		// Announcer first: the selector is stored only after we know
+		// whether the announcer accepted the config, so the lease can
+		// never advertise what the announcer failed to configure.
+		ret := ctrl.SetConfig(cfg)
+
+		state := "default"
+		switch {
+		case ret == k8s.SyncStateError:
+			// Invalid regex, dummy-interface failure, any announcer
+			// config failure: the announcer announces nothing, so the
+			// lease must advertise nothing.
+			selector.Store(&election.InterfaceSelector{})
+			state = "invalid"
+			if offending := purelbv2.FirstLocalAgent(cfg.Agents); offending != nil {
+				client.Errorf(offending, "ConfigError",
+					"invalid configuration: node %s is announcing nothing until this is fixed", myNode)
+			}
+		case preFilter > 0 && len(cfg.Agents) == 0:
+			// Every CR's nodeSelector deselected this node: the
+			// announcer is unconfigured, so advertise nothing. (A
+			// default fallback here would win elections it cannot
+			// serve — a blackhole.)
+			selector.Store(&election.InterfaceSelector{})
+			state = "deselected"
+		default:
+			sel, selErr := election.SelectorFromConfig(cfg)
+			if selErr != nil {
+				// Cannot happen when SetConfig succeeded (same regex,
+				// same agent), but stay coherent if it ever does.
+				selector.Store(&election.InterfaceSelector{})
+				state = "invalid"
+			} else {
+				// sel is nil for remote-only clusters (no Local spec):
+				// keep the default-detection lease, today's behavior.
+				selector.Store(sel)
+				if sel != nil {
+					state = "configured"
+				}
+			}
+		}
+		recordSelectorState(state)
+		logging.Info(logger, "op", "configChanged", "selectorState", state,
+			"node", myNode, "matchingAgents", fmt.Sprintf("%d", len(cfg.Agents)),
+			"msg", "config delivery evaluated")
+
+		return ret
+	}
 }
 
 func main() {
@@ -135,134 +296,7 @@ func main() {
 	// client.Run(), which happens-after the assignment below.
 	var client *k8s.Client
 
-	// configChanged wraps ctrl.SetConfig with nodeSelector evaluation
-	// and keeps the election selector coherent with the announcer: the
-	// lease must never advertise a subnet the announcer cannot announce
-	// on. Convergence after a config change is two-wave: wave 1
-	// reprocesses services against the stale lease subnets; wave 2
-	// follows the next lease renewal (≤2.5s) plus informer propagation.
-	configChanged := func(cfg *purelbv2.Config) k8s.SyncState {
-		// Fetch our Node's labels fresh per delivery — no stored label
-		// state. Like a Pod's nodeSelector, label changes take effect
-		// when config is next delivered (CR event, informer resync, or
-		// pod restart), not continuously.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		node, err := client.Clientset().CoreV1().Nodes().Get(ctx, *myNode, metav1.GetOptions{})
-		cancel()
-		if err != nil {
-			// SyncStateError makes the CR controller requeue this
-			// delivery with backoff; config is not applied.
-			logging.Info(logger, "op", "configChanged", "error", err,
-				"msg", "failed to get node for nodeSelector evaluation, delivery will be retried")
-			return k8s.SyncStateError
-		}
-
-		// Log locally as well as in the allocator. An operator debugging a
-		// VIP that stopped being announced looks at the node agent, and a
-		// dropped `remote` group is exactly why it would have stopped.
-		for _, g := range cfg.DroppedGroups {
-			logging.Info(logger, "op", "configChanged", "event", "serviceGroupOutOfScope",
-				"sg", g.Namespace+"/"+g.Name, "isRemote", fmt.Sprintf("%t", g.Spec.Remote != nil),
-				"msg", "ignored: ServiceGroups are read only from the PureLB install namespace")
-		}
-
-		for _, agent := range cfg.Agents {
-			logging.Debug(logger, "op", "configChanged", "agent", agent.Namespace+"/"+agent.Name,
-				"hasNodeSelector", fmt.Sprintf("%t", agent.Spec.NodeSelector != nil))
-		}
-
-		// AgentsForNode drops agents whose selector will not convert, and
-		// documents that reporting them is the caller's job. Do that here:
-		// otherwise a typo in matchExpressions removes an LBNodeAgent from
-		// consideration with no log, no event and no metric, which looks
-		// exactly like the CR not existing.
-		preFilter := len(cfg.Agents)
-		for _, agent := range cfg.Agents {
-			if purelbv2.IsCatchAll(agent.Spec.NodeSelector) {
-				continue
-			}
-			if _, err := metav1.LabelSelectorAsSelector(agent.Spec.NodeSelector); err != nil {
-				logging.Info(logger, "op", "configChanged", "event", "invalidNodeSelector",
-					"agent", agent.Namespace+"/"+agent.Name, "error", err,
-					"msg", "nodeSelector could not be evaluated; this LBNodeAgent matches no node")
-				client.Errorf(agent, "InvalidNodeSelector",
-					"nodeSelector could not be evaluated (%s); this LBNodeAgent applies to no node", err)
-			}
-		}
-
-		cfg.Agents = purelbv2.AgentsForNode(cfg.Agents, node.Labels)
-
-		// Report the agent whose configuration is actually applied, which is
-		// the first one with a Local spec, not simply the highest-precedence
-		// match. The announcer and the election selector both resolve through
-		// FirstLocalAgent, so an LBNodeAgent carrying only a nodeSelector
-		// sorts to the front, gets skipped, and naming it here would event
-		// "ignored" against the CR that is genuinely in force.
-		if len(cfg.Agents) > 1 {
-			winner := purelbv2.FirstLocalAgent(cfg.Agents)
-			if winner == nil {
-				logging.Info(logger, "op", "configChanged", "event", "noLocalSpec", "node", *myNode,
-					"matching", fmt.Sprintf("%d", len(cfg.Agents)),
-					"msg", "LBNodeAgents match this node but none has a local spec; announcing nothing")
-			}
-			for _, ignored := range cfg.Agents {
-				if winner == nil || ignored == winner {
-					continue
-				}
-				logging.Info(logger, "op", "configChanged", "msg", "multiple LBNodeAgents match this node, using highest precedence with a local spec",
-					"node", *myNode, "using", winner.Namespace+"/"+winner.Name, "ignoring", ignored.Namespace+"/"+ignored.Name)
-				client.Errorf(ignored, "ConfigIgnored",
-					"LBNodeAgent %s/%s takes precedence on node %s", winner.Namespace, winner.Name, *myNode)
-			}
-		}
-
-		// Announcer first: the selector is stored only after we know
-		// whether the announcer accepted the config, so the lease can
-		// never advertise what the announcer failed to configure.
-		ret := ctrl.SetConfig(cfg)
-
-		state := "default"
-		switch {
-		case ret == k8s.SyncStateError:
-			// Invalid regex, dummy-interface failure, any announcer
-			// config failure: the announcer announces nothing, so the
-			// lease must advertise nothing.
-			selector.Store(&election.InterfaceSelector{})
-			state = "invalid"
-			if offending := purelbv2.FirstLocalAgent(cfg.Agents); offending != nil {
-				client.Errorf(offending, "ConfigError",
-					"invalid configuration: node %s is announcing nothing until this is fixed", *myNode)
-			}
-		case preFilter > 0 && len(cfg.Agents) == 0:
-			// Every CR's nodeSelector deselected this node: the
-			// announcer is unconfigured, so advertise nothing. (A
-			// default fallback here would win elections it cannot
-			// serve — a blackhole.)
-			selector.Store(&election.InterfaceSelector{})
-			state = "deselected"
-		default:
-			sel, selErr := election.SelectorFromConfig(cfg)
-			if selErr != nil {
-				// Cannot happen when SetConfig succeeded (same regex,
-				// same agent), but stay coherent if it ever does.
-				selector.Store(&election.InterfaceSelector{})
-				state = "invalid"
-			} else {
-				// sel is nil for remote-only clusters (no Local spec):
-				// keep the default-detection lease, today's behavior.
-				selector.Store(sel)
-				if sel != nil {
-					state = "configured"
-				}
-			}
-		}
-		recordSelectorState(state)
-		logging.Info(logger, "op", "configChanged", "selectorState", state,
-			"node", *myNode, "matchingAgents", fmt.Sprintf("%d", len(cfg.Agents)),
-			"msg", "config delivery evaluated")
-
-		return ret
-	}
+	configChanged := newConfigChanged(logger, func() nodeClient { return client }, ctrl, *myNode, &selector)
 
 	client, err = k8s.New(&k8s.Config{
 		ProcessName:        "purelb-lbnodeagent",

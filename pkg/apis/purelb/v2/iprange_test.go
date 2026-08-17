@@ -165,3 +165,66 @@ func mustIPRange(t *testing.T, s string) IPRange {
 	assert.Nil(t, err, s)
 	return n
 }
+
+// TestRaw pins that Raw() returns the operator's original spec string
+// verbatim. ServiceGroup .status display shows this rather than the
+// parsed "(from - to)" form, so a round-trip failure here changes what
+// `kubectl get servicegroup` prints.
+func TestRaw(t *testing.T) {
+	for _, raw := range []string{
+		"192.168.1.0/24",
+		"192.168.1.10-192.168.1.20",
+		"2001:db8::/64",
+		"2001:db8::1-2001:db8::ff",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			assert.Equal(t, raw, mustIPRange(t, raw).Raw())
+		})
+	}
+}
+
+// TestIPRangeString covers the "(from - to)" rendering. It feeds the
+// "ServiceGroup overlaps" error text that
+// TestParseGroupsOverlapMessageIsStable already pins downstream in
+// internal/allocator, so a change here breaks that test at a distance.
+func TestIPRangeString(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want string
+	}{
+		{"192.168.1.0/24", "(192.168.1.0 - 192.168.1.255)"},
+		{"192.168.1.10-192.168.1.20", "(192.168.1.10 - 192.168.1.20)"},
+		{"2001:db8::/120", "(2001:db8:: - 2001:db8::ff)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.raw, func(t *testing.T) {
+			assert.Equal(t, tc.want, mustIPRange(t, tc.raw).String())
+		})
+	}
+}
+
+// TestAddrFamily covers the helper the announcer uses to label metrics
+// and pick the announcing annotation key. Note the implementation sets
+// V6 when To16() succeeds and then OVERRIDES with V4 when To4() does, so
+// an IPv4-mapped address is correctly V4 rather than V6.
+func TestAddrFamily(t *testing.T) {
+	tests := []struct {
+		name string
+		ip   net.IP
+		want int
+	}{
+		{"dotted quad", net.ParseIP("192.168.1.1"), FamilyV4},
+		{"ipv4 4-byte form", net.IPv4(10, 0, 0, 1).To4(), FamilyV4},
+		{"ipv4-mapped ipv6", net.ParseIP("::ffff:192.0.2.1"), FamilyV4},
+		{"ipv6", net.ParseIP("2001:db8::1"), FamilyV6},
+		{"ipv6 loopback", net.ParseIP("::1"), FamilyV6},
+		// Neither To16() nor To4() succeeds, so the family is reported as
+		// indeterminate rather than defaulting to a real family.
+		{"nil is indeterminate", nil, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, AddrFamily(tc.ip))
+		})
+	}
+}

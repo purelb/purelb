@@ -9,6 +9,12 @@ VIP to a new node.
 No image to build — it runs the code in [`server.py`](server.py) on a stock
 `python:3.12-alpine` image, mounted via a ConfigMap.
 
+It is also **the backend for the e2e suite**, where it runs in namespace `test`
+and the assertions parse its JSON. This page covers the standalone manual
+deployment in `echo-test`; for the suite's copy use
+`scripts/reset-test-cluster.sh` and see [../e2e/README.md](../e2e/README.md).
+Both run the same `server.py` — a change here changes what the suite tests.
+
 ## Deploy
 
 ```sh
@@ -42,6 +48,7 @@ Example response:
 
 ```
 request_count        = 3                            [# requests served by THIS pod instance]
+server_checksum      = 155146c0b4bb4736             [sha256 of the server.py THIS process loaded]
 pod                  = echo-5967b68d75-lqxbj        [env POD_NAME  <- fieldRef metadata.name]
 node                 = purelb2-1                    [env NODE_NAME <- fieldRef spec.nodeName]
 node_ip              = 172.30.250.104               [env HOST_IP   <- fieldRef status.hostIP]
@@ -59,7 +66,26 @@ Cluster` (the only mode local pools support): kube-proxy **DNAT**s the VIP to th
 pod, so `tcp_local_dst` is the pod IP (not the VIP — that's in `http_host`), and
 it **SNAT**s the source, so `tcp_peer_src` is the node IP, not the real caller.
 `node`/`node_ip` are always the pod's node. Health probes hit `/healthz` and are
-not counted.
+not counted, and neither is `/version`.
+
+## JSON
+
+Ask for JSON with either an `Accept` header or a query parameter — the header is
+the correct HTTP thing and is what the suite uses; `?format=json` exists because
+adding a header from a node shell is more to type than it is worth. Text stays
+the default, so everything above is unchanged.
+
+```sh
+curl -s -H 'Accept: application/json' http://$V4/ | jq .
+curl -s "http://$V4/?format=json" | jq -r .pod
+```
+
+The JSON carries the same values, but structured rather than annotated:
+`tcp_peer_src` and `tcp_local_dst` are objects with `ip` and `port`, and the
+text form's `socket_family = IPv4 (v4-mapped on a v6 socket)` is split into
+`socket_family` (`"IPv4"`/`"IPv6"`) and `ipv4_mapped` (boolean), so a test
+asserting the address family never has to parse prose. Absent headers are
+`null` rather than `<none>`.
 
 ## Watch service affinity move the VIP
 
@@ -102,6 +128,24 @@ kubectl create configmap echo-server -n echo-test --from-file=server.py \
   --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n echo-test rollout restart deployment/echo
 ```
+
+**The restart is not optional.** A ConfigMap has no tag, and a running
+interpreter never re-reads the file it started from: update the ConfigMap alone
+and the pod keeps serving the old code indefinitely while the mounted file, the
+pod spec and the tree all agree with each other. Nothing in the setup reports
+this on its own, which is why the server reports on itself.
+
+So the server reports the hash of the source **it actually loaded**:
+
+```sh
+curl -s http://$V4/version                              # what the pod is running
+sha256sum server.py | cut -c1-16                        # what is in the tree
+```
+
+If those differ, the pod is stale — nothing else will tell you. The e2e suite
+checks this on every JSON response and `reset-test-cluster.sh` refuses to hand
+over a cluster where they disagree, so in the suite the failure is loud and
+immediate. In this standalone deployment, it is on you to restart.
 
 ## Clean up
 

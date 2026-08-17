@@ -346,9 +346,23 @@ type AddressPool struct {
 	// +kubebuilder:validation:Required
 	Subnet string `json:"subnet"`
 
-	// Aggregation changes the address mask of the allocated address
-	// from the subnet mask to the specified mask. It can be "default"
-	// or an integer in the range 8-128.
+	// Aggregation changes the address mask of the allocated address from
+	// the subnet mask to the specified mask, which is what decides the
+	// route the kernel installs and therefore what routing software
+	// advertises: "/32" advertises a host route for the one address,
+	// while "default" advertises the whole pool subnet.
+	//
+	// The value is "default", empty, or a prefix length WITH ITS LEADING
+	// SLASH -- "/32", "/128". The slash is not decoration: the announcer
+	// builds the mask as net.ParseCIDR("0.0.0.0" + aggregation), so "32"
+	// becomes "0.0.0.032" and fails to parse.
+	//
+	// This comment used to say "an integer in the range 8-128", which
+	// described a format the code does not accept. Following it produced
+	// a ServiceGroup the API server stored happily and whose addresses
+	// were then never announced.
+	//
+	// +kubebuilder:validation:Pattern=`^(default|/([89]|[1-9][0-9]|1[01][0-9]|12[0-8]))$`
 	// +optional
 	Aggregation string `json:"aggregation,omitempty"`
 }

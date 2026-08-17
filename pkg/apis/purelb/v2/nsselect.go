@@ -34,9 +34,19 @@ func ServesNamespace(sg *ServiceGroup, namespace string) bool {
 }
 
 // IsNamespaceCatchAll reports whether sg names no namespace and therefore
-// serves all of them. Exported because the kubectl plugin has to classify
-// ServiceGroups exactly as the allocator does when it explains a decision;
-// two implementations of this rule would drift.
+// serves all of them.
+//
+// Exported so that anything deciding whether a group may serve a namespace
+// decides it here rather than re-reading spec.namespaces; two implementations
+// of "absent means all" would drift, and the drift would be silent.
+//
+// Note that `kubectl purelb validate` deliberately does NOT use these
+// functions, despite asking a question that sounds identical. It reports
+// whether a namespace is bound by two or more groups without exactly one
+// naming itself the default -- and for that, a catch-all group is not a
+// binding at all. ServesNamespace answers true for every catch-all, so using
+// it there would make the "default" group eligible for every namespace and
+// report ambiguity for configurations that have none.
 func IsNamespaceCatchAll(sg *ServiceGroup) bool {
 	return sg == nil || len(sg.Spec.Namespaces) == 0
 }

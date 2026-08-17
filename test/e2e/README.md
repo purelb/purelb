@@ -1,92 +1,103 @@
 # PureLB E2E Tests
 
-End-to-end functional tests for PureLB.
-
-## Test Suites
-
-| Directory | Description |
-|-----------|-------------|
-| [local/](local/) | Tests for local IP allocation mode (addresses on physical NIC) |
-| [remote/](remote/) | Tests for remote IP allocation mode (addresses on kube-lb0) |
-| [ipam-external/](ipam-external/) | Tests for external (sidecar) IPAM — also the acceptance test when adding a new sidecar IPAM implementation |
-| [timing/](timing/) | Tests for ETP Local timing behavior and latency characterization |
-| [address-lifetime/](address-lifetime/) | Tests for address lifetime/flags to prevent CNI conflicts (Flannel) |
-
-## Running Tests
-
-Each test suite has its own README with specific instructions. Generally:
+The suite is pytest, and it lives in [py/](py/). 
 
 ```bash
-cd <test-directory>
-./<test-script>.sh
+cd py
+python3 -m venv .venv && .venv/bin/pip install -e .
+../../../scripts/reset-test-cluster.sh --context <ctx> --yes
+.venv/bin/pytest --context <ctx> [--router-host <frr-host>]
 ```
 
-### Multi-interface test (gated)
+**[py/README.md](py/README.md) is the guide**: what each of the 18 test
+modules covers, what a cluster must provide for them to run, and how to
+run a subset.
 
-`test_multi_interface` in the local suite exercises nodeSelector-scoped
-LBNodeAgent CRs and multi-NIC announcement on a dual-homed node. It only
-runs when the `MULTI_IF_*` environment variables are set (all six are
-required together — a partial set fails loudly rather than silently
-skipping). One-command invocation for the prox-purelb2 profile
-(purelb2-3 is dual-homed: eth1 on the 251 subnet, eth0 on the 250
-subnet; nodes 1-2 provide the other-node-on-subnet the migration
-assertion needs):
+## The cluster the suite needs
 
-The pool ranges must not overlap the suite's generated default
-ServiceGroup (`.200-.220` and `:a::1-:a::20` per subnet) or the per-test
-ranges (`.230-.240`, `:b::1-:b::20`) — the allocator rejects overlapping
-ServiceGroups outright.
+Nothing here is invented for the documentation: the fixtures discover the
+topology at runtime ([purelb_e2e/topology.py](py/purelb_e2e/topology.py))
+and gate tests on what they find ([conftest.py](py/conftest.py)), so this
+is that logic stated forwards.
 
-```bash
-cd local
-MULTI_IF_NODE=purelb2-3 \
-MULTI_IF_IFACE=eth0 \
-MULTI_IF_SUBNET=172.30.250.0/24 \
-MULTI_IF_SUBNET6=2001:470:b8f3:250::/64 \
-MULTI_IF_POOL_V4=172.30.250.244-172.30.250.247 \
-MULTI_IF_POOL_V6=2001:470:b8f3:250:c::1-2001:470:b8f3:250:c::10 \
-./test-local-allocation.sh
+```
+   workstation (this repo, .venv, kubectl)
+      │
+      │  kubectl --context <ctx>              → apiserver
+      │  ssh <node InternalIP>                → ip addr show, curl
+      │  http://<node InternalIP>:7472        → lbnodeagent metrics
+      │  curl http://<VIP>                    → end-to-end, via the router
+      ▼
+ ┌──────────────────────────────────────────────────────────┐
+ │  FRR router                                --router-host  │
+ │  BGP AS 64514 · maximum-paths 8 · vtysh · tcpdump · sudo  │
+ └────────┬──────────────────────────────────────┬──────────┘
+          │                                      │
+   subnet A 172.30.250.0/24              subnet B 172.30.251.0/24
+            2001:db8:250::/64                     2001:db8:251::/64
+          │                                      │
+ ┌────────┴─────────┐                   ┌────────┴─────────┐
+ │ node-1    node-2 │                   │ node-3    node-4 │
+ └──────────────────┘                   └────────┬─────────┘
+          ▲                                      │
+          └──────── eth1, second NIC ────────────┘
+                    on node-3, into subnet A
+
+ every node:  gobgpd peering with the router · kube-lb0 dummy
+              arp_ignore=1, arp_announce=2 · sshd · ip, curl
+ free on the wire, per subnet:  .200-.253  and  <prefix>:a:: … :e::
 ```
 
-## Testing Methodology
+The addresses above are the shape, not literals — the fixtures build
+every pool from the subnets they discover.
 
-These E2E tests use **SSH-based connectivity testing** rather than external routing (BGP, static routes). This approach:
+### What each capability needs, and what you lose without it
 
-### What We Test
-- PureLB allocates IPs correctly from configured pools
-- IPs are placed on the correct interface (eth0 for local, kube-lb0 for remote)
-- Correct number of nodes announce each IP (1 for local with election, all for remote)
-- externalTrafficPolicy: Local works correctly for remote addresses
-- kube-proxy programs nftables rules for LoadBalancer IPs
-- Services are reachable via their VIP (tested from cluster nodes)
-- Cleanup removes IPs from interfaces and nftables rules
+| Capability | Configure | Without it |
+|---|---|---|
+| `multi-node` | 2+ nodes, all schedulable — the failover tests apply and remove `NoExecute` taints | failover, election, ECMP and stress tests skip |
+| `multi-subnet` | node InternalIPs spanning 2+ /24s | subnet placement, subnet-aware election, `balancePools` and `multiPool` skip |
+| `ipv6` | a **global /64** on the same interface that carries the node's InternalIP. A /128 is accepted as a fallback but yields a pool nothing can route to | the IPv6 half of every module skips |
+| `dual-homed` | one node with a second NIC **on a different subnet**, named `eth*`. A second NIC on the same subnet exercises none of the discovery logic and does not count | the multi-interface and `selector_state` tests skip |
+| `router` | FRR peered with every node, reachable by SSH, with `vtysh`, `tcpdump` and passwordless `sudo`. `maximum-paths 8` or there is no ECMP to assert | BGP route and on-the-wire GARP/NA tests skip |
 
-### What We Don't Test
-- External BGP route propagation
-- Traffic from truly external clients (outside the cluster)
-- ARP/NDP announcement to upstream routers
-- Integration with external routing infrastructure
+### Node configuration
 
-### Why SSH-Based Testing
+- **Free addresses.** Reserve `.200-.253` in every node subnet, and the
+  `:a::` through `:e::` sub-prefixes of every node /64. The fixtures carve
+  their pools from those bands, and an address handed out by DHCP or held
+  by another host inside them fails in a way that reads as a PureLB bug.
+- **ARP.** `net.ipv4.conf.all.arp_ignore=1` and
+  `net.ipv4.conf.all.arp_announce=2`, per
+  [the installation prerequisites](../../website/content/docs/installation/prerequisites/_index.md).
+  Without them every node may answer ARP for a local VIP, which the
+  announcing-node assertions read as the wrong node winning.
+- **SSH.** Key-based, non-interactive (`BatchMode=yes`) from this
+  workstation to every node InternalIP, as the invoking user. Most
+  assertions read `ip -br addr show` on the node; several `curl` the VIP
+  from a node. Host keys are accepted on first use.
+- **Metrics.** `:7472` reachable from the workstation on every node
+  (lbnodeagent is hostNetwork). The allocator is scraped through the
+  apiserver proxy and needs no route.
+- **Routing to the VIPs.** For the one end-to-end test, this workstation
+  must reach the VIP subnets through the router — it follows the route
+  BGP advertised, with no special configuration of its own.
 
-External routing depends on network infrastructure outside PureLB's control. SSH-based testing:
-1. **Isolates PureLB** - Tests PureLB's functionality without conflating network issues
-2. **Self-contained** - No special routing configuration needed on the test host
-3. **Deterministic** - No flaky failures from routing cache or ECMP selection
-4. **Validates the essentials** - If the VIP is on the interface and kube-proxy rules exist, external routing will work
+### In the cluster
 
-### Prerequisites
+PureLB v0.17.0+ installed in `purelb-system`, and the echo backend in
+namespace `test` — `scripts/reset-test-cluster.sh` provisions it from
+[echo-test.yaml](echo-test.yaml) and [../echo-server/server.py](../echo-server/server.py).
 
-- SSH access to all cluster nodes
-- kubectl configured for cluster access
-- kube-proxy running in **nftables mode** (for remote tests)
+Run the reset script rather than applying the manifest yourself. The server is
+mounted from a ConfigMap built out of `server.py`, so the manifest alone is not
+enough, and the script is what verifies that the pod is actually running the
+code in the tree — see [../echo-server/README.md](../echo-server/README.md).
 
-## Adding New Tests
+## What else is here
 
-When adding new test suites:
-
-1. Create a subdirectory under `test/e2e/` for the feature being tested
-2. Include a README.md documenting the tests
-3. Include any required Kubernetes manifests
-4. Ensure the test script cleans up after itself
-5. Follow the testing patterns in existing test suites
+| Path | |
+|------|--|
+| [echo-test.yaml](echo-test.yaml) | namespace `test` and the backend Deployment every module exercises. The suite does not create it; `scripts/reset-test-cluster.sh` does |
+| [../echo-server/](../echo-server/) | the backend itself — a dual-stack echo server reporting which pod served a request and where the addresses came from |
+| [py/EXTERNAL-IPAM.md](py/EXTERNAL-IPAM.md) | the external-IPAM module, and how to use it as the acceptance test for your own sidecar |

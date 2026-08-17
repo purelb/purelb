@@ -343,8 +343,21 @@ func TestRunValidate_OverlappingRanges(t *testing.T) {
 }
 
 func TestRunValidate_Clean(t *testing.T) {
+	// This fixture used to produce one FAIL ("Remote ServiceGroups exist but
+	// no BGPConfiguration is deployed") and two WARNs, and the test passed
+	// anyway -- because runValidate returned early for non-table formats,
+	// before computing its exit error. The test's NAME claimed clean while
+	// its fixture was not, so it asserted nothing and hid the bug that
+	// `validate -o json` never failed. It is now genuinely clean.
 	sg1 := makeSG("pool-a", "local", "10.0.0.0/28", "10.0.0.0/24")
-	sg2 := makeSG("pool-b", "remote", "10.1.0.0/28", "10.1.0.0/24")
+	sg2 := makeSG("pool-b", "local", "10.1.0.0/28", "10.1.0.0/24")
+
+	// Nodes carrying those subnets, or every pool warns that no node covers
+	// it and the LBNodeAgent warns that it selects 0 of 0 nodes.
+	nodeA := makeNode("node-a", nil)
+	nodeA.Status.Addresses = []v1.NodeAddress{{Type: v1.NodeInternalIP, Address: "10.0.0.5"}}
+	nodeB := makeNode("node-b", nil)
+	nodeB.Status.Addresses = []v1.NodeAddress{{Type: v1.NodeInternalIP, Address: "10.1.0.5"}}
 
 	lbna := &unstructured.Unstructured{}
 	lbna.SetGroupVersionKind(schema.GroupVersionKind{Group: "purelb.io", Version: "v2", Kind: "LBNodeAgent"})
@@ -356,10 +369,30 @@ func TestRunValidate_Clean(t *testing.T) {
 		},
 	}
 
-	c := newFakeClients(nil, sg1, sg2, lbna)
+	c := newFakeClients([]runtime.Object{nodeA, nodeB}, sg1, sg2, lbna)
 
-	err := runValidate(context.Background(), c, outputJSON, false)
-	assert.NoError(t, err)
+	// Asserted for EVERY format: which one a caller asks for says how they
+	// want to read the result, not whether a failure counts.
+	for _, format := range []outputFormat{outputJSON, outputYAML, outputTable} {
+		assert.NoError(t, runValidate(context.Background(), c, format, false),
+			"format %v", format)
+	}
+}
+
+// TestRunValidate_FailsInEveryOutputFormat is the regression test for
+// `validate -o json` reporting failures and exiting 0. The exit-code logic
+// sat below an early return taken by every non-table format, so the
+// documented CI gate did not gate for anyone consuming JSON.
+func TestRunValidate_FailsInEveryOutputFormat(t *testing.T) {
+	sg1 := makeSG("pool-a", "local", "10.0.0.0/24", "10.0.0.0/24")
+	sg2 := makeSG("pool-b", "local", "10.0.0.128/25", "10.0.0.0/24") // overlaps
+	c := newFakeClients(nil, sg1, sg2)
+
+	for _, format := range []outputFormat{outputJSON, outputYAML, outputTable} {
+		err := runValidate(context.Background(), c, format, false)
+		assert.Error(t, err, "format %v must report the failure", format)
+		assert.Contains(t, err.Error(), "validation failed")
+	}
 }
 
 // =============================================================================

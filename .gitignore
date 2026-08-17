@@ -17,5 +17,15 @@ pkg/apis/purelb/*/zz_generated.deepcopy.go
 # Unanchored, this pattern also matched cmd/kubectl-purelb/, so new source
 # files in the plugin were silently untracked.
 /kubectl-purelb
+# Written to the repo root by `make test-coverage`.
+/coverage.out
+# `go build ./cmd/test-sidecar` drops the binary in the repo root. Same
+# root anchor as /kubectl-purelb above, for the same reason.
+/test-sidecar
+# pytest e2e harness: local virtualenv and editable-install metadata.
+test/e2e/py/.venv/
+test/e2e/py/*.egg-info/
+test/e2e/py/**/__pycache__/
+test/e2e/py/.pytest_cache/
 test/e2e/timing/timing-results-*.csv
 .claude/

@@ -42,6 +42,11 @@ check: generate check-deps check-helm-rbac-source check-gofmt ## Run "short" tes
 	go vet ./...
 	go test -race -short ./...
 
+.PHONY: test-coverage
+test-coverage: ## Run tests with coverage and print the total
+	go test -short -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
+
 .PHONY: check-gofmt
 check-gofmt: ## Fail if any tracked Go source is not gofmt-clean
 	@unformatted=$$(gofmt -l ./api ./cmd ./internal ./pkg 2>/dev/null); \
@@ -55,6 +60,15 @@ check-gofmt: ## Fail if any tracked Go source is not gofmt-clean
 image: generate ## Build executables and containers
 	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/allocator
 	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/lbnodeagent
+
+.PHONY: image-test-sidecar
+image-test-sidecar: ## Build/push the sample external-IPAM sidecar used by the ipam-external e2e
+	# Deliberately NOT part of `make image`: this is test scaffolding, not
+	# a shipped component. It has its own target because the e2e suite
+	# defaults to ghcr.io/purelb/purelb/test-sidecar:latest, and until
+	# this existed that image was published by nothing in this repo -- so
+	# the ipam-external suite could not run out of the box at all.
+	KO_DOCKER_REPO=${REGISTRY_IMAGE} TAG=${SUFFIX} ${KO} build --base-import-paths --tags=${SUFFIX} ./cmd/test-sidecar
 
 .PHONY: plugin
 plugin: ## Build kubectl-purelb plugin binary

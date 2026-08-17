@@ -16,9 +16,11 @@ package local
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +29,7 @@ import (
 	"github.com/mdlayher/ndp"
 	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -1336,4 +1339,152 @@ func TestBuildUnsolicitedNA(t *testing.T) {
 
 func TestSendUnsolicitedNARejectsIPv4(t *testing.T) {
 	assert.Error(t, sendUnsolicitedNA("lo", net.ParseIP("192.0.2.1")))
+}
+
+// fakeElection reproduces the one condition that mattered: the answer to
+// "who owns this address" differs depending on which question you ask.
+type fakeElection struct {
+	winner     string // what plain Winner would have said
+	preferred  string // what WinnerWithPreference says when preferred is non-empty
+	sawPreferr []string
+}
+
+func (f *fakeElection) WinnerWithPreference(_ string, preferred []string) string {
+	f.sawPreferr = preferred
+	if len(preferred) > 0 {
+		return f.preferred
+	}
+	return f.winner
+}
+
+func (f *fakeElection) MemberCount() int { return 3 }
+
+// TestSendGARPSequenceHonoursAffinityPreference is the regression test for
+// a bug the e2e migration found: affinity-placed addresses never sent a
+// gratuitous ARP or an unsolicited Neighbour Advertisement.
+//
+// The announce path chooses the node with election.WinnerWithPreference,
+// but verify-before-send used plain election.Winner. Those disagree
+// exactly when a Service opts into NodeAffinityAnnotation, so the node
+// that actually held the address decided it was "no longer winner" and
+// skipped every packet. A VIP that moved then received nothing until the
+// upstream ARP/ND caches aged out -- minutes of blackhole after a
+// failover PureLB itself completed in seconds.
+//
+// The assertion is "the sequence did not return early", not "a frame
+// reached the wire": there is no interface to send on under `go test`, so
+// the send fails and counts an error. Sent-or-errored proves the
+// ownership check passed; neither moving is the bug.
+func TestSendGARPSequenceHonoursAffinityPreference(t *testing.T) {
+	const me = "node-b"
+	enabled := true
+	count := 1
+
+	for _, tc := range []struct {
+		name      string
+		preferred []string
+	}{
+		// The bug: preference names this node, plain Winner names another.
+		{name: "affinity places it here", preferred: []string{me}},
+		// The control: no preference, this node wins outright. This path
+		// always worked, and must keep working.
+		{name: "no affinity, wins outright", preferred: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeElection{winner: me, preferred: me}
+			if len(tc.preferred) > 0 {
+				fake.winner = "node-a" // plain Winner would say someone else
+			}
+			a := &announcer{myNode: me, logger: log.NewNopLogger(), election: fake}
+			cfg := &announcerConfig{spec: &purelbv2.LBNodeAgentLocalSpec{
+				GARPConfig: &purelbv2.GARPConfig{
+					Enabled:      &enabled,
+					Count:        &count,
+					InitialDelay: "0s",
+				},
+			}}
+
+			before := ptu.ToFloat64(garpSent) + ptu.ToFloat64(garpErrors)
+			a.sendGARPSequence(cfg, net.ParseIP("192.168.1.100"),
+				"purelb-test-nonexistent", tc.preferred)
+
+			assert.Eventually(t, func() bool {
+				return ptu.ToFloat64(garpSent)+ptu.ToFloat64(garpErrors) > before
+			}, 5*time.Second, 20*time.Millisecond,
+				"the sequence skipped every packet: verify-before-send asked a "+
+					"different question than the announce path did")
+			assert.Equal(t, tc.preferred, fake.sawPreferr,
+				"verify-before-send must pass the same preferred set the "+
+					"announce path used")
+		})
+	}
+}
+
+// recordingServiceEvent captures the events emitted on a Service so a test
+// can assert what an operator would see in `kubectl describe svc`.
+type recordingServiceEvent struct {
+	mu     sync.Mutex
+	events []string // "reason: message"
+}
+
+func (r *recordingServiceEvent) record(reason, format string, args ...interface{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, reason+": "+fmt.Sprintf(format, args...))
+}
+
+func (r *recordingServiceEvent) Infof(_ runtime.Object, reason, format string, args ...interface{}) {
+	r.record(reason, format, args...)
+}
+
+func (r *recordingServiceEvent) Errorf(_ runtime.Object, reason, format string, args ...interface{}) {
+	r.record(reason, format, args...)
+}
+
+func (r *recordingServiceEvent) ForceSync() {}
+
+func (r *recordingServiceEvent) reasons() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.events))
+	for _, e := range r.events {
+		out = append(out, strings.SplitN(e, ":", 2)[0])
+	}
+	return out
+}
+
+// TestAggregationRequiresALeadingSlash pins the parsing rule that made an
+// announcement fail silently on a real cluster.
+//
+// addVirtualInt builds the mask with net.ParseCIDR("0.0.0.0" + aggregation),
+// so the value must carry the slash. The field's own doc comment says "an
+// integer in the range 8-128" and the CRD validates nothing, so following the
+// documentation produces "0.0.0.032", the announcement fails, and -- before
+// the fix in this commit -- the Service still reported that it was being
+// announced.
+//
+// The event ORDERING itself is asserted end to end in
+// test/e2e/py/tests/test_remote.py, where a real announcement can actually be
+// made and then observed to be absent; a unit test here could only check that
+// the fake it was handed got called.
+func TestAggregationRequiresALeadingSlash(t *testing.T) {
+	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "kube-lb0-test"}}
+
+	for _, tc := range []struct {
+		name        string
+		aggregation string
+		wantErr     string
+	}{
+		{name: "no slash, as the doc comment describes", aggregation: "32",
+			wantErr: "invalid CIDR address"},
+		{name: "no slash, IPv6", aggregation: "128", wantErr: "invalid CIDR address"},
+		{name: "garbage", aggregation: "/not-a-number", wantErr: "invalid CIDR address"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := addVirtualInt(net.ParseIP("10.255.8.1"), link,
+				"10.255.8.0/24", tc.aggregation, AddressOptions{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
 }
