@@ -133,7 +133,7 @@ def test_allocations_are_spread_evenly_across_ranges(
     for i in range(count):
         got.extend(
             lb_service(
-                f"nginx-bal-{family}-{i}", families,
+                f"echo-bal-{family}-{i}", families,
                 annotations={SERVICE_GROUP: group}, timeout=60,
             )
         )
@@ -170,7 +170,7 @@ def test_balanced_addresses_are_announced_and_serve(
     group = balanced_group(BALANCED)
     for i in range(len(topo.subnets)):
         vip = lb_service(
-            f"nginx-bal-reach-{i}", ["IPv4"], annotations={SERVICE_GROUP: group}
+            f"echo-bal-reach-{i}", ["IPv4"], annotations={SERVICE_GROUP: group}
         )[0]
         holder, _ = wait_until(
             lambda v=vip: nodes.announcing_node(topo.node_ips, v),
@@ -196,16 +196,16 @@ def test_balance_pools_and_multi_pool_together_are_refused(
     """
     group = balanced_group("balanced-multipool-conflict", balance=True, multi_pool=True)
     lb_service(
-        "nginx-bal-conflict", ["IPv4"], annotations={SERVICE_GROUP: group}, wait=False
+        "echo-bal-conflict", ["IPv4"], annotations={SERVICE_GROUP: group}, wait=False
     )
     import time
 
     for _ in range(8):
         time.sleep(2)
-        assert not cluster.service_ingress_ips(NAMESPACE, "nginx-bal-conflict"), (
+        assert not cluster.service_ingress_ips(NAMESPACE, "echo-bal-conflict"), (
             "a group with both multiPool and balancePools allocated anyway"
         )
-    messages = events_for(cluster, NAMESPACE, "nginx-bal-conflict")
+    messages = events_for(cluster, NAMESPACE, "echo-bal-conflict")
     assert any("mutually exclusive" in m for m in messages), (
         f"no event explaining the refusal: {messages}"
     )
@@ -221,17 +221,17 @@ def test_multi_pool_annotation_on_a_balanced_group_is_refused(
     """
     group = balanced_group(BALANCED)
     lb_service(
-        "nginx-bal-annoverride", ["IPv4"],
+        "echo-bal-annoverride", ["IPv4"],
         annotations={SERVICE_GROUP: group, MULTI_POOL: "true"}, wait=False,
     )
     import time
 
     for _ in range(8):
         time.sleep(2)
-        assert not cluster.service_ingress_ips(NAMESPACE, "nginx-bal-annoverride"), (
+        assert not cluster.service_ingress_ips(NAMESPACE, "echo-bal-annoverride"), (
             "multi-pool=true on a balancePools group allocated anyway"
         )
-    messages = events_for(cluster, NAMESPACE, "nginx-bal-annoverride")
+    messages = events_for(cluster, NAMESPACE, "echo-bal-annoverride")
     assert any("mutually exclusive" in m for m in messages), (
         f"no event explaining the refusal: {messages}"
     )
@@ -248,16 +248,16 @@ def test_naming_a_servicegroup_that_does_not_exist_is_refused(
     """
     before = allocator_metrics()
     lb_service(
-        "nginx-bal-nosuchsg", ["IPv4"],
+        "echo-bal-nosuchsg", ["IPv4"],
         annotations={SERVICE_GROUP: "does-not-exist"}, wait=False,
     )
     import time
 
     for _ in range(8):
         time.sleep(2)
-        assert not cluster.service_ingress_ips(NAMESPACE, "nginx-bal-nosuchsg")
+        assert not cluster.service_ingress_ips(NAMESPACE, "echo-bal-nosuchsg")
 
-    messages = events_for(cluster, NAMESPACE, "nginx-bal-nosuchsg")
+    messages = events_for(cluster, NAMESPACE, "echo-bal-nosuchsg")
     assert any("unknown pool" in m for m in messages), (
         f"no event naming the missing ServiceGroup: {messages}"
     )

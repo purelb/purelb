@@ -84,7 +84,7 @@ def test_pool_with_no_matching_subnet_allocates_but_announces_nowhere(
     )
     try:
         ips = lb_service(
-            "nginx-lb-no-match", ["IPv4"],
+            "echo-lb-no-match", ["IPv4"],
             annotations={SERVICE_GROUP: "no-match-subnet"},
         )
         vip = ips[0]
@@ -110,7 +110,7 @@ def test_pool_with_no_matching_subnet_allocates_but_announces_nowhere(
             "but nothing shows that subnet filtering is the reason"
         )
     finally:
-        cluster.delete_service(NAMESPACE, "nginx-lb-no-match")
+        cluster.delete_service(NAMESPACE, "echo-lb-no-match")
         cluster.delete_cr("servicegroup", "no-match-subnet")
 
 
@@ -187,9 +187,9 @@ def test_etp_local_is_overridden_for_a_local_pool(
     REMOTE pools, where every node announces.
     """
     vip = lb_service(
-        "nginx-etp-local", ["IPv4"], externalTrafficPolicy="Local"
+        "echo-etp-local", ["IPv4"], externalTrafficPolicy="Local"
     )[0]
-    svc = cluster.service(NAMESPACE, "nginx-etp-local")
+    svc = cluster.service(NAMESPACE, "echo-etp-local")
     assert svc.spec.external_traffic_policy == "Cluster", (
         f"ETP is {svc.spec.external_traffic_policy!r}; a local pool without "
         f"{ALLOW_LOCAL} must be overridden to Cluster"
@@ -235,10 +235,10 @@ def test_allow_local_annotation_preserves_etp_local(
 ):
     """The opt-out is honoured, so the override is a policy not a bug."""
     lb_service(
-        "nginx-etp-allow", ["IPv4"],
+        "echo-etp-allow", ["IPv4"],
         annotations={ALLOW_LOCAL: "true"}, externalTrafficPolicy="Local",
     )
-    svc = cluster.service(NAMESPACE, "nginx-etp-allow")
+    svc = cluster.service(NAMESPACE, "echo-etp-allow")
     assert svc.spec.external_traffic_policy == "Local", (
         f"{ALLOW_LOCAL} was set but ETP is {svc.spec.external_traffic_policy!r}"
     )
@@ -256,18 +256,18 @@ def test_re_evaluate_annotation_is_consumed(
     that does not survive would make the annotation a re-allocation, and
     a live service would change address under a support command.
     """
-    before = lb_service("nginx-reeval", ["IPv4"])[0]
+    before = lb_service("echo-reeval", ["IPv4"])[0]
     cluster.core.patch_namespaced_service(
-        "nginx-reeval", NAMESPACE,
+        "echo-reeval", NAMESPACE,
         {"metadata": {"annotations": {RE_EVALUATE: "true"}}},
     )
     wait_until(
-        lambda: cluster.annotation(NAMESPACE, "nginx-reeval", RE_EVALUATE) in (None, "")
+        lambda: cluster.annotation(NAMESPACE, "echo-reeval", RE_EVALUATE) in (None, "")
         or None,
         timeout=45, interval=2.0,
         description="the re-evaluate annotation to be consumed",
     )
-    after = cluster.service_ingress_ips(NAMESPACE, "nginx-reeval")
+    after = cluster.service_ingress_ips(NAMESPACE, "echo-reeval")
     assert after == [before], f"address changed across re-evaluate: {before} -> {after}"
 
 
@@ -285,7 +285,7 @@ def test_graceful_shutdown_releases_the_lease(
     lets the next winner take over immediately. The difference is visible
     as failover latency, which is the number that matters in an outage.
     """
-    vip = lb_service("nginx-lb-graceful", ["IPv4"])[0]
+    vip = lb_service("echo-lb-graceful", ["IPv4"])[0]
     holder, _ = wait_until(
         lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
         description=f"{vip} to be announced",
@@ -358,7 +358,7 @@ def test_traffic_reaches_pods_on_nodes_other_than_the_announcer(
     )
     try:
         cluster.wait_rollout(NAMESPACE, "echo", timeout=180)
-        vip = lb_service("nginx-lb-spread", ["IPv4"])[0]
+        vip = lb_service("echo-lb-spread", ["IPv4"])[0]
         holder, _ = wait_until(
             lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
             description=f"{vip} to be announced",
@@ -399,7 +399,7 @@ def test_ipv6_vip_serves_traffic(
     correctly and still not carry traffic -- forwarding is a per-family
     sysctl, and ip6_forward being off is a distinct failure.
     """
-    vip = lb_service("nginx-lb-v6-traffic", ["IPv6"])[0]
+    vip = lb_service("echo-lb-v6-traffic", ["IPv6"])[0]
     wait_until(lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
                description=f"{vip} to be announced")
     assert nodes.echo_json(topo.node_ips, vip)["pod"], (

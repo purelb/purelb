@@ -62,7 +62,7 @@ def test_vip_fails_over_when_its_announcer_is_evicted(
     log_window,
 ):
     """Evict the announcing agent; the VIP moves and keeps serving."""
-    name = "nginx-lb-failover"
+    name = "echo-lb-failover"
     vip = lb_service(name, ["IPv4"])[0]
     agent_before = {n: agent_metrics(n) for n in topo.node_ips}
 
@@ -152,7 +152,7 @@ def test_agents_recover_after_the_taint_is_removed(
     NEXT test's assumptions valid, so it deserves to fail on its own terms
     rather than as a late assertion in a test about something else.
     """
-    vip = lb_service("nginx-lb-recover", ["IPv4"])[0]
+    vip = lb_service("echo-lb-recover", ["IPv4"])[0]
     holder, _ = wait_until(lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
                            description=f"{vip} announced")
 
@@ -210,7 +210,7 @@ def test_failover_stays_within_the_addresss_subnet(
     # A ServiceGroup scoped to this subnet, not purelb.io/addresses: that
     # annotation takes specific addresses and rejects a range.
     group = subnet_servicegroup("subnet-failover-pool", subnet)
-    name = "nginx-lb-subnet-failover"
+    name = "echo-lb-subnet-failover"
     vip = lb_service(name, ["IPv4"], annotations={"purelb.io/service-group": group})[0]
     assert topo.subnet_holding(vip).v4 == subnet.v4, (
         f"{vip} did not come from {subnet.v4}"

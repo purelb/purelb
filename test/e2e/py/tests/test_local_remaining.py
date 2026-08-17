@@ -86,7 +86,7 @@ def test_remote_address_lands_on_the_dummy_interface_on_every_node(
     applied here, nothing could announce it at all.
     """
     vip = lb_service(
-        "nginx-remote", ["IPv4"], annotations={SERVICE_GROUP: remote_group}
+        "echo-remote", ["IPv4"], annotations={SERVICE_GROUP: remote_group}
     )[0]
     assert ipaddress.ip_address(vip) in ipaddress.ip_network(REMOTE_V4_SUBNET)
     assert topo.subnet_holding(vip) is None, (
@@ -107,7 +107,7 @@ def test_remote_address_lands_on_the_dummy_interface_on_every_node(
 
     # Every node announces it, so no announcing-<family> slot claims one
     # winner -- that annotation is a local-mode concept.
-    value = cluster.annotation(NAMESPACE, "nginx-remote", announcing.annotation_key("IPv4"))
+    value = cluster.annotation(NAMESPACE, "echo-remote", announcing.annotation_key("IPv4"))
     assert not announcing.parse(value), (
         f"a remote address should claim no announcing slot, got {value!r}"
     )
@@ -147,7 +147,7 @@ def test_losers_report_losing_and_nothing_panics(
     unobserved. A loser that never logs the loss, or whose lease goes
     unhealthy, is how a split brain starts.
     """
-    vip = lb_service("nginx-lb-election", ["IPv4"])[0]
+    vip = lb_service("echo-lb-election", ["IPv4"])[0]
     winner, _ = wait_until(
         lambda: nodes.announcing_node(topo.node_ips, vip),
         timeout=45, description=f"{vip} to be announced",
@@ -197,7 +197,7 @@ def test_one_vip_spreads_across_backend_pods(
     )
     try:
         cluster.wait_rollout(NAMESPACE, "echo", timeout=180)
-        vip = lb_service("nginx-lb-spread-pods", ["IPv4"])[0]
+        vip = lb_service("echo-lb-spread-pods", ["IPv4"])[0]
         wait_until(lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
                    description=f"{vip} to be announced")
 
@@ -230,7 +230,7 @@ def test_a_pod_can_reach_a_vip(
     client actually uses, and it breaks independently -- hairpin and
     overlay problems show up here and nowhere else.
     """
-    vip = lb_service("nginx-lb-frompod", ["IPv4"])[0]
+    vip = lb_service("echo-lb-frompod", ["IPv4"])[0]
     wait_until(lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
                description=f"{vip} to be announced")
 
@@ -308,7 +308,7 @@ def test_a_service_picks_up_a_range_added_later(
     apply([first])
     try:
         ips = lb_service(
-            "nginx-incremental", ["IPv4"], annotations={SERVICE_GROUP: name}
+            "echo-incremental", ["IPv4"], annotations={SERVICE_GROUP: name}
         )
         assert len(ips) == 1, f"one range configured, expected one address, got {ips}"
 
@@ -316,7 +316,7 @@ def test_a_service_picks_up_a_range_added_later(
         apply([first, second])
         grown = wait_until(
             lambda: (lambda got: got if len(got) > 1 else None)(
-                cluster.service_ingress_ips(NAMESPACE, "nginx-incremental")
+                cluster.service_ingress_ips(NAMESPACE, "echo-incremental")
             ),
             timeout=90, interval=3.0,
             description="the existing Service to pick up an address from the new range",
@@ -326,7 +326,7 @@ def test_a_service_picks_up_a_range_added_later(
             f"cover both {first.v4} and {second.v4}"
         )
     finally:
-        cluster.delete_service(NAMESPACE, "nginx-incremental")
+        cluster.delete_service(NAMESPACE, "echo-incremental")
         cluster.delete_cr("servicegroup", name)
 
 
@@ -347,7 +347,7 @@ def test_a_node_can_reach_a_vip_on_the_other_subnet(
     target, other = topo.subnets[0], topo.subnets[1]
     group = subnet_servicegroup("test-cross-subnet", target)
     vip = lb_service(
-        "nginx-cross-subnet", ["IPv4"], annotations={SERVICE_GROUP: group}
+        "echo-cross-subnet", ["IPv4"], annotations={SERVICE_GROUP: group}
     )[0]
     assert topo.subnet_holding(vip).v4 == target.v4
 

@@ -77,7 +77,7 @@ def test_local_vip_has_a_finite_lifetime(
     topo: topology.Topology, default_servicegroup: str, lb_service
 ):
     """A permanent VIP would survive the death of the node announcing it."""
-    vip = lb_service("nginx-lb-flags", ["IPv4"])[0]
+    vip = lb_service("echo-lb-flags", ["IPv4"])[0]
     detail = detail_of(topo, vip)
     assert not detail.permanent, (
         f"{vip} has valid_lft forever; if its agent dies without "
@@ -95,7 +95,7 @@ def test_local_vip_has_noprefixroute(
     topo: topology.Topology, default_servicegroup: str, lb_service
 ):
     """Without it the kernel routes the whole subnet via the VIP."""
-    vip = lb_service("nginx-lb-noprefixroute", ["IPv4"])[0]
+    vip = lb_service("echo-lb-noprefixroute", ["IPv4"])[0]
     detail = detail_of(topo, vip)
     assert detail.has_flag("noprefixroute"), (
         f"{vip} lacks noprefixroute (flags: {detail.flags}); the kernel will "
@@ -113,13 +113,13 @@ def test_ipv6_vip_does_dad_unless_told_otherwise(
     Skipping DAD silently is how two nodes end up announcing the same
     address after a split brain without anything noticing.
     """
-    vip = lb_service("nginx-lb-dad-default", ["IPv6"])[0]
+    vip = lb_service("echo-lb-dad-default", ["IPv6"])[0]
     detail = detail_of(topo, vip)
     assert not detail.has_flag("nodad"), (
         f"{vip} has the nodad flag but skipIPv6DAD was never enabled "
         f"(flags: {detail.flags})"
     )
-    annotation = cluster.annotation(NAMESPACE, "nginx-lb-dad-default", DAD_ANNOTATION)
+    annotation = cluster.annotation(NAMESPACE, "echo-lb-dad-default", DAD_ANNOTATION)
     assert annotation in (None, "", "false"), (
         f"{DAD_ANNOTATION} = {annotation!r} on a service that did not ask for it"
     )
@@ -159,10 +159,10 @@ def test_skip_ipv6_dad_sets_nodad_when_enabled(
     )
     try:
         vip = lb_service(
-            "nginx-dad-test", ["IPv6"],
+            "echo-dad-test", ["IPv6"],
             annotations={"purelb.io/service-group": "dad-skip"},
         )[0]
-        assert cluster.annotation(NAMESPACE, "nginx-dad-test", DAD_ANNOTATION) == "true", (
+        assert cluster.annotation(NAMESPACE, "echo-dad-test", DAD_ANNOTATION) == "true", (
             f"{DAD_ANNOTATION} was not set on a service from a skipIPv6DAD pool"
         )
         detail = detail_of(topo, vip)
@@ -190,7 +190,7 @@ def test_address_lifetime_is_renewed_rather_than_expiring(
     # concluding anything about renewal measures nothing: the same
     # observation holds with the timer removed entirely.
     interval = short_address_lifetime(60)
-    vip = lb_service("nginx-lb-renewal", ["IPv4"])[0]
+    vip = lb_service("echo-lb-renewal", ["IPv4"])[0]
     holder, _ = wait_until(
         lambda: nodes.announcing_node(topo.node_ips, vip),
         timeout=45, description=f"{vip} to be announced",
@@ -237,9 +237,9 @@ def test_cni_does_not_adopt_a_vip_as_the_node_address(
     that did not run, which is the untallied-skip problem in its purest
     form.
     """
-    vips = lb_service("nginx-lb-cni", ["IPv4"])
+    vips = lb_service("echo-lb-cni", ["IPv4"])
     if topo.has_ipv6:
-        vips += lb_service("nginx-lb-cni6", ["IPv6"])
+        vips += lb_service("echo-lb-cni6", ["IPv6"])
 
     annotated = 0
     for node in sorted(topo.node_ips):

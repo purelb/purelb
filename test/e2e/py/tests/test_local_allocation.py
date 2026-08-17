@@ -99,7 +99,7 @@ def test_allocates_announces_and_serves(
     if family != "v4" and not topo.has_ipv6:
         pytest.skip("cluster has no IPv6 on the node subnets")
 
-    name = f"nginx-lb-{family}"
+    name = f"echo-lb-{family}"
     before = allocator_metrics()
     agent_before = {n: agent_metrics(n) for n in topo.node_ips}
 
@@ -192,14 +192,14 @@ def test_release_withdraws_the_address(
 ):
     """Deleting the Service frees the address and takes it off the node."""
     before = allocator_metrics()
-    ips = lb_service("nginx-lb-cleanup", ["IPv4"])
+    ips = lb_service("echo-lb-cleanup", ["IPv4"])
     vip = ips[0]
     holder, _ = wait_until(lambda: announced_on(topo, vip), timeout=45,
                            description=f"{vip} announced")
     agent_before = agent_metrics(holder)
 
     in_use = allocator_metrics().counter("purelb_address_pool_addresses_in_use", pool="default")
-    cluster.delete_service(NAMESPACE, "nginx-lb-cleanup")
+    cluster.delete_service(NAMESPACE, "echo-lb-cleanup")
 
     # nodes_with_address raises on an unreachable node, so "gone" cannot
     # be concluded from a node that never answered.
@@ -238,7 +238,7 @@ def test_specific_ip_request_is_honoured(
     """spec.loadBalancerIP gets exactly that address, and it announces."""
     subnet = topo.subnets[0]
     wanted = f"{subnet.v4_octets}.210"
-    ips = lb_service("nginx-lb-specific", ["IPv4"], loadBalancerIP=wanted)
+    ips = lb_service("echo-lb-specific", ["IPv4"], loadBalancerIP=wanted)
     assert ips == [wanted], f"asked for {wanted}, got {ips}"
     wait_until(
         lambda: announced_on(topo, wanted),
@@ -257,15 +257,15 @@ def test_foreign_loadbalancer_class_is_ignored(
     fight over the same status field.
     """
     lb_service(
-        "nginx-foreign-lbclass", ["IPv4"], wait=False, loadBalancerClass="other.io/foreign-lb"
+        "echo-foreign-lbclass", ["IPv4"], wait=False, loadBalancerClass="other.io/foreign-lb"
     )
     with pytest.raises(AssertionError):
         wait_until(
-            lambda: cluster.service_ingress_ips(NAMESPACE, "nginx-foreign-lbclass") or None,
+            lambda: cluster.service_ingress_ips(NAMESPACE, "echo-foreign-lbclass") or None,
             timeout=15,
             description="an address that should never arrive",
         )
-    svc = cluster.service(NAMESPACE, "nginx-foreign-lbclass")
+    svc = cluster.service(NAMESPACE, "echo-foreign-lbclass")
     assert (svc.metadata.annotations or {}).get(ALLOCATED_BY) is None, (
         "PureLB annotated a Service whose loadBalancerClass names another controller"
     )
@@ -280,13 +280,13 @@ def test_explicit_purelb_loadbalancer_class_allocates(
     ignores loadBalancerClass entirely and allocates for nothing.
     """
     ips = lb_service(
-        "nginx-purelb-lbclass", ["IPv4"], loadBalancerClass="purelb.io/purelbv2"
+        "echo-purelb-lbclass", ["IPv4"], loadBalancerClass="purelb.io/purelbv2"
     )
     address = ips[0]
     subnet = topo.subnet_holding(address)
     assert subnet is not None, f"{address} is in no node subnet"
 
-    svc = cluster.service(NAMESPACE, "nginx-purelb-lbclass")
+    svc = cluster.service(NAMESPACE, "echo-purelb-lbclass")
     assert (svc.metadata.annotations or {}).get(ALLOCATED_BY) == "PureLB"
 
     wait_until(lambda: announced_on(topo, address), timeout=45,
@@ -313,22 +313,22 @@ def test_shared_ip_puts_two_services_on_one_address(
     assert found is not None
 
     # Sharing is legal only while the services do not COLLIDE, and PureLB
-    # is what enforces that. This has to run while nginx-shared-http still
+    # is what enforces that. This has to run while echo-shared-http still
     # exists: my first version checked it after the delete, when port 80
     # was genuinely free, so the allocation correctly succeeded and the
     # test failed for the one reason that was not a bug.
-    lb_service("nginx-shared-conflict", ["IPv4"],
+    lb_service("echo-shared-conflict", ["IPv4"],
                annotations={SHARING: "webservers"}, wait=False)
     import time
     for _ in range(8):
         time.sleep(2)
-        assert not cluster.service_ingress_ips(NAMESPACE, "nginx-shared-conflict"), (
-            "a service sharing a key AND port 80 with nginx-shared-http was "
+        assert not cluster.service_ingress_ips(NAMESPACE, "echo-shared-conflict"), (
+            "a service sharing a key AND port 80 with echo-shared-http was "
             "allocated anyway; both would answer on the same address and port"
         )
     conflict = [
         e.message for e in cluster.core.list_namespaced_event(
-            NAMESPACE, field_selector="involvedObject.name=nginx-shared-conflict"
+            NAMESPACE, field_selector="involvedObject.name=echo-shared-conflict"
         ).items if e.message
     ]
     assert any("already in use" in m for m in conflict), (
@@ -338,15 +338,15 @@ def test_shared_ip_puts_two_services_on_one_address(
     # Deleting one holder must NOT withdraw the address: the other still
     # has it. Getting this wrong is a withdrawal-refcount bug, and it
     # takes down a live service.
-    cluster.delete_service(NAMESPACE, "nginx-shared-http")
-    cluster.wait_service_gone(NAMESPACE, "nginx-shared-http")
+    cluster.delete_service(NAMESPACE, "echo-shared-http")
+    cluster.wait_service_gone(NAMESPACE, "echo-shared-http")
     still = wait_until(lambda: announced_on(topo, vip), timeout=20,
                        description=f"{vip} to remain announced for the surviving service")
-    assert still is not None, f"{vip} was withdrawn while nginx-shared-https still holds it"
+    assert still is not None, f"{vip} was withdrawn while echo-shared-https still holds it"
 
     # A DIFFERENT key must not share. Sharing every service that asked to
     # share anything would be a far worse bug than not sharing at all.
-    other = lb_service("nginx-shared-other", ["IPv4"],
+    other = lb_service("echo-shared-other", ["IPv4"],
                        annotations={SHARING: "other-key"})
     assert other != first, (
         f"services with different sharing keys both got {other}"
@@ -364,7 +364,7 @@ def test_multiple_services_get_distinct_addresses(
     """
     allocated = []
     for i in range(3):
-        allocated.extend(lb_service(f"nginx-lb-multi-{i}", ["IPv4"]))
+        allocated.extend(lb_service(f"echo-lb-multi-{i}", ["IPv4"]))
     assert len(set(allocated)) == len(allocated), f"duplicate addresses: {allocated}"
 
 
@@ -374,7 +374,7 @@ def test_no_duplicate_vips_across_nodes(topo: topology.Topology, default_service
     Two nodes holding the same VIP is a split brain: ARP resolves to
     whichever replied last and traffic flaps between them.
     """
-    ips = lb_service("nginx-lb-unique", ["IPv4"])
+    ips = lb_service("echo-lb-unique", ["IPv4"])
     vip = ips[0]
     wait_until(lambda: announced_on(topo, vip), timeout=45, description=f"{vip} announced")
     holders = nodes.nodes_with_address(topo.node_ips, vip)

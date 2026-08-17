@@ -136,7 +136,7 @@ def test_default_group_places_each_vip_on_its_own_subnet(
     a node that can actually announce it.
     """
     for i in range(4):
-        vip = lb_service(f"nginx-lb-multipool-{i}", ["IPv4"])[0]
+        vip = lb_service(f"echo-lb-multipool-{i}", ["IPv4"])[0]
         subnet = topo.subnet_holding(vip)
         assert subnet is not None, f"{vip} is in no node subnet"
         holder, _ = wait_until(
@@ -155,7 +155,7 @@ def test_ipv6_vips_are_placed_on_their_own_subnet(
 ):
     """Same rule for IPv6, which NDP makes just as subnet-local."""
     for i in range(2):
-        vip = lb_service(f"nginx-lb-v6-place-{i}", ["IPv6"])[0]
+        vip = lb_service(f"echo-lb-v6-place-{i}", ["IPv6"])[0]
         subnet = topo.subnet_holding(vip)
         assert subnet is not None, f"{vip} is in no node subnet"
         holder, _ = wait_until(
@@ -212,7 +212,7 @@ def test_servicegroup_multipool_gives_one_address_per_subnet(
     group = multipool_group("multipool-test", multi_pool=True)
     families = {"v4": ["IPv4"], "v6": ["IPv6"], "dual": ["IPv4", "IPv6"]}[family]
     ips = lb_service(
-        f"nginx-mp-sg-{family}", families,
+        f"echo-mp-sg-{family}", families,
         annotations={SERVICE_GROUP: group}, timeout=90,
     )
 
@@ -239,7 +239,7 @@ def test_multipool_annotation_enables_it_on_a_single_pool_group(
 ):
     """The annotation turns multi-pool ON for a group that does not set it."""
     ips = lb_service(
-        "nginx-mp-ann-v4", ["IPv4"],
+        "echo-mp-ann-v4", ["IPv4"],
         annotations={SERVICE_GROUP: "default", MULTI_POOL: "true"},
         timeout=90,
     )
@@ -257,7 +257,7 @@ def test_multipool_annotation_overrides_the_group_and_turns_it_off(
     """
     group = multipool_group("multipool-override", multi_pool=True)
     ips = lb_service(
-        "nginx-mp-override", ["IPv4"],
+        "echo-mp-override", ["IPv4"],
         annotations={SERVICE_GROUP: group, MULTI_POOL: "false"},
     )
     assert len(ips) == 1, (
@@ -284,7 +284,7 @@ def test_vip_has_no_home_when_its_subnet_runs_out_of_nodes(
     smallest = min(topo.subnets, key=lambda s: len(s.nodes))
     group = subnet_servicegroup("exhaustion-pool", smallest)
     vip = lb_service(
-        "nginx-lb-small-subnet", ["IPv4"], annotations={SERVICE_GROUP: group}
+        "echo-lb-small-subnet", ["IPv4"], annotations={SERVICE_GROUP: group}
     )[0]
     assert topo.subnet_holding(vip).v4 == smallest.v4
 
