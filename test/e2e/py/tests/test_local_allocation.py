@@ -139,8 +139,8 @@ def test_allocates_announces_and_serves(
                 f"which is on {topo.subnet_of(node).v4}"
             )
 
-        body = curl_from_node(topo, address)
-        assert "Pod:" in body, f"{address} did not serve the backend; got {body[:200]!r}"
+        served = nodes.echo_json(topo.node_ips, address)
+        assert served["pod"], f"{address} did not serve the backend; got {served!r}"
 
     # Annotations PureLB sets on a service it allocated for.
     svc = cluster.service(NAMESPACE, name)
@@ -291,7 +291,7 @@ def test_explicit_purelb_loadbalancer_class_allocates(
 
     wait_until(lambda: announced_on(topo, address), timeout=45,
                description=f"{address} to be announced")
-    assert "Pod:" in curl_from_node(topo, address)
+    assert nodes.echo_json(topo.node_ips, address)["pod"]
 
 
 def test_shared_ip_puts_two_services_on_one_address(

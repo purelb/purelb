@@ -38,6 +38,7 @@ surfacing as sixteen mysterious route failures.
 from __future__ import annotations
 
 import ipaddress
+import json
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -366,7 +367,8 @@ def curl_external_status(address: str, timeout: float = 10.0) -> Tuple[int, str]
     host = ipaddress.ip_address(address)
     url = f"http://[{address}]/" if host.version == 6 else f"http://{address}/"
     proc = subprocess.run(  # noqa: S603
-        ["curl", "-s", "--connect-timeout", str(int(timeout)), url],
+        ["curl", "-s", "-H", "Accept: application/json",
+         "--connect-timeout", str(int(timeout)), url],
         capture_output=True, text=True, timeout=timeout + 10,
     )
     return proc.returncode, proc.stdout
@@ -410,7 +412,7 @@ def test_the_vip_is_reachable_from_outside_the_cluster(
         timeout=60, interval=5.0,
         description=f"{vip} to answer from off-cluster",
     )
-    assert "Pod:" in body, (
+    assert json.loads(body)["pod"], (
         f"the router has a route to {vip} but it serves nothing from "
         f"off-cluster; got {body[:200]!r}"
     )
@@ -438,16 +440,16 @@ def test_etp_local_next_hops_track_the_endpoint_count(
 
     def scale(replicas: int) -> None:
         cluster.apps.patch_namespaced_deployment_scale(
-            "nginx", NAMESPACE, {"spec": {"replicas": replicas}}
+            "echo", NAMESPACE, {"spec": {"replicas": replicas}}
         )
 
-    original = cluster.deployment(NAMESPACE, "nginx").spec.replicas or 1
+    original = cluster.deployment(NAMESPACE, "echo").spec.replicas or 1
     try:
         # Two endpoints on (at most) two nodes.
         scale(2)
-        cluster.wait_rollout(NAMESPACE, "nginx", timeout=180)
+        cluster.wait_rollout(NAMESPACE, "echo", timeout=180)
         endpoint_nodes = wait_until(
-            lambda: {p.spec.node_name for p in cluster.pods(NAMESPACE, "app=nginx")
+            lambda: {p.spec.node_name for p in cluster.pods(NAMESPACE, "app=echo")
                      if p.status.phase == "Running"} or None,
             timeout=120, interval=3.0, description="endpoint nodes",
         )
@@ -463,14 +465,14 @@ def test_etp_local_next_hops_track_the_endpoint_count(
         # Zero endpoints: the route goes away entirely.
         scale(0)
         wait_until(
-            lambda: (not cluster.pods(NAMESPACE, "app=nginx")) or None,
+            lambda: (not cluster.pods(NAMESPACE, "app=echo")) or None,
             timeout=120, interval=3.0, description="every backend pod to go",
         )
         wait_for_withdrawal(router, prefix, timeout=120)
 
         # And comes back.
         scale(1)
-        cluster.wait_rollout(NAMESPACE, "nginx", timeout=180)
+        cluster.wait_rollout(NAMESPACE, "echo", timeout=180)
         restored = wait_until(
             lambda: router.nexthops(prefix) or None,
             timeout=120, interval=3.0,
@@ -481,7 +483,7 @@ def test_etp_local_next_hops_track_the_endpoint_count(
         )
     finally:
         scale(original)
-        cluster.wait_rollout(NAMESPACE, "nginx", timeout=180)
+        cluster.wait_rollout(NAMESPACE, "echo", timeout=180)
 
 
 # ------------------------------------------------ aggregation exclusivity
@@ -591,10 +593,10 @@ def test_a_withdrawn_vip_stops_serving_from_outside(
                      annotations={SERVICE_GROUP: group}, timeout=90)[0]
     prefix = host_prefix(vip)
     wait_for_route(router, prefix)
-    assert "Pod:" in wait_until(
+    assert json.loads(wait_until(
         lambda: curl_external(vip) or None,
         timeout=60, interval=5.0, description=f"{vip} to answer before withdrawal",
-    )
+    ))["pod"]
 
     cluster.delete_service(NAMESPACE, "router-unreach")
     wait_for_withdrawal(router, prefix)

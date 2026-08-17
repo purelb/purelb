@@ -56,7 +56,7 @@ from typing import Dict, Iterator, List, Optional
 
 import pytest
 
-from purelb_e2e import TEST_NAMESPACE, metrics, topology
+from purelb_e2e import backend, TEST_NAMESPACE, metrics, topology
 from purelb_e2e.cluster import Cluster
 from purelb_e2e.wait import wait_until
 
@@ -74,7 +74,7 @@ REJECTED = "purelb_address_pool_allocation_rejected_total"
 def tenant_namespace(cluster: Cluster) -> Iterator[str]:
     """A scratch namespace with its own backend.
 
-    Its own nginx, because a Service only reaches endpoints in its own
+    Its own backend, because a Service only reaches endpoints in its own
     namespace -- a VIP allocated here and pointed at the backend in
     `test` would allocate fine and serve nothing, which would look like
     an announcement bug.
@@ -102,25 +102,25 @@ def tenant_namespace(cluster: Cluster) -> Iterator[str]:
         if exc.status != 409:
             raise
 
-    labels = {"app": "nginx"}
+    # The server ConfigMap is per-namespace -- reset-test-cluster.sh builds
+    # one in `test`, and a ConfigMap cannot be mounted across namespaces --
+    # so the tenant backend needs its own copy of the same server.py.
+    backend.ensure_configmap(cluster, TENANT_NS)
+
+    labels = {"app": "echo"}
     try:
         cluster.apps.create_namespaced_deployment(
             TENANT_NS,
             {
                 "apiVersion": "apps/v1",
                 "kind": "Deployment",
-                "metadata": {"name": "nginx", "namespace": TENANT_NS},
+                "metadata": {"name": "echo", "namespace": TENANT_NS},
                 "spec": {
                     "replicas": 1,
                     "selector": {"matchLabels": labels},
                     "template": {
                         "metadata": {"labels": labels},
-                        "spec": {
-                            "containers": [
-                                {"name": "nginx", "image": "nginx:alpine",
-                                 "ports": [{"containerPort": 80}]}
-                            ]
-                        },
+                        "spec": backend.pod_spec(),
                     },
                 },
             },
@@ -128,7 +128,7 @@ def tenant_namespace(cluster: Cluster) -> Iterator[str]:
     except ApiException as exc:
         if exc.status != 409:
             raise
-    cluster.wait_rollout(TENANT_NS, "nginx", timeout=180)
+    cluster.wait_rollout(TENANT_NS, "echo", timeout=180)
 
     yield TENANT_NS
 

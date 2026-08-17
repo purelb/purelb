@@ -1,0 +1,77 @@
+# The backend every e2e module exercises.
+#
+# Not self-contained: the `echo-server` ConfigMap holds test/echo-server/server.py
+# and must exist before this applies cleanly. `scripts/reset-test-cluster.sh`
+# builds it from that file and stamps a checksum onto the pod template so an
+# edit to the server actually rolls the pods -- a ConfigMap has no tag, and a
+# running interpreter will not re-read the file it started from.
+#
+# Provision by hand with:
+#   kubectl create configmap echo-server -n test \
+#       --from-file=server.py=test/echo-server/server.py \
+#       --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl apply -f test/e2e/echo-test.yaml
+#
+# No Service here on purpose: every test creates its own LoadBalancer Service
+# selecting `app: echo`, which is the thing under test.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo
+  template:
+    metadata:
+      labels:
+        app: echo
+      annotations:
+        # Stamped with sha256(server.py) by reset-test-cluster.sh. Without it,
+        # editing the server updates the ConfigMap while the running pods keep
+        # executing the old code, and the suite silently tests a server that is
+        # not the one in the tree.
+        purelb.io/config-checksum: "unset"
+    spec:
+      # The suite moves this pod between nodes to drive affinity and failover.
+      # 3s + the SIGTERM handler in server.py means the old pod is gone in about
+      # a second, so its endpoint stops being Serving promptly. The default 30s
+      # left a moved VIP pinned to the drain window.
+      terminationGracePeriodSeconds: 3
+      containers:
+      - name: echo
+        image: python:3.12-alpine
+        command: ["python3", "/app/server.py"]
+        ports:
+        - containerPort: 8080
+        env:
+        - name: POD_NAME
+          valueFrom: { fieldRef: { fieldPath: metadata.name } }
+        - name: NODE_NAME
+          valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+        - name: HOST_IP
+          valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+        - name: POD_IP
+          valueFrom: { fieldRef: { fieldPath: status.podIP } }
+        volumeMounts:
+        - name: app
+          mountPath: /app
+        # Python needs interpreter startup before it binds, unlike nginx which
+        # was listening almost immediately. Without a probe the endpoint goes
+        # Ready before the socket exists and the first request is refused.
+        # periodSeconds 1 keeps the readiness delay off the timing measurements.
+        readinessProbe:
+          httpGet: { path: /healthz, port: 8080 }
+          periodSeconds: 1
+      volumes:
+      - name: app
+        configMap:
+          name: echo-server

@@ -35,7 +35,7 @@ from typing import Dict, Iterator, List, Optional, Sequence
 
 import pytest
 
-from purelb_e2e import metrics, topology
+from purelb_e2e import backend, metrics, topology
 from purelb_e2e.cluster import Cluster, utcnow
 from purelb_e2e.nodes import Router, ssh
 from purelb_e2e.wait import wait_until
@@ -280,8 +280,10 @@ def lb_service(cluster: Cluster):
                 "type": "LoadBalancer",
                 "ipFamilyPolicy": policy or ("RequireDualStack" if len(families) > 1 else "SingleStack"),
                 "ipFamilies": list(families),
-                "selector": selector or {"app": "nginx"},
-                "ports": [{"port": 80, "targetPort": 80}],
+                "selector": selector or {"app": "echo"},
+                # The echo backend listens on 8080; the Service still
+                # publishes 80, so nothing outside this line cares.
+                "ports": [{"port": 80, "targetPort": 8080}],
                 **spec_extra,
             },
         }
@@ -303,7 +305,7 @@ def lb_service(cluster: Cluster):
 
 @pytest.fixture
 def pinned_backend(cluster: Cluster):
-    """An nginx Deployment pinned to one node, removed afterwards.
+    """An echo backend Deployment pinned to one node, removed afterwards.
 
     Combined with purelb.io/node-affinity: service-endpoints, this is how
     a test makes a SPECIFIC node the announcer. Without it the election
@@ -325,16 +327,7 @@ def pinned_backend(cluster: Cluster):
                     "selector": {"matchLabels": labels},
                     "template": {
                         "metadata": {"labels": labels},
-                        "spec": {
-                            "nodeName": node,
-                            "containers": [
-                                {
-                                    "name": "nginx",
-                                    "image": "nginx:alpine",
-                                    "ports": [{"containerPort": 80}],
-                                }
-                            ],
-                        },
+                        "spec": backend.pod_spec(node),
                     },
                 },
             },

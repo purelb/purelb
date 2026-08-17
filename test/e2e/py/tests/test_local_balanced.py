@@ -179,7 +179,7 @@ def test_balanced_addresses_are_announced_and_serve(
         assert holder in topo.subnet_holding(vip).nodes, (
             f"{vip} announced by {holder}, which is off its subnet"
         )
-        assert "Pod:" in nodes.curl_via_node(topo.node_ips, vip)
+        assert nodes.echo_json(topo.node_ips, vip)["pod"]
 
 
 # ----------------------------------------------------- mutual exclusion

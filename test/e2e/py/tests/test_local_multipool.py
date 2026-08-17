@@ -229,7 +229,7 @@ def test_servicegroup_multipool_gives_one_address_per_subnet(
             timeout=45, description=f"{address} to be announced",
         )
         assert holder in subnet.nodes, f"{address} announced by {holder}, off its subnet"
-        assert "Pod:" in nodes.curl_via_node(topo.node_ips, address), (
+        assert nodes.echo_json(topo.node_ips, address)["pod"], (
             f"multi-pool address {address} is announced but does not serve"
         )
 

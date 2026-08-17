@@ -47,8 +47,8 @@ die()   { echo -e "${RED}✗${NC} $1" >&2; exit 1; }
 CONTEXT=""
 PURELB_NS="purelb-system"
 ASSUME_YES=0
-# Scratch namespaces only. NOT "test": it holds the nginx backend the
-# suites require but do not create (test/e2e/nginx-test.yaml), so
+# Scratch namespaces only. NOT "test": it holds the echo backend the
+# suites require but do not create (test/e2e/echo-test.yaml), so
 # deleting it makes every suite fail prerequisite validation. Its
 # LoadBalancer Services are removed above like any other.
 EXTRA_NS=("test-tenant" "echo-test")
@@ -283,21 +283,51 @@ echo "  LB Services:    $(kubectl get svc -A --no-headers 2>/dev/null | grep -c 
 echo "  PureLB pods:"
 kubectl get pods -n "$PURELB_NS" --no-headers 2>/dev/null | awk '{printf "    %-32s %s %s\n", $1, $2, $3}'
 
-# The suites require an nginx backend in the `test` namespace and none of
+# The suites require the echo backend in the `test` namespace and none of
 # them creates it, so a baseline without one is not runnable. Restoring it
 # here rather than warning about it is also what makes suite ORDER stop
 # mattering: the retired bash ipam-external suite deleted the backend on
 # its way out, which silently removed a prerequisite for everything that
 # ran after it.
-BACKEND=$(kubectl get pods -n test -l app=nginx --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
-if [ "$BACKEND" -lt 1 ]; then
-    info "restoring the nginx backend in namespace 'test'"
-    kubectl apply -f "${REPO_ROOT}/test/e2e/nginx-test.yaml" >/dev/null
-    kubectl rollout status deployment/nginx -n test --timeout=120s >/dev/null \
-        || die "nginx backend did not become ready"
-    BACKEND=$(kubectl get pods -n test -l app=nginx --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+#
+# Applied unconditionally, unlike the old nginx restore which ran only when
+# no pod was up. The server is a ConfigMap, not an image, so "a pod is
+# running" says nothing about WHICH server it is running -- an edit to
+# server.py must reach the cluster even when the old pod is perfectly
+# healthy. The checksum below is what turns that edit into a rollout.
+# Remove the nginx backend this replaced. Clusters that ran the suite
+# before the switch still have it, and nothing else would ever clean it
+# up -- it would sit there indefinitely, answering on `app: nginx`,
+# confusing anyone who went looking for the backend.
+if kubectl get deployment nginx -n test >/dev/null 2>&1; then
+    info "removing the superseded nginx backend"
+    kubectl delete deployment nginx -n test --ignore-not-found --timeout=60s >/dev/null
+    kubectl delete configmap nginx-config -n test --ignore-not-found >/dev/null
 fi
-echo "  Backend pods:   $BACKEND running in namespace 'test'"
+
+info "restoring the echo backend in namespace 'test'"
+kubectl create configmap echo-server -n test \
+    --from-file=server.py="${REPO_ROOT}/test/echo-server/server.py" \
+    --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null \
+    || die "could not create the echo-server ConfigMap"
+kubectl apply -f "${REPO_ROOT}/test/e2e/echo-test.yaml" >/dev/null \
+    || die "could not apply test/e2e/echo-test.yaml"
+
+# Stamp sha256(server.py) on the pod template. A ConfigMap has no tag and a
+# running interpreter never re-reads the file it started from, so without
+# this an edited server would sit in the ConfigMap while every pod kept
+# serving the old code -- and the suite would be testing something that is
+# not in the tree. Patching an unchanged checksum is a no-op; a changed one
+# rolls the Deployment.
+SUM=$(sha256sum "${REPO_ROOT}/test/echo-server/server.py" | cut -c1-16)
+kubectl -n test patch deployment echo --type=merge \
+    -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"purelb.io/config-checksum\":\"${SUM}\"}}}}}" \
+    >/dev/null || die "could not stamp the echo-server checksum"
+
+kubectl rollout status deployment/echo -n test --timeout=180s >/dev/null \
+    || die "echo backend did not become ready"
+BACKEND=$(kubectl get pods -n test -l app=echo --field-selector=status.phase=Running -o name 2>/dev/null | wc -l)
+echo "  Backend pods:   $BACKEND running in namespace 'test' (server.py $SUM)"
 
 if [ "$STALE" -ne 0 ]; then
     die "$STALE stale address(es) remain; the cluster is NOT a clean baseline"

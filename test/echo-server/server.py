@@ -8,6 +8,7 @@
 # in via a ConfigMap (see README.md).
 
 import http.server, socket, os, ipaddress, threading, signal
+import json, urllib.parse
 
 # Exit immediately on SIGTERM so a rescheduled/deleted pod terminates fast
 # (default is to run until SIGKILL after terminationGracePeriodSeconds). This
@@ -45,15 +46,73 @@ def fam(raw):
         return "IPv4 (v4-mapped on a v6 socket)"
     return "IPv{}".format(a.version)
 
+def header_or(h, name):
+    """Header value, or None. Text renders None as <none>; JSON as null."""
+    v = h.get(name)
+    return v if v else None
+
+
+def collect(handler, n, peer, loc):
+    """Everything the response reports, gathered once.
+
+    Both renderings read from this, so the text a human curls and the
+    JSON a test parses can never disagree about what was observed.
+    """
+    praw, lraw = peer[0], loc[0]
+    pa = ipaddress.ip_address(praw)
+    return {
+        "request_count": n,
+        "pod": POD, "node": NODE, "node_ip": NODEIP, "pod_ip": PODIP,
+        "tcp_peer_src":  {"ip": unmap(praw), "port": peer[1]},
+        "tcp_local_dst": {"ip": unmap(lraw), "port": loc[1]},
+        # Split apart deliberately: the text form says "IPv4 (v4-mapped on
+        # a v6 socket)", and a test asserting the address family should not
+        # have to parse prose to get it.
+        "socket_family": "IPv4" if (pa.version == 4 or pa.ipv4_mapped) else "IPv6",
+        "ipv4_mapped": bool(pa.version == 6 and pa.ipv4_mapped),
+        "http_host": header_or(handler.headers, "Host"),
+        "http_x_forwarded_for": header_or(handler.headers, "X-Forwarded-For"),
+        "http_x_real_ip": header_or(handler.headers, "X-Real-IP"),
+        "http_path": handler.path,
+    }
+
+
 class H(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def wants_json(self):
+        """Accept: application/json, or ?format=json.
+
+        Two ways on purpose. The harness sets the header, which is the
+        correct HTTP thing; ?format=json is for poking at it from a node
+        shell, where adding a header is more to type than it is worth.
+        Text stays the default so the manual workflow is unchanged.
+        """
+        if "application/json" in (self.headers.get("Accept") or ""):
+            return True
+        query = urllib.parse.urlparse(self.path).query
+        return urllib.parse.parse_qs(query).get("format", [""])[0] == "json"
+
     def do_GET(self):
-        if self.path == "/healthz":            # readiness probe: not counted
+        # Compare the parsed path, not the raw one, so /healthz?x=y is
+        # still the probe rather than a counted request.
+        if urllib.parse.urlparse(self.path).path == "/healthz":
             self.send_response(200); self.send_header("Content-Length", "3")
             self.end_headers(); self.wfile.write(b"ok\n"); return
         n = next_count()
         peer = self.connection.getpeername()   # kernel: packet SOURCE addr/port
         loc  = self.connection.getsockname()   # kernel: local (pod-side) addr/port
+        f = collect(self, n, peer, loc)
+
+        if self.wants_json():
+            body = (json.dumps(f, indent=2) + "\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         lines = [
           "# source: this pod process (in-memory, resets on pod restart/reschedule)",
           "request_count        = {:<28} [# requests served by THIS pod instance]".format(n),
@@ -70,9 +129,9 @@ class H(http.server.BaseHTTPRequestHandler):
           "socket_family        = {:<28} [address family of the accepted connection]".format(fam(peer[0])),
           "",
           "# source: HTTP request headers (what the client wrote at L7)",
-          "http_host            = {:<28} [Host header = the VIP:port the client dialed]".format(self.headers.get("Host", "<none>")),
-          "http_x_forwarded_for = {:<28} [only present if an L7 proxy added it]".format(self.headers.get("X-Forwarded-For", "<none>")),
-          "http_x_real_ip       = {:<28} [only present if an L7 proxy added it]".format(self.headers.get("X-Real-IP", "<none>")),
+          "http_host            = {:<28} [Host header = the VIP:port the client dialed]".format(f["http_host"] or "<none>"),
+          "http_x_forwarded_for = {:<28} [only present if an L7 proxy added it]".format(f["http_x_forwarded_for"] or "<none>"),
+          "http_x_real_ip       = {:<28} [only present if an L7 proxy added it]".format(f["http_x_real_ip"] or "<none>"),
           "http_path            = {:<28} [request line]".format(self.path),
           "",
         ]

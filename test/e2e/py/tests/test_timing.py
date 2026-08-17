@@ -213,7 +213,7 @@ def test_d3_service_creation_to_first_successful_request(
         def create_and_serve() -> None:
             ips = lb_service(name, ["IPv4"])
             wait_until(
-                lambda: "Pod:" in nodes.curl_via_node(topo.node_ips, ips[0]) or None,
+                lambda: nodes.echo_json(topo.node_ips, ips[0])["pod"] or None,
                 timeout=CEILING["D3"] * 3, interval=0.5,
                 description=f"{ips[0]} to serve a request",
             )

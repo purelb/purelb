@@ -39,6 +39,7 @@ script.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Dict, Iterator, List
 
@@ -285,7 +286,7 @@ def allocated(cluster: Cluster, external_sg: str, rpc_baseline) -> Iterator[List
                 "type": "LoadBalancer",
                 "ipFamilyPolicy": "SingleStack",
                 "ipFamilies": ["IPv4"],
-                "selector": {"app": "nginx"},
+                "selector": {"app": "echo"},
                 "ports": [{"port": 80, "targetPort": 80}],
             },
         }
@@ -346,11 +347,13 @@ def test_external_servicegroup_is_accepted(cluster: Cluster, external_sg: str):
 
 
 def test_backend_is_ready(cluster: Cluster):
-    dep = cluster.deployment(NAMESPACE, "nginx")
+    dep = cluster.deployment(NAMESPACE, "echo")
     assert dep is not None, (
-        f"no nginx Deployment in {NAMESPACE}; apply test/e2e/nginx-test.yaml"
+        f"no echo Deployment in {NAMESPACE}; run "
+        f"scripts/reset-test-cluster.sh, which builds the server ConfigMap "
+        f"from test/echo-server/server.py and applies test/e2e/echo-test.yaml"
     )
-    assert (dep.status.available_replicas or 0) >= 1, "nginx backend has no ready replica"
+    assert (dep.status.available_replicas or 0) >= 1, "echo backend has no ready replica"
 
 
 # ---------------------------------------------------------------- allocation
@@ -392,8 +395,12 @@ def test_vip_serves_the_backend(cluster: Cluster, node_ips: Dict[str, str], allo
     """
     vip = allocated[0]
     node = sorted(node_ips)[0]
-    body = nodes.ssh(node_ips[node], f"curl -s --max-time 5 http://{vip}/", timeout=30)
-    assert "Pod:" in body, f"VIP {vip} did not serve the nginx backend; got {body[:200]!r}"
+    body = nodes.ssh(
+        node_ips[node], f"curl -s --max-time 5 'http://{vip}/?format=json'", timeout=30
+    )
+    assert json.loads(body)["pod"], (
+        f"VIP {vip} did not serve the echo backend; got {body[:200]!r}"
+    )
 
 
 # -------------------------------------------------------------------- status
@@ -501,7 +508,7 @@ def dual_stack_service(cluster: Cluster, external_sg: str, pool_cidrs: Dict[str,
                     "type": "LoadBalancer",
                     "ipFamilyPolicy": policy,
                     "ipFamilies": families,
-                    "selector": {"app": "nginx"},
+                    "selector": {"app": "echo"},
                     "ports": [{"port": 80, "targetPort": 80}],
                 },
             }

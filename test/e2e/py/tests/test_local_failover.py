@@ -70,7 +70,7 @@ def test_vip_fails_over_when_its_announcer_is_evicted(
         lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
         description=f"{vip} to be announced",
     )
-    assert "Pod:" in nodes.curl_via_node(topo.node_ips, vip), f"{vip} was not serving before failover"
+    assert nodes.echo_json(topo.node_ips, vip)["pod"], f"{vip} was not serving before failover"
     assert announcing.announcer_of(announcing_annotation(cluster, name), vip) == original, (
         "the annotation disagrees with the interface before we even start"
     )
@@ -103,7 +103,7 @@ def test_vip_fails_over_when_its_announcer_is_evicted(
             f"{topo.subnet_of(new_winner).v4}, not {subnet.v4}"
         )
 
-    assert "Pod:" in nodes.curl_via_node(topo.node_ips, vip), f"{vip} stopped serving after failover"
+    assert nodes.echo_json(topo.node_ips, vip)["pod"], f"{vip} stopped serving after failover"
 
     # The annotation must converge while the old winner is still DOWN. Its
     # agent cannot clear its own slot, so the new winner has to overwrite

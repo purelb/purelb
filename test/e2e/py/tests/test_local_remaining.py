@@ -28,6 +28,7 @@ which is exactly why subnet-aware election must not apply to it.
 
 from __future__ import annotations
 
+import json
 import ipaddress
 from collections import Counter
 from typing import Dict, List
@@ -192,15 +193,15 @@ def test_one_vip_spreads_across_backend_pods(
     """
     replicas = 3
     cluster.apps.patch_namespaced_deployment_scale(
-        "nginx", NAMESPACE, {"spec": {"replicas": replicas}}
+        "echo", NAMESPACE, {"spec": {"replicas": replicas}}
     )
     try:
-        cluster.wait_rollout(NAMESPACE, "nginx", timeout=180)
+        cluster.wait_rollout(NAMESPACE, "echo", timeout=180)
         vip = lb_service("nginx-lb-spread-pods", ["IPv4"])[0]
         wait_until(lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
                    description=f"{vip} to be announced")
 
-        pods = {p.metadata.name for p in cluster.pods(NAMESPACE, "app=nginx")}
+        pods = {p.metadata.name for p in cluster.pods(NAMESPACE, "app=echo")}
         seen: Counter = Counter()
         for _ in range(30):
             body = nodes.curl_via_node(topo.node_ips, vip)
@@ -215,7 +216,7 @@ def test_one_vip_spreads_across_backend_pods(
         )
     finally:
         cluster.apps.patch_namespaced_deployment_scale(
-            "nginx", NAMESPACE, {"spec": {"replicas": 1}}
+            "echo", NAMESPACE, {"spec": {"replicas": 1}}
         )
 
 
@@ -246,7 +247,8 @@ def test_a_pod_can_reach_a_vip(
                     {
                         "name": "client",
                         "image": "curlimages/curl:latest",
-                        "command": ["sh", "-c", f"curl -s --max-time 10 http://{vip}/ || true"],
+                        "command": ["sh", "-c",
+                                    f"curl -s --max-time 10 'http://{vip}/?format=json' || true"],
                     }
                 ],
             },
@@ -260,7 +262,7 @@ def test_a_pod_can_reach_a_vip(
             description="the client pod to finish",
         )
         body = cluster.core.read_namespaced_pod_log(name=name, namespace=NAMESPACE)
-        assert "Pod:" in body, (
+        assert json.loads(body)["pod"], (
             f"a pod could not reach VIP {vip} (got {body[:200]!r}); node-to-VIP "
             f"works, so this is the CNI path rather than the announcement"
         )
@@ -357,9 +359,11 @@ def test_a_node_can_reach_a_vip_on_the_other_subnet(
 
     source = other.nodes[0]
     body = nodes.ssh(
-        topo.node_ips[source], f"curl -s --max-time 10 http://{vip}/", timeout=40
+        topo.node_ips[source], f"curl -s --max-time 10 'http://{vip}/?format=json'",
+        timeout=40,
     )
-    assert "Pod:" in body, (
+    assert json.loads(body)["pod"], (
         f"{source} on {other.v4} could not reach {vip} on {target.v4}; the VIP "
-        f"is announced on {holder}, so this is routing between the subnets"
+        f"is announced on {holder}, so this is routing between the subnets. "
+        f"Got {body[:200]!r}"
     )

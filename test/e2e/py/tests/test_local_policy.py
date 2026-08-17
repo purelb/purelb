@@ -196,7 +196,38 @@ def test_etp_local_is_overridden_for_a_local_pool(
     )
     wait_until(lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
                description=f"{vip} to be announced")
-    assert "Pod:" in nodes.curl_via_node(topo.node_ips, vip)
+
+    # Assert the TRAFFIC behaves like Cluster, not just that the field says
+    # so. The spec check above passes against a build that rewrites the
+    # field and then forwards as if it were Local -- which is exactly the
+    # bug the override exists to prevent, and was untested until the
+    # backend could report what the kernel did to the packet.
+    served = nodes.echo_json(topo.node_ips, vip)
+    assert served["pod"], f"{vip} did not serve"
+
+    # kube-proxy DNAT'd the VIP to the pod: the socket's local address is
+    # the pod IP, while the Host header still carries the VIP the client
+    # dialled. If these were equal the traffic never went through the
+    # Service at all.
+    assert served["tcp_local_dst"]["ip"] == served["pod_ip"], (
+        f"the accepted connection's local address is "
+        f"{served['tcp_local_dst']['ip']}, not the pod IP {served['pod_ip']}; "
+        f"the VIP was not DNAT'd to the endpoint"
+    )
+    assert served["http_host"].split(":")[0].strip("[]") == vip, (
+        f"Host header is {served['http_host']!r}, expected the VIP {vip}"
+    )
+
+    # Deliberately NOT asserting that the source was SNAT'd. It is, but it
+    # cannot be observed from here: the request originates on a node, so
+    # SNAT rewrites the source to that node's own address and the result
+    # is identical to no SNAT at all. Measured -- curling from purelb2-1
+    # yields tcp_peer_src 172.30.250.104, which is exactly what an
+    # un-SNAT'd request from that node would show. Proving the SNAT half
+    # needs a client whose address is not already a node's, i.e. a pod or
+    # something off-cluster; test_a_pod_can_reach_a_vip has the client for
+    # it if that is ever worth asserting.
+    assert served["tcp_peer_src"]["ip"], "no source address reported"
 
 
 def test_allow_local_annotation_preserves_etp_local(
@@ -294,7 +325,7 @@ def test_graceful_shutdown_releases_the_lease(
         timeout=90, interval=2.0,
         description=f"{vip} to move off {holder} after a graceful stop",
     )
-    assert "Pod:" in nodes.curl_via_node(topo.node_ips, vip), (
+    assert nodes.echo_json(topo.node_ips, vip)["pod"], (
         f"{vip} moved to {moved[0]} but stopped serving"
     )
 
@@ -323,10 +354,10 @@ def test_traffic_reaches_pods_on_nodes_other_than_the_announcer(
     """
     replicas = max(3, len(topo.node_ips))
     cluster.apps.patch_namespaced_deployment_scale(
-        "nginx", NAMESPACE, {"spec": {"replicas": replicas}}
+        "echo", NAMESPACE, {"spec": {"replicas": replicas}}
     )
     try:
-        cluster.wait_rollout(NAMESPACE, "nginx", timeout=180)
+        cluster.wait_rollout(NAMESPACE, "echo", timeout=180)
         vip = lb_service("nginx-lb-spread", ["IPv4"])[0]
         holder, _ = wait_until(
             lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
@@ -336,7 +367,7 @@ def test_traffic_reaches_pods_on_nodes_other_than_the_announcer(
         # The backend reports its pod name; map that to a node.
         pod_node = {
             p.metadata.name: p.spec.node_name
-            for p in cluster.pods(NAMESPACE, "app=nginx")
+            for p in cluster.pods(NAMESPACE, "app=echo")
         }
         seen: set = set()
         for _ in range(30):
@@ -354,7 +385,7 @@ def test_traffic_reaches_pods_on_nodes_other_than_the_announcer(
         )
     finally:
         cluster.apps.patch_namespaced_deployment_scale(
-            "nginx", NAMESPACE, {"spec": {"replicas": 1}}
+            "echo", NAMESPACE, {"spec": {"replicas": 1}}
         )
 
 
@@ -371,6 +402,6 @@ def test_ipv6_vip_serves_traffic(
     vip = lb_service("nginx-lb-v6-traffic", ["IPv6"])[0]
     wait_until(lambda: nodes.announcing_node(topo.node_ips, vip), timeout=45,
                description=f"{vip} to be announced")
-    assert "Pod:" in nodes.curl_via_node(topo.node_ips, vip), (
+    assert nodes.echo_json(topo.node_ips, vip)["pod"], (
         f"IPv6 VIP {vip} is announced but serves nothing; check ip6 forwarding"
     )

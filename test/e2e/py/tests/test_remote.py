@@ -38,6 +38,7 @@ visibly rather than silently allocating something else.
 
 from __future__ import annotations
 
+import json
 import ipaddress
 import time
 from typing import Dict, Iterator, List, Optional
@@ -119,8 +120,8 @@ def remote_group(cluster: Cluster):
 
 
 @pytest.fixture
-def pinned_nginx(cluster: Cluster):
-    """An nginx Deployment pinned to chosen nodes, scalable to zero.
+def pinned_backend_remote(cluster: Cluster):
+    """An echo backend Deployment pinned to chosen nodes, scalable to zero.
 
     ETP Local is about which nodes have ENDPOINTS, so these tests need to
     place and remove endpoints deliberately rather than take what the
@@ -130,13 +131,7 @@ def pinned_nginx(cluster: Cluster):
 
     def make(name: str, node: Optional[str], replicas: int = 1) -> str:
         labels = {"app": name}
-        spec: Dict[str, object] = {
-            "containers": [
-                {"name": "nginx", "image": "nginx:alpine", "ports": [{"containerPort": 80}]}
-            ]
-        }
-        if node:
-            spec["nodeName"] = node
+        spec: Dict[str, object] = backend.pod_spec(node)
         cluster.apps.create_namespaced_deployment(
             NAMESPACE,
             {
@@ -289,7 +284,7 @@ def test_local_and_remote_pools_do_not_contaminate_each_other(
 
 
 def test_etp_local_restricts_announcement_to_endpoint_nodes(
-    cluster: Cluster, topo: topology.Topology, remote_group, lb_service, pinned_nginx,
+    cluster: Cluster, topo: topology.Topology, remote_group, lb_service, pinned_backend_remote,
 ):
     """With ETP Local, only nodes holding an endpoint announce.
 
@@ -301,7 +296,7 @@ def test_etp_local_restricts_announcement_to_endpoint_nodes(
     """
     group = remote_group()
     target = sorted(topo.node_ips)[0]
-    backend = pinned_nginx("etp-backend", target)
+    backend = pinned_backend_remote("etp-backend", target)
 
     vip = lb_service(
         "remote-etp", ["IPv4"], annotations={SERVICE_GROUP: group},
@@ -322,7 +317,7 @@ def test_etp_local_restricts_announcement_to_endpoint_nodes(
 
 
 def test_etp_local_withdraws_when_the_last_endpoint_goes(
-    cluster: Cluster, topo: topology.Topology, remote_group, lb_service, pinned_nginx,
+    cluster: Cluster, topo: topology.Topology, remote_group, lb_service, pinned_backend_remote,
 ):
     """Zero endpoints means nowhere, then back when one returns.
 
@@ -331,7 +326,7 @@ def test_etp_local_withdraws_when_the_last_endpoint_goes(
     """
     group = remote_group()
     target = sorted(topo.node_ips)[0]
-    backend = pinned_nginx("etp-zero-backend", target)
+    backend = pinned_backend_remote("etp-zero-backend", target)
     vip = lb_service(
         "remote-etp-zero", ["IPv4"], annotations={SERVICE_GROUP: group},
         selector={"app": backend}, externalTrafficPolicy="Local",
@@ -362,7 +357,7 @@ def test_etp_local_withdraws_when_the_last_endpoint_goes(
 
 @pytest.mark.requires("multi-node")
 def test_etp_local_follows_the_endpoint_to_another_node(
-    cluster: Cluster, topo: topology.Topology, remote_group, lb_service, pinned_nginx,
+    cluster: Cluster, topo: topology.Topology, remote_group, lb_service, pinned_backend_remote,
 ):
     """Move the endpoint; the announcement moves with it.
 
@@ -372,7 +367,7 @@ def test_etp_local_follows_the_endpoint_to_another_node(
     """
     group = remote_group()
     first, second = sorted(topo.node_ips)[0], sorted(topo.node_ips)[1]
-    backend = pinned_nginx("etp-move-backend", first)
+    backend = pinned_backend_remote("etp-move-backend", first)
     vip = lb_service(
         "remote-etp-move", ["IPv4"], annotations={SERVICE_GROUP: group},
         selector={"app": backend}, externalTrafficPolicy="Local",
@@ -395,12 +390,12 @@ def test_etp_local_follows_the_endpoint_to_another_node(
 
 
 def test_switching_a_service_to_etp_local_narrows_the_announcement(
-    cluster: Cluster, topo: topology.Topology, remote_group, lb_service, pinned_nginx,
+    cluster: Cluster, topo: topology.Topology, remote_group, lb_service, pinned_backend_remote,
 ):
     """Cluster -> Local on a live Service, without losing the address."""
     group = remote_group()
     target = sorted(topo.node_ips)[0]
-    backend = pinned_nginx("etp-transition-backend", target)
+    backend = pinned_backend_remote("etp-transition-backend", target)
     vip = lb_service(
         "remote-etp-transition", ["IPv4"], annotations={SERVICE_GROUP: group},
         selector={"app": backend},
@@ -877,7 +872,7 @@ def test_a_specific_remote_address_can_be_requested(
 
 
 def test_an_agent_restart_during_etp_local_restores_the_narrow_set(
-    cluster: Cluster, topo: topology.Topology, remote_group, lb_service, pinned_nginx,
+    cluster: Cluster, topo: topology.Topology, remote_group, lb_service, pinned_backend_remote,
 ):
     """Restarting an agent must not widen an ETP Local announcement.
 
@@ -889,7 +884,7 @@ def test_an_agent_restart_during_etp_local_restores_the_narrow_set(
     group = remote_group()
     target = sorted(topo.node_ips)[0]
     other = sorted(topo.node_ips)[-1]
-    backend = pinned_nginx("etp-restart-backend", target)
+    backend = pinned_backend_remote("etp-restart-backend", target)
     vip = lb_service(
         "remote-etp-restart", ["IPv4"], annotations={SERVICE_GROUP: group},
         selector={"app": backend}, externalTrafficPolicy="Local",
@@ -1042,7 +1037,7 @@ def test_a_remote_vip_serves_traffic_from_a_pod(
                         "image": "curlimages/curl:latest",
                         "command": ["sh", "-c",
                                     f"for i in 1 2 3 4 5; do "
-                                    f"curl -s --max-time 10 http://{vip}/ && break; "
+                                    f"curl -s --max-time 10 'http://{vip}/?format=json' && break; "
                                     f"sleep 3; done"],
                     }
                 ],
@@ -1056,7 +1051,7 @@ def test_a_remote_vip_serves_traffic_from_a_pod(
             timeout=180, interval=3.0, description="the client pod to finish",
         )
         body = cluster.core.read_namespaced_pod_log(name=name, namespace=NAMESPACE)
-        assert "Pod:" in body, (
+        assert json.loads(body)["pod"], (
             f"a pod could not reach remote VIP {vip}; the address is on kube-lb0 "
             f"on every node, so this is the Service programming rather than the "
             f"announcement. Got {body[:200]!r}"
@@ -1098,7 +1093,7 @@ def test_a_remote_ipv6_vip_serves_traffic_from_a_pod(
                         "image": "curlimages/curl:latest",
                         "command": ["sh", "-c",
                                     f"for i in 1 2 3 4 5; do "
-                                    f"curl -s --max-time 10 http://[{vip}]/ && break; "
+                                    f"curl -s --max-time 10 'http://[{vip}]/?format=json' && break; "
                                     f"sleep 3; done"],
                     }
                 ],
@@ -1112,7 +1107,7 @@ def test_a_remote_ipv6_vip_serves_traffic_from_a_pod(
             timeout=180, interval=3.0, description="the client pod to finish",
         )
         body = cluster.core.read_namespaced_pod_log(name=name, namespace=NAMESPACE)
-        assert "Pod:" in body, (
+        assert json.loads(body)["pod"], (
             f"a pod could not reach remote IPv6 VIP {vip}; got {body[:200]!r}"
         )
     finally:

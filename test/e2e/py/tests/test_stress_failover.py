@@ -134,7 +134,7 @@ def test_repeated_failover_never_strands_or_duplicates_the_address(
             f"is {new_holder}"
         )
 
-        assert "Pod:" in nodes.curl_via_node(topo.node_ips, vip), (
+        assert nodes.echo_json(topo.node_ips, vip)["pod"], (
             f"iteration {i} ({flavour}): {vip} moved to {new_holder} and stopped "
             f"serving; the move finished at the network layer but not at the "
             f"Service layer"

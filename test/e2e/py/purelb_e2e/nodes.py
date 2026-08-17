@@ -201,7 +201,8 @@ def _lifetime(token: str) -> Optional[int]:
 
 
 def curl_via_node(node_ips: Dict[str, str], address: str, path: str = "/",
-                  timeout: float = 30.0) -> str:
+                  timeout: float = 30.0,
+                  headers: Optional[Dict[str, str]] = None) -> str:
     """HTTP GET a VIP from a cluster node, returning the body.
 
     From a node rather than from the workstation. The bash suite curled
@@ -215,7 +216,36 @@ def curl_via_node(node_ips: Dict[str, str], address: str, path: str = "/",
     host = ipaddress.ip_address(address)
     url = f"http://[{address}]{path}" if host.version == 6 else f"http://{address}{path}"
     node = sorted(node_ips)[0]
-    return ssh(node_ips[node], f"curl -s --max-time 5 {url}", timeout=timeout)
+    hdr = "".join(f" -H {shlex.quote(f'{k}: {v}')}" for k, v in (headers or {}).items())
+    return ssh(node_ips[node], f"curl -s --max-time 5{hdr} {url}", timeout=timeout)
+
+
+def echo_json(node_ips: Dict[str, str], address: str, path: str = "/",
+              timeout: float = 30.0) -> dict:
+    """GET a VIP from a node and parse the echo backend's JSON.
+
+    The backend answers text by default -- that form is annotated and is
+    what you want when curling by hand -- so the harness asks for JSON
+    explicitly. Parsing prose in an assertion is how a test ends up
+    matching on a substring and passing against the wrong thing.
+
+    Raises rather than returning a sentinel when the body is not the
+    backend's: "the VIP served something" and "the VIP served OUR pod"
+    are different claims, and a test asserting the second must not be
+    satisfiable by the first.
+    """
+    body = curl_via_node(node_ips, address, path=path, timeout=timeout,
+                         headers={"Accept": "application/json"})
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            f"{address} did not return the echo backend's JSON. Got "
+            f"{body[:200]!r}. Something answered, but not our pod."
+        ) from exc
+    if "pod" not in parsed:
+        raise AssertionError(f"{address} returned JSON without a pod field: {parsed}")
+    return parsed
 
 
 def announcing_node(node_ips: Dict[str, str], address: str) -> Optional[Tuple[str, str]]:
