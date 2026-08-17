@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import ipaddress
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pytest
 
@@ -352,13 +352,14 @@ def test_two_services_sharing_an_address_produce_one_route(
 # -------------------------------------------------- external connectivity
 
 
-def curl_external(address: str, timeout: float = 10.0) -> str:
-    """GET the VIP from THIS machine, off-cluster.
+def curl_external_status(address: str, timeout: float = 10.0) -> Tuple[int, str]:
+    """GET the VIP from THIS machine, returning (curl exit code, body).
 
-    The whole point of BGP is that something outside the cluster can
-    reach the address, and this is the only assertion in the suite that
-    proves it end to end: the workstation has no special knowledge, it
-    just follows the route the router learned.
+    The exit code is the half that matters when proving an address has
+    STOPPED answering. curl exits non-zero when nothing responded, and
+    returns an empty body for a great many other reasons besides -- so a
+    check written against the body alone cannot tell "the address is
+    gone" from "the address answered with something I did not recognise".
     """
     import subprocess
 
@@ -368,7 +369,18 @@ def curl_external(address: str, timeout: float = 10.0) -> str:
         ["curl", "-s", "--connect-timeout", str(int(timeout)), url],
         capture_output=True, text=True, timeout=timeout + 10,
     )
-    return proc.stdout
+    return proc.returncode, proc.stdout
+
+
+def curl_external(address: str, timeout: float = 10.0) -> str:
+    """GET the VIP from THIS machine, off-cluster.
+
+    The whole point of BGP is that something outside the cluster can
+    reach the address, and this is the only assertion in the suite that
+    proves it end to end: the workstation has no special knowledge, it
+    just follows the route the router learned.
+    """
+    return curl_external_status(address, timeout)[1]
 
 
 @pytest.mark.parametrize("family", ["IPv4", "IPv6"])
@@ -586,10 +598,29 @@ def test_a_withdrawn_vip_stops_serving_from_outside(
 
     cluster.delete_service(NAMESPACE, "router-unreach")
     wait_for_withdrawal(router, prefix)
+
+    # Assert the request FAILS -- not that a marker is absent.
+    #
+    # This was `"Pod:" not in curl_external(vip)`, which passed for an
+    # empty body, a connection refused, a timeout, and an error page from
+    # anything else that happened to hold the address. It could not fail
+    # in the one case it exists to catch: a withdrawn VIP that is still
+    # serving. It would also have passed for ever the moment the test
+    # backend's marker changed.
+    #
+    # curl exiting non-zero is the positive statement of "nothing
+    # answered". If something does answer -- ours or anyone's -- this
+    # times out and the test goes red, which is the point.
+    def gone() -> Optional[bool]:
+        code, body = curl_external_status(vip, timeout=5.0)
+        return True if code != 0 and not body else None
+
     wait_until(
-        lambda: ("Pod:" not in curl_external(vip, timeout=5.0)) or None,
-        timeout=60, interval=5.0,
-        description=f"{vip} to stop answering once its route is withdrawn",
+        gone, timeout=60, interval=5.0,
+        description=(
+            f"{vip} to stop answering once its route is withdrawn "
+            f"(curl must fail; a body means something is still carrying it)"
+        ),
     )
 
 
