@@ -570,9 +570,72 @@ def _describe(item: pytest.Item) -> str:
     return name.removeprefix("test_").replace("_", " ")
 
 
-def pytest_collection_modifyitems(items: List[pytest.Item]) -> None:
+def _preflight_problems(config: pytest.Config, items: List[pytest.Item]) -> List[str]:
+    """What is unreachable, checked once, before any test runs.
+
+    Reports EVERY problem rather than the first. A bad context and a bad
+    router together used to present as 158 identical cluster errors with
+    no mention of the router at all, so you fixed the context, waited out
+    a 23-minute run, and only then discovered the second fault.
+
+    Only probes what the selected tests actually need: the harness's pure
+    unit tests take no `cluster` fixture and must keep running with no
+    cluster at all.
+    """
+    problems: List[str] = []
+    needs = {name for item in items for name in getattr(item, "fixturenames", ())}
+
+    if "cluster" in needs:
+        ctx = config.getoption("--context")
+        if not ctx:
+            problems.append(
+                "no kubectl context given. Pass --context <name> or export CONTEXT."
+            )
+        else:
+            try:
+                Cluster(context=ctx).nodes()
+            except Exception as exc:  # noqa: BLE001 - any failure here is fatal
+                problems.append(
+                    f"cannot reach the cluster for context {ctx!r}:\n"
+                    f"      {type(exc).__name__}: {str(exc).splitlines()[0][:200]}\n"
+                    f"      Check `kubectl --context {ctx} get nodes`."
+                )
+
+    # A router named on the command line is REQUESTED, and a requested
+    # capability that is missing is an error. Without this, pointing
+    # --router-host at a dead host skipped 22 tests and exited 0 -- a green
+    # run, indistinguishable from not passing the flag. The preflight that
+    # was supposed to catch it was itself gated on the router capability,
+    # so it skipped exactly when it should have fired.
+    host = config.getoption("--router-host")
+    if host and "router" in needs:
+        if not Router(host=host).available():
+            problems.append(
+                f"--router-host {host} was given but the router is not usable:\n"
+                f"      SSH must work and `tcpdump` must be present on it.\n"
+                f"      Check `ssh {host} command -v tcpdump`.\n"
+                f"      To run without the router modules instead, drop the flag\n"
+                f"      (and unset ROUTER_HOST) -- 22 tests will then skip."
+            )
+    return problems
+
+
+# trylast so this runs AFTER pytest's own -k/-m deselection: `items` must be
+# the tests that will actually run. Without it, `-k` down to two pure unit
+# tests still probed the cluster, because the unfiltered list contained tests
+# that wanted one.
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item]) -> None:
     for item in items:
         _descriptions[item.nodeid] = _describe(item)
+
+    problems = _preflight_problems(config, items)
+    if problems:
+        lines = ["", "PREFLIGHT FAILED - nothing was tested.", ""]
+        lines += [f"  {i}. {p}" for i, p in enumerate(problems, start=1)]
+        n = len(items)
+        lines += ["", f"{n} test{'' if n == 1 else 's'} collected, none run.", ""]
+        pytest.exit("\n".join(lines), returncode=pytest.ExitCode.USAGE_ERROR)
 
 
 def pytest_runtest_logreport(report) -> None:  # noqa: ANN001
