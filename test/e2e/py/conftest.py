@@ -156,12 +156,29 @@ def capabilities(cluster: Cluster, node_ips: Dict[str, str], router: Router | No
 
 @pytest.fixture(autouse=True)
 def _capability_gate(request: pytest.FixtureRequest) -> None:
-    marker = request.node.get_closest_marker("requires")
-    if marker is None:
+    # iter_markers, NOT get_closest_marker. `requires` is applied at both
+    # module and function level, and get_closest_marker returns only the
+    # nearest one -- so a test that declared its own requirement silently
+    # DISCARDED its module's. test_router_bgp's module-level
+    # requires("router") was lost by the two tests that add
+    # requires("multi-node"): with no --router-host they ran anyway and
+    # failed inside the router fixture with
+    # `'NoneType' object has no attribute 'nexthops'`, which reads as a
+    # BGP defect rather than a missing capability. Five tests across three
+    # modules were affected.
+    #
+    # Capabilities are a union: a test needs everything asked of it by any
+    # scope, so the markers accumulate rather than override.
+    wanted: List[str] = []
+    for marker in request.node.iter_markers("requires"):
+        for arg in marker.args:
+            if arg not in wanted:
+                wanted.append(arg)
+    if not wanted:
         return
     caps = request.getfixturevalue("capabilities")
     required = [c.strip() for c in (request.config.getoption("--require") or "").split(",") if c.strip()]
-    for cap in marker.args:
+    for cap in wanted:
         if cap not in CAPABILITIES:
             pytest.fail(f"unknown capability {cap!r}; known: {CAPABILITIES}")
         if caps.get(cap):
