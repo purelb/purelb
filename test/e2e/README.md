@@ -85,13 +85,19 @@ every pool from the subnets they discover.
 
 ### In the cluster
 
-PureLB v0.17.0+ installed in `purelb-system`, and an nginx backend in
-namespace `test` — `scripts/reset-test-cluster.sh` applies
-[nginx-test.yaml](nginx-test.yaml) if it is missing.
+PureLB v0.17.0+ installed in `purelb-system`, and the echo backend in
+namespace `test` — `scripts/reset-test-cluster.sh` provisions it from
+[echo-test.yaml](echo-test.yaml) and [../echo-server/server.py](../echo-server/server.py).
+
+Run the reset script rather than applying the manifest yourself. The server is
+mounted from a ConfigMap built out of `server.py`, so the manifest alone is not
+enough, and the script is what verifies that the pod is actually running the
+code in the tree — see [../echo-server/README.md](../echo-server/README.md).
 
 ## What else is here
 
 | Path | |
 |------|--|
-| [nginx-test.yaml](nginx-test.yaml) | the backend every module exercises, in namespace `test`. The suite does not create it; `scripts/reset-test-cluster.sh` applies it if it is missing |
+| [echo-test.yaml](echo-test.yaml) | namespace `test` and the backend Deployment every module exercises. The suite does not create it; `scripts/reset-test-cluster.sh` does |
+| [../echo-server/](../echo-server/) | the backend itself — a dual-stack echo server reporting which pod served a request and where the addresses came from |
 | [py/EXTERNAL-IPAM.md](py/EXTERNAL-IPAM.md) | the external-IPAM module, and how to use it as the acceptance test for your own sidecar |

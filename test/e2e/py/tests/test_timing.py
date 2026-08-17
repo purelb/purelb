@@ -88,6 +88,44 @@ def _record(label: str, samples: List[float]) -> None:
     `echo "$TEST,$EVENT,$VALUE"` with VALUE holding `count=..,min=..`, so a
     strict three-column reader would already choke on the historical files.
     Matching it exactly beats tidying it and breaking continuity.
+
+    KNOWN DISCONTINUITY, so nobody reads a harness change as a product
+    regression: B1 and D3 step at the migration boundary and stay there.
+    B1 min goes ~370ms (bash, through 2026-03-12) -> ~1600ms (pytest, from
+    2026-08-13); D3 min goes ~650ms -> ~1380ms. B3 does not move.
+
+    MEASURED CAUSE -- both terms are this harness, not the product. B1 was
+    split into its two waits and each was timed:
+
+      * The allocation wait polls at the wait_until default of 1.0s while
+        allocation actually completes in 88-162ms (measured at 20ms
+        polling, idle and after agent churn alike). Every B1 sample
+        therefore carries a full second that is pure rounding.
+      * The announcement wait's predicate SSHes each node in turn, and a
+        fresh `ssh` costs ~950ms cold against ~270ms warm. A whole sweep
+        is ~4.2s cold, ~1.4s warm.
+
+    That also explains the first-iteration spike: iteration 0 pays the cold
+    SSH premium and later iterations do not. Split measurement, same
+    cluster, minutes apart:
+
+        cold   alloc 1087ms  announce 1961ms   total 3048ms
+        warm   alloc 1067ms  announce  544ms   total 1611ms
+
+    Pre-warming one sweep collapses the first-iteration excess from
+    +1414ms to +24ms and reproduces the 2026-08-13 numbers exactly, which
+    is what that run was: the timing module alone, straight after topology
+    discovery had already SSHed every node. In a full suite the preceding
+    modules leave SSH idle long enough to go cold again.
+
+    So B1 ~= 1000ms of poll rounding + one SSH sweep + the real latency,
+    and the real latency is the smallest of the three. Read these as
+    tripwires, which is all they claim to be, and not as convergence times.
+
+    The nginx -> echo backend switch did NOT move any of them: the last
+    nginx run (20260817-084636) and the echo runs that follow agree to
+    within noise, including D3, where a readiness-probe step was predicted
+    and did not appear.
     """
     ms = [int(round(s * 1000)) for s in samples]
     for i, value in enumerate(ms, start=1):

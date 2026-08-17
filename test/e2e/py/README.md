@@ -25,7 +25,7 @@ What follows is what the suite needs from *you* to run against it.
 |---|---|
 | A cluster with PureLB v0.17.0+ installed | namespace `purelb-system` unless you pass `--purelb-namespace` |
 | A kubectl context for it | passed as `--context <name>`; no default |
-| An nginx backend in namespace `test` | every Service the suite creates selects `app: nginx` there. `reset-test-cluster.sh` applies [nginx-test.yaml](../nginx-test.yaml) if it is missing |
+| The echo backend in namespace `test` | every Service the suite creates selects `app: echo` there, and the assertions parse its JSON. Provisioned by `reset-test-cluster.sh` — see [../echo-server/README.md](../echo-server/README.md) |
 | Passwordless SSH from this workstation to every node's InternalIP | the assertions read `ip -br addr show` on the node — "did the VIP land on the NIC" is not answerable from the API |
 | Reachable `:7472` on each node | lbnodeagent is hostNetwork and is scraped directly. The allocator is scraped through the apiserver proxy, so it needs no route |
 
@@ -93,14 +93,55 @@ Useful flags:
 
 | Flag | |
 |---|---|
-| `--context` | kubectl context. **Required.** |
+| `--context` | kubectl context. **Required.** Defaults to `$CONTEXT` |
 | `--purelb-namespace` | install namespace (default `purelb-system`) |
-| `--router-host` | upstream router; enables the BGP and on-the-wire GARP/NA modules |
+| `--router-host` | upstream router; enables the BGP and on-the-wire GARP/NA modules. Defaults to `$ROUTER_HOST` |
 | `--require a,b` | a missing capability **fails** instead of skipping — for release runs |
 | `--show-tests` | every test with its result and **what it checked**, instead of progress dots |
 | `--report PATH` | write a plain-text report of the whole run to `PATH` |
 | `-x` | stop at the first failure |
 | `--durations=20` | the 20 slowest tests, which is how to find out what a full run costs on your cluster |
+
+Export the two that never change for a given cluster, so a forgotten flag
+cannot quietly shrink a run:
+
+```sh
+export CONTEXT=<ctx> ROUTER_HOST=<frr-host>
+```
+
+Omitting `--router-host` is not an error — the router modules simply skip.
+That is **22 tests**, and the run still ends green, so a whole-suite result
+can look complete while the BGP and on-the-wire GARP/NA assertions never
+ran. Set the variable once, or pass `--require router` to turn the absence
+into a failure.
+
+### Preflight
+
+Before any test runs, the suite probes what the selected tests need and
+stops immediately if something is unreachable, reporting **every** problem
+at once rather than the first:
+
+```
+PREFLIGHT FAILED - nothing was tested.
+
+  1. cannot reach the cluster for context 'WRONG-CTX':
+      ConfigException: Invalid kube-config file. ...
+      Check `kubectl --context WRONG-CTX get nodes`.
+  2. --router-host 172.30.250.99 was given but the router is not usable:
+      ...
+
+176 tests collected, none run.
+```
+
+Naming a router on the command line makes it **required**: a
+`--router-host` that cannot be reached is an error, not a skip. Pointing it
+at a dead host previously skipped 22 tests and exited 0 — a green run
+indistinguishable from not passing the flag. To run without those modules,
+drop the flag and unset `ROUTER_HOST`.
+
+Only what the selected tests need is probed, so the harness's own unit
+tests (`test_harness.py`, the ones taking no `cluster` fixture) still run
+with no cluster at all.
 
 Every run ends with a `SKIPPED — this run did NOT test the following`
 block. Read it. Green with half the suite skipped is not the same as
@@ -488,7 +529,7 @@ several tests assert on it, and the release test tears it down last.
 | `test_allocator_can_write_servicegroup_status` | The v0.17.0 status subresource must be writable |
 | `test_sidecar_is_running_alongside_the_allocator` | The sidecar container is in the allocator pod and every container is ready |
 | `test_external_servicegroup_is_accepted` | The `external` ServiceGroup exists and carries the provider |
-| `test_backend_is_ready` | The nginx backend has a ready replica before anything is measured |
+| `test_backend_is_ready` | The echo backend has a ready replica before anything is measured |
 | `test_address_comes_from_the_sidecar_pool` | Exactly one address, and it is inside the sidecar's CIDR |
 | `test_pool_type_annotation_matches_the_announce_mode` | `purelb.io/pool-type` matches `local` or `remote` as configured |
 | `test_address_is_announced_on_a_node_interface` (local only) | The VIP reaches a real node interface, not `lo` |
