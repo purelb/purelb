@@ -97,12 +97,54 @@ Useful flags:
 | `--purelb-namespace` | install namespace (default `purelb-system`) |
 | `--router-host` | upstream router; enables the BGP and on-the-wire GARP/NA modules |
 | `--require a,b` | a missing capability **fails** instead of skipping — for release runs |
+| `--show-tests` | every test with its result and **what it checked**, instead of progress dots |
+| `--report PATH` | write a plain-text report of the whole run to `PATH` |
 | `-x` | stop at the first failure |
 | `--durations=20` | the 20 slowest tests, which is how to find out what a full run costs on your cluster |
 
 Every run ends with a `SKIPPED — this run did NOT test the following`
 block. Read it. Green with half the suite skipped is not the same as
 green.
+
+### Seeing what actually ran
+
+By default pytest prints one dot per test, which tells you nothing about
+what was verified. `--show-tests` replaces the dots with a line per test
+**as it finishes** — the verdict and what the test actually checked,
+taken from the test's own docstring. Several tests here take minutes
+apiece (restarting a DaemonSet, waiting out a lease, capturing on the
+wire), so watching it run matters:
+
+```
+$ .venv/bin/pytest --context <ctx> --show-tests
+tests/test_local_policy.py::test_etp_local_is_overridden_for_a_local_pool PASS  ExternalTrafficPolicy: Local is forced to Cluster on local pools. [ 12%]
+tests/test_local_policy.py::test_a_pool_matching_no_node_allocates_but_announces_nothing PASS  An address nobody can announce is still allocated. [ 25%]
+```
+
+The run then ends with a recap grouped by module, so a failure part way
+through a 20-minute run does not have to be found by scrolling:
+
+```
+=================================== RESULTS ====================================
+test_local_policy.py
+  PASS     6.4s  ExternalTrafficPolicy: Local is forced to Cluster on local pools.
+  FAIL    12.0s  The allow-local annotation is honoured.
+                 AssertionError: ETP is 'Cluster'; purelb.io/allow-local must preserve Local
+  SKIP     0.0s  BGP routes are learned by the upstream router.
+```
+
+`--report PATH` writes the same to a file, with the **full** failure
+output rather than the one-line summary, plus the context, namespace,
+router and the capabilities the probe detected — which is what makes a
+skip list actionable. That is the artifact to attach to a ticket or keep
+beside a release:
+
+```
+.venv/bin/pytest --context <ctx> --router-host <frr> \
+    --report /tmp/purelb-e2e-$(date +%F).txt
+```
+
+Both work with any other flags, and neither changes what runs.
 
 ---
 

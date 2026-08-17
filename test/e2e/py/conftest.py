@@ -42,6 +42,9 @@ from purelb_e2e.wait import wait_until
 
 CAPABILITIES = ("multi-subnet", "ipv6", "dual-homed", "router", "multi-node")
 
+# Filled in by the capabilities probe; read by --report.
+_detected_capabilities: Dict[str, bool] = {}
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--context", action="store", default=os.environ.get("CONTEXT"),
@@ -52,9 +55,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--require", action="store", default="",
                      help="comma-separated capabilities that MUST be present; "
                           "a missing one fails the run instead of skipping")
+    parser.addoption("--show-tests", action="store_true", default=False,
+                     help="print every test with its result and what it checked, "
+                          "instead of only the progress dots")
+    parser.addoption("--report", action="store", default=None, metavar="PATH",
+                     help="write a plain-text report of every test, its result "
+                          "and any failure detail, to PATH")
+
+
+_CONFIG: Dict[str, object] = {}
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    _CONFIG["config"] = config
+    if config.getoption("--show-tests") and config.option.verbose < 1:
+        config.option.verbose = 1
     config.addinivalue_line(
         "markers",
         "requires(*caps): skip unless the cluster has these capabilities "
@@ -133,6 +148,9 @@ def capabilities(cluster: Cluster, node_ips: Dict[str, str], router: Router | No
         "router": router is not None,
         "multi-node": len(node_ips) >= 2,
     }
+    # Recorded for --report: a skip list is only actionable next to the
+    # reason the capability was absent.
+    _detected_capabilities.update(caps)
     return caps
 
 
@@ -510,12 +528,186 @@ def created_service_groups(cluster: Cluster) -> Iterator[List[str]]:
         cluster.delete_cr("servicegroup", name)
 
 
-def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # noqa: ANN001
-    """Report skips prominently.
+# --------------------------------------------------------------- reporting
+#
+# pytest's own output is written for the person who wrote the tests: dots,
+# or node ids like `test_local_multipool.py::test_a_vip_whose_subnet_no_node_
+# carries_is_announced_by_nobody[IPv6]`. An operator running this before an
+# upgrade wants a different thing -- what was checked, what the verdict was,
+# and a file they can attach to a ticket. That is what --show-tests and
+# --report produce.
+#
+# Descriptions come from each test's docstring first line, falling back to a
+# humanised function name. 142 of 163 tests have a docstring; the rest are
+# named well enough to read.
 
-    A run that skipped half the suite and printed 'passed' is the
-    suite-level version of an assertion that passes when it cannot observe.
+_descriptions: Dict[str, str] = {}
+_results: Dict[str, Dict[str, object]] = {}
+
+
+def _describe(item: pytest.Item) -> str:
+    doc = getattr(getattr(item, "function", None), "__doc__", None)
+    if doc and doc.strip():
+        return doc.strip().splitlines()[0].strip()
+    name = item.name.split("[")[0]
+    return name.removeprefix("test_").replace("_", " ")
+
+
+def pytest_collection_modifyitems(items: List[pytest.Item]) -> None:
+    for item in items:
+        _descriptions[item.nodeid] = _describe(item)
+
+
+def pytest_runtest_logreport(report) -> None:  # noqa: ANN001
+    """Record one verdict per test, whichever phase decided it.
+
+    A test that fails or skips in SETUP never reaches the call phase, so
+    keying only on `when == "call"` silently drops every capability skip
+    and every fixture error -- which are exactly the ones an operator
+    needs to see.
     """
+    entry = _results.setdefault(
+        report.nodeid, {"outcome": "passed", "duration": 0.0, "detail": ""}
+    )
+    entry["duration"] = float(entry["duration"]) + report.duration
+    if report.when == "call":
+        if report.outcome != "passed":
+            entry["outcome"] = report.outcome
+    elif report.outcome != "passed":
+        # setup/teardown failure or skip decides the verdict.
+        entry["outcome"] = report.outcome
+    if report.outcome != "passed" and not entry["detail"]:
+        if isinstance(report.longrepr, tuple):        # skip: (file, line, reason)
+            entry["detail"] = str(report.longrepr[2])
+        elif report.longrepr is not None:
+            entry["detail"] = str(report.longrepr)
+
+
+_STATUS = {"passed": "PASS", "failed": "FAIL", "skipped": "SKIP", "error": "ERROR"}
+
+
+def _headline(detail: str) -> str:
+    """The one line worth showing in a terminal.
+
+    pytest marks the assertion message with a leading `E`, and puts the
+    file:line last. Taking the last line gives
+    `test_local_garp.py:341: AssertionError` -- true, and useless, because
+    every message these tests raise was written to explain what the
+    failure MEANS. Prefer the first `E` line.
+    """
+    for line in detail.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("E "):
+            return stripped[2:].strip()
+    lines = [l.strip() for l in detail.splitlines() if l.strip()]
+    return lines[-1] if lines else ""
+
+
+def pytest_report_teststatus(report, config):  # noqa: ANN001, ANN201
+    """Put the description on pytest's own per-test verbose line.
+
+    --show-tests forces verbose mode (below) so pytest prints one line per
+    test as it finishes; this replaces the bare PASSED/FAILED word with the
+    verdict plus what the test actually checked. Writing our own lines
+    instead means fighting the terminal writer for the filename prefix and
+    the percentage column, which is how the first attempt at this ended up
+    breaking a line in the middle of every result.
+    """
+    if not config.getoption("--show-tests"):
+        return None
+    if report.when == "setup" and report.outcome == "passed":
+        return None
+    if report.when == "teardown" and report.outcome == "passed":
+        return None
+    status = _STATUS.get(report.outcome, report.outcome.upper())
+    desc = _descriptions.get(report.nodeid, "")
+    return report.outcome, status[0], f"{status}  {desc}" if desc else status
+
+
+def _grouped() -> Dict[str, List[tuple]]:
+    """Results by module, in collection order."""
+    out: Dict[str, List[tuple]] = {}
+    for nodeid, r in _results.items():
+        module = nodeid.split("::")[0].split("/")[-1]
+        name = nodeid.split("::", 1)[1] if "::" in nodeid else nodeid
+        out.setdefault(module, []).append(
+            (name, _STATUS.get(str(r["outcome"]), str(r["outcome"]).upper()),
+             float(r["duration"]), _descriptions.get(nodeid, ""), str(r["detail"]))
+        )
+    return out
+
+
+def _counts() -> Dict[str, int]:
+    c: Dict[str, int] = {}
+    for r in _results.values():
+        key = str(r["outcome"])
+        c[key] = c.get(key, 0) + 1
+    return c
+
+
+def _write_report(path: str, config) -> None:  # noqa: ANN001
+    counts = _counts()
+    total = sum(counts.values())
+    summary = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "nothing ran"
+    lines: List[str] = [
+        "PureLB end-to-end test report",
+        "=" * 70,
+        f"Generated : {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Context   : {config.getoption('--context') or '(none)'}",
+        f"Namespace : {config.getoption('--purelb-namespace')}",
+        f"Router    : {config.getoption('--router-host') or '(not provided)'}",
+        f"Result    : {total} tests - {summary}",
+        "",
+    ]
+    if _detected_capabilities:
+        detected = ", ".join(
+            f"{k}={'yes' if v else 'NO'}" for k, v in sorted(_detected_capabilities.items())
+        )
+        lines += [f"Cluster   : {detected}", ""]
+    if counts.get("skipped"):
+        lines += [
+            "A skipped test verified NOTHING. Green with skips is not the same",
+            "as green; use --require to turn a missing capability into a failure.",
+            "",
+        ]
+    for module, rows in _grouped().items():
+        lines += ["-" * 70, module, "-" * 70]
+        for name, status, duration, desc, detail in rows:
+            lines.append(f"  {status:<5} {duration:6.1f}s  {desc or name}")
+            lines.append(f"        {' ' * 7}  [{name}]")
+            if detail:
+                for dl in detail.strip().splitlines():
+                    lines.append(f"        {' ' * 7}  | {dl}")
+        lines.append("")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # noqa: ANN001
+    """Per-test results, the skip block, and the report file.
+
+    The skip block is not optional and never has been: a run that skipped
+    half the suite and printed 'passed' is the suite-level version of an
+    assertion that passes when it cannot observe.
+    """
+    if config.getoption("--show-tests") and _results:
+        terminalreporter.write_sep("=", "RESULTS")
+        for module, rows in _grouped().items():
+            terminalreporter.write_line(module)
+            for name, status, duration, desc, detail in rows:
+                colour = {"PASS": {"green": True}, "FAIL": {"red": True},
+                          "ERROR": {"red": True}, "SKIP": {"yellow": True}}.get(status, {})
+                terminalreporter.write(f"  {status:<5} ", **colour)
+                terminalreporter.write_line(f"{duration:6.1f}s  {desc or name}")
+                if status in ("FAIL", "ERROR") and detail:
+                    terminalreporter.write_line(
+                        f"          {' ' * 6}  {_headline(detail)[:200]}")
+
+    report_path = config.getoption("--report")
+    if report_path:
+        _write_report(report_path, config)
+        terminalreporter.write_line(f"\nreport written to {report_path}")
+
     skipped = terminalreporter.stats.get("skipped", [])
     if not skipped:
         return
