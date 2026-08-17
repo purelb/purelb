@@ -46,6 +46,20 @@ spec:
       # a second, so its endpoint stops being Serving promptly. The default 30s
       # left a moved VIP pinned to the drain window.
       terminationGracePeriodSeconds: 3
+      # The failover tests taint the announcing node `purelb-test:NoExecute` to
+      # evict its lbnodeagent. Without this toleration the backend goes with it:
+      # the Service loses its only ready endpoint, and the assertion that the
+      # VIP still serves after failover fails with connection-refused -- which
+      # reads as a PureLB announcement bug and is not one. Those tests mean to
+      # evict the ANNOUNCER, not the workload behind the VIP.
+      #
+      # It did not bite on the previous nginx backend only because nginx bound
+      # its socket immediately and had no readiness probe, so the replacement
+      # pod was Ready inside the assertion's window. That was luck, not design.
+      tolerations:
+      - key: purelb-test
+        operator: Exists
+        effect: NoExecute
       containers:
       - name: echo
         image: python:3.12-alpine

@@ -45,7 +45,7 @@ from typing import Dict, Iterator, List, Optional
 
 import pytest
 
-from purelb_e2e import TEST_NAMESPACE, announcing, metrics, nodes, topology
+from purelb_e2e import TEST_NAMESPACE, announcing, backend, metrics, nodes, topology
 from purelb_e2e.cluster import Cluster
 from purelb_e2e.wait import wait_until, wait_while
 
@@ -503,7 +503,7 @@ def test_sharing_key_added_to_a_live_service(
                        annotations={SERVICE_GROUP: group})[0]
     second = lb_service("remote-share-b", ["IPv4"],
                         annotations={SERVICE_GROUP: group, SHARING: "late-sharing"},
-                        ports=[{"port": 8080, "targetPort": 80}])[0]
+                        ports=[{"port": 8080, "targetPort": backend.PORT}])[0]
     assert second != first, f"both services got {first} before either asked to share"
 
     # Annotate the holder, then re-create the other one.
@@ -520,7 +520,7 @@ def test_sharing_key_added_to_a_live_service(
     cluster.wait_service_gone(NAMESPACE, "remote-share-b")
     again = lb_service("remote-share-b", ["IPv4"],
                        annotations={SERVICE_GROUP: group, SHARING: "late-sharing"},
-                       ports=[{"port": 8080, "targetPort": 80}])[0]
+                       ports=[{"port": 8080, "targetPort": backend.PORT}])[0]
     assert again == first, (
         f"recreated with a matching sharing key, {again} should have adopted "
         f"{first}"
@@ -843,7 +843,7 @@ def test_remote_addresses_can_be_shared(
                        annotations={SERVICE_GROUP: group, SHARING: "remote-web"})[0]
     second = lb_service("remote-shared-b", ["IPv4"],
                         annotations={SERVICE_GROUP: group, SHARING: "remote-web"},
-                        ports=[{"port": 443, "targetPort": 80}])[0]
+                        ports=[{"port": 443, "targetPort": backend.PORT}])[0]
     assert first == second, f"sharing key did not share: {first} vs {second}"
 
 

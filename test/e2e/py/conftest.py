@@ -280,10 +280,17 @@ def lb_service(cluster: Cluster):
                 "type": "LoadBalancer",
                 "ipFamilyPolicy": policy or ("RequireDualStack" if len(families) > 1 else "SingleStack"),
                 "ipFamilies": list(families),
-                "selector": selector or {"app": "echo"},
+                "selector": selector or {"app": backend.LABEL},
                 # The echo backend listens on 8080; the Service still
                 # publishes 80, so nothing outside this line cares.
-                "ports": [{"port": 80, "targetPort": 8080}],
+                #
+                # Taken from backend rather than written out, because the
+                # switch off nginx updated the selector here and left the
+                # port at 80 in five other modules. kube-proxy DNATs to a
+                # port nothing listens on, the pod RSTs, and the test fails
+                # as "connection refused" -- which reads as an announcement
+                # problem and is not one.
+                "ports": [{"port": 80, "targetPort": backend.PORT}],
                 **spec_extra,
             },
         }

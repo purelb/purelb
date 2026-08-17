@@ -45,7 +45,7 @@ from typing import Dict, Iterator, List
 
 import pytest
 
-from purelb_e2e import metrics, nodes
+from purelb_e2e import backend, metrics, nodes
 from purelb_e2e.cluster import Cluster
 from purelb_e2e.wait import wait_until, wait_while
 
@@ -287,7 +287,7 @@ def allocated(cluster: Cluster, external_sg: str, rpc_baseline) -> Iterator[List
                 "ipFamilyPolicy": "SingleStack",
                 "ipFamilies": ["IPv4"],
                 "selector": {"app": "echo"},
-                "ports": [{"port": 80, "targetPort": 80}],
+                "ports": [{"port": 80, "targetPort": backend.PORT}],
             },
         }
     )
@@ -509,7 +509,7 @@ def dual_stack_service(cluster: Cluster, external_sg: str, pool_cidrs: Dict[str,
                     "ipFamilyPolicy": policy,
                     "ipFamilies": families,
                     "selector": {"app": "echo"},
-                    "ports": [{"port": 80, "targetPort": 80}],
+                    "ports": [{"port": 80, "targetPort": backend.PORT}],
                 },
             }
         )

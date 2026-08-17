@@ -44,7 +44,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pytest
 
-from purelb_e2e import TEST_NAMESPACE, nodes, topology
+from purelb_e2e import TEST_NAMESPACE, backend, nodes, topology
 from purelb_e2e.cluster import Cluster
 from purelb_e2e.wait import wait_until, wait_while
 
@@ -333,7 +333,7 @@ def test_two_services_sharing_an_address_produce_one_route(
                        timeout=90)[0]
     second = lb_service("router-share-b", ["IPv4"],
                         annotations={SERVICE_GROUP: group, SHARING: "router-key"},
-                        ports=[{"port": 8443, "targetPort": 80}], timeout=90)[0]
+                        ports=[{"port": 8443, "targetPort": backend.PORT}], timeout=90)[0]
     assert first == second, f"sharing key did not share: {first} vs {second}"
 
     prefix = host_prefix(first)

@@ -33,7 +33,7 @@ from typing import Dict, List
 
 import pytest
 
-from purelb_e2e import TEST_NAMESPACE, metrics, nodes, topology
+from purelb_e2e import TEST_NAMESPACE, backend, metrics, nodes, topology
 from purelb_e2e.cluster import Cluster
 from purelb_e2e.wait import wait_until, wait_while
 
@@ -302,9 +302,9 @@ def test_shared_ip_puts_two_services_on_one_address(
     They must also use different ports: sharing is only legal when the
     services do not collide, and PureLB is what enforces that.
     """
-    first = lb_service("nginx-shared-http", ["IPv4"], annotations={SHARING: "webservers"})
-    second = lb_service("nginx-shared-https", ["IPv4"], annotations={SHARING: "webservers"},
-                        ports=[{"port": 443, "targetPort": 80}])
+    first = lb_service("echo-shared-http", ["IPv4"], annotations={SHARING: "webservers"})
+    second = lb_service("echo-shared-https", ["IPv4"], annotations={SHARING: "webservers"},
+                        ports=[{"port": 443, "targetPort": backend.PORT}])
     assert first == second, f"sharing key did not share: {first} vs {second}"
 
     vip = first[0]
