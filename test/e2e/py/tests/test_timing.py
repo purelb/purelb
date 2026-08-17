@@ -66,10 +66,21 @@ _rows: List[Tuple[str, str, str]] = []
 CEILING = {
     "B1": float(os.environ.get("TIMING_MAX_B1_MS", 5000)) / 1000,   # create -> VIP on the NIC
     "B3": float(os.environ.get("TIMING_MAX_B3_MS", 5000)) / 1000,   # delete -> VIP withdrawn
+    "D1": float(os.environ.get("TIMING_MAX_D1_MS", 5000)) / 1000,   # VIP on NIC -> kube-proxy rules
+    "D1v6": float(os.environ.get("TIMING_MAX_D1_MS", 5000)) / 1000,
     "D3": float(os.environ.get("TIMING_MAX_D3_MS", 15000)) / 1000,  # create -> first good curl
     "E3": float(os.environ.get("TIMING_MAX_E3_MS", 30000)) / 1000,  # re-convergence after node loss
 }
 SAMPLES = int(os.environ.get("TIMING_SAMPLES", 3))
+
+# Poll interval for the allocation wait in the measurements below.
+#
+# The suite-wide default is 1.0s, which is fine when a test just needs the
+# address and wrong when a test is timing how long it took: allocation
+# completes in 88-162ms (measured at 20ms polling, idle and after agent
+# churn alike), so the default rounded every sample up to a whole second.
+# See _record for the full decomposition.
+ALLOC_POLL = 0.05
 
 
 def measure(action: Callable[[], None]) -> float:
@@ -89,43 +100,46 @@ def _record(label: str, samples: List[float]) -> None:
     strict three-column reader would already choke on the historical files.
     Matching it exactly beats tidying it and breaking continuity.
 
-    KNOWN DISCONTINUITY, so nobody reads a harness change as a product
-    regression: B1 and D3 step at the migration boundary and stay there.
-    B1 min goes ~370ms (bash, through 2026-03-12) -> ~1600ms (pytest, from
-    2026-08-13); D3 min goes ~650ms -> ~1380ms. B3 does not move.
+    TWO DISCONTINUITIES, both this harness rather than the product, and
+    the second one undoes the first. Anyone comparing across them needs
+    to know which era a row came from.
 
-    MEASURED CAUSE -- both terms are this harness, not the product. B1 was
-    split into its two waits and each was timed:
+    2026-08-13, the migration: B1 min ~370ms -> ~1600ms, D3 ~650ms ->
+    ~1380ms, B3 unmoved. Diagnosed by splitting B1's two waits and timing
+    each separately. Two independent artifacts:
 
-      * The allocation wait polls at the wait_until default of 1.0s while
+      * The allocation wait polled at the wait_until default of 1.0s while
         allocation actually completes in 88-162ms (measured at 20ms
-        polling, idle and after agent churn alike). Every B1 sample
-        therefore carries a full second that is pure rounding.
-      * The announcement wait's predicate SSHes each node in turn, and a
-        fresh `ssh` costs ~950ms cold against ~270ms warm. A whole sweep
-        is ~4.2s cold, ~1.4s warm.
+        polling, idle and after agent churn alike), so every sample
+        carried a full second of pure rounding.
+      * The announcement predicate SSHes each node in turn, and a fresh
+        `ssh` costs ~950ms cold against ~270ms warm -- a whole 5-node
+        sweep is ~4.2s cold, ~1.4s warm. Whichever iteration ran first
+        paid that, which is why iteration 0 read ~1.4s slower than the
+        two after it:
 
-    That also explains the first-iteration spike: iteration 0 pays the cold
-    SSH premium and later iterations do not. Split measurement, same
-    cluster, minutes apart:
+            cold   alloc 1087ms  announce 1961ms   total 3048ms
+            warm   alloc 1067ms  announce  544ms   total 1611ms
 
-        cold   alloc 1087ms  announce 1961ms   total 3048ms
-        warm   alloc 1067ms  announce  544ms   total 1611ms
+    2026-08-17 12:41, the correction: ALLOC_POLL replaces the 1.0s
+    rounding and _warm_ssh pays the cold sweep before anything is timed.
+    B1 p95 2893ms -> 690ms, and the spread across three iterations
+    collapses from 1286ms to 15ms, which is the artifact leaving rather
+    than the cluster improving. B1 is comparable with the bash era again
+    (bash 2026-03-12: 895/911ms; now 675-690ms).
 
-    Pre-warming one sweep collapses the first-iteration excess from
-    +1414ms to +24ms and reproduces the 2026-08-13 numbers exactly, which
-    is what that run was: the timing module alone, straight after topology
-    discovery had already SSHed every node. In a full suite the preceding
-    modules leave SSH idle long enough to go cold again.
+    B3 stays above its bash numbers (~1450ms against ~400ms) and that is
+    honest: it still contains one full sweep, because the withdrawal
+    check has to ask EVERY node before it can conclude the address is
+    gone. The bash suite timestamped before its sweep and so excluded it.
 
-    So B1 ~= 1000ms of poll rounding + one SSH sweep + the real latency,
-    and the real latency is the smallest of the three. Read these as
-    tripwires, which is all they claim to be, and not as convergence times.
+    D1 is the check on all of this: newly written here, it lands at
+    340-777ms against the bash era's 295-702ms without being tuned to.
 
-    The nginx -> echo backend switch did NOT move any of them: the last
-    nginx run (20260817-084636) and the echo runs that follow agree to
-    within noise, including D3, where a readiness-probe step was predicted
-    and did not appear.
+    The nginx -> echo backend switch moved none of them: the last nginx
+    run (20260817-084636) and the echo runs that follow agree to within
+    noise, including D3, where a readiness-probe step was predicted and
+    did not appear.
     """
     ms = [int(round(s * 1000)) for s in samples]
     for i, value in enumerate(ms, start=1):
@@ -166,6 +180,29 @@ def assert_within(label: str, samples: List[float]) -> None:
 
 
 @pytest.fixture(scope="module", autouse=True)
+def _warm_ssh(topo: topology.Topology) -> None:
+    """Pay the cold-SSH cost once, before anything is measured.
+
+    Every measurement here observes the cluster by shelling out to `ssh`
+    per node, and a fresh ssh costs ~950ms against ~270ms warm -- a whole
+    5-node sweep is ~4.2s cold and ~1.4s warm. Whichever test ran first
+    absorbed that, so its first iteration read ~1.4s slower than the two
+    after it and the p95, taken from the worst sample, was the SSH
+    handshake rather than the product.
+
+    Measured, same cluster, minutes apart:
+
+        cold   alloc 1087ms  announce 1961ms   total 3048ms
+        warm   alloc 1067ms  announce  544ms   total 1611ms
+
+    One warm-up sweep collapses the first-iteration excess from +1414ms
+    to +24ms. It deliberately looks for an address nobody has, so it
+    visits every node instead of stopping at the first match.
+    """
+    nodes.announcing_node(topo.node_ips, "203.0.113.1")
+
+
+@pytest.fixture(scope="module", autouse=True)
 def timing_results() -> object:
     """Write the run's measurements to the series on teardown.
 
@@ -195,7 +232,7 @@ def test_b1_service_creation_to_vip_on_the_interface(
         name = f"timing-b1-{i}"
 
         def create_and_wait() -> None:
-            ips = lb_service(name, ["IPv4"])
+            ips = lb_service(name, ["IPv4"], interval=ALLOC_POLL)
             wait_until(
                 lambda: nodes.announcing_node(topo.node_ips, ips[0]),
                 timeout=CEILING["B1"] * 3, interval=0.2,
@@ -218,7 +255,7 @@ def test_b3_service_deletion_to_vip_withdrawn(
     samples: List[float] = []
     for i in range(SAMPLES):
         name = f"timing-b3-{i}"
-        vip = lb_service(name, ["IPv4"])[0]
+        vip = lb_service(name, ["IPv4"], interval=ALLOC_POLL)[0]
         wait_until(lambda: nodes.announcing_node(topo.node_ips, vip),
                    timeout=CEILING["B1"] * 3, interval=0.2, description="announced")
 
@@ -249,7 +286,7 @@ def test_d3_service_creation_to_first_successful_request(
         name = f"timing-d3-{i}"
 
         def create_and_serve() -> None:
-            ips = lb_service(name, ["IPv4"])
+            ips = lb_service(name, ["IPv4"], interval=ALLOC_POLL)
             wait_until(
                 lambda: nodes.echo_json(topo.node_ips, ips[0])["pod"] or None,
                 timeout=CEILING["D3"] * 3, interval=0.5,

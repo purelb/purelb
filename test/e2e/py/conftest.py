@@ -269,6 +269,7 @@ def lb_service(cluster: Cluster):
         policy: Optional[str] = None,
         wait: bool = True,
         timeout: float = 45.0,
+        interval: float = 1.0,
         **spec_extra: object,
     ) -> List[str]:
         body = {
@@ -318,6 +319,12 @@ def lb_service(cluster: Cluster):
         return wait_until(
             lambda: cluster.service_ingress_ips(namespace, name) or None,
             timeout=timeout,
+            # 1.0s is right for a test that only needs the address. It is
+            # wrong for one that is TIMING the allocation: allocation
+            # completes in 88-162ms, so the default rounds every
+            # measurement up to a whole second. test_timing passes a fine
+            # interval; nothing else should need to.
+            interval=interval,
             description=f"{namespace}/{name} to be allocated {'+'.join(families)}",
         )
 
