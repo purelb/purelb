@@ -28,19 +28,19 @@ import (
 const subsystem = "k8s_client"
 
 var (
-	updates = prometheus.NewCounter(prometheus.CounterOpts{
+	updates = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "updates_total",
 		Help:      "Number of k8s object updates that have been processed.",
-	})
+	}, []string{"kind"})
 
-	updateErrors = prometheus.NewCounter(prometheus.CounterOpts{
+	updateErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "update_errors_total",
 		Help:      "Number of k8s object updates that failed for some reason.",
-	})
+	}, []string{"kind"})
 
 	configLoaded = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: purelbv2.MetricsNamespace,

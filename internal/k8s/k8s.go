@@ -30,8 +30,6 @@ import (
 	"purelb.io/pkg/generated/clientset/versioned"
 	"purelb.io/pkg/generated/informers/externalversions"
 
-	"purelb.io/internal/election"
-
 	"github.com/go-kit/log"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -306,6 +304,20 @@ type poolStatus struct{}
 
 func (poolStatus) isQueueItem() {}
 
+// queueItemKind returns the category of work-queue item for metrics labeling.
+func queueItemKind(item queueItem) string {
+	switch item.(type) {
+	case svcKey, svcDeleted:
+		return "service"
+	case synced:
+		return "cache_sync"
+	case poolStatus:
+		return "pool_status"
+	default:
+		return "unknown"
+	}
+}
+
 // New connects to masterAddr, using kubeconfig to authenticate.
 //
 // The client uses processName to identify itself to the cluster
@@ -577,14 +589,14 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 			}
 			return nil
 		}
-		updates.Inc()
+		updates.WithLabelValues(queueItemKind(key)).Inc()
 		st := c.sync(key)
 		// c.logger.Log("sync", key, "result", st)
 		switch st {
 		case SyncStateSuccess:
 			c.queue.Forget(key)
 		case SyncStateError:
-			updateErrors.Inc()
+			updateErrors.WithLabelValues(queueItemKind(key)).Inc()
 			c.queue.AddRateLimited(key)
 		case SyncStateReprocessAll:
 			c.queue.Forget(key)
@@ -645,7 +657,7 @@ func (c *Client) ActiveSubnets(namespace string) ([]string, error) {
 
 	for _, lease := range leases.Items {
 		// Only consider PureLB node leases
-		if !strings.HasPrefix(lease.Name, election.LeasePrefix) {
+		if !strings.HasPrefix(lease.Name, purelbv2.LeasePrefix) {
 			continue
 		}
 		// Skip leases without renewal info
@@ -658,8 +670,8 @@ func (c *Client) ActiveSubnets(namespace string) ([]string, error) {
 			continue
 		}
 		// Extract subnets from the lease annotation
-		if ann, ok := lease.Annotations[election.SubnetsAnnotation]; ok {
-			for _, s := range election.ParseSubnetsAnnotation(ann) {
+		if ann, ok := lease.Annotations[purelbv2.SubnetsAnnotation]; ok {
+			for _, s := range purelbv2.ParseSubnetsAnnotation(ann) {
 				subnets[s] = true
 			}
 		}

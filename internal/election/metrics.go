@@ -49,13 +49,13 @@ var (
 	})
 
 	// winnerChanges counts the number of times a winner changed for any service.
-	// Labels: service (namespace/name)
+	// Labels: key (IP address string)
 	winnerChanges = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "winner_changes_total",
 		Help:      "Total number of winner changes per service",
-	}, []string{"service"})
+	}, []string{"key"})
 
 	// memberCount tracks the current number of active members in the election.
 	memberCount = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -92,7 +92,7 @@ var (
 		Subsystem: subsystem,
 		Name:      "affinity_fallback_total",
 		Help:      "Times an opted-in service had no preferred candidate eligible and fell back to standard hash election.",
-	}, []string{"service"})
+	}, []string{"key"})
 )
 
 func init() {
@@ -126,8 +126,8 @@ func RecordLeaseRenewalFailure() {
 }
 
 // RecordWinnerChange increments the winner change counter for a service.
-func RecordWinnerChange(service string) {
-	winnerChanges.WithLabelValues(service).Inc()
+func RecordWinnerChange(key string) {
+	winnerChanges.WithLabelValues(key).Inc()
 }
 
 // RecordMemberCount sets the current member count.
@@ -148,8 +148,8 @@ func RecordLocalSubnetCount(count int) {
 // RecordAffinityFallback increments the per-service affinity-fallback
 // counter. Called by WinnerWithPreference when an opt-in service has
 // no preferred candidate eligible (subnet mismatch, lease loss, etc.).
-// service is the election key (typically the IP address string passed
+// key is the election key (typically the IP address string passed
 // to WinnerWithPreference).
-func RecordAffinityFallback(service string) {
-	affinityFallbacks.WithLabelValues(service).Inc()
+func RecordAffinityFallback(key string) {
+	affinityFallbacks.WithLabelValues(key).Inc()
 }

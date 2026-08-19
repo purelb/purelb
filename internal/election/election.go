@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -33,12 +34,10 @@ import (
 	"k8s.io/utils/ptr"
 
 	"purelb.io/internal/logging"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 const (
-	// LeasePrefix is prepended to node names to form lease names
-	LeasePrefix = "purelb-node-"
-
 	// Default timing values (can be overridden via Config)
 	DefaultLeaseDuration = 5 * time.Second
 	DefaultRenewDeadline = 7 * time.Second
@@ -109,7 +108,7 @@ type electionState struct {
 type Election struct {
 	config Config
 
-	// leaseName is this node's lease name (LeasePrefix + NodeName)
+	// leaseName is this node's lease name (purelbv2.LeasePrefix + NodeName)
 	leaseName string
 
 	// state holds the current election state (atomic for lock-free access)
@@ -130,6 +129,11 @@ type Election struct {
 
 	// renewTicker triggers periodic lease renewal
 	renewTicker *time.Ticker
+
+	// winnerCache remembers the last-recorded non-empty winner per key for
+	// change detection. Observability only — nothing reads this back to make
+	// an election decision.
+	winnerCache sync.Map // map[string]string
 
 	// ctx and cancel for managing goroutines
 	ctx    context.Context
@@ -163,7 +167,7 @@ func New(cfg Config) (*Election, error) {
 
 	e := &Election{
 		config:    cfg,
-		leaseName: LeasePrefix + cfg.NodeName,
+		leaseName: purelbv2.LeasePrefix + cfg.NodeName,
 		ctx:       ctx,
 		cancel:    cancel,
 	}
@@ -382,7 +386,20 @@ func (e *Election) Winner(key string) string {
 // Pass nil (or an empty slice) for preferred to behave identically to
 // Winner; no fallback is recorded in that case (it's opt-out, not a
 // degraded state).
-func (e *Election) WinnerWithPreference(key string, preferred []string) string {
+func (e *Election) WinnerWithPreference(key string, preferred []string) (winner string) {
+	defer func() {
+		if winner == "" {
+			return // health-loss/no-candidates: not a real handover, don't record or cache it
+		}
+		if prev, loaded := e.winnerCache.Swap(key, winner); loaded {
+			if p := prev.(string); p != "" && p != winner {
+				RecordWinnerChange(key)
+				logging.Debug(e.config.Logger, "op", "election", "action", "winnerChanged",
+					"key", key, "from", p, "to", winner)
+			}
+		}
+	}()
+
 	// Same self-health + informer-sync + parse-IP preamble as Winner.
 	if !e.leaseHealthy.Load() {
 		return ""
@@ -400,7 +417,8 @@ func (e *Election) WinnerWithPreference(key string, preferred []string) string {
 		// affinity biasing (the subnet-based filtering doesn't apply).
 		candidates := make([]string, len(state.liveNodes))
 		copy(candidates, state.liveNodes)
-		return election(key, candidates)[0]
+		winner = election(key, candidates)[0]
+		return
 	}
 
 	candidates := e.findCandidatesForIP(state, ip)
@@ -421,10 +439,10 @@ func (e *Election) WinnerWithPreference(key string, preferred []string) string {
 			}
 		}
 		if len(prefCandidates) > 0 {
-			winner := election(key, prefCandidates)[0]
+			winner = election(key, prefCandidates)[0]
 			logging.Debug(e.config.Logger, "op", "election", "action", "winnerWithPreference",
 				"key", key, "preferred", len(preferred), "preferredCandidates", len(prefCandidates), "winner", winner)
-			return winner
+			return
 		}
 		// Preferred is non-empty but none intersect with candidates —
 		// silent fallback to standard election; tracked for observability.
@@ -433,7 +451,8 @@ func (e *Election) WinnerWithPreference(key string, preferred []string) string {
 			"key", key, "result", "fallback", "reason", "no preferred candidate eligible")
 	}
 
-	return election(key, candidates)[0]
+	winner = election(key, candidates)[0]
+	return
 }
 
 // findCandidatesForIP returns all nodes that have a subnet containing the given IP.
@@ -590,7 +609,7 @@ func (e *Election) createOrUpdateLease() error {
 			Name:      e.leaseName,
 			Namespace: e.config.Namespace,
 			Annotations: map[string]string{
-				SubnetsAnnotation:  subnetsAnnotation,
+				purelbv2.SubnetsAnnotation:  subnetsAnnotation,
 				InstanceAnnotation: e.config.InstanceID,
 			},
 			Labels: map[string]string{
@@ -691,8 +710,8 @@ func (e *Election) renewLease() error {
 		subnets, err := e.config.GetLocalSubnets()
 		if err == nil {
 			newAnnotation := FormatSubnetsAnnotation(subnets)
-			if lease.Annotations[SubnetsAnnotation] != newAnnotation {
-				lease.Annotations[SubnetsAnnotation] = newAnnotation
+			if lease.Annotations[purelbv2.SubnetsAnnotation] != newAnnotation {
+				lease.Annotations[purelbv2.SubnetsAnnotation] = newAnnotation
 				RecordLocalSubnetCount(len(subnets))
 				logging.Info(e.config.Logger, "op", "election", "action", "subnetsChanged",
 					"lease", e.leaseName, "subnets", newAnnotation)
@@ -772,7 +791,7 @@ func (e *Election) rebuildMaps() {
 		}
 
 		// Only process PureLB leases
-		if len(lease.Name) <= len(LeasePrefix) || lease.Name[:len(LeasePrefix)] != LeasePrefix {
+		if len(lease.Name) <= len(purelbv2.LeasePrefix) || lease.Name[:len(purelbv2.LeasePrefix)] != purelbv2.LeasePrefix {
 			continue
 		}
 
@@ -784,13 +803,13 @@ func (e *Election) rebuildMaps() {
 		}
 
 		// Extract node name from lease
-		nodeName := lease.Name[len(LeasePrefix):]
+		nodeName := lease.Name[len(purelbv2.LeasePrefix):]
 		newState.liveNodes = append(newState.liveNodes, nodeName)
 
 		// Parse subnet annotation
 		if lease.Annotations != nil {
-			subnetsStr := lease.Annotations[SubnetsAnnotation]
-			subnets := ParseSubnetsAnnotation(subnetsStr)
+			subnetsStr := lease.Annotations[purelbv2.SubnetsAnnotation]
+			subnets := purelbv2.ParseSubnetsAnnotation(subnetsStr)
 			newState.nodeToSubnets[nodeName] = subnets
 
 			for _, subnet := range subnets {
@@ -869,11 +888,11 @@ func (e *Election) onLeaseAdd(obj interface{}) {
 	}
 
 	// Only process PureLB leases
-	if len(lease.Name) <= len(LeasePrefix) || lease.Name[:len(LeasePrefix)] != LeasePrefix {
+	if len(lease.Name) <= len(purelbv2.LeasePrefix) || lease.Name[:len(purelbv2.LeasePrefix)] != purelbv2.LeasePrefix {
 		return
 	}
 
-	nodeName := lease.Name[len(LeasePrefix):]
+	nodeName := lease.Name[len(purelbv2.LeasePrefix):]
 	logging.Info(e.config.Logger, "op", "election", "event", "leaseAdd",
 		"node", nodeName, "msg", "node joined cluster")
 
@@ -890,7 +909,7 @@ func (e *Election) onLeaseUpdate(oldObj, newObj interface{}) {
 	}
 
 	// Only process PureLB leases
-	if len(newLease.Name) <= len(LeasePrefix) || newLease.Name[:len(LeasePrefix)] != LeasePrefix {
+	if len(newLease.Name) <= len(purelbv2.LeasePrefix) || newLease.Name[:len(purelbv2.LeasePrefix)] != purelbv2.LeasePrefix {
 		return
 	}
 
@@ -927,11 +946,11 @@ func (e *Election) onLeaseDelete(obj interface{}) {
 	}
 
 	// Only process PureLB leases
-	if len(lease.Name) <= len(LeasePrefix) || lease.Name[:len(LeasePrefix)] != LeasePrefix {
+	if len(lease.Name) <= len(purelbv2.LeasePrefix) || lease.Name[:len(purelbv2.LeasePrefix)] != purelbv2.LeasePrefix {
 		return
 	}
 
-	nodeName := lease.Name[len(LeasePrefix):]
+	nodeName := lease.Name[len(purelbv2.LeasePrefix):]
 	logging.Info(e.config.Logger, "op", "election", "event", "leaseDelete",
 		"node", nodeName, "msg", "node left cluster")
 

@@ -14,6 +14,11 @@
 
 package v2
 
+import (
+	"net"
+	"strings"
+)
+
 const (
 	// ============================================================================
 	// User-settable annotations (on Services)
@@ -106,9 +111,49 @@ const (
 	SkipIPv6DADAnnotation string = "purelb.io/skip-ipv6-dad"
 
 	// ============================================================================
+	// Lease annotations (coordination between nodes)
+	// ============================================================================
+
+	// LeasePrefix is prepended to node names to form lease names.
+	LeasePrefix = "purelb-node-"
+
+	// SubnetsAnnotation is the annotation key used on leases to store
+	// the node's local subnets.
+	SubnetsAnnotation = "purelb.io/subnets"
+
+	// ============================================================================
 	// Metrics
 	// ============================================================================
 
 	// MetricsNamespace is the Prometheus metrics namespace for PureLB.
 	MetricsNamespace string = "purelb"
+
+	// MaxAnnotationSubnets caps how many subnet entries we accept from a
+	// single lease annotation. Peer leases are written by other nodes; a
+	// buggy writer must not be able to bloat every node's election maps.
+	MaxAnnotationSubnets = 256
 )
+
+// ParseSubnetsAnnotation parses the annotation value back into a slice
+// of subnet strings. Returns an empty slice for empty input. Entries
+// that are not valid CIDRs are dropped, and at most
+// maxAnnotationSubnets entries are returned. Valid entries keep their
+// original spelling — downstream consumers match them as exact strings
+// against ServiceGroup subnet specs.
+func ParseSubnetsAnnotation(annotation string) []string {
+	if annotation == "" {
+		return []string{}
+	}
+	entries := strings.Split(annotation, ",")
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if _, _, err := net.ParseCIDR(entry); err != nil {
+			continue
+		}
+		result = append(result, entry)
+		if len(result) == MaxAnnotationSubnets {
+			break
+		}
+	}
+	return result
+}

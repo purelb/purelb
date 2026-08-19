@@ -307,6 +307,7 @@ func (c *Controller) syncHandler() error {
 
 	switch c.configCB(&cfg) {
 	case SyncStateSuccess:
+		updates.WithLabelValues("config").Inc()
 		configLoaded.Set(1)
 	case SyncStateError:
 		// Count the error AND return non-nil so processNextWorkItem
@@ -317,9 +318,10 @@ func (c *Controller) syncHandler() error {
 		// config error is bounded (the rate limiter caps backoff and
 		// Forget resets it on the next success) and both consumers'
 		// callbacks are idempotent. forceSync is deliberately not called.
-		updateErrors.Inc()
+		updateErrors.WithLabelValues("config").Inc()
 		return fmt.Errorf("config rejected by consumer, requeuing")
 	case SyncStateReprocessAll:
+		updates.WithLabelValues("config").Inc()
 		configLoaded.Set(1)
 		c.forceSync()
 		// Republish pool status too. forceSync only re-enqueues
