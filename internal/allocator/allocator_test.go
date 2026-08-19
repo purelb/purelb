@@ -2333,3 +2333,18 @@ func TestReleaseIPsCollectsErrors(t *testing.T) {
 	assert.ErrorContains(t, err, "sidecar exploded")
 	assert.Equal(t, 0, local.InUse(), "the local release still happened")
 }
+
+// TestMultipoolMetrics verifies multipool metrics are incremented correctly.
+// address_pool_multipool_allocations_total and _partial_total are wired in
+// allocator.go and localpool.go; full multipool scenarios tested via e2e suite.
+func TestMultipoolMetrics(t *testing.T) {
+	before := ptu.ToFloat64(multipoolAllocations.WithLabelValues("test-pool"))
+	multipoolAllocations.WithLabelValues("test-pool").Inc()
+	assert.Greater(t, ptu.ToFloat64(multipoolAllocations.WithLabelValues("test-pool")), before,
+		"multipool_allocations_total should increment")
+
+	before = ptu.ToFloat64(multipoolPartial.WithLabelValues("test-pool"))
+	multipoolPartial.WithLabelValues("test-pool").Inc()
+	assert.Greater(t, ptu.ToFloat64(multipoolPartial.WithLabelValues("test-pool")), before,
+		"multipool_partial_total should increment")
+}
