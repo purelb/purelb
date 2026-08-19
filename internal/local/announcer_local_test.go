@@ -1488,3 +1488,12 @@ func TestAggregationRequiresALeadingSlash(t *testing.T) {
 		})
 	}
 }
+
+// TestElectionLossesMetric verifies election_losses_total is callable without panic.
+// Full loss scenarios tested via e2e suite (actual node failovers).
+func TestElectionLossesMetric(t *testing.T) {
+	before := ptu.ToFloat64(electionLosses)
+	RecordElectionLoss()
+	assert.Greater(t, ptu.ToFloat64(electionLosses), before,
+		"election_losses_total should increment on call")
+}
