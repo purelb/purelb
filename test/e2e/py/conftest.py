@@ -37,6 +37,7 @@ import pytest
 
 from purelb_e2e import backend, metrics, topology
 from purelb_e2e.cluster import Cluster, utcnow
+from purelb_e2e import nodes as nodes_mod
 from purelb_e2e.nodes import Router, ssh
 from purelb_e2e.wait import wait_until
 
@@ -55,6 +56,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--require", action="store", default="",
                      help="comma-separated capabilities that MUST be present; "
                           "a missing one fails the run instead of skipping")
+    parser.addoption("--no-preflight", action="store_true", default=False,
+                     help="skip the preflight. For deliberately degraded clusters "
+                          "-- e.g. testing with the allocator scaled to zero")
     parser.addoption("--show-tests", action="store_true", default=False,
                      help="print every test with its result and what it checked, "
                           "instead of only the progress dots")
@@ -577,6 +581,79 @@ def _describe(item: pytest.Item) -> str:
     return name.removeprefix("test_").replace("_", " ")
 
 
+
+def _purelb_health_problems(cluster: Cluster) -> List[str]:
+    """Is the software under test actually running, and is the CNI sane.
+
+    Reachability is not readiness. The preflight proved we could talk to
+    the API server and stopped there, so a cluster whose allocator was
+    not running still started all 179 tests -- and 119 lb_service call
+    sites each waited out a 45s allocation timeout, roughly ninety
+    minutes to report "everything is broken". These two API calls cost
+    69ms and answer the same question.
+
+    The default-route check is the fault that motivated this. A
+    dual-homed node took DHCP defaults on both NICs at equal v4 metric
+    while v6 preferred the other; flannel requires one interface for
+    both, refused to start, and no pod-network pod could be created on
+    that node. Nothing in the suite noticed, because lbnodeagent is
+    hostNetwork and reported a healthy 5/5 the entire time. The node's
+    InternalIP also silently moved to the other subnet, which skews every
+    multi-subnet test on runs that PASS.
+    """
+    problems: List[str] = []
+    ns = cluster.purelb_namespace
+
+    try:
+        dep = cluster.deployment(ns, "allocator")
+        ready = (dep.status.ready_replicas or 0) if dep is not None else 0
+        if ready < 1:
+            problems.append(
+                f"the allocator has {ready} ready replicas in {ns!r}. Nothing can "
+                f"be allocated, so every allocation test would wait out its 45s\n"
+                f"      timeout and fail. Check "
+                f"`kubectl -n {ns} get pods -l component=allocator`."
+            )
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"could not read the allocator Deployment in {ns!r}: {exc!r}")
+
+    try:
+        names = cluster.node_names()
+        if not cluster.daemonset_ready(ns, "lbnodeagent", expect_nodes=len(names)):
+            ds = cluster.apps.read_namespaced_daemon_set("lbnodeagent", ns)
+            st = ds.status
+            problems.append(
+                f"the lbnodeagent DaemonSet is not whole: "
+                f"{st.number_ready or 0} ready / {st.desired_number_scheduled or 0} "
+                f"scheduled, on a {len(names)}-node cluster.\n"
+                f"      A node without an agent announces nothing, and the tests "
+                f"that assert EVERY node announces would fail slowly."
+            )
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"could not read the lbnodeagent DaemonSet in {ns!r}: {exc!r}")
+
+    # One SSH per node, ~1.4s warm for five nodes.
+    try:
+        for node, ip in sorted(cluster.node_ips().items()):
+            d = nodes_mod.default_route_interfaces(ip)
+            if d["v4"] is None or d["v6"] is None:
+                continue                      # single-stack, or unreachable: not our call
+            if d["v4_tied"] or d["v6_tied"] or d["v4"] != d["v6"]:
+                problems.append(
+                    f"{node} ({ip}) has an ambiguous default interface: "
+                    f"v4={d['v4']}{' (TIED)' if d['v4_tied'] else ''}, "
+                    f"v6={d['v6']}{' (TIED)' if d['v6_tied'] else ''}.\n"
+                    f"      Flannel requires one interface for both families and "
+                    f"will not start; pods on that node get no network, while\n"
+                    f"      lbnodeagent keeps reporting healthy because it is "
+                    f"hostNetwork. Give one NIC a higher route-metric."
+                )
+    except Exception:  # noqa: BLE001 - SSH is checked by the tests that need it
+        pass
+
+    return problems
+
+
 def _preflight_problems(config: pytest.Config, items: List[pytest.Item]) -> List[str]:
     """What is unreachable, checked once, before any test runs.
 
@@ -599,14 +676,22 @@ def _preflight_problems(config: pytest.Config, items: List[pytest.Item]) -> List
                 "no kubectl context given. Pass --context <name> or export CONTEXT."
             )
         else:
+            cluster = None
             try:
-                Cluster(context=ctx).nodes()
+                cluster = Cluster(
+                    context=ctx,
+                    purelb_namespace=config.getoption("--purelb-namespace"),
+                )
+                cluster.nodes()
             except Exception as exc:  # noqa: BLE001 - any failure here is fatal
+                cluster = None
                 problems.append(
                     f"cannot reach the cluster for context {ctx!r}:\n"
                     f"      {type(exc).__name__}: {str(exc).splitlines()[0][:200]}\n"
                     f"      Check `kubectl --context {ctx} get nodes`."
                 )
+            if cluster is not None:
+                problems.extend(_purelb_health_problems(cluster))
 
     # A router named on the command line is REQUESTED, and a requested
     # capability that is missing is an error. Without this, pointing
@@ -636,6 +721,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item
     for item in items:
         _descriptions[item.nodeid] = _describe(item)
 
+    if config.getoption("--no-preflight"):
+        return
     problems = _preflight_problems(config, items)
     if problems:
         lines = ["", "PREFLIGHT FAILED - nothing was tested.", ""]
