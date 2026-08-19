@@ -100,6 +100,7 @@ Useful flags:
 | `--show-tests` | every test with its result and **what it checked**, instead of progress dots |
 | `--report PATH` | write a plain-text report of the whole run to `PATH` |
 | `-x` | stop at the first failure |
+| `--maxfail=N` | stop after N failures. Worth setting in a loop that runs the suite repeatedly: a systemic breakage otherwise burns the full run, and every allocation test waits out its 45s timeout before failing |
 | `--durations=20` | the 20 slowest tests, which is how to find out what a full run costs on your cluster |
 
 Export the two that never change for a given cluster, so a forgotten flag

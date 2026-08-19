@@ -22,6 +22,7 @@ of the harness never constructs a command line.
 from __future__ import annotations
 
 import contextlib
+import re
 import json
 import ipaddress
 import shlex
@@ -74,6 +75,46 @@ def has_address(host: str, address: str) -> bool:
         except ValueError:
             continue
     return False
+
+
+def default_route_interfaces(host: str) -> Dict[str, object]:
+    """Which interface owns the default route, per family, and is it certain.
+
+    Returns {"v4": iface|None, "v6": iface|None, "v4_tied": bool,
+    "v6_tied": bool}. `tied` means two interfaces share the lowest metric,
+    so which one wins is decided per boot rather than by configuration.
+
+    This is the shape of a real outage rather than a theoretical one. A
+    dual-homed node took DHCP defaults on both NICs at equal v4 metric
+    while IPv6 preferred the other NIC; flannel requires both families on
+    one interface, refused to start, and every pod-network pod on that
+    node was stuck. lbnodeagent kept reporting healthy throughout because
+    it is hostNetwork and needs no CNI, so nothing in the suite noticed --
+    the tests merely took ninety minutes to fail with unrelated messages.
+    """
+    out: Dict[str, object] = {"v4": None, "v6": None, "v4_tied": False, "v6_tied": False}
+    for fam, flag in (("v4", "-4"), ("v6", "-6")):
+        try:
+            text = ssh(host, f"ip {flag} route show default", timeout=20, check=False)
+        except Exception:  # noqa: BLE001 - unreachable node is the caller's problem
+            continue
+        best: Dict[str, int] = {}
+        for line in text.splitlines():
+            dev = re.search(r"\bdev\s+(\S+)", line)
+            if not dev:
+                continue
+            met = re.search(r"\bmetric\s+(\d+)", line)
+            metric = int(met.group(1)) if met else 0
+            iface = dev.group(1)
+            if iface not in best or metric < best[iface]:
+                best[iface] = metric
+        if not best:
+            continue
+        low = min(best.values())
+        winners = sorted(i for i, m in best.items() if m == low)
+        out[fam] = winners[0]
+        out[f"{fam}_tied"] = len(winners) > 1
+    return out
 
 
 def nftables_has_service(host: str, address: str, port: int = 80) -> bool:

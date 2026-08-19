@@ -85,6 +85,61 @@ def nodes_announcing(topo: topology.Topology, address: str) -> List[str]:
     return found
 
 
+def wait_every_node_announcing(
+    topo: topology.Topology, address: str, timeout: float = 90.0,
+    cluster: Optional[Cluster] = None,
+) -> List[str]:
+    """Wait for every node to carry `address`, and SAY WHAT IS MISSING.
+
+    Eleven sites wait on this condition and the bare wait_until reports
+    only "timed out ... on every node" -- not which node was short, and
+    not whether its agent was even running. A 1-in-8 flake reported that
+    way is unactionable after the fact: the cluster has moved on by the
+    time anyone reads it.
+
+    On timeout this names the nodes that had the address, the ones that
+    did not, and (given a cluster) whether an lbnodeagent was running on
+    each straggler -- which is what separates "the agent never got the
+    event" from "there was no agent there to get it".
+    """
+    deadline = time.monotonic() + timeout
+    got: List[str] = []
+    last_error: Optional[BaseException] = None
+    while True:
+        # Exceptions are "not yet", exactly as wait_until treats them.
+        # nodes_announcing SSHes every node, so a transient SSH failure
+        # must not fail the test -- the wait_until this replaced retried,
+        # and a helper that did not would turn a blip into a red run.
+        try:
+            got = nodes_announcing(topo, address)
+            last_error = None
+            if len(got) == len(topo.node_ips):
+                return got
+        except Exception as exc:  # noqa: BLE001 - deliberately broad, see above
+            last_error = exc
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(3.0)
+
+    missing = sorted(set(topo.node_ips) - set(got))
+    detail = []
+    for node in missing:
+        state = "unknown"
+        if cluster is not None:
+            pod = cluster.pod_on_node(cluster.purelb_namespace, "component=lbnodeagent", node)
+            state = "no agent pod" if pod is None else f"agent {pod.metadata.name} phase={pod.status.phase}"
+        detail.append(f"{node} ({state})")
+    raise AssertionError(
+        f"after {timeout:.0f}s, {address} is on {len(got)}/{len(topo.node_ips)} nodes.\n"
+        f"  announcing:     {sorted(got) or 'none'}\n"
+        f"  NOT announcing: {detail}\n"
+        f"Every node announces a remote address -- there is no election -- so a "
+        f"node short here is either an agent that was not running or one that "
+        f"missed the Service event."
+        + (f"\nLast error while probing: {last_error!r}" if last_error else "")
+    )
+
+
 def assert_never_allocates(cluster: Cluster, name: str, seconds: int = 16) -> None:
     for _ in range(seconds // 2):
         time.sleep(2)
@@ -580,12 +635,7 @@ def test_deleting_a_remote_service_withdraws_it_from_every_node(
     """
     group = remote_group()
     vip = lb_service("remote-delete", ["IPv4"], annotations={SERVICE_GROUP: group})[0]
-    wait_until(
-        lambda: (lambda got: got if len(got) == len(topo.node_ips) else None)(
-            nodes_announcing(topo, vip)
-        ),
-        timeout=90, interval=3.0, description=f"{vip} on every node",
-    )
+    wait_every_node_announcing(topo, vip, timeout=90, cluster=cluster)
     cluster.delete_service(NAMESPACE, "remote-delete")
     wait_while(
         lambda: bool(nodes_announcing(topo, vip)),
@@ -609,12 +659,7 @@ def test_a_remote_address_survives_losing_one_node(
     """
     group = remote_group()
     vip = lb_service("remote-survive", ["IPv4"], annotations={SERVICE_GROUP: group})[0]
-    wait_until(
-        lambda: (lambda got: got if len(got) == len(topo.node_ips) else None)(
-            nodes_announcing(topo, vip)
-        ),
-        timeout=90, interval=3.0, description=f"{vip} on every node",
-    )
+    wait_every_node_announcing(topo, vip, timeout=90, cluster=cluster)
 
     victim = sorted(topo.node_ips)[-1]
     tainted_nodes(victim)
@@ -643,12 +688,7 @@ def test_a_restarted_agent_re_announces(
     """
     group = remote_group()
     vip = lb_service("remote-restart", ["IPv4"], annotations={SERVICE_GROUP: group})[0]
-    wait_until(
-        lambda: (lambda got: got if len(got) == len(topo.node_ips) else None)(
-            nodes_announcing(topo, vip)
-        ),
-        timeout=90, interval=3.0, description=f"{vip} on every node",
-    )
+    wait_every_node_announcing(topo, vip, timeout=90, cluster=cluster)
 
     node = sorted(topo.node_ips)[0]
     pod = cluster.pod_on_node(cluster.purelb_namespace, "component=lbnodeagent", node)
@@ -1015,12 +1055,7 @@ def test_a_remote_vip_serves_traffic_from_a_pod(
     """
     group = remote_group()
     vip = lb_service("remote-reach", ["IPv4"], annotations={SERVICE_GROUP: group})[0]
-    wait_until(
-        lambda: (lambda got: got if len(got) == len(topo.node_ips) else None)(
-            nodes_announcing(topo, vip)
-        ),
-        timeout=90, interval=3.0, description=f"{vip} on every node",
-    )
+    wait_every_node_announcing(topo, vip, timeout=90, cluster=cluster)
 
     name = "remote-vip-client"
     cluster.core.create_namespaced_pod(
@@ -1071,12 +1106,7 @@ def test_a_remote_ipv6_vip_serves_traffic_from_a_pod(
     """
     group = remote_group()
     vip = lb_service("remote-reach-v6", ["IPv6"], annotations={SERVICE_GROUP: group})[0]
-    wait_until(
-        lambda: (lambda got: got if len(got) == len(topo.node_ips) else None)(
-            nodes_announcing(topo, vip)
-        ),
-        timeout=90, interval=3.0, description=f"{vip} on every node",
-    )
+    wait_every_node_announcing(topo, vip, timeout=90, cluster=cluster)
 
     name = "remote-vip-client-v6"
     cluster.core.create_namespaced_pod(
