@@ -105,7 +105,7 @@ func TestSyncHandlerRequeuesOnConfigError(t *testing.T) {
 	}
 	defer c.workqueue.ShutDown()
 
-	errorsBefore := ptu.ToFloat64(updateErrors)
+	errorsBefore := ptu.ToFloat64(updateErrors.WithLabelValues("config"))
 
 	c.workqueue.Add("lbna/default/test")
 	if !c.processNextWorkItem() {
@@ -114,7 +114,7 @@ func TestSyncHandlerRequeuesOnConfigError(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("configCB calls = %d, want 1", calls)
 	}
-	if got := ptu.ToFloat64(updateErrors); got != errorsBefore+1 {
+	if got := ptu.ToFloat64(updateErrors.WithLabelValues("config")); got != errorsBefore+1 {
 		t.Errorf("updateErrors = %v, want %v", got, errorsBefore+1)
 	}
 

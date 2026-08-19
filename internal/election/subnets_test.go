@@ -20,6 +20,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 func TestNetworkAddress(t *testing.T) {
@@ -142,7 +144,7 @@ func TestParseSubnetsAnnotation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ParseSubnetsAnnotation(tt.annotation)
+			result := purelbv2.ParseSubnetsAnnotation(tt.annotation)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -153,7 +155,7 @@ func TestFormatParseRoundTrip(t *testing.T) {
 	original := []string{"192.168.1.0/24", "10.0.0.0/8", "fd53:9ef0:8683::/64"}
 
 	formatted := FormatSubnetsAnnotation(original)
-	parsed := ParseSubnetsAnnotation(formatted)
+	parsed := purelbv2.ParseSubnetsAnnotation(formatted)
 
 	assert.Equal(t, original, parsed)
 }
