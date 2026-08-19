@@ -285,12 +285,22 @@ def test_allocator_metrics_scrape(allocator_metrics):
     assert snap.get("purelb_k8s_client_config_loaded_bool") is not None, (
         "allocator exports no config_loaded metric; is this really PureLB?"
     )
+    # k8s_client_updates_total should have incremented during startup (config delivery)
+    assert snap.counter("purelb_k8s_client_updates_total") > 0, (
+        "k8s_client_updates_total should track API updates"
+    )
 
 
 def test_agent_metrics_scrape(cluster, agent_metrics):
     node = cluster.node_names()[0]
     snap = agent_metrics(node)
     assert snap.value("purelb_election_lease_healthy") == 1.0
+    # Lease renewal metrics: lease_renewals_total should have incremented during startup
+    assert snap.value("purelb_election_lease_renewals_total") >= 0
+    # Member and subnet counts should be non-zero in a healthy cluster
+    assert snap.value("purelb_election_member_count") > 0
+    assert snap.value("purelb_election_subnet_count") > 0
+    assert snap.value("purelb_election_local_subnet_count") > 0
 
 
 def test_logs_are_windowed(cluster, log_window):
