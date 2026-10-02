@@ -140,6 +140,33 @@ def test_vip_fails_over_when_its_announcer_is_evicted(
         f"accumulating rather than being overwritten: {value!r}"
     )
 
+    # winner_changes_total counts the handover once, on the node the VIP
+    # moved TO. Every surviving node evaluated the same key; none of the
+    # others may record it. (The old winner's agent is gone.)
+    survivors = sorted(n for n in topo.node_ips if n != original)
+    after = {n: agent_metrics(n) for n in survivors}
+    metrics.assert_increased(
+        agent_before[new_winner], after[new_winner],
+        "purelb_election_winner_changes_total", key=vip,
+    )
+    for n in survivors:
+        if n != new_winner:
+            metrics.assert_not_increased(
+                agent_before[n], after[n], "purelb_election_winner_changes_total", key=vip,
+            )
+
+    # Releasing the address drops its per-key series on every node, so a
+    # node doesn't keep one series per IP it ever elected.
+    cluster.delete_service(NAMESPACE, name)
+    wait_until(
+        lambda: all(
+            agent_metrics(n).get("purelb_election_winner_changes_total", key=vip) is None
+            for n in survivors
+        ) or None,
+        timeout=60, interval=3.0,
+        description=f"every node to drop the winner_changes_total series for {vip}",
+    )
+
 
 @pytest.mark.requires("multi-node")
 def test_agents_recover_after_the_taint_is_removed(
