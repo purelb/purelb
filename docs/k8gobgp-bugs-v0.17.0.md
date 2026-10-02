@@ -20,7 +20,7 @@ The four issues filed against v0.2.4 are fixed (all in `d2be7a3`):
 
 | Issue | Was | Now |
 |---|---|---|
-| purelb/gobgp-netlink#57 | An IPv4 route over an IPv6 session was sent with a 16-byte NEXT_HOP (a 4-in-6 `::ffff:` address); FRR treats it as withdrawn, so no IPv4 VIP was advertised over IPv6-only peering | gobgp-netlink v1.3.6 sends a 4-byte IPv4 next hop. Verified on prox-purelb2: FRR installs the route with 5 ECMP next hops, no NEXT_HOP errors |
+| purelb/gobgp-netlink#57 | Regression in v0.2.5 (gobgp-netlink v1.3.x; v0.2.4 was fine): an IPv4 route over an IPv6 session was sent with a 16-byte NEXT_HOP (a 4-in-6 `::ffff:` address); FRR treats it as withdrawn, so no IPv4 VIP was advertised over IPv6-only peering | gobgp-netlink v1.3.6 sends a 4-byte IPv4 next hop. Verified on prox-purelb2: FRR installs the route with 5 ECMP next hops, no NEXT_HOP errors |
 
 ## Open against v0.2.6
 

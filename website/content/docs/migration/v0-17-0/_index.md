@@ -129,10 +129,10 @@ v0.17.0 ships k8gobgp v0.2.6 (from v0.2.4). It moves to gobgp-netlink v1.3.6
 and changes metrics, validation and some behaviour. Remote pools without BGP are
 unaffected.
 
-IPv4 routes can now be advertised over an IPv6 BGP session. Before
-gobgp-netlink v1.3.6 they were sent with a malformed 16-byte NEXT_HOP, which
-the router discards (FRR logs `Nexthop attribute length isn't four`), so a
-cluster peering only over IPv6 advertised no IPv4 addresses.
+When peering over IPv6, the IPv6 next hop a node advertises is now its own
+session address. With v0.2.4 it was the first global IPv6 address on the
+peer-facing interface, which can be a PureLB local VIP: the router then sends
+remote-VIP traffic to that VIP's address, which breaks when the VIP moves.
 
 ### Check your BGPConfiguration before upgrading
 
