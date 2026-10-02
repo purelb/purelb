@@ -48,13 +48,15 @@ var (
 		Help:      "Total number of failed lease renewal attempts",
 	})
 
-	// winnerChanges counts the number of times a winner changed for any service.
+	// winnerChanges counts handovers of an election key to this node. Only
+	// the new winner records, so a cluster-wide sum counts each handover
+	// once. Series are removed when the key is released (ForgetKey).
 	// Labels: key (IP address string)
 	winnerChanges = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "winner_changes_total",
-		Help:      "Total number of winner changes per service",
+		Help:      "Handovers of an election key (IP address) to this node",
 	}, []string{"key"})
 
 	// memberCount tracks the current number of active members in the election.
@@ -86,12 +88,13 @@ var (
 	// eligible for the election (subnet mismatch, lease loss, etc.),
 	// triggering silent fallback to standard hash election. Sustained
 	// non-zero rate indicates a misconfiguration (pods on subnet-less
-	// nodes, all preferred nodes down, etc.).
+	// nodes, all preferred nodes down, etc.). Recorded only on the node
+	// that won the fallback election.
 	affinityFallbacks = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "affinity_fallback_total",
-		Help:      "Times an opted-in service had no preferred candidate eligible and fell back to standard hash election.",
+		Help:      "Times an opted-in service had no preferred candidate eligible and fell back to standard hash election, recorded on the fallback's winner.",
 	}, []string{"key"})
 )
 
@@ -143,6 +146,12 @@ func RecordSubnetCount(count int) {
 // RecordLocalSubnetCount sets the local subnet count.
 func RecordLocalSubnetCount(count int) {
 	localSubnetCount.Set(float64(count))
+}
+
+// forgetKeyMetrics removes key's series from the per-key counters.
+func forgetKeyMetrics(key string) {
+	winnerChanges.DeleteLabelValues(key)
+	affinityFallbacks.DeleteLabelValues(key)
 }
 
 // RecordAffinityFallback increments the per-service affinity-fallback

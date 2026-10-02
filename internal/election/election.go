@@ -387,16 +387,23 @@ func (e *Election) Winner(key string) string {
 // Winner; no fallback is recorded in that case (it's opt-out, not a
 // degraded state).
 func (e *Election) WinnerWithPreference(key string, preferred []string) (winner string) {
+	fellBack := false
 	defer func() {
 		if winner == "" {
 			return // health-loss/no-candidates: not a real handover, don't record or cache it
 		}
+		// Every node caches every key so its next comparison is right, but
+		// only the new winner records: a handover counts exactly once
+		// cluster-wide, even when the old winner is gone and can't report.
 		if prev, loaded := e.winnerCache.Swap(key, winner); loaded {
-			if p := prev.(string); p != "" && p != winner {
+			if p := prev.(string); p != "" && p != winner && winner == e.config.NodeName {
 				RecordWinnerChange(key)
 				logging.Debug(e.config.Logger, "op", "election", "action", "winnerChanged",
 					"key", key, "from", p, "to", winner)
 			}
+		}
+		if fellBack && winner == e.config.NodeName {
+			RecordAffinityFallback(key)
 		}
 	}()
 
@@ -445,14 +452,30 @@ func (e *Election) WinnerWithPreference(key string, preferred []string) (winner 
 			return
 		}
 		// Preferred is non-empty but none intersect with candidates —
-		// silent fallback to standard election; tracked for observability.
-		RecordAffinityFallback(key)
+		// silent fallback to standard election; tracked for observability
+		// by the deferred recorder, on the fallback's winner only.
+		fellBack = true
 		logging.Debug(e.config.Logger, "op", "election", "action", "winnerWithPreference",
 			"key", key, "result", "fallback", "reason", "no preferred candidate eligible")
 	}
 
 	winner = election(key, candidates)[0]
 	return
+}
+
+// ForgetKey drops everything the election remembers about key: the cached
+// winner and the key's per-key metric series. Call it when no Service
+// references the address any more, so a released IP doesn't hold a cache
+// entry and series for the life of the process.
+//
+// Not synchronised with WinnerWithPreference, deliberately: a concurrent
+// call (the GARP goroutine) can re-insert the key after the delete. That
+// leaks one entry until the IP is used and released again, which is
+// cheaper than a lock.
+func (e *Election) ForgetKey(key string) {
+	e.winnerCache.Delete(key)
+	forgetKeyMetrics(key)
+	logging.Debug(e.config.Logger, "op", "election", "action", "forgetKey", "key", key)
 }
 
 // findCandidatesForIP returns all nodes that have a subnet containing the given IP.
@@ -609,8 +632,8 @@ func (e *Election) createOrUpdateLease() error {
 			Name:      e.leaseName,
 			Namespace: e.config.Namespace,
 			Annotations: map[string]string{
-				purelbv2.SubnetsAnnotation:  subnetsAnnotation,
-				InstanceAnnotation: e.config.InstanceID,
+				purelbv2.SubnetsAnnotation: subnetsAnnotation,
+				InstanceAnnotation:         e.config.InstanceID,
 			},
 			Labels: map[string]string{
 				"app.kubernetes.io/component": "lbnodeagent",

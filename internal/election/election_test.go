@@ -30,6 +30,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -1334,20 +1336,95 @@ func TestWinnerWithPreference(t *testing.T) {
 			"no subnet match → empty (matches Winner contract)")
 	})
 
-	t.Run("winner_changes_total metric wired via defer (no panic, label correct)", func(t *testing.T) {
-		// Unit test: verify defer mechanism doesn't panic and key label is used.
-		// e2e suite exercises actual handover scenario.
-		e := setup(t, []string{"a", "b"}, "192.168.1.0/24", []string{"a", "b"})
+}
 
-		// First call: winner cached, no change to record (no previous value)
-		w1 := e.WinnerWithPreference(ip, nil)
-		assert.NotEqual(t, "", w1, "should have a winner")
-
-		// Repeat call: same winner, defer detects no change
-		w2 := e.WinnerWithPreference(ip, nil)
-		assert.Equal(t, w1, w2, "winner should be stable on repeated calls")
-
-		// Metric populated on actual change; this test verifies defer is wired
-		t.Log("winner_changes_total metric defer-based tracking verified")
+// nodeView builds the election as node `self` sees it, with `subnetNodes`
+// as the only candidates for subnet. Several views can share one key to
+// model what different nodes record for the same handover.
+func nodeView(t *testing.T, self, subnet string, subnetNodes []string) *Election {
+	t.Helper()
+	stopCh := make(chan struct{})
+	t.Cleanup(func() { close(stopCh) })
+	e, err := New(Config{
+		Namespace: "purelb",
+		NodeName:  self,
+		Client:    fake.NewSimpleClientset(),
+		StopCh:    stopCh,
 	})
+	require.NoError(t, err)
+	e.leaseHealthy.Store(true)
+	setCandidates(e, subnet, subnetNodes)
+	return e
+}
+
+func setCandidates(e *Election, subnet string, subnetNodes []string) {
+	e.state.Store(&electionState{
+		liveNodes:     []string{"a", "b", "c"},
+		subnetToNodes: map[string][]string{subnet: subnetNodes},
+		nodeToSubnets: make(map[string][]string),
+	})
+}
+
+// TestWinnerChangeRecordedByNewWinnerOnly: a handover from a to b is seen
+// by every node, but only b records it, so a cluster-wide sum counts it
+// exactly once. Covers IPv4 and IPv6 keys.
+func TestWinnerChangeRecordedByNewWinnerOnly(t *testing.T) {
+	for _, tc := range []struct{ family, subnet, key string }{
+		{"IPv4", "192.168.7.0/24", "192.168.7.10"},
+		{"IPv6", "2001:db8:7::/64", "2001:db8:7::10"},
+	} {
+		t.Run(tc.family, func(t *testing.T) {
+			delta := func(self string) float64 {
+				e := nodeView(t, self, tc.subnet, []string{"a"})
+				require.Equal(t, "a", e.WinnerWithPreference(tc.key, nil))
+				before := testutil.ToFloat64(winnerChanges.WithLabelValues(tc.key))
+				setCandidates(e, tc.subnet, []string{"b"})
+				require.Equal(t, "b", e.WinnerWithPreference(tc.key, nil))
+				return testutil.ToFloat64(winnerChanges.WithLabelValues(tc.key)) - before
+			}
+			assert.Equal(t, 0.0, delta("a"), "old winner must not record")
+			assert.Equal(t, 0.0, delta("c"), "uninvolved node must not record")
+			assert.Equal(t, 1.0, delta("b"), "new winner records exactly once")
+		})
+	}
+}
+
+// TestAffinityFallbackRecordedByWinnerOnly: only the node that wins the
+// fallback election records it.
+func TestAffinityFallbackRecordedByWinnerOnly(t *testing.T) {
+	const subnet, key = "192.168.8.0/24", "192.168.8.10"
+	delta := func(self string) float64 {
+		e := nodeView(t, self, subnet, []string{"a"})
+		before := testutil.ToFloat64(affinityFallbacks.WithLabelValues(key))
+		// "z" is not a candidate, so the preference falls back.
+		require.Equal(t, "a", e.WinnerWithPreference(key, []string{"z"}))
+		return testutil.ToFloat64(affinityFallbacks.WithLabelValues(key)) - before
+	}
+	assert.Equal(t, 0.0, delta("b"), "non-winner must not record the fallback")
+	assert.Equal(t, 1.0, delta("a"), "fallback winner records it")
+}
+
+// TestForgetKey: forgetting a key removes its cache entry and its metric
+// series, and the next election for that key is a fresh start, not a
+// handover from a stale cached winner.
+func TestForgetKey(t *testing.T) {
+	const subnet, key = "192.168.9.0/24", "192.168.9.10"
+	e := nodeView(t, "b", subnet, []string{"a"})
+	e.WinnerWithPreference(key, nil)
+	setCandidates(e, subnet, []string{"b"})
+	e.WinnerWithPreference(key, nil) // handover to b: series exists
+	series := testutil.CollectAndCount(winnerChanges)
+
+	e.ForgetKey(key)
+	_, cached := e.winnerCache.Load(key)
+	assert.False(t, cached, "cache entry must be gone")
+	assert.Equal(t, series-1, testutil.CollectAndCount(winnerChanges), "series must be removed")
+
+	// Re-elect a different winner: no cached previous winner, so no
+	// change may be recorded and no series may reappear.
+	setCandidates(e, subnet, []string{"a"})
+	e.WinnerWithPreference(key, nil)
+	setCandidates(e, subnet, []string{"b"})
+	assert.Equal(t, series-1, testutil.CollectAndCount(winnerChanges),
+		"a winner seen only before ForgetKey must not count as a handover")
 }
