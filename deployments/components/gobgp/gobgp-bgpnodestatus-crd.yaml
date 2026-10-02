@@ -67,6 +67,20 @@ spec:
                 description: ASN is the local Autonomous System Number
                 format: int32
                 type: integer
+              bfdServer:
+                description: BFDServer reports the node's BFD server, when BFD is in use.
+                properties:
+                  listening:
+                    description: |-
+                      Listening is whether the BFD socket is bound.
+
+                      The socket binds lazily, on the first BFD peer, so false is the normal
+                      state on a node that does not use BFD - which is why this does not feed
+                      the top-level Healthy flag unconditionally.
+                    type: boolean
+                required:
+                - listening
+                type: object
               conditions:
                 description: Conditions represent the latest available observations of the node's BGP state
                 items:
@@ -125,8 +139,14 @@ spec:
                 type: array
               healthy:
                 description: |-
-                  Healthy is true when all neighbors are Established and no import/export failures exist.
+                  Healthy is true when all neighbors are Established, no import/export
+                  failures exist, and BFD - if any neighbor uses it - is working.
                   Conditions are authoritative; this is a convenience summary.
+
+                  No omitempty: it would drop the field when false, and the printcolumn
+                  then renders an unhealthy node as a BLANK cell rather than "false" -
+                  indistinguishable from "not reported yet" in `kubectl get bgpnodestatus`,
+                  which is the single place an operator looks first.
                 type: boolean
               heartbeatSeconds:
                 description: HeartbeatSeconds is the configured heartbeat interval, echoed so the plugin can calculate staleness
@@ -147,9 +167,60 @@ spec:
                     address:
                       description: Address is the neighbor's IP address
                       type: string
+                    bfd:
+                      description: BFD reports the BFD session, when BFD is enabled for this neighbor.
+                      properties:
+                        failureTransitions:
+                          description: |-
+                            FailureTransitions counts up-to-down transitions. Worth keeping even at a
+                            60s heartbeat: a flap that starts and ends inside the window is invisible
+                            in sessionState but visible here. Each one is a hard BGP reset.
+                          format: int64
+                          type: integer
+                        localDiagnosticCode:
+                          description: |-
+                            LocalDiagnosticCode is why our side last changed state.
+
+                            No omitempty: NoDiagnostic is code 0 and a perfectly healthy value, so
+                            omitting it when empty would hide the normal case.
+                          type: string
+                        remoteDiagnosticCode:
+                          description: RemoteDiagnosticCode is why the peer's side last changed state.
+                          type: string
+                        remoteSessionState:
+                          description: RemoteSessionState is the peer's view of the session.
+                          type: string
+                        sessionState:
+                          description: 'SessionState is our view: Up, Down, AdminDown, Init or Unspecified.'
+                          type: string
+                      required:
+                      - failureTransitions
+                      - localDiagnosticCode
+                      - remoteDiagnosticCode
+                      - sessionState
+                      type: object
                     description:
                       description: Description is the configured neighbor description
                       type: string
+                    inheritedBlocks:
+                      description: |-
+                        InheritedBlocks names the configuration blocks this neighbor took from its
+                        peer group rather than stating itself, sorted.
+
+                        ListPeer reports the *resolved* configuration, so a value the neighbor set
+                        and a value it inherited look identical - which is what made every
+                        peer-group defect in this controller hard to see. This answers "why does
+                        this peer have this value" without an operator having to diff the CR
+                        against a group by hand.
+
+                        Derived from the CR, not from gobgpd's GetRunningConfig provenance: the CR
+                        is authoritative about what the operator actually stated, and the daemon's
+                        version is a human-readable comment block appended to a 30 KB config
+                        document, which is neither cheap to fetch per reconcile nor a stable format
+                        to parse.
+                      items:
+                        type: string
+                      type: array
                     lastError:
                       description: LastError is the BGP notification code/subcode for non-Established neighbors
                       type: string
@@ -184,6 +255,7 @@ spec:
                   - prefixesSent
                   - state
                   type: object
+                maxItems: 128
                 type: array
               netlinkExport:
                 description: NetlinkExport reports the netlink export pipeline state
@@ -330,10 +402,20 @@ spec:
                       description: RIBRoute reports a single route in the BGP RIB.
                       properties:
                         advertisedTo:
-                          description: AdvertisedTo lists neighbor addresses this route is advertised to (only for local routes)
+                          description: |-
+                            AdvertisedTo lists neighbor addresses this route is advertised to (only
+                            for local routes), capped at 16 entries. This list is the product of
+                            routes and established neighbors, so it, not the route count, is what
+                            pushes the object towards etcd's size limit.
                           items:
                             type: string
+                          maxItems: 16
                           type: array
+                        advertisedToCount:
+                          description: |-
+                            AdvertisedToCount is the true number of neighbors this route is
+                            advertised to, which exceeds len(advertisedTo) when that list was capped.
+                          type: integer
                         communities:
                           description: Communities lists BGP communities attached to this route
                           items:
@@ -362,10 +444,20 @@ spec:
                       description: RIBRoute reports a single route in the BGP RIB.
                       properties:
                         advertisedTo:
-                          description: AdvertisedTo lists neighbor addresses this route is advertised to (only for local routes)
+                          description: |-
+                            AdvertisedTo lists neighbor addresses this route is advertised to (only
+                            for local routes), capped at 16 entries. This list is the product of
+                            routes and established neighbors, so it, not the route count, is what
+                            pushes the object towards etcd's size limit.
                           items:
                             type: string
+                          maxItems: 16
                           type: array
+                        advertisedToCount:
+                          description: |-
+                            AdvertisedToCount is the true number of neighbors this route is
+                            advertised to, which exceeds len(advertisedTo) when that list was capped.
+                          type: integer
                         communities:
                           description: Communities lists BGP communities attached to this route
                           items:
@@ -400,6 +492,11 @@ spec:
                   RouterIDSource indicates how the router ID was resolved:
                   "explicit", "template", "node-ipv4", or "hash-from-node-name"
                 type: string
+              truncated:
+                description: |-
+                  Truncated indicates the neighbors or vrfs list was capped at its maximum.
+                  The nested rib/netlinkImport/netlinkExport objects carry their own flag.
+                type: boolean
               vrfs:
                 description: VRFs reports the VRF summary
                 items:
@@ -423,8 +520,10 @@ spec:
                   - name
                   - rd
                   type: object
+                maxItems: 64
                 type: array
             required:
+            - healthy
             - neighborCount
             - nodeName
             type: object

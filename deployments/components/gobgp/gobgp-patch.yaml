@@ -13,9 +13,20 @@ spec:
         emptyDir: {}
       containers:
       - name: k8gobgp
-        image: ghcr.io/purelb/k8gobgp:0.2.4
+        image: ghcr.io/purelb/k8gobgp:0.2.6
         imagePullPolicy: IfNotPresent
         env:
+        # Under hostNetwork this is the node's primary address. gobgpd
+        # serves its own metrics (bgp_*) on it, port 7475.
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        # Bracketed so an IPv6 node address forms a valid host:port;
+        # k8gobgp's entrypoint builds "${NODE_IP}:7475" unbracketed, which
+        # fails to bind on IPv6. Must follow NODE_IP, which it expands.
+        - name: GOBGP_METRICS_HOST
+          value: "[$(NODE_IP)]:7475"
         - name: NODE_NAME
           valueFrom:
             fieldRef:
@@ -41,10 +52,13 @@ spec:
           hostPort: 179
           name: bgp
           protocol: TCP
+        # Port names follow upstream k8gobgp, so its PodMonitors work.
         - containerPort: 7473
+          name: metrics
+        - containerPort: 7475
           name: gobgp-metrics
         - containerPort: 7474
-          name: gobgp-health
+          name: health
         startupProbe:
           httpGet:
             path: /readyz
@@ -52,6 +66,9 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 5
           failureThreshold: 12
+          # /readyz now asks gobgpd (GetBgp, up to 3s); kubelet's 1s default
+          # would fail it whenever gobgpd is briefly busy.
+          timeoutSeconds: 5
         livenessProbe:
           httpGet:
             path: /healthz
@@ -64,6 +81,7 @@ spec:
             port: 7474
           initialDelaySeconds: 5
           periodSeconds: 10
+          timeoutSeconds: 5
         securityContext:
           allowPrivilegeEscalation: false
           runAsNonRoot: false

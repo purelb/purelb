@@ -9,8 +9,10 @@ COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
 GOBGP_IMAGE     ?= ghcr.io/purelb/k8gobgp
-GOBGP_TAG       ?= v0.2.4
-GOBGP_IMAGE_TAG ?= 0.2.4
+GOBGP_TAG       ?= v0.2.6
+GOBGP_IMAGE_TAG ?= 0.2.6
+# Where fetch-gobgp-crd writes the CRDs; check-deps points it at a temp dir.
+GOBGP_CRD_DIR   ?= deployments/components/gobgp
 CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml
 
 # Tools that we use.
@@ -178,12 +180,12 @@ fetch-gobgp-crd:  ## Fetch CRDs from k8gobgp ${GOBGP_TAG} release (writes 1 file
 	# Note: dots in the value must be escaped (\.) — kustomize cfg grep treats unescaped
 	# dots as path separators. Single-quote the pattern to keep backslashes intact.
 	$(KUSTOMIZE) cfg grep 'metadata.name=configs\.bgp\.purelb\.io' < $$TMP/all.yaml \
-	  > deployments/components/gobgp/gobgp-bgpconfig-crd.yaml
+	  > $(GOBGP_CRD_DIR)/gobgp-bgpconfig-crd.yaml
 	$(KUSTOMIZE) cfg grep 'metadata.name=bgpnodestatuses\.bgp\.purelb\.io' < $$TMP/all.yaml \
-	  > deployments/components/gobgp/gobgp-bgpnodestatus-crd.yaml
+	  > $(GOBGP_CRD_DIR)/gobgp-bgpnodestatus-crd.yaml
 	# Validation: count CRDs in input vs total in outputs. If mismatch, fail loudly.
 	IN=$$(grep -cE "^kind: CustomResourceDefinition" $$TMP/all.yaml)
-	OUT=$$(grep -chE "^kind: CustomResourceDefinition" deployments/components/gobgp/gobgp-*-crd.yaml | paste -sd+ - | bc)
+	OUT=$$(grep -chE "^kind: CustomResourceDefinition" $(GOBGP_CRD_DIR)/gobgp-*-crd.yaml | paste -sd+ - | bc)
 	if [ "$$IN" != "$$OUT" ]; then
 	  echo "ERROR: $$IN CRDs in upstream install.yaml but only $$OUT extracted by name." >&2
 	  echo "       k8gobgp likely added a new CRD. Add a per-name 'kustomize cfg grep' line" >&2
@@ -212,25 +214,31 @@ check-helm-rbac-source:  ## Verify Helm RBAC template injects rules from kustomi
 	echo "OK: Helm RBAC template uses kustomize source"
 
 .PHONY: check-deps
-check-deps:  ## Verify bundled k8gobgp CRDs match the pinned GOBGP_TAG release
+check-deps:  ## Verify bundled k8gobgp CRDs and every version pin match GOBGP_TAG
 	@set -e
+	# Pins: the image tag appears in four places; all must agree.
+	[ "${GOBGP_TAG}" = "v${GOBGP_IMAGE_TAG}" ] || { echo "ERROR: GOBGP_TAG ${GOBGP_TAG} != v${GOBGP_IMAGE_TAG}" >&2; exit 1; }
+	for pin in 'build/helm/purelb/values.yaml:tag: "${GOBGP_IMAGE_TAG}"' \
+	           'deployments/components/gobgp/gobgp-patch.yaml:image: ghcr.io/purelb/k8gobgp:${GOBGP_IMAGE_TAG}' \
+	           'website/content/docs/reference/helm-values/_index.md:`gobgp.image.tag` | string | `"${GOBGP_IMAGE_TAG}"`'; do
+	  file=$${pin%%:*}; want=$${pin#*:}
+	  grep -qF "$$want" "$$file" || { echo "ERROR: $$file does not pin k8gobgp ${GOBGP_IMAGE_TAG} (expected: $$want)" >&2; exit 1; }
+	done
+	# CRDs: re-extract from the release exactly as fetch-gobgp-crd does and
+	# compare CONTENT -- a schema change keeps the CRD names the same.
 	TMP=$$(mktemp -d)
 	trap 'rm -rf $$TMP' EXIT
-	echo "check-deps: fetching k8gobgp ${GOBGP_TAG} install.yaml..."
-	curl -fsSL https://github.com/purelb/k8gobgp/releases/download/${GOBGP_TAG}/install.yaml \
-	  | $(KUSTOMIZE) cfg grep "kind=CustomResourceDefinition" > $$TMP/upstream.yaml
-	UPSTREAM=$$(grep -hE "^[[:space:]]+name:[[:space:]]+[a-zA-Z0-9_-]+\.bgp\.purelb\.io" $$TMP/upstream.yaml | awk '{print $$2}' | sort -u)
-	COMMITTED=$$(grep -hE "^[[:space:]]+name:[[:space:]]+[a-zA-Z0-9_-]+\.bgp\.purelb\.io" deployments/components/gobgp/gobgp-*-crd.yaml | awk '{print $$2}' | sort -u)
-	if [ "$$UPSTREAM" != "$$COMMITTED" ]; then
-	  echo "ERROR: CRDs in deployments/components/gobgp/ do not match k8gobgp ${GOBGP_TAG}." >&2
-	  echo "Upstream produces:" >&2; echo "$$UPSTREAM" | sed 's/^/  /' >&2
-	  echo "Committed:"          >&2; echo "$$COMMITTED" | sed 's/^/  /' >&2
-	  echo "" >&2
-	  echo "If you added kubectl-purelb code that reads a CRD, you must also bump GOBGP_TAG" >&2
-	  echo "to a release that produces it, then run 'make fetch-gobgp-crd' to refresh files." >&2
-	  exit 1
-	fi
-	echo "OK: bundled CRDs match k8gobgp ${GOBGP_TAG}"
+	echo "check-deps: fetching k8gobgp ${GOBGP_TAG} CRDs..."
+	$(MAKE) --no-print-directory fetch-gobgp-crd GOBGP_CRD_DIR=$$TMP >/dev/null
+	for f in gobgp-bgpconfig-crd.yaml gobgp-bgpnodestatus-crd.yaml; do
+	  if ! diff -u deployments/components/gobgp/$$f $$TMP/$$f > $$TMP/$$f.diff; then
+	    echo "ERROR: deployments/components/gobgp/$$f does not match k8gobgp ${GOBGP_TAG}:" >&2
+	    head -40 $$TMP/$$f.diff >&2
+	    echo "Run 'make fetch-gobgp-crd' and commit the result." >&2
+	    exit 1
+	  fi
+	done
+	echo "OK: bundled CRDs and pins match k8gobgp ${GOBGP_TAG}"
 
 .PHONY: helm
 helm: CACHE_RULES != mktemp

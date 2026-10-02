@@ -1,5 +1,9 @@
-{{- if and .Values.gobgp.enabled .Values.Prometheus.lbnodeagent.Metrics.enabled }}
+{{- if and .Values.gobgp.enabled (or .Values.Prometheus.lbnodeagent.Metrics.enabled .Values.Prometheus.gobgp.serviceMonitor.enabled) }}
 ---
+# Headless: the metrics are per node, so a scraper must reach every pod,
+# not a load-balanced one. 7473 is the k8gobgp controller (k8gobgp_*),
+# 7475 is gobgpd itself (bgp_*). targetPorts stay numeric so a rollout
+# that mixes old and new port names can't misroute.
 apiVersion: v1
 kind: Service
 metadata:
@@ -13,9 +17,14 @@ spec:
     {{- include "purelb.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: lbnodeagent
   type: ClusterIP
+  clusterIP: None
   ports:
   - name: metrics
     port: 7473
     targetPort: 7473
+    protocol: TCP
+  - name: gobgp-metrics
+    port: 7475
+    targetPort: 7475
     protocol: TCP
 {{- end }}
