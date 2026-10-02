@@ -156,9 +156,28 @@ def scrape_url(url: str, timeout: float = 5.0) -> Snapshot:
     return Snapshot.parse(body, source=url)
 
 
+def _hostport(ip: str, port: int) -> str:
+    """host:port for a URL; an IPv6 literal has to be bracketed."""
+    return f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
+
+
+def check_health(node_ip: str, port: int, path: str = "/healthz", timeout: float = 5.0) -> bool:
+    """Check if a health endpoint returns 200, for liveness/readiness probes.
+
+    Returns False on any failure (connection refused, timeout, non-2xx status),
+    never raises. Used for sidecar health checks where absence is a valid state.
+    """
+    url = f"http://{_hostport(node_ip, port)}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+            return 200 <= resp.status < 300
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False
+
+
 def scrape_node(node_ip: str, port: int = METRICS_PORT) -> Snapshot:
     """Scrape an lbnodeagent, which serves on a hostPort."""
-    return scrape_url(f"http://{node_ip}:{port}/metrics")
+    return scrape_url(f"http://{_hostport(node_ip, port)}/metrics")
 
 
 def scrape_pod_via_apiserver(core, namespace: str, pod: str, port: int = METRICS_PORT) -> Snapshot:

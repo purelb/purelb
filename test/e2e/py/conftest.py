@@ -41,7 +41,7 @@ from purelb_e2e import nodes as nodes_mod
 from purelb_e2e.nodes import Router, ssh
 from purelb_e2e.wait import wait_until
 
-CAPABILITIES = ("multi-subnet", "ipv6", "dual-homed", "router", "multi-node")
+CAPABILITIES = ("multi-subnet", "ipv6", "dual-homed", "router", "multi-node", "bgp")
 
 # Filled in by the capabilities probe; read by --report.
 _detected_capabilities: Dict[str, bool] = {}
@@ -145,12 +145,29 @@ def capabilities(cluster: Cluster, node_ips: Dict[str, str], router: Router | No
         if len(phys) > 1:
             dual_homed = True
 
+    # Probe for k8gobgp sidecar: retry over ~15-20s, catch terminal failure.
+    # VP review critical: wait_until raises on exhaustion, must be caught locally
+    # or entire session fails. Never let WaitTimeout escape this fixture.
+    bgp = False
+    try:
+        probe_node = next(iter(node_ips.values()))
+        def probe_bgp() -> bool:
+            try:
+                snap = metrics.scrape_node(probe_node, port=7473)
+                return snap.has_series("k8gobgp_gobgpd_connection_status")
+            except Exception:  # noqa: BLE001 - startup in progress, sidecar absent, or node unreachable
+                return False
+        bgp = wait_until(probe_bgp, timeout=20, interval=5.0, description="k8gobgp sidecar") or False
+    except Exception:  # noqa: BLE001 - a node we cannot reach or WaitTimeout limits capability, not the run
+        bgp = False
+
     caps = {
         "multi-subnet": len(subnets) >= 2,
         "ipv6": v6,
         "dual-homed": dual_homed,
         "router": router is not None,
         "multi-node": len(node_ips) >= 2,
+        "bgp": bgp,
     }
     # Recorded for --report: a skip list is only actionable next to the
     # reason the capability was absent.
@@ -540,6 +557,33 @@ def agent_metrics(node_ips: Dict[str, str]):
         if node not in node_ips:
             raise AssertionError(f"unknown node {node!r}; known: {sorted(node_ips)}")
         return metrics.scrape_node(node_ips[node])
+    return _scrape
+
+
+@pytest.fixture(scope="session")
+def gobgp_metrics(node_ips: Dict[str, str]):
+    """Callable returning a fresh k8gobgp scrape for a named node."""
+    def _scrape(node: str) -> metrics.Snapshot:
+        if node not in node_ips:
+            raise AssertionError(f"unknown node {node!r}; known: {sorted(node_ips)}")
+        return metrics.scrape_node(node_ips[node], port=7473)
+    return _scrape
+
+
+@pytest.fixture(scope="session")
+def gobgpd_metrics(cluster: Cluster, node_ips: Dict[str, str]):
+    """Callable returning a fresh scrape of gobgpd's own metrics (bgp_*).
+
+    gobgpd binds 7475 only to the node's primary address (status.hostIP,
+    the FIRST InternalIP), unlike 7472/7473 -- so this can't use
+    node_ips, which keeps the last one.
+    """
+    primary = {name: cluster.node_ip(name) for name in node_ips}
+
+    def _scrape(node: str) -> metrics.Snapshot:
+        if node not in primary:
+            raise AssertionError(f"unknown node {node!r}; known: {sorted(primary)}")
+        return metrics.scrape_node(primary[node], port=7475)
     return _scrape
 
 
