@@ -52,7 +52,6 @@ func (t *logThrottle) changed(v string) bool {
 // log at info level on first detection or change, debug on repeats.
 var lastSubnets logThrottle
 
-
 // InstanceAnnotation is the annotation key used on leases to store
 // the unique instance ID (Pod UID) of the lbnodeagent that created
 // the lease. This prevents race conditions during DaemonSet pod
@@ -234,7 +233,6 @@ func networkAddress(ipnet *net.IPNet) string {
 func FormatSubnetsAnnotation(subnets []string) string {
 	return strings.Join(subnets, ",")
 }
-
 
 // SubnetContainsIP checks if any of the given subnets contains the IP address.
 // Returns the matching subnet(s) as a slice.

@@ -137,7 +137,7 @@ const (
 // ParseSubnetsAnnotation parses the annotation value back into a slice
 // of subnet strings. Returns an empty slice for empty input. Entries
 // that are not valid CIDRs are dropped, and at most
-// maxAnnotationSubnets entries are returned. Valid entries keep their
+// MaxAnnotationSubnets entries are returned. Valid entries keep their
 // original spelling — downstream consumers match them as exact strings
 // against ServiceGroup subnet specs.
 func ParseSubnetsAnnotation(annotation string) []string {
