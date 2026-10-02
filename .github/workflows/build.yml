@@ -80,7 +80,7 @@ jobs:
           echo "release=$release" >> "$GITHUB_OUTPUT"
 
       - name: Checkout docs content at ${{ steps.ref.outputs.ref }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.ref.outputs.ref }}
           submodules: recursive
@@ -91,7 +91,7 @@ jobs:
       # (build-time only, never committed) or `helm repo add` would lose the
       # newest release.
       - name: Check out current Helm index from main
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: main
           sparse-checkout: website/static/charts
