@@ -28,7 +28,7 @@ jobs:
        startsWith(github.event.workflow_run.head_branch, 'v'))
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
