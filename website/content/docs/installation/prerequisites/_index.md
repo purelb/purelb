@@ -38,10 +38,6 @@ If you plan to use BGP routing (the default installation includes the k8gobgp si
 
 If you do not need BGP, install PureLB with the `-nobgp` manifest variant or set `gobgp.enabled=false` in Helm.
 
-## Netbox Requirements
+## External IPAM Requirements
 
-If you plan to use [Netbox IPAM integration]({{< relref "/docs/configuration/netbox" >}}):
-
-- Network access from the allocator pod to the Netbox API.
-- A Netbox API token with `ipam.view_ipaddress` and `ipam.change_ipaddress` permissions.
-- A Netbox tenant configured for PureLB to allocate from.
+If you plan to use an [external IPAM system]({{< relref "/docs/configuration/external-ipam" >}}), you need a sidecar that implements PureLB's IPAM contract for it, running in the allocator pod. The sidecar's own requirements (network access to the IPAM API, credentials) are set by the sidecar.

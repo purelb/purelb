@@ -45,11 +45,11 @@ Metric | Type | Labels | Description
 `purelb_election_lease_healthy` | Gauge | | 1 if this node's Lease is healthy and being renewed, 0 otherwise
 `purelb_election_lease_renewals_total` | Counter | | Total successful Lease renewals
 `purelb_election_lease_renewal_failures_total` | Counter | | Total failed Lease renewal attempts
-`purelb_election_winner_changes_total` | Counter | `key` | **Breaking change (v0.17.0):** label renamed from `service` to `key`. Counts actual announcer changes per VIP (real handovers, not spurious state fluctuations). Enables diagnosis of election flapping — compare against stable baseline for your deployment
+`purelb_election_winner_changes_total` | Counter | `key` | **Breaking change (v0.17.0):** label renamed from `service` to `key`. Handovers of a VIP **to this node**: only the new winner records, so `sum` across nodes counts each handover exactly once. A key's series is removed when the address is released. Enables diagnosis of election flapping — compare against stable baseline for your deployment
 `purelb_election_member_count` | Gauge | | Current number of healthy nodes in the election
 `purelb_election_subnet_count` | Gauge | | Number of unique subnets tracked across all members
 `purelb_election_local_subnet_count` | Gauge | | Number of subnets on this node
-`purelb_election_affinity_fallback_total` | Counter | `key` | **Breaking change (v0.17.0):** label renamed from `service` to `key`. Times a node-affinity-opted-in service had no preferred candidate eligible and fell back to standard hash election
+`purelb_election_affinity_fallback_total` | Counter | `key` | **Breaking change (v0.17.0):** label renamed from `service` to `key`. Times a node-affinity-opted-in service had no preferred candidate eligible and fell back to standard hash election, recorded on the node that won the fallback. A key's series is removed when the address is released
 
 ## LBNodeAgent Local Pool Metrics
 
