@@ -310,8 +310,8 @@ def test_gobgp_metrics_scrape(cluster, gobgp_metrics, gobgpd_metrics):
     7473 is the k8gobgp controller (k8gobgp_*); 7475 is gobgpd itself
     (bgp_*), which only answers if NODE_IP reached it and the bind
     succeeded. A failed bind is only logged -- the pod stays Ready -- so
-    the log is checked too. Wrapped in wait_until to cover the
-    controller's startup (~12-17s before the first collection).
+    the log is checked too. Wrapped in wait_until to cover a freshly
+    started sidecar.
     """
     node = cluster.node_names()[0]
     node_ip = cluster.node_ip(node)

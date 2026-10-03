@@ -387,7 +387,7 @@ surfacing as sixteen mysterious route failures. Every test needs
 | `test_the_router_is_peered_with_every_node` `[bgp]` | Established sessions with all of them; gobgpd's `bgp_peer_state` agrees with the router |
 | `test_the_router_learns_a_host_route_via_every_node` `[bgp]` ×2 — `IPv4`, `IPv6` | A VIP becomes a /32 (or /128) in the RIB, ECMP over all nodes; every node's gobgpd advertises more routes |
 | `test_the_advertised_prefix_length_matches_the_aggregation` ×2 — `host-route`, `subnet-aggregate` | Aggregation decides what the router learns, which is the point of it |
-| `test_deleting_the_service_withdraws_the_route` `[bgp]` ×2 — `IPv4`, `IPv6` | The route goes when the Service does; `k8gobgp_rib_routes` rises with it and gobgpd's advertised count falls back |
+| `test_deleting_the_service_withdraws_the_route` `[bgp]` ×2 — `IPv4`, `IPv6` | The route goes when the Service does; `bgp_rib_paths` rises with it and gobgpd's advertised count falls back |
 | `test_losing_a_node_drops_only_its_next_hop` `[multi-node]` ×2 — `IPv4`, `IPv6` | One node down means one next-hop fewer, not a withdrawn route |
 | `test_etp_local_narrows_the_next_hops_to_endpoint_nodes` ×2 — `IPv4`, `IPv6` | ETP Local is visible in the RIB, not only on the interfaces |
 | `test_two_services_sharing_an_address_produce_one_route` | A shared address is one route, and it survives losing one holder |

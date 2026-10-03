@@ -63,13 +63,9 @@ SUBNET_V6 = "fd00:10:255::/64"
 # route assertions poll rather than sample.
 CONVERGE = 45.0
 
-# Two metric sources, two cadences; keep them distinct so retuning one does
-# not mistune the other, and both distinct from CONVERGE (the BGP wire).
-# gobgpd's own metrics (port 7475, bgp_*) are cached for 15s.
+# gobgpd's own metrics (port 7475, bgp_*), including the RIB count, are
+# cached for 15s. Kept distinct from CONVERGE, which covers the BGP wire.
 GOBGPD_CONVERGE = 60.0
-# k8gobgp_rib_routes comes from the k8gobgp controller's GetTable poll,
-# which v0.2.5 runs every 60s: worst case 60s + a 10s collection + a poll.
-RIB_POLL_CONVERGE = 150.0
 
 pytestmark = pytest.mark.requires("router", "bgp")
 
@@ -77,9 +73,9 @@ pytestmark = pytest.mark.requires("router", "bgp")
 def gobgp_value(scrape, node: str, name: str, **labels: str) -> float:
     """Read a k8gobgp or gobgpd metric, retrying until the series exists.
 
-    k8gobgp resets k8gobgp_rib_routes before each poll, and an absent
-    series reads as 0 -- which makes a baseline wrong and a "rose" check
-    pass vacuously. So a value is only taken once the metric is present.
+    An absent series reads as 0, which makes a baseline wrong and a "rose"
+    check pass vacuously -- and a freshly started pod exports nothing until
+    its collector has run. So a value is only taken once the metric exists.
     """
     def read():
         snap = scrape(node)
@@ -89,13 +85,8 @@ def gobgp_value(scrape, node: str, name: str, **labels: str) -> float:
 
 
 def route_family(family: str) -> str:
-    """gobgpd's route_family label value: hyphenated, unlike k8gobgp's."""
+    """gobgpd's route_family label value, which is hyphenated."""
     return "ipv4-unicast" if family == "IPv4" else "ipv6-unicast"
-
-
-def rib_family(family: str) -> str:
-    """k8gobgp_rib_routes' family label value: underscored, unlike gobgpd's."""
-    return "ipv4_unicast" if family == "IPv4" else "ipv6_unicast"
 
 
 def wait_advertised(topo: topology.Topology, gobgpd_metrics, family: str,
@@ -138,6 +129,14 @@ def gobgp_error_baseline(topo: topology.Topology, gobgp_metrics):
     """k8gobgp's error counters as the module started, so the last test can
     assert nothing in the module made them move."""
     return {node: gobgp_metrics(node) for node in sorted(topo.node_ips)}
+
+
+@pytest.fixture(scope="module")
+def gobgpd_error_baseline(topo: topology.Topology, gobgpd_metrics):
+    """gobgpd's scrape errors as the module started. A RIB family gobgpd
+    can't read is reported there (promhttp_metric_handler_errors_total
+    {cause="gathering"}), not as a missing series."""
+    return {node: gobgpd_metrics(node) for node in sorted(topo.node_ips)}
 
 
 def host_prefix(address: str) -> str:
@@ -196,14 +195,15 @@ def wait_for_withdrawal(router, prefix: str, timeout: float = CONVERGE) -> None:
 
 
 def test_the_router_is_peered_with_every_node(
-    router, topo: topology.Topology, gobgpd_metrics, gobgp_error_baseline
+    router, topo: topology.Topology, gobgpd_metrics, gobgp_error_baseline,
+    gobgpd_error_baseline,
 ):
     """Established sessions with all of them, before anything else.
 
     Run first on purpose: without peering every route assertion in this
     module fails identically, and "no route found" is a poor way to learn
     that BGP was never up. Cross-verify gobgpd's own view agrees with
-    what the router sees. (Taking gobgp_error_baseline here opens the
+    what the router sees. (Taking the two error baselines here opens the
     module's error-counter window.)
     """
     peers = router.bgp_peers()
@@ -317,21 +317,21 @@ def test_the_advertised_prefix_length_matches_the_aggregation(
 @pytest.mark.parametrize("family", ["IPv4", "IPv6"])
 def test_deleting_the_service_withdraws_the_route(
     cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service,
-    gobgp_metrics, gobgpd_metrics, family: str,
+    gobgpd_metrics, family: str,
 ):
     """The route goes when the Service does.
 
     A route that outlives its Service is a blackhole: the router keeps
     sending traffic to nodes that no longer answer for the address.
-    Cross-check k8gobgp's RIB count rises with the route (the one test
-    that keeps k8gobgp_rib_routes covered), and gobgpd stops advertising
+    Cross-check gobgpd's global RIB count rises with the route (the one
+    test that keeps bgp_rib_paths covered), and gobgpd stops advertising
     it when the Service goes.
     """
     if family == "IPv6" and not topo.has_ipv6:
         pytest.skip("cluster has no IPv6")
     name = f"router-withdraw-{family.lower()}"
-    rib_baseline = {node: gobgp_value(gobgp_metrics, node, "k8gobgp_rib_routes",
-                                      family=rib_family(family))
+    rib_baseline = {node: gobgp_value(gobgpd_metrics, node, "bgp_rib_paths",
+                                      route_family=route_family(family))
                     for node in topo.node_ips}
     advertised = {node: gobgp_value(gobgpd_metrics, node, "bgp_routes_advertised",
                                     route_family=route_family(family))
@@ -351,16 +351,16 @@ def test_deleting_the_service_withdraws_the_route(
     def check_rib_rose() -> bool:
         for node in topo.node_ips:
             try:
-                current = gobgp_value(gobgp_metrics, node, "k8gobgp_rib_routes",
-                                      family=rib_family(family))
+                current = gobgp_value(gobgpd_metrics, node, "bgp_rib_paths",
+                                      route_family=route_family(family))
                 status_rise[node] = current > rib_baseline[node]
             except Exception:  # noqa: BLE001 - a scrape blip is "not yet"
                 status_rise[node] = False
         return all(status_rise.values())
 
     assert wait_until(
-        check_rib_rose, timeout=RIB_POLL_CONVERGE, interval=5.0,
-        description="k8gobgp's RIB count to rise on all nodes after route creation"
+        check_rib_rose, timeout=GOBGPD_CONVERGE, interval=5.0,
+        description="gobgpd's RIB count to rise on all nodes after route creation"
     ), f"RIB did not rise on: {[n for n, ok in status_rise.items() if not ok]}"
 
     cluster.delete_service(NAMESPACE, name)
@@ -825,26 +825,33 @@ def test_next_hops_are_restored_when_a_node_comes_back(
 
 
 def test_gobgp_reports_no_collection_or_connection_errors(
-    topo: topology.Topology, gobgp_metrics, gobgp_error_baseline
+    topo: topology.Topology, gobgp_metrics, gobgpd_metrics,
+    gobgp_error_baseline, gobgpd_error_baseline,
 ):
-    """Nothing in this module made k8gobgp's error counters move.
+    """Nothing in this module made k8gobgp's or gobgpd's error counters move.
 
-    Last in the module on purpose: the baseline was taken by the first
+    Last in the module on purpose: the baselines were taken by the first
     test, so this covers every route created and withdrawn above. "No
-    increase" rather than "== 0": since v0.2.5 a failed readiness probe
-    during startup also counts a connection error, which is history, not
-    a fault. peer_apply_errors_total counts a peer gobgpd refused.
+    increase" rather than "== 0": a failed readiness probe during startup
+    also counts a connection error, which is history, not a fault.
+    peer_apply_errors_total counts a peer gobgpd refused. On 7475, a RIB
+    family gobgpd can't read (bgp_rib_paths) is a gathering error.
 
-    Labelled counters are only exported once incremented, so only the
-    unlabelled one can be checked for existence; the names of the others
-    were checked against k8gobgp v0.2.5's controllers/metrics.go.
+    The k8gobgp counters are labelled and only exported once incremented;
+    their names were checked against k8gobgp v0.2.7's controllers/metrics.go.
+    promhttp exports the gathering counter from the start, so it must exist.
     """
     for node in sorted(topo.node_ips):
         after = gobgp_metrics(node)
-        assert after.has_series("k8gobgp_metrics_collection_errors_total"), (
-            f"k8gobgp_metrics_collection_errors_total missing on {node}: renamed?"
-        )
-        for name in ("k8gobgp_metrics_collection_errors_total",
-                     "k8gobgp_gobgpd_connection_errors_total",
+        for name in ("k8gobgp_gobgpd_connection_errors_total",
                      "k8gobgp_peer_apply_errors_total"):
             metrics.assert_not_increased(gobgp_error_baseline[node], after, name)
+
+        after_d = gobgpd_metrics(node)
+        assert after_d.get("promhttp_metric_handler_errors_total", cause="gathering") is not None, (
+            f"promhttp_metric_handler_errors_total{{cause=\"gathering\"}} missing on {node}'s 7475"
+        )
+        metrics.assert_not_increased(
+            gobgpd_error_baseline[node], after_d,
+            "promhttp_metric_handler_errors_total", cause="gathering",
+        )
