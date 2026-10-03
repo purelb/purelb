@@ -30,7 +30,7 @@ Full support for IPv4, IPv6, and [dual-stack]({{< relref "/docs/configuration/se
 Configured using [Custom Resource Definitions]({{< relref "/docs/configuration" >}}) with schema validation.
 
 * **External IPAM Integration.**
-Integrates with [Netbox]({{< relref "/docs/configuration/netbox" >}}) for enterprise IP address management.
+Delegates allocation to an external IPAM system (Netbox, Infoblox, or your own) through a [sidecar]({{< relref "/docs/configuration/external-ipam" >}}).
 
 * **Prometheus Metrics.**
 Built-in [metrics]({{< relref "/docs/operations/monitoring" >}}) for pool utilization, election health, and node agent activity.

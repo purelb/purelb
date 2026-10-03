@@ -583,29 +583,66 @@ def test_sharing_key_added_to_a_live_service(
 
 
 @pytest.mark.requires("ipv6")
+@pytest.mark.parametrize("primary,secondary", [("IPv4", "IPv6"), ("IPv6", "IPv4")])
 def test_single_stack_service_upgraded_to_dual_stack(
-    cluster: Cluster, remote_group, lb_service
+    cluster: Cluster, topo: topology.Topology, remote_group, lb_service,
+    agent_metrics, log_window, primary: str, secondary: str,
 ):
-    """Adding IPv6 to a live Service allocates the second family.
+    """Adding a second family allocates it; removing it again withdraws it.
 
-    The IPv4 address must survive: renumbering a running service because
-    IPv6 was switched on would be an outage.
+    The primary address must survive both changes: renumbering a running
+    service because a family was switched on or off would be an outage.
+
+    Going back to SingleStack drops the secondary address from the ingress
+    list in place. The agent used to visit only the new list, so the
+    dropped VIP stayed on every node with a renewal timer re-adding it.
+    Kubernetes can't change a Service's primary family, so each direction
+    (drop IPv6, drop IPv4) needs its own primary.
     """
+    name = f"remote-upgrade-{primary.lower()}"
     group = remote_group()
-    v4 = lb_service("remote-upgrade", ["IPv4"], annotations={SERVICE_GROUP: group})[0]
+    first = lb_service(name, [primary], annotations={SERVICE_GROUP: group})[0]
 
     cluster.core.patch_namespaced_service(
-        "remote-upgrade", NAMESPACE,
-        {"spec": {"ipFamilyPolicy": "RequireDualStack", "ipFamilies": ["IPv4", "IPv6"]}},
+        name, NAMESPACE,
+        {"spec": {"ipFamilyPolicy": "RequireDualStack", "ipFamilies": [primary, secondary]}},
     )
     both = wait_until(
         lambda: (lambda got: got if len(got) == 2 else None)(
-            cluster.service_ingress_ips(NAMESPACE, "remote-upgrade")
+            cluster.service_ingress_ips(NAMESPACE, name)
         ),
         timeout=120, interval=3.0,
         description="the second family to be allocated",
     )
-    assert v4 in both, f"the IPv4 address changed from {v4} to {both}"
+    assert first in both, f"the {primary} address changed from {first} to {both}"
+    second = next(ip for ip in both if ip != first)
+    wait_every_node_announcing(topo, second, timeout=90, cluster=cluster)
+
+    before = {node: agent_metrics(node) for node in sorted(topo.node_ips)}
+    cluster.core.patch_namespaced_service(
+        name, NAMESPACE,
+        {"spec": {"ipFamilyPolicy": "SingleStack", "ipFamilies": [primary]}},
+    )
+    wait_until(
+        lambda: cluster.service_ingress_ips(NAMESPACE, name) == [first] or None,
+        timeout=120, interval=3.0,
+        description=f"the {secondary} address to be released",
+    )
+    wait_while(
+        lambda: bool(nodes_announcing(topo, second)),
+        timeout=120, interval=3.0,
+        description=f"{second} to be withdrawn from every node",
+    )
+    assert sorted(nodes_announcing(topo, first)) == sorted(topo.node_ips), (
+        f"the {primary} address {first} must stay on every node"
+    )
+    for node in sorted(topo.node_ips):
+        metrics.assert_increased(before[node], agent_metrics(node),
+                                 "purelb_lbnodeagent_address_withdrawals_total")
+    logs = cluster.component_logs("lbnodeagent", log_window)
+    assert any("ingressRemoved" in t for t in logs.values()), (
+        "no lbnodeagent logged ingressRemoved for the dropped family"
+    )
 
 
 def test_re_evaluate_on_a_remote_service(cluster: Cluster, remote_group, lb_service):

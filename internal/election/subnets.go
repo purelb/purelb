@@ -52,10 +52,6 @@ func (t *logThrottle) changed(v string) bool {
 // log at info level on first detection or change, debug on repeats.
 var lastSubnets logThrottle
 
-// SubnetsAnnotation is the annotation key used on leases to store
-// the node's local subnets.
-const SubnetsAnnotation = "purelb.io/subnets"
-
 // InstanceAnnotation is the annotation key used on leases to store
 // the unique instance ID (Pod UID) of the lbnodeagent that created
 // the lease. This prevents race conditions during DaemonSet pod
@@ -236,35 +232,6 @@ func networkAddress(ipnet *net.IPNet) string {
 // value format (comma-separated).
 func FormatSubnetsAnnotation(subnets []string) string {
 	return strings.Join(subnets, ",")
-}
-
-// maxAnnotationSubnets caps how many subnet entries we accept from a
-// single lease annotation. Peer leases are written by other nodes; a
-// buggy writer must not be able to bloat every node's election maps.
-const maxAnnotationSubnets = 256
-
-// ParseSubnetsAnnotation parses the annotation value back into a slice
-// of subnet strings. Returns an empty slice for empty input. Entries
-// that are not valid CIDRs are dropped, and at most
-// maxAnnotationSubnets entries are returned. Valid entries keep their
-// original spelling — downstream consumers match them as exact strings
-// against ServiceGroup subnet specs.
-func ParseSubnetsAnnotation(annotation string) []string {
-	if annotation == "" {
-		return []string{}
-	}
-	entries := strings.Split(annotation, ",")
-	result := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if _, _, err := net.ParseCIDR(entry); err != nil {
-			continue
-		}
-		result = append(result, entry)
-		if len(result) == maxAnnotationSubnets {
-			break
-		}
-	}
-	return result
 }
 
 // SubnetContainsIP checks if any of the given subnets contains the IP address.

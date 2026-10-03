@@ -225,15 +225,15 @@ func TestMatchInterfaceNames(t *testing.T) {
 
 func TestParseSubnetsAnnotationHardening(t *testing.T) {
 	t.Run("invalid entries dropped, originals kept verbatim", func(t *testing.T) {
-		parsed := ParseSubnetsAnnotation("192.168.1.0/24,not-a-cidr,fd53:9ef0:8683::/64,,300.1.1.0/24")
+		parsed := purelbv2.ParseSubnetsAnnotation("192.168.1.0/24,not-a-cidr,fd53:9ef0:8683::/64,,300.1.1.0/24")
 		assert.Equal(t, []string{"192.168.1.0/24", "fd53:9ef0:8683::/64"}, parsed)
 	})
 
-	t.Run("capped at maxAnnotationSubnets", func(t *testing.T) {
-		entries := make([]string, maxAnnotationSubnets+10)
+	t.Run("capped at purelbv2.MaxAnnotationSubnets", func(t *testing.T) {
+		entries := make([]string, purelbv2.MaxAnnotationSubnets+10)
 		for i := range entries {
 			entries[i] = "10.0.0.0/8"
 		}
-		assert.Len(t, ParseSubnetsAnnotation(strings.Join(entries, ",")), maxAnnotationSubnets)
+		assert.Len(t, purelbv2.ParseSubnetsAnnotation(strings.Join(entries, ",")), purelbv2.MaxAnnotationSubnets)
 	})
 }

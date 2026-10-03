@@ -94,6 +94,9 @@ type nodeElection interface {
 	// announce an address it then refused to advertise.
 	WinnerWithPreference(key string, preferred []string) string
 	MemberCount() int
+	// ForgetKey drops the election's per-key state once no Service on
+	// this node references the address.
+	ForgetKey(key string)
 }
 
 type announcer struct {
@@ -313,8 +316,30 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 		return retErr
 	}
 
+	// Withdraw any address this Service no longer has. A DualStack ->
+	// SingleStack change drops one family from the ingress list in place,
+	// and the loop below only visits the new list: without this the
+	// dropped VIP, its renewal timer (which keeps re-adding it) and its
+	// gauge would all outlive the address.
+	var dropped []net.IP
+	for _, old := range a.svcIngresses[nsName] {
+		oldIP := net.ParseIP(old.IP)
+		if oldIP == nil || ingressHasIP(svc.Status.LoadBalancer.Ingress, oldIP) {
+			continue
+		}
+		logging.Info(l, "event", "ingressRemoved", "ip", oldIP)
+		if err := a.deleteAddress(nsName, "ingressRemoved", oldIP); err != nil {
+			retErr = err
+		}
+		a.clearOwnAnnounceSlot(svc, oldIP)
+		dropped = append(dropped, oldIP)
+	}
+
 	// add the address to our announcement database
 	a.svcIngresses[nsName] = svc.Status.LoadBalancer.Ingress
+	for _, ip := range dropped {
+		a.forgetIfUnreferenced(ip)
+	}
 
 	// Compute preferred-node set once per SetBalancer cycle (not per IP).
 	// For dual-stack services the inner loop iterates twice — without
@@ -699,8 +724,40 @@ func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 		if err := a.deleteAddress(nsName, reason, lbIP); err != nil {
 			errs = append(errs, err)
 		}
+		// Not on the way out: the process is exiting, and forgetting
+		// each address would rescan svcIngresses per Service.
+		if reason != reasonWithdrawAll {
+			a.forgetIfUnreferenced(lbIP)
+		}
 	}
 	return errors.Join(errs...)
+}
+
+// ingressHasIP reports whether ingress lists ip. Addresses are compared
+// parsed, not as strings: one IPv6 address has more than one text form.
+func ingressHasIP(ingress []v1.LoadBalancerIngress, ip net.IP) bool {
+	for _, in := range ingress {
+		if inIP := net.ParseIP(in.IP); inIP != nil && inIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// forgetIfUnreferenced tells the election to drop ip once no Service on
+// this node references it. A shared IP is remembered until its last
+// Service lets go. svcIngresses is owned by the service-sync goroutine,
+// which is the only caller, so the scan needs no synchronisation.
+func (a *announcer) forgetIfUnreferenced(ip net.IP) {
+	if a.election == nil {
+		return
+	}
+	for _, ingress := range a.svcIngresses {
+		if ingressHasIP(ingress, ip) {
+			return
+		}
+	}
+	a.election.ForgetKey(ip.String())
 }
 
 // deleteAddress deletes the IP address associated with the
@@ -764,6 +821,9 @@ func (a *announcer) Shutdown() {
 	}
 }
 
+// reasonWithdrawAll is the DeleteBalancer reason used on shutdown.
+const reasonWithdrawAll = "withdrawAll"
+
 // WithdrawAll withdraws all announcements without removing the dummy interface.
 // This is useful during graceful shutdown before the lease is deleted.
 func (a *announcer) WithdrawAll() {
@@ -777,7 +837,7 @@ func (a *announcer) WithdrawAll() {
 
 	// withdraw any announcements that we have made
 	for nsName := range a.svcIngresses {
-		if err := a.DeleteBalancer(nsName, "withdrawAll", nil); err != nil {
+		if err := a.DeleteBalancer(nsName, reasonWithdrawAll, nil); err != nil {
 			logging.Info(a.logger, "op", "withdrawAll", "error", err)
 		}
 	}

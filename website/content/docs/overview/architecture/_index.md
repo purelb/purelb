@@ -42,7 +42,7 @@ PureLB uses CRDs for all configuration:
 
 CRD | API Group | Purpose
 ----|-----------|--------
-ServiceGroup | `purelb.io/v2` | Defines IP address pools (local, remote, or Netbox)
+ServiceGroup | `purelb.io/v2` | Defines IP address pools (local, remote, or external IPAM)
 LBNodeAgent | `purelb.io/v2` | Configures node agent behavior (interfaces, GARP, address lifetime)
 BGPConfiguration | `bgp.purelb.io/v1` | Configures k8gobgp BGP peering (when BGP is enabled)
 BGPNodeStatus | `bgp.purelb.io/v1` | Per-node BGP status (written by k8gobgp, read-only)

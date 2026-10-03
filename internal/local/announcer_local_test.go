@@ -1347,6 +1347,7 @@ type fakeElection struct {
 	winner     string // what plain Winner would have said
 	preferred  string // what WinnerWithPreference says when preferred is non-empty
 	sawPreferr []string
+	forgot     []string // keys passed to ForgetKey, in order
 }
 
 func (f *fakeElection) WinnerWithPreference(_ string, preferred []string) string {
@@ -1358,6 +1359,8 @@ func (f *fakeElection) WinnerWithPreference(_ string, preferred []string) string
 }
 
 func (f *fakeElection) MemberCount() int { return 3 }
+
+func (f *fakeElection) ForgetKey(key string) { f.forgot = append(f.forgot, key) }
 
 // TestSendGARPSequenceHonoursAffinityPreference is the regression test for
 // a bug the e2e migration found: affinity-placed addresses never sent a
@@ -1487,4 +1490,80 @@ func TestAggregationRequiresALeadingSlash(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+}
+
+// TestElectionLossesMetric verifies election_losses_total is callable without panic.
+// Full loss scenarios tested via e2e suite (actual node failovers).
+func TestElectionLossesMetric(t *testing.T) {
+	before := ptu.ToFloat64(electionLosses)
+	RecordElectionLoss()
+	assert.Greater(t, ptu.ToFloat64(electionLosses), before,
+		"election_losses_total should increment on call")
+}
+
+// TestSetBalancerWithdrawsDroppedFamily is the regression test for the
+// DualStack -> SingleStack bug: the allocator drops one family from the
+// ingress list in place, and the dropped VIP used to stay on the node
+// with a live renewal timer re-adding it. The dropped address must be
+// withdrawn, its slot cleared and its election key forgotten, while the
+// kept address is left to the normal path. svcIngresses holds the raw
+// ingress text, which for IPv6 need not be canonical.
+func TestSetBalancerWithdrawsDroppedFamily(t *testing.T) {
+	const ns, name, nsName = "default", "test-svc", "default/test-svc"
+	for _, tc := range []struct {
+		desc                     string
+		keep, drop, dropRaw      string
+		keepSlotKey, dropSlotKey string
+	}{
+		{"drop IPv6, keep IPv4", "192.0.2.1", "2001:db8::1", "2001:DB8:0::1",
+			"purelb.io/announcing-IPv4", "purelb.io/announcing-IPv6"},
+		{"drop IPv4, keep IPv6", "2001:db8::1", "192.0.2.1", "192.0.2.1",
+			"purelb.io/announcing-IPv6", "purelb.io/announcing-IPv4"},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			a := withdrawalTestAnnouncer(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "^purelb-nomatch$"})
+			fe := &fakeElection{}
+			a.election = fe
+			a.svcIngresses[nsName] = []v1.LoadBalancerIngress{{IP: tc.keep}, {IP: tc.dropRaw}}
+			announceForTest(a, nsName, tc.drop)
+
+			svc := lbSvc(tc.keep) // the allocator has dropped one family
+			svc.Namespace, svc.Name = ns, name
+			svc.Annotations = map[string]string{tc.dropSlotKey: "node-a,eth0," + tc.drop}
+
+			assert.NoError(t, a.SetBalancer(svc, nil))
+
+			key := renewalKey(nsName, tc.drop)
+			_, announced := a.announced.Load(key)
+			assert.False(t, announced, "dropped address must no longer be announced")
+			_, timerAlive := a.addressRenewals.Load(key)
+			assert.False(t, timerAlive, "dropped address's renewal timer must be cancelled")
+			assert.Empty(t, svc.Annotations[tc.dropSlotKey], "dropped family's announce slot must be cleared")
+			assert.Contains(t, fe.forgot, tc.drop, "dropped address's election key must be forgotten, canonically")
+			assert.NotContains(t, fe.forgot, tc.keep, "kept address must not be forgotten")
+		})
+	}
+}
+
+// TestDeleteBalancerForgetsOnlyUnreferencedIP: a shared address is
+// forgotten only when its last Service goes, whatever text form each
+// Service's ingress uses; shutdown forgets nothing.
+func TestDeleteBalancerForgetsOnlyUnreferencedIP(t *testing.T) {
+	a := withdrawalTestAnnouncer(nil)
+	fe := &fakeElection{}
+	a.election = fe
+	a.svcIngresses["default/one"] = []v1.LoadBalancerIngress{{IP: "192.0.2.5"}, {IP: "2001:db8::5"}}
+	a.svcIngresses["default/two"] = []v1.LoadBalancerIngress{{IP: "192.0.2.5"}, {IP: "2001:DB8:0::5"}}
+
+	assert.NoError(t, a.DeleteBalancer("default/one", "test", nil))
+	assert.Empty(t, fe.forgot, "a shared address still held by another Service must not be forgotten")
+
+	assert.NoError(t, a.DeleteBalancer("default/two", "test", nil))
+	assert.ElementsMatch(t, []string{"192.0.2.5", "2001:db8::5"}, fe.forgot,
+		"the last Service's addresses are forgotten, in canonical form")
+
+	fe.forgot = nil
+	a.svcIngresses["default/three"] = []v1.LoadBalancerIngress{{IP: "192.0.2.6"}}
+	a.WithdrawAll()
+	assert.Empty(t, fe.forgot, "shutdown must not forget keys")
 }

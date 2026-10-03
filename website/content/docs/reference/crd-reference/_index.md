@@ -12,7 +12,7 @@ weight: 10
 
 ### ServiceGroupSpec
 
-Exactly one of `local`, `remote`, or `netbox` must be specified.
+Exactly one of `local`, `remote`, or `external` must be specified.
 
 Field | Type | Required | Description
 ------|------|----------|------------
@@ -48,13 +48,15 @@ Field | Type | Default | Description
 `multiPool` | bool | `false` | Allocate one IP per range per family with active nodes
 `balancePools` | bool | `false` | Allocate to range with fewest IPs in use (mutually exclusive with `multiPool`)
 
-### ServiceGroupNetboxSpec
+### ServiceGroupExternalSpec
+
+Addresses come from an external IPAM system through a sidecar in the allocator pod. See [External IPAM (Sidecar)]({{< relref "/docs/configuration/external-ipam" >}}).
 
 Field | Type | Required | Description
 ------|------|----------|------------
-`url` | string | Yes | Base URL of the Netbox API
-`tenant` | string | Yes | Netbox tenant name
-`aggregation` | string | No | Override address mask (`"default"` or `"8"`-`"128"`)
+`provider` | string | Yes | IPAM provider name. Display only (shown in `.status.ipam`); not checked against the sidecar
+`socket` | string | No | Absolute path of the sidecar's Unix socket in the allocator pod. Default `/var/run/purelb/ipam.sock`
+`announce` | string | Yes | How addresses from this pool are announced: `local` (node interface) or `remote` (`kube-lb0`, for BGP)
 
 ### AddressPool
 

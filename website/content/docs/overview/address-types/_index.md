@@ -1,6 +1,6 @@
 ---
 title: "Address Types"
-description: "Local addresses, remote addresses, and Netbox IPAM -- how PureLB handles different address types."
+description: "Local addresses, remote addresses, and external IPAM -- how PureLB handles different address types."
 weight: 20
 ---
 
@@ -77,13 +77,13 @@ See [ServiceGroup remote pools]({{< relref "/docs/configuration/service-groups#r
 
 The `aggregation` field controls the address mask, which determines what routes are advertised. Use `/32` (IPv4) or `/128` (IPv6) for host routes, `default` for the subnet mask. See [Aggregation]({{< relref "/docs/configuration/service-groups#aggregation" >}}) for details.
 
-## Netbox Addresses
+## External IPAM Addresses
 
-**Use when:** You manage IP addresses in an external Netbox IPAM system.
+**Use when:** You manage IP addresses in an external IPAM system (Netbox, Infoblox, BlueCat, or your own).
 
-Instead of defining address pools locally, PureLB requests addresses from Netbox one at a time. Netbox tracks allocation and prevents conflicts across your infrastructure.
+Instead of defining address pools locally, PureLB asks a sidecar in the allocator pod for addresses, and the sidecar talks to the IPAM system. The IPAM system tracks allocation and prevents conflicts across your infrastructure.
 
-See [Netbox IPAM Integration]({{< relref "/docs/configuration/netbox" >}}) for configuration.
+See [External IPAM (Sidecar)]({{< relref "/docs/configuration/external-ipam" >}}) for configuration.
 
 ## ExternalTrafficPolicy
 

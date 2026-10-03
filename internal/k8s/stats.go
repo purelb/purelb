@@ -16,8 +16,13 @@
 package k8s
 
 import (
-	"fmt"
+	"net"
 	"net/http"
+	"strconv"
+
+	"github.com/go-kit/log"
+
+	"purelb.io/internal/logging"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 
@@ -28,19 +33,19 @@ import (
 const subsystem = "k8s_client"
 
 var (
-	updates = prometheus.NewCounter(prometheus.CounterOpts{
+	updates = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "updates_total",
 		Help:      "Number of k8s object updates that have been processed.",
-	})
+	}, []string{"kind"})
 
-	updateErrors = prometheus.NewCounter(prometheus.CounterOpts{
+	updateErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
 		Name:      "update_errors_total",
 		Help:      "Number of k8s object updates that failed for some reason.",
-	})
+	}, []string{"kind"})
 
 	configLoaded = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: purelbv2.MetricsNamespace,
@@ -56,8 +61,18 @@ func init() {
 	prometheus.MustRegister(configLoaded)
 }
 
-// RunMetrics runs the metrics server. It doesn't ever return.
-func RunMetrics(metricsHost string, metricsPort int) {
+// metricsAddr joins host and port into a listen address. An IPv6 host
+// must be bracketed, or the listener fails with "too many colons".
+func metricsAddr(host string, port int) string {
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// RunMetrics runs the metrics server. It only returns if the listener
+// fails, which it logs: the error used to be discarded, so a metrics
+// endpoint that never came up was indistinguishable from an idle one.
+func RunMetrics(logger log.Logger, metricsHost string, metricsPort int) {
+	addr := metricsAddr(metricsHost, metricsPort)
 	http.Handle("/metrics", promhttp.Handler())
-	http.ListenAndServe(fmt.Sprintf("%s:%d", metricsHost, metricsPort), nil)
+	err := http.ListenAndServe(addr, nil)
+	logging.Info(logger, "op", "metrics", "action", "listen", "addr", addr, "error", err)
 }

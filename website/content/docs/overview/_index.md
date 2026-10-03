@@ -9,5 +9,5 @@ PureLB is a load-balancer orchestrator for Kubernetes clusters. It allocates IP 
 This section explains how PureLB works:
 
 * [Architecture](architecture) -- The Allocator and LBNodeAgent components, how they interact with the Kubernetes API, and the role of kube-proxy.
-* [Address Types](address-types) -- Local addresses (same subnet), remote addresses (routed via BGP), and Netbox IPAM.
+* [Address Types](address-types) -- Local addresses (same subnet), remote addresses (routed via BGP), and external IPAM.
 * [Election System](election) -- How PureLB uses Kubernetes Leases to elect which node announces each local address.

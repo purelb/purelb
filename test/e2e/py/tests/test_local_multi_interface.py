@@ -785,11 +785,9 @@ def affinity_pool(cluster: Cluster, topo: topology.Topology):
 def _fallbacks(agent_metrics, topo: topology.Topology, address: str) -> float:
     """Affinity fallbacks recorded for one ADDRESS, summed over all nodes.
 
-    Note the label value: the counter is declared with a `service` label
-    but the announcer calls WinnerWithPreference(lbIP.String(), ...), so
-    what lands in it is the IP. Anyone querying
-    affinity_fallback_total{service="ns/name"} in an alert gets nothing,
-    for ever, and reads it as "no fallbacks".
+    The counter is keyed by the election key (IP address). The announcer
+    calls WinnerWithPreference(lbIP.String(), ...), so what lands in it is
+    the IP address string.
 
     Summed across nodes because every node evaluates the election
     independently, so the node that records the fallback need not be the
@@ -798,7 +796,7 @@ def _fallbacks(agent_metrics, topo: topology.Topology, address: str) -> float:
     total = 0.0
     for node in topo.node_ips:
         try:
-            total += agent_metrics(node).counter(AFFINITY_FALLBACK, service=address)
+            total += agent_metrics(node).counter(AFFINITY_FALLBACK, key=address)
         except Exception:  # noqa: BLE001 - an unreachable node contributes nothing
             continue
     return total
