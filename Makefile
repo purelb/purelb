@@ -9,8 +9,8 @@ COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
 GOBGP_IMAGE     ?= ghcr.io/purelb/k8gobgp
-GOBGP_TAG       ?= v0.2.6
-GOBGP_IMAGE_TAG ?= 0.2.6
+GOBGP_TAG       ?= v0.2.7
+GOBGP_IMAGE_TAG ?= 0.2.7
 # Where fetch-gobgp-crd writes the CRDs; check-deps points it at a temp dir.
 GOBGP_CRD_DIR   ?= deployments/components/gobgp
 CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml

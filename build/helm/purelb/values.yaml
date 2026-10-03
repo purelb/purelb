@@ -290,7 +290,7 @@ gobgp:
 
   image:
     repository: ghcr.io/purelb/k8gobgp
-    tag: "0.2.6"
+    tag: "0.2.7"
     pullPolicy: IfNotPresent
 
   containerSecurityContext:
