@@ -40,11 +40,11 @@ from __future__ import annotations
 import ipaddress
 import json
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import pytest
 
-from purelb_e2e import TEST_NAMESPACE, backend, nodes, topology
+from purelb_e2e import TEST_NAMESPACE, backend, metrics, nodes, topology
 from purelb_e2e.cluster import Cluster
 from purelb_e2e.wait import wait_until, wait_while
 
@@ -63,7 +63,80 @@ SUBNET_V6 = "fd00:10:255::/64"
 # route assertions poll rather than sample.
 CONVERGE = 45.0
 
-pytestmark = pytest.mark.requires("router")
+# gobgpd's own metrics (port 7475, bgp_*), including the RIB count, are
+# cached for 15s. Kept distinct from CONVERGE, which covers the BGP wire.
+GOBGPD_CONVERGE = 60.0
+
+pytestmark = pytest.mark.requires("router", "bgp")
+
+
+def gobgp_value(scrape, node: str, name: str, **labels: str) -> float:
+    """Read a k8gobgp or gobgpd metric, retrying until the series exists.
+
+    An absent series reads as 0, which makes a baseline wrong and a "rose"
+    check pass vacuously -- and a freshly started pod exports nothing until
+    its collector has run. So a value is only taken once the metric exists.
+    """
+    def read():
+        snap = scrape(node)
+        return (snap.counter(name, **labels),) if snap.has_series(name) else None
+    return wait_until(read, timeout=30, interval=2.0,
+                      description=f"{name} to be exported on {node}")[0]
+
+
+def route_family(family: str) -> str:
+    """gobgpd's route_family label value, which is hyphenated."""
+    return "ipv4-unicast" if family == "IPv4" else "ipv6-unicast"
+
+
+def wait_advertised(topo: topology.Topology, gobgpd_metrics, family: str,
+                    baseline: Dict[str, float], rose: bool) -> None:
+    """Wait for every node's gobgpd to advertise more (or no more) routes
+    of `family` than `baseline`, naming the nodes that lagged."""
+    status: Dict[str, bool] = {}
+
+    def check() -> bool:
+        for node in topo.node_ips:
+            try:
+                now = gobgp_value(gobgpd_metrics, node, "bgp_routes_advertised",
+                                  route_family=route_family(family))
+                status[node] = now > baseline[node] if rose else now <= baseline[node]
+            except Exception:  # noqa: BLE001 - a scrape blip is "not yet"
+                status[node] = False
+        return all(status.values())
+
+    what = "rise" if rose else "fall back to baseline"
+    assert wait_until(
+        check, timeout=GOBGPD_CONVERGE, interval=5.0,
+        description=f"gobgpd's advertised {family} routes to {what} on every node",
+    ), f"advertised routes did not {what} on: {[n for n, ok in status.items() if not ok]}"
+
+
+def node_addresses(topo: topology.Topology, node: str) -> Set[str]:
+    """Every address on `node`. gobgpd takes an IPv6 next-hop from the
+    peer-facing interface, which the topology does not record."""
+    return {a.split("/")[0] for a in nodes.addresses_on(topo.node_ips[node])}
+
+
+def hop_is_node(topo: topology.Topology, node: str, hop: str, family: str) -> bool:
+    if family == "IPv4":
+        return hop == topo.node_ips[node]
+    return hop in node_addresses(topo, node)
+
+
+@pytest.fixture(scope="module")
+def gobgp_error_baseline(topo: topology.Topology, gobgp_metrics):
+    """k8gobgp's error counters as the module started, so the last test can
+    assert nothing in the module made them move."""
+    return {node: gobgp_metrics(node) for node in sorted(topo.node_ips)}
+
+
+@pytest.fixture(scope="module")
+def gobgpd_error_baseline(topo: topology.Topology, gobgpd_metrics):
+    """gobgpd's scrape errors as the module started. A RIB family gobgpd
+    can't read is reported there (promhttp_metric_handler_errors_total
+    {cause="gathering"}), not as a missing series."""
+    return {node: gobgpd_metrics(node) for node in sorted(topo.node_ips)}
 
 
 def host_prefix(address: str) -> str:
@@ -122,13 +195,16 @@ def wait_for_withdrawal(router, prefix: str, timeout: float = CONVERGE) -> None:
 
 
 def test_the_router_is_peered_with_every_node(
-    router, topo: topology.Topology
+    router, topo: topology.Topology, gobgpd_metrics, gobgp_error_baseline,
+    gobgpd_error_baseline,
 ):
     """Established sessions with all of them, before anything else.
 
     Run first on purpose: without peering every route assertion in this
     module fails identically, and "no route found" is a poor way to learn
-    that BGP was never up.
+    that BGP was never up. Cross-verify gobgpd's own view agrees with
+    what the router sees. (Taking the two error baselines here opens the
+    module's error-counter window.)
     """
     peers = router.bgp_peers()
     assert peers, "the router has no established BGP sessions at all"
@@ -137,6 +213,26 @@ def test_the_router_is_peered_with_every_node(
         f"{sorted(peers)}"
     )
 
+    # VP review condition — diagnostics: aggregate predicate tracks per-node status
+    # so a failure can say "which node lagged" not just "not all converged".
+    status = {}
+    def check_neighbors():
+        for node in topo.node_ips:
+            try:
+                # bgp_peer_state is 1 per peer, labelled by its session
+                # state, so the subset-sum counts established peers.
+                established = gobgpd_metrics(node).counter(
+                    "bgp_peer_state", session_state="SESSION_STATE_ESTABLISHED") >= 1
+                status[node] = established
+            except Exception:
+                status[node] = False
+        return all(status.values())
+
+    assert wait_until(
+        check_neighbors, timeout=GOBGPD_CONVERGE, interval=5.0,
+        description=f"gobgpd to report an established session on {len(topo.node_ips)} node(s)"
+    ), f"gobgpd sessions lagged on: {[n for n, ok in status.items() if not ok]}"
+
 
 # ------------------------------------------------- routes and next-hops
 
@@ -144,17 +240,21 @@ def test_the_router_is_peered_with_every_node(
 @pytest.mark.parametrize("family", ["IPv4", "IPv6"])
 def test_the_router_learns_a_host_route_via_every_node(
     cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service,
-    family: str,
+    gobgpd_metrics, family: str,
 ):
     """A VIP becomes a /32 (or /128) in the router's RIB, ECMP over all nodes.
 
     Every node announces a remote address, so every node advertises it,
     and the router should end up with one next-hop per node. Fewer
     next-hops is not a cosmetic difference: it is capacity and redundancy
-    silently missing.
+    silently missing. Cross-check that every node's gobgpd advertises it.
     """
     if family == "IPv6" and not topo.has_ipv6:
         pytest.skip("cluster has no IPv6")
+
+    advertised = {node: gobgp_value(gobgpd_metrics, node, "bgp_routes_advertised",
+                                    route_family=route_family(family))
+                  for node in topo.node_ips}
 
     group = bgp_group()
     vip = lb_service(
@@ -174,6 +274,8 @@ def test_the_router_learns_a_host_route_via_every_node(
     assert len(hops) == len(topo.node_ips), (
         f"{prefix} has {len(hops)} next-hops for {len(topo.node_ips)} nodes: {hops}"
     )
+
+    wait_advertised(topo, gobgpd_metrics, family, advertised, rose=True)
 
 
 @pytest.mark.parametrize(
@@ -212,28 +314,65 @@ def test_the_advertised_prefix_length_matches_the_aggregation(
 # ------------------------------------------------------------ withdrawal
 
 
+@pytest.mark.parametrize("family", ["IPv4", "IPv6"])
 def test_deleting_the_service_withdraws_the_route(
-    cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service
+    cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service,
+    gobgpd_metrics, family: str,
 ):
     """The route goes when the Service does.
 
     A route that outlives its Service is a blackhole: the router keeps
     sending traffic to nodes that no longer answer for the address.
+    Cross-check gobgpd's global RIB count rises with the route (the one
+    test that keeps bgp_rib_paths covered), and gobgpd stops advertising
+    it when the Service goes.
     """
+    if family == "IPv6" and not topo.has_ipv6:
+        pytest.skip("cluster has no IPv6")
+    name = f"router-withdraw-{family.lower()}"
+    rib_baseline = {node: gobgp_value(gobgpd_metrics, node, "bgp_rib_paths",
+                                      route_family=route_family(family))
+                    for node in topo.node_ips}
+    advertised = {node: gobgp_value(gobgpd_metrics, node, "bgp_routes_advertised",
+                                    route_family=route_family(family))
+                  for node in topo.node_ips}
+
     group = bgp_group()
-    vip = lb_service("router-withdraw", ["IPv4"],
+    vip = lb_service(name, [family],
                      annotations={SERVICE_GROUP: group}, timeout=90)[0]
     prefix = host_prefix(vip)
     wait_for_route(router, prefix)
 
-    cluster.delete_service(NAMESPACE, "router-withdraw")
+    # After route lands, assert RIB count rose on all nodes via polling.
+    # VP review correction: polling (not snapshot) for both rise and fall to avoid race
+    # against still-draining routes from prior tests' fire-and-forget teardown.
+    status_rise: Dict[str, bool] = {}
+
+    def check_rib_rose() -> bool:
+        for node in topo.node_ips:
+            try:
+                current = gobgp_value(gobgpd_metrics, node, "bgp_rib_paths",
+                                      route_family=route_family(family))
+                status_rise[node] = current > rib_baseline[node]
+            except Exception:  # noqa: BLE001 - a scrape blip is "not yet"
+                status_rise[node] = False
+        return all(status_rise.values())
+
+    assert wait_until(
+        check_rib_rose, timeout=GOBGPD_CONVERGE, interval=5.0,
+        description="gobgpd's RIB count to rise on all nodes after route creation"
+    ), f"RIB did not rise on: {[n for n, ok in status_rise.items() if not ok]}"
+
+    cluster.delete_service(NAMESPACE, name)
     wait_for_withdrawal(router, prefix)
+    wait_advertised(topo, gobgpd_metrics, family, advertised, rose=False)
 
 
 @pytest.mark.requires("multi-node")
+@pytest.mark.parametrize("family", ["IPv4", "IPv6"])
 def test_losing_a_node_drops_only_its_next_hop(
     cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service,
-    tainted_nodes,
+    tainted_nodes, family: str,
 ):
     """One node down means one next-hop fewer, not a withdrawn route.
 
@@ -242,8 +381,10 @@ def test_losing_a_node_drops_only_its_next_hop(
     entirely when one of five nodes goes away would be an outage caused
     by redundancy.
     """
+    if family == "IPv6" and not topo.has_ipv6:
+        pytest.skip("cluster has no IPv6")
     group = bgp_group()
-    vip = lb_service("router-nodefail", ["IPv4"],
+    vip = lb_service(f"router-nodefail-{family.lower()}", [family],
                      annotations={SERVICE_GROUP: group}, timeout=90)[0]
     prefix = host_prefix(vip)
     wait_until(
@@ -255,18 +396,20 @@ def test_losing_a_node_drops_only_its_next_hop(
     )
 
     victim = sorted(topo.node_ips)[-1]
-    victim_ip = topo.node_ips[victim]
+    # Read before the taint: the victim's addresses are what its next-hop
+    # was, and an IPv6 next-hop is not in the topology.
+    victim_hops = {topo.node_ips[victim]} if family == "IPv4" else node_addresses(topo, victim)
     tainted_nodes(victim)
     pod = cluster.pod_on_node(cluster.purelb_namespace, "component=lbnodeagent", victim)
     if pod is not None:
         cluster.delete_pod(cluster.purelb_namespace, pod.metadata.name, grace_seconds=10)
 
     remaining = wait_until(
-        lambda: (lambda got: got if victim_ip not in got else None)(
+        lambda: (lambda got: got if not victim_hops & set(got) else None)(
             router.nexthops(prefix)
         ),
         timeout=90, interval=3.0,
-        description=f"FRR to drop {victim_ip} as a next-hop for {prefix}",
+        description=f"FRR to drop {victim} as a next-hop for {prefix}",
     )
     assert remaining, (
         f"{prefix} lost ALL next-hops when {victim} went away; one node "
@@ -281,9 +424,10 @@ def test_losing_a_node_drops_only_its_next_hop(
 # ------------------------------------------------------------- ETP Local
 
 
+@pytest.mark.parametrize("family", ["IPv4", "IPv6"])
 def test_etp_local_narrows_the_next_hops_to_endpoint_nodes(
     cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service,
-    pinned_backend,
+    pinned_backend, family: str,
 ):
     """ETP Local is visible in the RIB, not only on the interfaces.
 
@@ -293,23 +437,24 @@ def test_etp_local_narrows_the_next_hops_to_endpoint_nodes(
     would keep arriving at a node that no longer answers -- which is the
     failure ETP Local exists to prevent.
     """
+    if family == "IPv6" and not topo.has_ipv6:
+        pytest.skip("cluster has no IPv6")
     group = bgp_group()
     target = sorted(topo.node_ips)[0]
-    backend = pinned_backend("router-etp-backend", target)
+    backend = pinned_backend(f"router-etp-backend-{family.lower()}", target)
     vip = lb_service(
-        "router-etp", ["IPv4"], annotations={SERVICE_GROUP: group},
+        f"router-etp-{family.lower()}", [family], annotations={SERVICE_GROUP: group},
         selector={"app": backend}, externalTrafficPolicy="Local", timeout=90,
     )[0]
     prefix = host_prefix(vip)
 
     hops = wait_until(
-        lambda: (lambda got: got if got == [topo.node_ips[target]] else None)(
-            router.nexthops(prefix)
-        ),
+        lambda: (lambda got: got if len(got) == 1 and hop_is_node(topo, target, got[0], family)
+                 else None)(router.nexthops(prefix)),
         timeout=90, interval=3.0,
         description=f"{prefix} to have only {target} as a next-hop",
     )
-    assert hops == [topo.node_ips[target]], (
+    assert len(hops) == 1 and hop_is_node(topo, target, hops[0], family), (
         f"{prefix} next-hops are {hops}; with ETP Local only {target} holds an "
         f"endpoint, so only it should be advertising"
     )
@@ -421,8 +566,10 @@ def test_the_vip_is_reachable_from_outside_the_cluster(
 # ------------------------------------------------ ETP Local, full cycle
 
 
+@pytest.mark.parametrize("family", ["IPv4", "IPv6"])
 def test_etp_local_next_hops_track_the_endpoint_count(
     cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service,
+    family: str,
 ):
     """Scale the backend and the router's next-hops follow.
 
@@ -431,9 +578,11 @@ def test_etp_local_next_hops_track_the_endpoint_count(
     behind it is a blackhole that looks healthy in the RIB, and it is
     exactly what ETP Local is supposed to prevent.
     """
+    if family == "IPv6" and not topo.has_ipv6:
+        pytest.skip("cluster has no IPv6")
     group = bgp_group()
     vip = lb_service(
-        "router-etp-cycle", ["IPv4"], annotations={SERVICE_GROUP: group},
+        f"router-etp-cycle-{family.lower()}", [family], annotations={SERVICE_GROUP: group},
         externalTrafficPolicy="Local", timeout=90,
     )[0]
     prefix = host_prefix(vip)
@@ -627,9 +776,10 @@ def test_a_withdrawn_vip_stops_serving_from_outside(
 
 
 @pytest.mark.requires("multi-node")
+@pytest.mark.parametrize("family", ["IPv4", "IPv6"])
 def test_next_hops_are_restored_when_a_node_comes_back(
     cluster: Cluster, topo: topology.Topology, router, bgp_group, lb_service,
-    tainted_nodes,
+    tainted_nodes, family: str,
 ):
     """Recovery, not just failure.
 
@@ -637,8 +787,10 @@ def test_next_hops_are_restored_when_a_node_comes_back(
     node failure would permanently shrink the ECMP set and the cluster
     would quietly lose capacity with each incident.
     """
+    if family == "IPv6" and not topo.has_ipv6:
+        pytest.skip("cluster has no IPv6")
     group = bgp_group()
-    vip = lb_service("router-recover", ["IPv4"],
+    vip = lb_service(f"router-recover-{family.lower()}", [family],
                      annotations={SERVICE_GROUP: group}, timeout=90)[0]
     prefix = host_prefix(vip)
     full = len(topo.node_ips)
@@ -670,3 +822,36 @@ def test_next_hops_are_restored_when_a_node_comes_back(
         description=f"{prefix} to regain {victim} as a next-hop",
     )
     assert len(restored) == full, restored
+
+
+def test_gobgp_reports_no_collection_or_connection_errors(
+    topo: topology.Topology, gobgp_metrics, gobgpd_metrics,
+    gobgp_error_baseline, gobgpd_error_baseline,
+):
+    """Nothing in this module made k8gobgp's or gobgpd's error counters move.
+
+    Last in the module on purpose: the baselines were taken by the first
+    test, so this covers every route created and withdrawn above. "No
+    increase" rather than "== 0": a failed readiness probe during startup
+    also counts a connection error, which is history, not a fault.
+    peer_apply_errors_total counts a peer gobgpd refused. On 7475, a RIB
+    family gobgpd can't read (bgp_rib_paths) is a gathering error.
+
+    The k8gobgp counters are labelled and only exported once incremented;
+    their names were checked against k8gobgp v0.2.7's controllers/metrics.go.
+    promhttp exports the gathering counter from the start, so it must exist.
+    """
+    for node in sorted(topo.node_ips):
+        after = gobgp_metrics(node)
+        for name in ("k8gobgp_gobgpd_connection_errors_total",
+                     "k8gobgp_peer_apply_errors_total"):
+            metrics.assert_not_increased(gobgp_error_baseline[node], after, name)
+
+        after_d = gobgpd_metrics(node)
+        assert after_d.get("promhttp_metric_handler_errors_total", cause="gathering") is not None, (
+            f"promhttp_metric_handler_errors_total{{cause=\"gathering\"}} missing on {node}'s 7475"
+        )
+        metrics.assert_not_increased(
+            gobgpd_error_baseline[node], after_d,
+            "promhttp_metric_handler_errors_total", cause="gathering",
+        )

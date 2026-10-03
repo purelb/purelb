@@ -41,6 +41,19 @@ release worth picking up.
       ports). Note material findings in the PR description and in the
       GitHub release notes (`generate_release_notes: true` won't surface
       these — humans must).
+- [ ] Release notes are not enough; check the artifacts too (v0.2.5's notes
+      called its CRD changes "additive" while adding enums that reject
+      existing objects):
+      - RBAC: `diff` the old and new `rbac.yaml` release assets
+        (`gh release download vX.Y.Z -R purelb/k8gobgp -p rbac.yaml -O -`)
+        against `deployments/components/gobgp/gobgp-rbac.yaml`.
+      - Sidecar contract: `git diff OLD NEW -- config/daemonset entrypoint.sh
+        cmd/manager/main.go` in the k8gobgp repo. Copy new env vars, ports
+        and probe settings into BOTH `gobgp-patch.yaml` and the Helm
+        `daemonset.yaml`, then render both and diff the k8gobgp container.
+      - Metrics: diff `controllers/metrics.go`; update the e2e assertions,
+        the BGP metrics docs and the migration guide for renames.
+      - Image: `trivy image ghcr.io/purelb/k8gobgp:X.Y.Z` and record the result.
 - [ ] Update IN ORDER:
       1. `Makefile`: `GOBGP_TAG ?= vX.Y.Z` and `GOBGP_IMAGE_TAG ?= X.Y.Z`
          (note the `v` prefix difference — the GitHub release URL uses `v`,
@@ -57,11 +70,14 @@ release worth picking up.
       (note the escaped dots — kustomize cfg grep treats unescaped dots as
       path separators), then re-run.
 - [ ] Commit any non-empty diff to `deployments/components/gobgp/gobgp-*-crd.yaml`.
-- [ ] `make check-deps` PASSES. If it doesn't pass locally, neither will
-      CI on the PR.
-- [ ] Final sweep: `grep -rn "k8gobgp:0\." Makefile build/ deployments/components/ website/content/`
-      — every hit should be the new tag. Misses here are the #1 source of
-      past drift.
+- [ ] `make check-deps` PASSES. It compares the CRD files' CONTENT with the
+      release and checks all four pins agree. If it doesn't pass locally,
+      neither will CI on the PR.
+- [ ] Final sweep for the OLD version, literally (set `OLD_GOBGP=X.Y.Z`):
+      `grep -rnF "$OLD_GOBGP" Makefile build/ deployments/components/ website/content/`
+      — expect no hits. (`check-deps` now asserts the four pins; this
+      catches mentions in prose. The `0.2.4+` comments in
+      `cmd/kubectl-purelb` describe a minimum and are correct to keep.)
 
 ## Version-string bump (PureLB itself)
 
@@ -104,6 +120,7 @@ would catch — but with a 6-minute round-trip saved per failure:
 
 ```bash
 make check                              # vet + race tests + check-deps + check-helm-rbac-source
+govulncheck ./...                       # must report "No vulnerabilities found"
 SUFFIX=$NEW make manifest               # render the install manifest
 SUFFIX=$NEW make install-manifest       # render the standalone install
 SUFFIX=$NEW make helm                   # package the chart
@@ -151,6 +168,13 @@ kubectl get bgpnodestatus -A                                   # one row per nod
                                                                # the bundled k8gobgp is
                                                                # writing the CRD that the
                                                                # plugin reads)
+
+# Both k8gobgp metrics endpoints answer, and gobgpd bound its listener
+# (a failed bind is only logged; the pod stays Ready):
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' | cut -d' ' -f1)
+curl -s http://$NODE_IP:7473/metrics | grep -c '^k8gobgp_'        # non-zero
+curl -s http://$NODE_IP:7475/metrics | grep -c '^bgp_build_info'  # 1
+kubectl -n purelb-system logs ds/lbnodeagent -c k8gobgp | grep -c 'HTTP listener failed'  # 0
 ```
 
 Tear down before the next test:
@@ -204,7 +228,25 @@ kubectl delete crd servicegroups.purelb.io lbnodeagents.purelb.io \
 kubectl delete ns purelb-system
 ```
 
-If anything is empty, erroring, or missing in either of the two
+### Smoke test C — Helm upgrade from the previous release
+
+A fresh install hides upgrade-only bugs. Helm never upgrades CRDs, so an
+upgrade that skips the CRD step runs the new release against the old
+schemas, and the API server silently drops the fields it doesn't know.
+
+```bash
+helm install --create-namespace -n purelb-system purelb purelb/purelb --version ${OLD}
+kubectl -n purelb-system get pods                              # all Running on OLD
+kubectl apply --server-side --force-conflicts -f deployments/install-crds-${NEW}.yaml
+helm upgrade -n purelb-system purelb ./purelb-${NEW}-rc1.tgz
+kubectl -n purelb-system rollout status ds/lbnodeagent --timeout=10m
+kubectl get crd configs.bgp.purelb.io -o yaml | grep -c ebgpMaximumPaths   # non-zero: new schema
+kubectl purelb status                                          # no errors
+```
+
+Tear down as for smoke test B.
+
+If anything is empty, erroring, or missing in any of the three
 pre-tag smoke tests, **STOP**. The release ships a bug.
 
 ### Cleanup of rc1 artifacts

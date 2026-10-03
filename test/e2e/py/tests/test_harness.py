@@ -303,6 +303,38 @@ def test_agent_metrics_scrape(cluster, agent_metrics):
     assert snap.value("purelb_election_local_subnet_count") > 0
 
 
+@pytest.mark.requires("bgp")
+def test_gobgp_metrics_scrape(cluster, gobgp_metrics, gobgpd_metrics):
+    """Both k8gobgp sidecar endpoints answer, and its health endpoints do.
+
+    7473 is the k8gobgp controller (k8gobgp_*); 7475 is gobgpd itself
+    (bgp_*), which only answers if NODE_IP reached it and the bind
+    succeeded. A failed bind is only logged -- the pod stays Ready -- so
+    the log is checked too. Wrapped in wait_until to cover a freshly
+    started sidecar.
+    """
+    node = cluster.node_names()[0]
+    node_ip = cluster.node_ip(node)
+
+    def check_gobgp():
+        snap = gobgp_metrics(node)
+        # k8gobgp_gobgpd_connection_status has a label, use counter() for subset matching
+        return snap.counter("k8gobgp_gobgpd_connection_status") == 1.0 and snap.has_series("k8gobgp_router_id_info")
+
+    assert wait_until(check_gobgp, timeout=20.0, interval=2.0, description="k8gobgp metrics available")
+    assert wait_until(lambda: gobgpd_metrics(node).has_series("bgp_build_info"),
+                      timeout=20.0, interval=2.0, description="gobgpd metrics on 7475")
+    # Health endpoints can be checked unwrapped; they're part of DaemonSet readiness
+    assert metrics.check_health(node_ip, 7474, "/healthz"), f"{node} /healthz not ready"
+    assert metrics.check_health(node_ip, 7474, "/readyz"), f"{node} /readyz not ready"
+
+    # Whole container log, not a window: the bind happens at startup.
+    pod = cluster.pod_on_node(cluster.purelb_namespace, "component=lbnodeagent", node)
+    assert pod is not None, f"no lbnodeagent pod on {node}"
+    log = cluster.pod_log_text(cluster.purelb_namespace, pod.metadata.name, container="k8gobgp")
+    assert "HTTP listener failed" not in log, f"gobgpd failed to bind a listener on {node}"
+
+
 def test_logs_are_windowed(cluster, log_window):
     """Reading with a window must not return the whole history."""
     windowed = cluster.component_logs("allocator", log_window)

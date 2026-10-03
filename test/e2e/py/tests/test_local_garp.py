@@ -209,11 +209,14 @@ def _apply_agent(cluster: Cluster, topo: topology.Topology,
         }
     )
     cluster.restart_daemonset(cluster.purelb_namespace, "lbnodeagent")
+    # The rollout replaces one node at a time and holds each new pod for
+    # minReadySeconds (30s) before moving on, so it scales with the nodes:
+    # allow startup + 30s per node, plus slack.
     wait_until(
         lambda: cluster.daemonset_ready(
             cluster.purelb_namespace, "lbnodeagent", expect_nodes=len(topo.node_ips)
         ) or None,
-        timeout=240, interval=3.0,
+        timeout=len(topo.node_ips) * 75.0 + 60.0, interval=3.0,
         description="every lbnodeagent to come back with the new GARP config",
     )
 

@@ -49,7 +49,36 @@ type ribAdvertEntry struct {
 	Prefix       string   `json:"prefix"`
 	NextHop      string   `json:"nextHop"`
 	AdvertisedTo []string `json:"advertisedTo,omitempty"`
-	Service      string   `json:"service,omitempty"`
+	// AdvertisedToCount is the real peer count; k8gobgp v0.2.5+ caps the
+	// AdvertisedTo list at 16.
+	AdvertisedToCount int64  `json:"advertisedToCount,omitempty"`
+	Service           string `json:"service,omitempty"`
+}
+
+// ribAdvertisedTo reads a RIB route's peers. k8gobgp v0.2.5+ caps the
+// advertisedTo list at 16 and reports the real total in
+// advertisedToCount; older status has only the list, so the count falls
+// back to its length.
+func ribAdvertisedTo(route map[string]interface{}) ([]string, int64) {
+	advTo, _, _ := unstructured.NestedStringSlice(route, "advertisedTo")
+	count, found, err := unstructured.NestedInt64(route, "advertisedToCount")
+	if !found || err != nil || count < int64(len(advTo)) {
+		count = int64(len(advTo))
+	}
+	return advTo, count
+}
+
+// formatAdvertisedTo renders a route's peers, noting any the capped list
+// left out.
+func formatAdvertisedTo(advTo []string, count int64) string {
+	if count == 0 {
+		return "(not advertised)"
+	}
+	out := strings.Join(advTo, ", ")
+	if more := count - int64(len(advTo)); more > 0 {
+		out += fmt.Sprintf(" (+%d more)", more)
+	}
+	return out
 }
 
 type exportEntry struct {
@@ -209,7 +238,7 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 				}
 				prefix, _ := rMap["prefix"].(string)
 				nextHop, _ := rMap["nextHop"].(string)
-				advTo, _, _ := unstructured.NestedStringSlice(rMap, "advertisedTo")
+				advTo, advCount := ribAdvertisedTo(rMap)
 
 				// Match to service: exact IP match first, then check if any
 				// service VIP falls within this aggregate route's subnet.
@@ -231,7 +260,7 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 
 				dp.RIBRoutes = append(dp.RIBRoutes, ribAdvertEntry{
 					Node: nodeName, Prefix: prefix, NextHop: nextHop,
-					AdvertisedTo: advTo, Service: svcName,
+					AdvertisedTo: advTo, AdvertisedToCount: advCount, Service: svcName,
 				})
 			}
 		}
@@ -437,10 +466,7 @@ func runBGPDataplaneImpl(ctx context.Context, c *clients, format outputFormat, f
 		tw := tableWriter(os.Stdout)
 		fmt.Fprintf(tw, "NODE\tROUTE\tADVERTISED TO\tSERVICE\n")
 		for _, r := range dp.RIBRoutes {
-			advTo := strings.Join(r.AdvertisedTo, ", ")
-			if advTo == "" {
-				advTo = "(not advertised)"
-			}
+			advTo := formatAdvertisedTo(r.AdvertisedTo, r.AdvertisedToCount)
 			svc := r.Service
 			if svc == "" {
 				svc = "-"

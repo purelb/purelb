@@ -42,6 +42,8 @@ Value | Type | Default | Description
 
 Value | Type | Default | Description
 ------|------|---------|------------
+`lbnodeagent.minReadySeconds` | int | `30` | Seconds a new lbnodeagent pod must stay Ready before the rollout moves to the next node; gives BGP sessions time to re-establish. Readiness does not track BGP sessions, so this is what paces a rollout
+`lbnodeagent.updateStrategy` | object | `RollingUpdate`, `maxUnavailable: 1` | DaemonSet update strategy. Set `type: OnDelete` to roll one node at a time by hand (canary)
 `lbnodeagent.localInterface` | string | `"default"` | Interface for local address announcement
 `lbnodeagent.dummyInterface` | string | `"kube-lb0"` | Dummy interface for remote addresses
 `lbnodeagent.garpConfig` | object | (not set) | GARP configuration: `enabled`, `count`, `interval`, `initialDelay`
@@ -67,7 +69,7 @@ Value | Type | Default | Description
 ------|------|---------|------------
 `gobgp.enabled` | bool | `true` | Enable k8gobgp BGP sidecar in the lbnodeagent DaemonSet
 `gobgp.image.repository` | string | `ghcr.io/purelb/k8gobgp` | k8gobgp container image
-`gobgp.image.tag` | string | `"0.2.4"` | k8gobgp image tag
+`gobgp.image.tag` | string | `"0.2.7"` | k8gobgp image tag
 `gobgp.image.pullPolicy` | string | `IfNotPresent` | Image pull policy
 `gobgp.containerSecurityContext` | object | (see below) | Container security context
 `gobgp.resources.requests.cpu` | string | `250m` | CPU request
@@ -92,6 +94,10 @@ Value | Type | Default | Description
 `Prometheus.lbnodeagent.serviceMonitor.extraLabels` | object | `{}` | Additional labels on ServiceMonitor
 `Prometheus.lbnodeagent.prometheusRules.enabled` | bool | `false` | Create PrometheusRules for lbnodeagent
 `Prometheus.lbnodeagent.prometheusRules.rules` | []object | `[]` | Alert rules
+`Prometheus.gobgp.serviceMonitor.enabled` | bool | `false` | Create a ServiceMonitor for the k8gobgp sidecar: port 7473 (`k8gobgp_*`) and 7475 (gobgpd's `bgp_*`). Also creates the headless k8gobgp metrics Service. Requires `gobgp.enabled`
+`Prometheus.gobgp.serviceMonitor.extraLabels` | object | `{}` | Additional labels on the ServiceMonitor
+`Prometheus.gobgp.serviceMonitor.interval` | string | `30s` | Scrape interval for both endpoints. gobgpd caches its collector for 15s, so faster scraping only replays the cache
+`Prometheus.gobgp.serviceMonitor.gobgpdMetricRelabelings` | []object | upstream keep-list | `metricRelabelings` for 7475 only. The default is k8gobgp's keep-list (about 14 series per peer instead of 35). Set `[]` to keep everything
 
 ## Extra Objects
 

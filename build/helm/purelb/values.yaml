@@ -110,6 +110,22 @@ Prometheus:
       ##       description: Redis&trade; instance {{ "{{ $labels.instance }}" }} is down
       rules: []
 
+  # k8gobgp sidecar: 7473 (k8gobgp_* controller metrics) and 7475 (gobgpd's
+  # own bgp_* metrics). Requires gobgp.enabled and Prometheus Operator.
+  gobgp:
+    serviceMonitor:
+      enabled: false
+      extraLabels: {}
+      # gobgpd caches its collector for 15s; scraping faster replays the cache.
+      interval: 30s
+      # Applied to 7475 only. gobgpd emits ~35 series per peer with no cap;
+      # this is upstream k8gobgp's keep-list (docs/metrics.md), ~14 per
+      # peer. Set to [] to keep everything.
+      gobgpdMetricRelabelings:
+      - sourceLabels: [__name__]
+        action: keep
+        regex: '(bgp_peer_(state|type|asn|local_asn|established_timestamp_seconds|flop_count|out_queue_count|password_set|bfd_.*)|bgp_(received|sent)_notification_total|bgp_routes_.*|bgp_(bfd|netlink)_.*|bgp_build_info|bgp_message_handling_.*|fsm_loop_mgmt_op_lock_wait_seconds.*|go_(goroutines|threads|memstats_alloc_bytes)|process_(cpu_seconds_total|resident_memory_bytes|open_fds))'
+
 # You may define a valid spec and set create: true to create a ServiceGroup.
 # See https://purelb.io/install/config/
 serviceGroup:
@@ -191,6 +207,14 @@ leaseConfig:
 # Configurable values specific to lbnodeagent.
 # See https://purelb.io/install/config/
 lbnodeagent:
+  # Pace rollouts: each new pod gets this long to re-establish its BGP
+  # sessions before the next node restarts. Readiness doesn't track
+  # sessions, so it can't gate a rollout on its own.
+  minReadySeconds: 30
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   localInterface: default
   dummyInterface: kube-lb0
   # Optional GARP (Gratuitous ARP) configuration
@@ -266,11 +290,12 @@ gobgp:
 
   image:
     repository: ghcr.io/purelb/k8gobgp
-    tag: "0.2.4"
+    tag: "0.2.7"
     pullPolicy: IfNotPresent
 
   containerSecurityContext:
     allowPrivilegeEscalation: false
+    runAsNonRoot: false  # gobgpd needs root for netlink and port 179
     capabilities:
       add:
       - NET_ADMIN

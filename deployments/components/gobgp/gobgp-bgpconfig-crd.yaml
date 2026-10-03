@@ -51,6 +51,10 @@ spec:
                       type: string
                     prefixes:
                       items:
+                        description: |-
+                          Prefix matches either an IP prefix or a Route Target Constrain prefix -
+                          exactly one of them. gobgpd rejects a prefix with both set, so ipPrefix is
+                          optional rather than required; without that, rtcPrefix could never be used.
                         properties:
                           ipPrefix:
                             type: string
@@ -60,9 +64,14 @@ spec:
                           maskLengthMin:
                             format: int32
                             type: integer
-                        required:
-                        - ipPrefix
+                          rtcPrefix:
+                            description: RtcPrefix is a Route Target Constrain prefix, for RTC policy matching.
+                            type: string
                         type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of ipPrefix or rtcPrefix must be set
+                          rule: has(self.ipPrefix) != has(self.rtcPrefix)
+                      maxItems: 1024
                       type: array
                     type:
                       type: string
@@ -70,6 +79,7 @@ spec:
                   - name
                   - type
                   type: object
+                maxItems: 256
                 type: array
               dynamicNeighbors:
                 items:
@@ -82,6 +92,7 @@ spec:
                   - peerGroup
                   - prefix
                   type: object
+                maxItems: 256
                 type: array
               global:
                 properties:
@@ -130,6 +141,10 @@ spec:
                         type: array
                     type: object
                   defaultRouteDistance:
+                    description: |-
+                      INERT as of gobgp-netlink v1.3.5, which removed the field from its API
+                      because nothing in the daemon implemented it. Accepted here so existing
+                      manifests keep applying; setting it has no effect and logs a warning event.
                     properties:
                       externalRouteDistance:
                         format: int32
@@ -138,9 +153,33 @@ spec:
                         format: int32
                         type: integer
                     type: object
+                  ebgpMaximumPaths:
+                    description: |-
+                      EbgpMaximumPaths caps how many eBGP paths the multipath set may hold for one
+                      prefix. Requires useMultiplePaths.
+                    format: int32
+                    maximum: 255
+                    type: integer
                   families:
+                    description: |-
+                      Families is the global address-family set. Omit it to keep gobgpd's
+                      default of ipv4-unicast and ipv6-unicast.
+
+                      The enum is enforced because the wire encoding is a bare ordinal: an
+                      unrecognized name cannot be passed through, and a wrong value does not
+                      error - it enables no families at all. See globalFamilyOrdinals.
                     items:
+                      enum:
+                      - ipv4-unicast
+                      - ipv6-unicast
+                      - ipv4-labeled
+                      - ipv6-labeled
+                      - ipv4-vpn
+                      - ipv6-vpn
+                      - l2vpn-vpls
+                      - l2vpn-evpn
                       type: string
+                    maxItems: 16
                     type: array
                   gracefulRestart:
                     properties:
@@ -149,12 +188,56 @@ spec:
                       helperOnly:
                         type: boolean
                       restartTime:
+                        description: |-
+                          RestartTime is how long a peer should hold this speaker's routes while it
+                          restarts, in seconds. Omit it to take gobgpd's default, which is the
+                          session's hold time.
+
+                          Bounded at 4095 because RFC 4724 section 3 gives Restart Time 12 bits,
+                          sharing a 16-bit word with a 4-bit flags nibble. A larger value does not
+                          fail - it silently overflows into the flags and corrupts the capability, so
+                          this is not a Go type limit and 65535 would be the wrong bound.
+                        format: int32
+                        maximum: 4095
+                        type: integer
+                      staleRoutesTime:
+                        description: |-
+                          StaleRoutesTime is how long this speaker keeps a restarting peer's routes
+                          marked stale before purging them, in seconds. 0 disables the timer, which is
+                          gobgpd's default.
+
+                          Only families that have not sent End-of-RIB are purged when it fires, so a
+                          family that finished its refresh keeps its adj-RIB-in - checked in
+                          staleRoutesExpiredFunc.
                         format: int32
                         type: integer
                     type: object
+                  ibgpMaximumPaths:
+                    description: |-
+                      IbgpMaximumPaths caps how many iBGP paths the multipath set may hold for one
+                      prefix. Requires useMultiplePaths.
+                    format: int32
+                    maximum: 255
+                    type: integer
                   listenAddresses:
+                    description: |-
+                      ListenAddresses are the local addresses gobgpd accepts BGP connections on.
+                      Omit it to take gobgpd's default, which is every interface ("0.0.0.0" and
+                      "::").
+
+                      The pattern rejects obvious nonsense early, with a message that names the
+                      field. It is deliberately not a complete IP grammar - the authoritative
+                      check is netip.ParseAddr in the controller, which is what gobgpd itself
+                      uses, so a value that passes here and fails there is reported before
+                      StartBgp rather than after.
+
+                      CEL isIP() would be stricter but needs apiserver 1.31+, and a CEL rule that
+                      cannot compile makes the whole CRD unapplyable rather than degrading.
                     items:
+                      maxLength: 45
+                      pattern: ^[0-9a-fA-F:.]+(%[0-9a-zA-Z._-]+)?$
                       type: string
+                    maxItems: 16
                     type: array
                   listenPort:
                     format: int32
@@ -176,8 +259,37 @@ spec:
                   routeSelectionOptions:
                     properties:
                       advertiseInactiveRoutes:
+                        description: |-
+                          AdvertiseInactiveRoutes advertises routes not installed in the FIB.
+                          INERT as of gobgp-netlink v1.3.5, which removed the field from its API
+                          because nothing in the daemon implemented it. Accepted here so existing
+                          manifests keep applying; setting it has no effect and logs a warning event.
                         type: boolean
                       alwaysCompareMed:
+                        description: AlwaysCompareMed compares MED across paths from different ASes.
+                        type: boolean
+                      disableBestPathSelection:
+                        description: DisableBestPathSelection turns off best-path selection entirely.
+                        type: boolean
+                      enableAigp:
+                        description: |-
+                          EnableAigp enables AIGP metric comparison.
+                          INERT as of gobgp-netlink v1.3.5, which removed the field from its API
+                          because nothing in the daemon implemented it. Accepted here so existing
+                          manifests keep applying; setting it has no effect and logs a warning event.
+                        type: boolean
+                      externalCompareRouterID:
+                        description: ExternalCompareRouterID compares router IDs for external paths.
+                        type: boolean
+                      ignoreAsPathLength:
+                        description: IgnoreAsPathLength skips AS-path length in best-path selection.
+                        type: boolean
+                      ignoreNextHopIgpMetric:
+                        description: |-
+                          IgnoreNextHopIgpMetric skips the next-hop IGP metric.
+                          INERT as of gobgp-netlink v1.3.5, which removed the field from its API
+                          because nothing in the daemon implemented it. Accepted here so existing
+                          manifests keep applying; setting it has no effect and logs a warning event.
                         type: boolean
                     type: object
                   routerID:
@@ -198,12 +310,31 @@ spec:
                       Default: "10.255.0.0/16"
                     type: string
                   useMultiplePaths:
+                    description: |-
+                      UseMultiplePaths installs more than one path per prefix, so the multipath
+                      set can be exported to the kernel as ECMP.
+
+                      It requires at least one of ebgpMaximumPaths or ibgpMaximumPaths, and they
+                      require it: gobgp-netlink v1.3.5 refuses both halves of that pair, because a
+                      limit without multipath was accepted, reported back, and did nothing, while
+                      multipath without a limit selects only the single best path. Both are checked
+                      here before StartBgp so the error names the CRD fields.
                     type: boolean
                 required:
                 - asn
                 type: object
               neighbors:
                 items:
+                  description: |-
+                    Neighbor is one BGP peer.
+
+                    The BFD/link-local rule below catches a failure with no other symptom: BFD
+                    control packets to a link-local address need the scope zone to pick an
+                    egress interface, and without one transmit still succeeds on some arbitrary
+                    interface. BGP establishes, everything reads healthy, and the BFD session
+                    never leaves Down - so the failure detector the operator just enabled is not
+                    running. Use `fe80::1%eth0`, or `neighborInterface`, which resolves the zone
+                    itself.
                   properties:
                     afiSafis:
                       items:
@@ -219,6 +350,25 @@ spec:
                           enabled:
                             type: boolean
                           family:
+                            description: |-
+                              Family is the address family, e.g. ipv4-unicast.
+
+                              Enforced as an enum because the converter previously recognized only
+                              three names and sent AFI_UNSPECIFIED for anything else - so a typo, or a
+                              perfectly valid family it did not know, was accepted by the CRD and
+                              silently produced a peer with no usable family.
+                            enum:
+                            - ipv4-unicast
+                            - ipv6-unicast
+                            - ipv4-labeled
+                            - ipv6-labeled
+                            - ipv4-vpn
+                            - ipv6-vpn
+                            - l2vpn-vpls
+                            - l2vpn-evpn
+                            - ipv4-flowspec
+                            - ipv6-flowspec
+                            - rtc
                             type: string
                           prefixLimit:
                             properties:
@@ -261,10 +411,106 @@ spec:
                               type: array
                           type: object
                       type: object
+                    bfd:
+                      description: |-
+                        BFD, if set, overrides whatever the peer group specifies. Omit it to
+                        inherit. See the BFD type for why the override is whole-block.
+                      properties:
+                        desiredMinimumTxInterval:
+                          default: 1000000
+                          description: |-
+                            DesiredMinimumTxInterval is the minimum interval, in MICROSECONDS,
+                            between transmitted control packets. 300000 is 300ms; 300 is 300
+                            microseconds.
+                          format: int32
+                          maximum: 30000000
+                          minimum: 300000
+                          type: integer
+                        detectionMultiplier:
+                          default: 3
+                          description: |-
+                            DetectionMultiplier is how many intervals may be missed before the
+                            session is declared down. Detection time is
+                            requiredMinimumReceive x detectionMultiplier.
+                          format: int32
+                          maximum: 255
+                          minimum: 3
+                          type: integer
+                        enabled:
+                          description: |-
+                            Enabled activates BFD for this session.
+
+                            A pointer so that `enabled: false` survives serialization: as a plain
+                            bool with omitempty it would be indistinguishable from an absent block,
+                            and an absent block means "inherit from the peer group".
+                          type: boolean
+                        port:
+                          default: 3784
+                          description: |-
+                            Port is the destination UDP port for control packets sent to this peer.
+
+                            The local listener is always 3784 regardless of this value, so setting
+                            anything else means transmitting to a port the peer is probably not
+                            listening on. RFC 5881 mandates 3784; there is rarely a reason to change
+                            it.
+                          format: int32
+                          maximum: 65535
+                          minimum: 1024
+                          type: integer
+                        requiredMinimumReceive:
+                          default: 1000000
+                          description: |-
+                            RequiredMinimumReceive is the minimum interval, in MICROSECONDS, between
+                            received control packets.
+                          format: int32
+                          maximum: 30000000
+                          minimum: 300000
+                          type: integer
+                      type: object
                     config:
+                      description: |-
+                        NeighborConfig is a neighbor's own settings.
+
+                        Peer-group inheritance: for a neighbor that names a peerGroup, any field left
+                        unset here takes the group's value. That is why an omitted field is sent to
+                        gobgpd as absent rather than as a zero - stating a field claims it and stops
+                        the group supplying it.
+
+                        Two consequences worth knowing:
+
+                          - A member CAN override a group's value with a zero one. description,
+                            authPassword, allowOwnAsn, replacePeerAsn, allowAspathLoopLocal and
+                            sendSoftwareVersion carry explicit presence, so `authPassword: ""` opts a
+                            member out of its group's TCP-MD5 password and `replacePeerAsn: false`
+                            overrides a group that sets it true. Omitting the field inherits; setting
+                            it - to anything, including the zero value - claims it.
+
+                          - allowOwnAsn, replacePeerAsn and allowAspathLoopLocal share one presence
+                            signal in gobgpd. Stating any one of them claims all three, so the other
+                            two fall back to their defaults instead of inheriting from the group.
+                            State all three together, or none.
+
+                          - peerAsn is the exception: where a peer group states one, the group's value
+                            always wins and a differing value here is discarded. The controller emits a
+                            PeerAsnOverridden warning event when that happens.
                       properties:
                         adminDown:
                           type: boolean
+                        allowAspathLoopLocal:
+                          description: AllowAspathLoopLocal permits a local AS-path loop.
+                          type: boolean
+                        allowOwnAsn:
+                          description: |-
+                            AllowOwnAsn permits our own ASN to appear this many times in a received
+                            AS path.
+
+                            The bound is load-bearing, not cosmetic. gobgpd's peer-group path errors
+                            above MaxUint8, but its neighbor path does a bare uint8() cast with no
+                            check (grpc_server.go, newNeighborFromAPIStruct), so 256 would silently
+                            truncate to 0 - the opposite of what was asked for.
+                          format: int32
+                          maximum: 255
+                          type: integer
                         authPassword:
                           description: 'AuthPassword is the BGP authentication password (DEPRECATED: use AuthPasswordSecretRef instead)'
                           type: string
@@ -298,6 +544,16 @@ spec:
                           format: int32
                           type: integer
                         neighborAddress:
+                          description: |-
+                            NeighborAddress is the peer's IP address. For a link-local IPv6 peer,
+                            include the scope zone: fe80::1%eth0.
+
+                            The length bound is not cosmetic. CEL rules are costed statically against
+                            the declared maxLength, so an unbounded string here makes the BFD
+                            link-local rule on Neighbor exceed the apiserver's per-rule cost budget
+                            by ~64x and the CRD is rejected outright. 64 = 45 (the longest textual
+                            IPv6 form, ::ffff:255.255.255.255) + '%' + 15 (IFNAMSIZ-1), rounded up.
+                          maxLength: 64
                           type: string
                         neighborInterface:
                           type: string
@@ -306,6 +562,51 @@ spec:
                           type: integer
                         peerGroup:
                           type: string
+                        removePrivate:
+                          description: |-
+                            RemovePrivate strips private ASNs from advertised AS paths:
+                            "all" removes them, "replace" substitutes our own ASN.
+                          enum:
+                          - all
+                          - replace
+                          type: string
+                        replacePeerAsn:
+                          description: ReplacePeerAsn rewrites the peer's ASN with ours in advertised AS paths.
+                          type: boolean
+                        routeFlapDamping:
+                          description: |-
+                            RouteFlapDamping enables RFC 2439 damping for this peer.
+                            INERT as of gobgp-netlink v1.3.5, which removed the field from its API
+                            because nothing in the daemon implemented it. Accepted here so existing
+                            manifests keep applying; setting it has no effect and logs a warning event.
+                          type: boolean
+                        sendCommunity:
+                          description: |-
+                            SendCommunity filters which community attributes are advertised to this
+                            peer, applied AFTER the export policy - so a policy that adds a community
+                            cannot walk past it.
+
+                            Dead in every gobgp release before gobgp-netlink v1.3.1: accepted by the
+                            config loader, dropped by the gRPC converters, read by nothing. Omit it to
+                            leave gobgpd's behavior alone.
+
+                            "none" is not literal. Large communities, LLGR_STALE/NO_LLGR, and every
+                            family except IPv4/IPv6 unicast and labeled unicast survive every
+                            setting, and it is ignored entirely for route-server clients. See the BGP
+                            section of README.md.
+
+                            Note "none" and "extended" strip NO_EXPORT, NO_ADVERTISE and
+                            NO_EXPORT_SUBCONFED, so the receiving AS loses the signal not to
+                            re-export. That is a route-leak vector, not just a filter.
+                          enum:
+                          - standard
+                          - extended
+                          - both
+                          - none
+                          type: string
+                        sendSoftwareVersion:
+                          description: SendSoftwareVersion advertises the software-version capability (RFC 9384).
+                          type: boolean
                         vrf:
                           type: string
                       required:
@@ -328,6 +629,27 @@ spec:
                         helperOnly:
                           type: boolean
                         restartTime:
+                          description: |-
+                            RestartTime is how long a peer should hold this speaker's routes while it
+                            restarts, in seconds. Omit it to take gobgpd's default, which is the
+                            session's hold time.
+
+                            Bounded at 4095 because RFC 4724 section 3 gives Restart Time 12 bits,
+                            sharing a 16-bit word with a 4-bit flags nibble. A larger value does not
+                            fail - it silently overflows into the flags and corrupts the capability, so
+                            this is not a Go type limit and 65535 would be the wrong bound.
+                          format: int32
+                          maximum: 4095
+                          type: integer
+                        staleRoutesTime:
+                          description: |-
+                            StaleRoutesTime is how long this speaker keeps a restarting peer's routes
+                            marked stale before purging them, in seconds. 0 disables the timer, which is
+                            gobgpd's default.
+
+                            Only families that have not sent End-of-RIB are purged when it fires, so a
+                            family that finished its refresh keeps its adj-RIB-in - checked in
+                            staleRoutesExpiredFunc.
                           format: int32
                           type: integer
                       type: object
@@ -389,6 +711,18 @@ spec:
                       - routeReflectorClusterId
                       type: object
                     timers:
+                      description: |-
+                        Timers holds session timers.
+
+                        Whole-block inheritance: for a neighbor in a peer group, supplying this block
+                        at all claims every timer in it. A neighbor that sets only connectRetry
+                        therefore stops inheriting the group's holdTime and keepaliveInterval and falls
+                        back to gobgpd's defaults. Repeat the group's values here, or omit the block.
+
+                        Editing holdTime or keepaliveInterval rebuilds the BGP session as of
+                        gobgp-netlink v1.3.5; connectRetry and idleHoldTimeAfterReset do not. Editing
+                        them on a peer group rebuilds every member's session at once, so enable
+                        graceful restart first.
                       properties:
                         config:
                           properties:
@@ -402,6 +736,10 @@ spec:
                               format: int64
                               type: integer
                             minimumAdvertisementInterval:
+                              description: |-
+                                INERT as of gobgp-netlink v1.3.5, which removed the field from its API
+                                because nothing in the daemon implemented it. Accepted here so existing
+                                manifests keep applying; setting it has no effect and logs a warning event.
                               format: int64
                               type: integer
                           type: object
@@ -412,6 +750,16 @@ spec:
                       properties:
                         bindInterface:
                           type: string
+                        ipTos:
+                          description: |-
+                            IpTos sets IP_TOS / IPV6_TCLASS on the BGP session.
+
+                            Bounded at 255 because it is a single IP header byte and gobgpd casts it
+                            to uint8 with no range check - an unbounded value would be silently
+                            truncated rather than rejected.
+                          format: int32
+                          maximum: 255
+                          type: integer
                         localAddress:
                           type: string
                         passiveMode:
@@ -420,6 +768,10 @@ spec:
                   required:
                   - config
                   type: object
+                  x-kubernetes-validations:
+                  - message: a link-local neighborAddress needs its scope zone when BFD is enabled (fe80::1%eth0, not fe80::1); or use neighborInterface instead
+                    rule: '!has(self.bfd) || (has(self.bfd.enabled) && !self.bfd.enabled) || !has(self.config.neighborAddress) || !self.config.neighborAddress.lowerAscii().startsWith(''fe80'') || self.config.neighborAddress.contains(''%'')'
+                maxItems: 1024
                 type: array
               netlinkExport:
                 description: NetlinkExport configures global netlink export for exporting BGP routes to Linux kernel
@@ -445,12 +797,14 @@ spec:
                           items:
                             pattern: ^\d{1,5}:\d{1,5}$
                             type: string
+                          maxItems: 128
                           type: array
                         largeCommunityList:
                           description: 'LargeCommunityList filters routes by large BGP communities (format: "ASN:LocalData1:LocalData2")'
                           items:
                             pattern: ^\d+:\d+:\d+$
                             type: string
+                          maxItems: 128
                           type: array
                         metric:
                           description: 'Metric is the route metric/priority in Linux routing table (default: 20)'
@@ -506,6 +860,25 @@ spec:
                           enabled:
                             type: boolean
                           family:
+                            description: |-
+                              Family is the address family, e.g. ipv4-unicast.
+
+                              Enforced as an enum because the converter previously recognized only
+                              three names and sent AFI_UNSPECIFIED for anything else - so a typo, or a
+                              perfectly valid family it did not know, was accepted by the CRD and
+                              silently produced a peer with no usable family.
+                            enum:
+                            - ipv4-unicast
+                            - ipv6-unicast
+                            - ipv4-labeled
+                            - ipv6-labeled
+                            - ipv4-vpn
+                            - ipv6-vpn
+                            - l2vpn-vpls
+                            - l2vpn-evpn
+                            - ipv4-flowspec
+                            - ipv6-flowspec
+                            - rtc
                             type: string
                           prefixLimit:
                             properties:
@@ -548,8 +921,72 @@ spec:
                               type: array
                           type: object
                       type: object
+                    bfd:
+                      description: BFD applies to every member that does not specify its own.
+                      properties:
+                        desiredMinimumTxInterval:
+                          default: 1000000
+                          description: |-
+                            DesiredMinimumTxInterval is the minimum interval, in MICROSECONDS,
+                            between transmitted control packets. 300000 is 300ms; 300 is 300
+                            microseconds.
+                          format: int32
+                          maximum: 30000000
+                          minimum: 300000
+                          type: integer
+                        detectionMultiplier:
+                          default: 3
+                          description: |-
+                            DetectionMultiplier is how many intervals may be missed before the
+                            session is declared down. Detection time is
+                            requiredMinimumReceive x detectionMultiplier.
+                          format: int32
+                          maximum: 255
+                          minimum: 3
+                          type: integer
+                        enabled:
+                          description: |-
+                            Enabled activates BFD for this session.
+
+                            A pointer so that `enabled: false` survives serialization: as a plain
+                            bool with omitempty it would be indistinguishable from an absent block,
+                            and an absent block means "inherit from the peer group".
+                          type: boolean
+                        port:
+                          default: 3784
+                          description: |-
+                            Port is the destination UDP port for control packets sent to this peer.
+
+                            The local listener is always 3784 regardless of this value, so setting
+                            anything else means transmitting to a port the peer is probably not
+                            listening on. RFC 5881 mandates 3784; there is rarely a reason to change
+                            it.
+                          format: int32
+                          maximum: 65535
+                          minimum: 1024
+                          type: integer
+                        requiredMinimumReceive:
+                          default: 1000000
+                          description: |-
+                            RequiredMinimumReceive is the minimum interval, in MICROSECONDS, between
+                            received control packets.
+                          format: int32
+                          maximum: 30000000
+                          minimum: 300000
+                          type: integer
+                      type: object
                     config:
                       properties:
+                        allowAspathLoopLocal:
+                          description: AllowAspathLoopLocal permits our own ASN in locally originated paths.
+                          type: boolean
+                        allowOwnAsn:
+                          description: |-
+                            AllowOwnAsn permits this many occurrences of our own ASN in a received
+                            AS path. Bounded at 255 because gobgpd rejects anything larger.
+                          format: int32
+                          maximum: 255
+                          type: integer
                         authPassword:
                           description: 'AuthPassword is the BGP authentication password (DEPRECATED: use AuthPasswordSecretRef instead)'
                           type: string
@@ -585,8 +1022,92 @@ spec:
                           type: integer
                         peerGroupName:
                           type: string
+                        removePrivate:
+                          description: |-
+                            RemovePrivate strips private ASNs from advertised AS paths:
+                            "all" removes them, "replace" substitutes our own ASN.
+                          enum:
+                          - all
+                          - replace
+                          type: string
+                        replacePeerAsn:
+                          description: ReplacePeerAsn replaces the peer's ASN in the AS path with our own.
+                          type: boolean
+                        routeFlapDamping:
+                          description: |-
+                            RouteFlapDamping enables RFC 2439 damping for members of this group.
+                            INERT as of gobgp-netlink v1.3.5, which removed the field from its API
+                            because nothing in the daemon implemented it. Accepted here so existing
+                            manifests keep applying; setting it has no effect and logs a warning event.
+                          type: boolean
+                        sendCommunity:
+                          description: |-
+                            SendCommunity filters which community attributes are advertised to this
+                            peer, applied AFTER the export policy - so a policy that adds a community
+                            cannot walk past it.
+
+                            Dead in every gobgp release before gobgp-netlink v1.3.1: accepted by the
+                            config loader, dropped by the gRPC converters, read by nothing. Omit it to
+                            leave gobgpd's behavior alone.
+
+                            "none" is not literal. Large communities, LLGR_STALE/NO_LLGR, and every
+                            family except IPv4/IPv6 unicast and labeled unicast survive every
+                            setting, and it is ignored entirely for route-server clients. See the BGP
+                            section of README.md.
+
+                            Note "none" and "extended" strip NO_EXPORT, NO_ADVERTISE and
+                            NO_EXPORT_SUBCONFED, so the receiving AS loses the signal not to
+                            re-export. That is a route-leak vector, not just a filter.
+                          enum:
+                          - standard
+                          - extended
+                          - both
+                          - none
+                          type: string
+                        sendSoftwareVersion:
+                          description: SendSoftwareVersion advertises the software-version capability (RFC 9384).
+                          type: boolean
                       required:
                       - peerGroupName
+                      type: object
+                    gracefulRestart:
+                      description: |-
+                        GracefulRestart applies to every member that does not state its own.
+
+                        Editing it reaches members already in the group, verified against
+                        gobgp-netlink v1.3.5: a member picked up restartTime 120 -> 240 from a
+                        group edit. That was not true before v1.3.5, where
+                        SetDefaultNeighborConfigValues returned early once a member had resolved,
+                        so a group edit silently applied to new members only.
+                      properties:
+                        enabled:
+                          type: boolean
+                        helperOnly:
+                          type: boolean
+                        restartTime:
+                          description: |-
+                            RestartTime is how long a peer should hold this speaker's routes while it
+                            restarts, in seconds. Omit it to take gobgpd's default, which is the
+                            session's hold time.
+
+                            Bounded at 4095 because RFC 4724 section 3 gives Restart Time 12 bits,
+                            sharing a 16-bit word with a 4-bit flags nibble. A larger value does not
+                            fail - it silently overflows into the flags and corrupts the capability, so
+                            this is not a Go type limit and 65535 would be the wrong bound.
+                          format: int32
+                          maximum: 4095
+                          type: integer
+                        staleRoutesTime:
+                          description: |-
+                            StaleRoutesTime is how long this speaker keeps a restarting peer's routes
+                            marked stale before purging them, in seconds. 0 disables the timer, which is
+                            gobgpd's default.
+
+                            Only families that have not sent End-of-RIB are purged when it fires, so a
+                            family that finished its refresh keeps its adj-RIB-in - checked in
+                            staleRoutesExpiredFunc.
+                          format: int32
+                          type: integer
                       type: object
                     nodeSelector:
                       description: |-
@@ -636,6 +1157,18 @@ spec:
                       type: object
                       x-kubernetes-map-type: atomic
                     timers:
+                      description: |-
+                        Timers holds session timers.
+
+                        Whole-block inheritance: for a neighbor in a peer group, supplying this block
+                        at all claims every timer in it. A neighbor that sets only connectRetry
+                        therefore stops inheriting the group's holdTime and keepaliveInterval and falls
+                        back to gobgpd's defaults. Repeat the group's values here, or omit the block.
+
+                        Editing holdTime or keepaliveInterval rebuilds the BGP session as of
+                        gobgp-netlink v1.3.5; connectRetry and idleHoldTimeAfterReset do not. Editing
+                        them on a peer group rebuilds every member's session at once, so enable
+                        graceful restart first.
                       properties:
                         config:
                           properties:
@@ -649,6 +1182,10 @@ spec:
                               format: int64
                               type: integer
                             minimumAdvertisementInterval:
+                              description: |-
+                                INERT as of gobgp-netlink v1.3.5, which removed the field from its API
+                                because nothing in the daemon implemented it. Accepted here so existing
+                                manifests keep applying; setting it has no effect and logs a warning event.
                               format: int64
                               type: integer
                           type: object
@@ -659,6 +1196,16 @@ spec:
                       properties:
                         bindInterface:
                           type: string
+                        ipTos:
+                          description: |-
+                            IpTos sets IP_TOS / IPV6_TCLASS on the BGP session.
+
+                            Bounded at 255 because it is a single IP header byte and gobgpd casts it
+                            to uint8 with no range check - an unbounded value would be silently
+                            truncated rather than rejected.
+                          format: int32
+                          maximum: 255
+                          type: integer
                         localAddress:
                           type: string
                         passiveMode:
@@ -667,6 +1214,7 @@ spec:
                   required:
                   - config
                   type: object
+                maxItems: 256
                 type: array
               policyDefinitions:
                 items:
@@ -674,6 +1222,12 @@ spec:
                     name:
                       type: string
                     statements:
+                      description: |-
+                        Statements are evaluated in order.
+
+                        Bounded because CEL rules nested below here are costed statically
+                        against this bound; unbounded, the estimator assumes the maximum and
+                        pushed the whole CRD over the apiserver budget, rejecting it outright.
                       items:
                         properties:
                           actions:
@@ -692,10 +1246,57 @@ spec:
                               community:
                                 properties:
                                   communities:
+                                    description: Communities are the values to act on.
                                     items:
                                       type: string
+                                    maxItems: 64
                                     type: array
                                   type:
+                                    description: Type is "add", "remove" or "replace".
+                                    enum:
+                                    - add
+                                    - remove
+                                    - replace
+                                    type: string
+                                required:
+                                - communities
+                                - type
+                                type: object
+                              extCommunity:
+                                description: ExtCommunity manipulates extended communities.
+                                properties:
+                                  communities:
+                                    description: Communities are the values to act on.
+                                    items:
+                                      type: string
+                                    maxItems: 64
+                                    type: array
+                                  type:
+                                    description: Type is "add", "remove" or "replace".
+                                    enum:
+                                    - add
+                                    - remove
+                                    - replace
+                                    type: string
+                                required:
+                                - communities
+                                - type
+                                type: object
+                              largeCommunity:
+                                description: LargeCommunity manipulates large communities.
+                                properties:
+                                  communities:
+                                    description: Communities are the values to act on.
+                                    items:
+                                      type: string
+                                    maxItems: 64
+                                    type: array
+                                  type:
+                                    description: Type is "add", "remove" or "replace".
+                                    enum:
+                                    - add
+                                    - remove
+                                    - replace
                                     type: string
                                 required:
                                 - communities
@@ -707,14 +1308,46 @@ spec:
                               med:
                                 properties:
                                   type:
+                                    description: Type is "mod" (adjust relative to the current MED) or "replace".
+                                    enum:
+                                    - mod
+                                    - replace
                                     type: string
                                   value:
+                                    description: Value is the amount to add, or the value to set.
                                     format: int64
                                     type: integer
                                 required:
                                 - type
                                 - value
                                 type: object
+                              nexthop:
+                                description: Nexthop rewrites the route's next hop.
+                                properties:
+                                  address:
+                                    description: Address sets an explicit next hop.
+                                    maxLength: 64
+                                    type: string
+                                  peerAddress:
+                                    description: PeerAddress rewrites the next hop to the peer's address.
+                                    type: boolean
+                                  self:
+                                    description: Self rewrites the next hop to this speaker's address.
+                                    type: boolean
+                                  unchanged:
+                                    description: Unchanged preserves the received next hop.
+                                    type: boolean
+                                type: object
+                                x-kubernetes-validations:
+                                - message: set at most one of address, self, unchanged, peerAddress
+                                  rule: '[has(self.address), has(self.self) && self.self, has(self.unchanged) && self.unchanged, has(self.peerAddress) && self.peerAddress].filter(x, x).size() <= 1'
+                              origin:
+                                description: Origin sets the ORIGIN attribute.
+                                enum:
+                                - igp
+                                - egp
+                                - incomplete
+                                type: string
                               routeAction:
                                 type: string
                             required:
@@ -722,42 +1355,212 @@ spec:
                             type: object
                           conditions:
                             properties:
+                              afiSafiIn:
+                                description: AfiSafiIn matches when the route belongs to one of these families.
+                                items:
+                                  enum:
+                                  - ipv4-unicast
+                                  - ipv6-unicast
+                                  - ipv4-labeled
+                                  - ipv6-labeled
+                                  - ipv4-vpn
+                                  - ipv6-vpn
+                                  - l2vpn-vpls
+                                  - l2vpn-evpn
+                                  - ipv4-flowspec
+                                  - ipv6-flowspec
+                                  - rtc
+                                  type: string
+                                maxItems: 16
+                                type: array
+                              asPathLength:
+                                description: AsPathLength matches on the number of ASes in the AS path.
+                                properties:
+                                  length:
+                                    description: Length is the number of ASes to compare against.
+                                    format: int32
+                                    type: integer
+                                  operator:
+                                    description: Operator is "eq", "ge" or "le".
+                                    enum:
+                                    - eq
+                                    - ge
+                                    - le
+                                    type: string
+                                required:
+                                - length
+                                - operator
+                                type: object
                               asPathSet:
+                                description: |-
+                                  MatchSet references a DefinedSet and says how its members must match.
+
+                                  match was previously accepted and dropped: crdToAPIMatchSet set only Name, so
+                                  "all" and "invert" were both sent as TYPE_UNSPECIFIED and the policy matched
+                                  differently than it read. That is a silent change of routing policy, not an
+                                  inert no-op, which is why the values are now an enforced enum.
                                 properties:
                                   match:
+                                    description: Match is "any" (default), "all", or "invert".
+                                    enum:
+                                    - any
+                                    - all
+                                    - invert
                                     type: string
                                   name:
+                                    description: Name of the DefinedSet to match against.
                                     type: string
                                 required:
                                 - name
+                                type: object
+                              communityCount:
+                                description: CommunityCount matches on how many communities a route carries.
+                                properties:
+                                  count:
+                                    description: Count is the number of communities to compare against.
+                                    format: int32
+                                    type: integer
+                                  operator:
+                                    description: Operator is "eq", "ge" or "le".
+                                    enum:
+                                    - eq
+                                    - ge
+                                    - le
+                                    type: string
+                                required:
+                                - count
+                                - operator
                                 type: object
                               communitySet:
+                                description: |-
+                                  MatchSet references a DefinedSet and says how its members must match.
+
+                                  match was previously accepted and dropped: crdToAPIMatchSet set only Name, so
+                                  "all" and "invert" were both sent as TYPE_UNSPECIFIED and the policy matched
+                                  differently than it read. That is a silent change of routing policy, not an
+                                  inert no-op, which is why the values are now an enforced enum.
                                 properties:
                                   match:
+                                    description: Match is "any" (default), "all", or "invert".
+                                    enum:
+                                    - any
+                                    - all
+                                    - invert
                                     type: string
                                   name:
+                                    description: Name of the DefinedSet to match against.
                                     type: string
                                 required:
                                 - name
                                 type: object
+                              extCommunitySet:
+                                description: ExtCommunitySet matches extended communities.
+                                properties:
+                                  match:
+                                    description: Match is "any" (default), "all", or "invert".
+                                    enum:
+                                    - any
+                                    - all
+                                    - invert
+                                    type: string
+                                  name:
+                                    description: Name of the DefinedSet to match against.
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              largeCommunitySet:
+                                description: |-
+                                  LargeCommunitySet matches large communities. Note NetlinkExportRule
+                                  already supported large communities; BGP policy did not.
+                                properties:
+                                  match:
+                                    description: Match is "any" (default), "all", or "invert".
+                                    enum:
+                                    - any
+                                    - all
+                                    - invert
+                                    type: string
+                                  name:
+                                    description: Name of the DefinedSet to match against.
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              localPrefEq:
+                                description: |-
+                                  LocalPrefEq matches an exact LOCAL_PREF. A pointer because 0 is a valid
+                                  local preference and must be distinguishable from "not matching on it".
+                                format: int32
+                                type: integer
+                              medEq:
+                                description: MedEq matches an exact MED. A pointer for the same reason as LocalPrefEq.
+                                format: int32
+                                type: integer
                               neighborSet:
+                                description: |-
+                                  MatchSet references a DefinedSet and says how its members must match.
+
+                                  match was previously accepted and dropped: crdToAPIMatchSet set only Name, so
+                                  "all" and "invert" were both sent as TYPE_UNSPECIFIED and the policy matched
+                                  differently than it read. That is a silent change of routing policy, not an
+                                  inert no-op, which is why the values are now an enforced enum.
                                 properties:
                                   match:
+                                    description: Match is "any" (default), "all", or "invert".
+                                    enum:
+                                    - any
+                                    - all
+                                    - invert
                                     type: string
                                   name:
+                                    description: Name of the DefinedSet to match against.
                                     type: string
                                 required:
                                 - name
                                 type: object
+                              nextHopInList:
+                                description: NextHopInList matches when the next hop is one of these addresses.
+                                items:
+                                  type: string
+                                maxItems: 64
+                                type: array
+                              origin:
+                                description: Origin matches the ORIGIN attribute.
+                                enum:
+                                - igp
+                                - egp
+                                - incomplete
+                                type: string
                               prefixSet:
+                                description: |-
+                                  MatchSet references a DefinedSet and says how its members must match.
+
+                                  match was previously accepted and dropped: crdToAPIMatchSet set only Name, so
+                                  "all" and "invert" were both sent as TYPE_UNSPECIFIED and the policy matched
+                                  differently than it read. That is a silent change of routing policy, not an
+                                  inert no-op, which is why the values are now an enforced enum.
                                 properties:
                                   match:
+                                    description: Match is "any" (default), "all", or "invert".
+                                    enum:
+                                    - any
+                                    - all
+                                    - invert
                                     type: string
                                   name:
+                                    description: Name of the DefinedSet to match against.
                                     type: string
                                 required:
                                 - name
                                 type: object
+                              routeType:
+                                description: RouteType matches the route's origin relative to this speaker.
+                                enum:
+                                - internal
+                                - external
+                                - local
+                                type: string
                               rpkiResult:
                                 type: string
                             type: object
@@ -768,11 +1571,13 @@ spec:
                         - conditions
                         - name
                         type: object
+                      maxItems: 128
                       type: array
                   required:
                   - name
                   - statements
                   type: object
+                maxItems: 256
                 type: array
               vrfs:
                 items:
@@ -795,6 +1600,7 @@ spec:
                           items:
                             pattern: ^\d{1,5}:\d{1,5}$
                             type: string
+                          maxItems: 128
                           type: array
                         enabled:
                           description: Enabled activates VRF-to-VRF export
@@ -804,6 +1610,7 @@ spec:
                           items:
                             pattern: ^\d+:\d+:\d+$
                             type: string
+                          maxItems: 128
                           type: array
                         linuxTableId:
                           description: LinuxTableId is the target Linux routing table ID (auto-lookup from Linux VRF if not specified)
@@ -837,6 +1644,7 @@ spec:
                   required:
                   - name
                   type: object
+                maxItems: 256
                 type: array
             required:
             - global
@@ -899,9 +1707,6 @@ spec:
                   - type
                   type: object
                 type: array
-              establishedNeighbors:
-                description: EstablishedNeighbors is the count of neighbors in Established state
-                type: integer
               lastReconcileTime:
                 description: LastReconcileTime is the timestamp of the last reconciliation
                 format: date-time

@@ -66,7 +66,7 @@ Field | Type | Default | Description
 `asn` | int | Required | Local Autonomous System Number. Use a private ASN from 64512-65534.
 `routerID` | string | Auto-detect | BGP router identifier. Leave empty for auto-detection from the node's internal IPv4 address, or set explicitly for multi-homed nodes.
 `listenPort` | int | `179` | BGP listen port.
-`families` | string array | Required | Address families to enable: `"ipv4-unicast"`, `"ipv6-unicast"`.
+`families` | string array | `ipv4-unicast`, `ipv6-unicast` | Global address families. Optional: omit it to keep both IPv4 and IPv6 unicast. Values are lowercase and case-sensitive. A list without `ipv6-unicast` turns IPv6 advertisement off for every Service.
 
 ### Router ID Options
 
@@ -113,10 +113,10 @@ Field | Description
 `config.peerAsn` | Peer's ASN (required, must differ from local `asn` for eBGP)
 `config.description` | Human-readable description
 `afiSafis` | Address families to negotiate with this peer
-`timers.holdTime` | BGP hold time (default: 90s)
-`timers.keepaliveInterval` | Keepalive interval (default: 30s)
+`timers.config.holdTime` | BGP hold time (default: 90s). Changing it resets the session
+`timers.config.keepaliveInterval` | Keepalive interval (default: 30s). Changing it resets the session
 `transport.passiveMode` | Wait for peer to initiate (default: false)
-`authPasswordSecretRef` | Reference to a Secret containing the BGP authentication password
+`config.authPasswordSecretRef` | Reference to a Secret containing the BGP authentication password
 `nodeSelector` | Kubernetes label selector to limit which nodes peer with this neighbor
 
 ### Node-Specific Peers
@@ -156,10 +156,10 @@ k8gobgp writes a `BGPNodeStatus` CR per node, reporting:
 - Health status
 - Last error messages
 
-Check status with:
+BGPNodeStatus is cluster-scoped (one per node, no namespace). Check status with:
 
 ```sh
-kubectl get bgpnodestatus -n purelb-system
+kubectl get bgpnodestatus
 kubectl purelb bgp sessions
 ```
 
@@ -187,6 +187,48 @@ kubectl purelb gobgp neighbor
 kubectl purelb gobgp global rib
 ```
 
+## Metrics & Health Checks
+
+The k8gobgp sidecar runs two processes, and each serves its own metrics:
+
+| Endpoint | Served by | Metrics |
+|----------|-----------|---------|
+| `http://<node-ip>:7473/metrics` | k8gobgp controller | `k8gobgp_*`: reconciliation, configuration, router ID |
+| `http://<node-primary-ip>:7475/metrics` | gobgpd | `bgp_*`: global RIB size; per-peer session state, messages and routes; BFD; netlink |
+| `http://<node-ip>:7474/healthz` | k8gobgp controller | Liveness |
+| `http://<node-ip>:7474/readyz` | k8gobgp controller | Readiness: gobgpd answers a `GetBgp` request |
+
+gobgpd listens on the node's primary address only (the first InternalIP). The
+Helm chart can create a ServiceMonitor for both metrics endpoints:
+`Prometheus.gobgp.serviceMonitor.enabled`.
+
+### Key Metrics
+
+Metric | Port | Labels | Description
+-------|------|--------|------------
+`k8gobgp_gobgpd_connection_status` | 7473 | `endpoint` | 1 if the controller can reach gobgpd, 0 otherwise
+`k8gobgp_configured_objects` | 7473 | `kind`, `name`, `namespace` | Objects from the BGPConfiguration pushed to this node's gobgpd, by `kind` (`neighbor`, `peer_group`, `dynamic_neighbor`, `vrf`, `policy`, `defined_set`)
+`k8gobgp_peer_apply_errors_total` | 7473 | `key`, `op` | Peers gobgpd refused. A refused peer never appears in the `bgp_*` metrics, so this is the only place it shows
+`k8gobgp_global_restart_required` | 7473 | `field`, `name`, `namespace` | 1 when a global setting was edited and only takes effect after the pod restarts
+`k8gobgp_nodestatus_write_total` | 7473 | `result` | BGPNodeStatus writes (`success`, `error`, `skipped`)
+`bgp_peer_state` | 7475 | `peer`, `session_state`, `admin_state` | 1 per peer, labelled with its state. Established peers: `count(bgp_peer_state{session_state="SESSION_STATE_ESTABLISHED"})`
+`bgp_rib_paths` | 7475 | `route_family` | Paths in the global RIB per family (`route_family="ipv4-unicast"`, `"ipv6-unicast"`), including PureLB's own routes, which the per-peer `bgp_routes_*` don't count until a session advertises them
+`bgp_routes_advertised` | 7475 | `peer`, `route_family` | Routes sent to each peer (`route_family="ipv4-unicast"`, `"ipv6-unicast"`)
+`bgp_routes_received`, `bgp_routes_accepted` | 7475 | `peer`, `route_family` | Routes from each peer, before and after import policy
+
+The full list, ready-made queries, a scrape-time filter for 7475 and alert
+rules are in k8gobgp's [metrics documentation](https://github.com/purelb/k8gobgp/blob/v0.2.7/docs/metrics.md),
+[alerts](https://github.com/purelb/k8gobgp/blob/v0.2.7/docs/alerting/k8gobgp-alerts.yaml)
+and [PodMonitors](https://github.com/purelb/k8gobgp/blob/v0.2.7/docs/monitoring/podmonitors.yaml).
+Upgrading from k8gobgp v0.2.4 renames or removes several metrics; see the
+[v0.17.0 migration guide]({{< relref "/docs/migration/v0-17-0" >}}).
+
+### Health Checks
+
+`/readyz` reports whether gobgpd is answering. It does **not** report BGP
+sessions: a pod can be Ready with no session established. Watch
+`bgp_peer_state` for sessions.
+
 ## Complete BGPConfiguration CRD Reference
 
 This page covers the most common configuration fields. The BGPConfiguration CRD supports additional features including policy definitions, VRFs, route reflector configuration, graceful restart, and netlink export rules.
@@ -194,7 +236,7 @@ This page covers the most common configuration fields. The BGPConfiguration CRD 
 For the complete CRD field definitions, see the [k8gobgp repository](https://github.com/purelb/k8gobgp) and the CRD schema installed in your cluster:
 
 ```sh
-kubectl explain bgpconfiguration.spec
-kubectl explain bgpconfiguration.spec.neighbors
-kubectl explain bgpconfiguration.spec.netlinkImport
+kubectl explain bgpconfig.spec
+kubectl explain bgpconfig.spec.neighbors
+kubectl explain bgpconfig.spec.netlinkImport
 ```

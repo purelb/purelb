@@ -156,7 +156,7 @@ Field | Type | Default | Description
 `asn` | int32 | Required | Local Autonomous System Number
 `routerID` | string | Auto-detect | BGP router identifier. Empty for auto-detection, explicit IP, or template variable (`${NODE_IP}`)
 `listenPort` | int32 | `179` | BGP listen port
-`families` | []string | Required | Address families: `"ipv4-unicast"`, `"ipv6-unicast"`
+`families` | []string | `ipv4-unicast`, `ipv6-unicast` | Global address families. Optional: omit it to keep both. Lowercase, case-sensitive
 `listenAddresses` | []string | | IPs to listen on
 `gracefulRestart` | object | | Graceful restart configuration
 
@@ -176,8 +176,8 @@ Field | Type | Description
 `config.description` | string | Human-readable description
 `config.authPasswordSecretRef` | object | Reference to Secret with BGP auth password
 `afiSafis` | []object | Per-family configuration (family, enabled)
-`timers.holdTime` | int | BGP hold time (seconds)
-`timers.keepaliveInterval` | int | Keepalive interval (seconds)
+`timers.config.holdTime` | int | BGP hold time (seconds). Changing it resets the session
+`timers.config.keepaliveInterval` | int | Keepalive interval (seconds). Changing it resets the session
 `transport.passiveMode` | bool | Wait for peer to initiate
 `nodeSelector` | LabelSelector | Limit which nodes peer with this neighbor
 
@@ -186,7 +186,7 @@ Field | Type | Description
 ## BGPNodeStatus
 
 **API Version:** `bgp.purelb.io/v1`
-**Scope:** Namespaced
+**Scope:** Cluster
 
 Read-only status resource written by k8gobgp per node.
 

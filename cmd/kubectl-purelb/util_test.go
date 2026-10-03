@@ -15,7 +15,9 @@
 package main
 
 import (
+	"fmt"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -246,4 +248,31 @@ func TestElectionHashMatchesPureLB(t *testing.T) {
 		w2 := electionWinner(tt.key, reversed)
 		assert.Equal(t, w1, w2, "order independence failed for key %s", tt.key)
 	}
+}
+
+// TestRibAdvertisedTo: k8gobgp v0.2.5+ caps advertisedTo at 16 and gives
+// the real total in advertisedToCount; v0.2.4 status has only the list.
+// Counts arrive as int64 from the dynamic client, so the fixtures use
+// int64 too -- a plain int would read as absent and pass via the fallback.
+func TestRibAdvertisedTo(t *testing.T) {
+	peers := make([]interface{}, 16)
+	for i := range peers {
+		peers[i] = fmt.Sprintf("10.0.0.%d", i+1)
+	}
+
+	list, count := ribAdvertisedTo(map[string]interface{}{
+		"advertisedTo": peers, "advertisedToCount": int64(20),
+	})
+	assert.Len(t, list, 16)
+	assert.Equal(t, int64(20), count, "capped list: count comes from advertisedToCount")
+	assert.True(t, strings.HasSuffix(formatAdvertisedTo(list, count), " (+4 more)"))
+
+	list, count = ribAdvertisedTo(map[string]interface{}{
+		"advertisedTo": []interface{}{"10.0.0.1", "10.0.0.2"},
+	})
+	assert.Equal(t, int64(2), count, "v0.2.4 status: count falls back to the list length")
+	assert.Equal(t, "10.0.0.1, 10.0.0.2", formatAdvertisedTo(list, count))
+
+	list, count = ribAdvertisedTo(map[string]interface{}{"advertisedToCount": int64(0)})
+	assert.Equal(t, "(not advertised)", formatAdvertisedTo(list, count))
 }

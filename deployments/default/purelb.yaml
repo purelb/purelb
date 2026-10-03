@@ -224,6 +224,14 @@ metadata:
   name: lbnodeagent
   namespace: purelb-system
 spec:
+  # Pace rollouts: each new pod gets 30s to re-establish its BGP sessions
+  # before the next node restarts. Readiness can't gate this; it doesn't
+  # track sessions.
+  minReadySeconds: 30
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: purelb

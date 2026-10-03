@@ -4,7 +4,9 @@ description: "Complete reference for all PureLB Prometheus metrics."
 weight: 30
 ---
 
-All metrics use the `purelb` namespace. Metrics are exposed on port 7472 at `/metrics` on both the Allocator and LBNodeAgent pods.
+This reference covers metrics in the `purelb` namespace, exposed on port 7472 at `/metrics` on both the Allocator and LBNodeAgent pods.
+
+The k8gobgp sidecar serves two more endpoints: the k8gobgp controller's `k8gobgp_*` metrics on port 7473, and gobgpd's own `bgp_*` metrics (per-peer sessions and routes) on port 7475. See [Metrics & Health Checks]({{< relref "/docs/configuration/bgp#metrics--health-checks" >}}) in the BGP configuration guide.
 
 ## Labeling Conventions
 

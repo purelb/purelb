@@ -80,9 +80,19 @@ helm install --create-namespace --namespace=purelb-system \
 > the CRD API version and namespace changed — follow the
 > [Migration guide]({{< relref "/docs/migration" >}}) instead.
 
+Helm installs the chart's CRDs on first install but **never upgrades them**.
+Apply the new release's CRDs first, then upgrade the chart. Without this the
+cluster keeps the old CRD schemas, and the API server silently drops fields the
+new release relies on:
+
 ```sh
+VERSION=v0.17.0   # the release you are upgrading to
+kubectl apply --server-side --force-conflicts \
+    -f https://github.com/purelb/purelb/releases/download/${VERSION}/install-crds-${VERSION}.yaml
 helm repo update
-helm upgrade --namespace=purelb-system purelb purelb/purelb
+helm upgrade --namespace=purelb-system purelb purelb/purelb --version ${VERSION}
 ```
+
+Use `install-crds-nobgp-${VERSION}.yaml` if you installed with `gobgp.enabled=false`.
 
 Existing services retain their allocated addresses during the upgrade.

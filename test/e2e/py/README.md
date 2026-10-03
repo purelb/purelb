@@ -384,19 +384,20 @@ surfacing as sixteen mysterious route failures. Every test needs
 
 | Test | Asserts |
 |---|---|
-| `test_the_router_is_peered_with_every_node` | Established sessions with all of them, before anything else runs |
-| `test_the_router_learns_a_host_route_via_every_node` ×2 — `IPv4`, `IPv6` | A VIP becomes a /32 (or /128) in the RIB, ECMP over all nodes |
+| `test_the_router_is_peered_with_every_node` `[bgp]` | Established sessions with all of them; gobgpd's `bgp_peer_state` agrees with the router |
+| `test_the_router_learns_a_host_route_via_every_node` `[bgp]` ×2 — `IPv4`, `IPv6` | A VIP becomes a /32 (or /128) in the RIB, ECMP over all nodes; every node's gobgpd advertises more routes |
 | `test_the_advertised_prefix_length_matches_the_aggregation` ×2 — `host-route`, `subnet-aggregate` | Aggregation decides what the router learns, which is the point of it |
-| `test_deleting_the_service_withdraws_the_route` | The route goes when the Service does |
-| `test_losing_a_node_drops_only_its_next_hop` `[multi-node]` | One node down means one next-hop fewer, not a withdrawn route |
-| `test_etp_local_narrows_the_next_hops_to_endpoint_nodes` | ETP Local is visible in the RIB, not only on the interfaces |
+| `test_deleting_the_service_withdraws_the_route` `[bgp]` ×2 — `IPv4`, `IPv6` | The route goes when the Service does; `bgp_rib_paths` rises with it and gobgpd's advertised count falls back |
+| `test_losing_a_node_drops_only_its_next_hop` `[multi-node]` ×2 — `IPv4`, `IPv6` | One node down means one next-hop fewer, not a withdrawn route |
+| `test_etp_local_narrows_the_next_hops_to_endpoint_nodes` ×2 — `IPv4`, `IPv6` | ETP Local is visible in the RIB, not only on the interfaces |
 | `test_two_services_sharing_an_address_produce_one_route` | A shared address is one route, and it survives losing one holder |
 | `test_the_vip_is_reachable_from_outside_the_cluster` ×2 — `IPv4`, `IPv6` | Traffic from off-cluster follows the advertised route to a pod — the only end-to-end proof in the suite |
-| `test_etp_local_next_hops_track_the_endpoint_count` | Scale the backend and the router's next-hops follow |
+| `test_etp_local_next_hops_track_the_endpoint_count` ×2 — `IPv4`, `IPv6` | Scale the backend and the router's next-hops follow |
 | `test_aggregation_advertises_one_prefix_and_not_the_other` ×2 — `host-route-only`, `aggregate-only` | The prefix that was asked for, and **not** the one that was not |
 | `test_an_aggregate_route_survives_losing_one_of_its_services` | With `default` aggregation, two Services share one /24 route |
 | `test_a_withdrawn_vip_stops_serving_from_outside` | Withdrawal has to actually stop traffic, not just tidy the RIB |
-| `test_next_hops_are_restored_when_a_node_comes_back` `[multi-node]` | Recovery, not just failure |
+| `test_next_hops_are_restored_when_a_node_comes_back` `[multi-node]` ×2 — `IPv4`, `IPv6` | Recovery, not just failure |
+| `test_gobgp_reports_no_collection_or_connection_errors` `[bgp]` | Nothing in the module moved k8gobgp's collection, connection or peer-apply error counters (baseline taken by the first test) |
 
 ### Features that cut across both modes
 
@@ -511,6 +512,7 @@ cluster; 7 do.
 | `test_pod_resolution_is_exact` | One node resolves to exactly one pod, by field selector |
 | `test_allocator_metrics_scrape` | The allocator scrape works and looks like PureLB |
 | `test_agent_metrics_scrape` | An lbnodeagent scrape works and its lease is healthy |
+| `test_gobgp_metrics_scrape` `[bgp]` | Both sidecar endpoints answer (7473 `k8gobgp_*`, 7475 gobgpd `bgp_*`), health endpoints respond, and gobgpd logged no listener failure |
 | `test_logs_are_windowed` | Reading with a window must not return the whole history |
 | `test_capability_probe_agrees_with_the_cluster` `[multi-node]` | The probe's `multi-node` verdict matches the node count |
 | `test_router_reachable_and_faces_the_pool_subnet` `[router]` | The router answers and has a real interface on the node subnet |
@@ -589,6 +591,7 @@ tests with `@pytest.mark.requires(...)`:
 | `ipv6` | a node carries a non-link-local IPv6 address |
 | `dual-homed` | a node has more than one `eth*` interface |
 | `router` | `--router-host` was given and `tcpdump` is present on it |
+| `bgp` | the k8gobgp sidecar answers on 7473. Every router BGP test needs it, so release runs should pass `--require bgp` |
 
 A missing capability skips, and the skip is listed at the end of the run.
 `--require multi-subnet,ipv6` turns those two into failures instead.

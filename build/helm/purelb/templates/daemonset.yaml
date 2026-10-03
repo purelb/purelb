@@ -8,6 +8,11 @@ metadata:
   name: lbnodeagent
   namespace: {{ .Release.Namespace }}
 spec:
+  minReadySeconds: {{ .Values.lbnodeagent.minReadySeconds }}
+  {{- with .Values.lbnodeagent.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "purelb.selectorLabels" . | nindent 6 }}
@@ -71,13 +76,21 @@ spec:
           {{- toYaml . | nindent 10 }}
         {{- end }}
         {{- if .Values.gobgp.enabled }}
-        volumeMounts:
-        - name: gobgp-socket
-          mountPath: /var/run/gobgp
       - name: k8gobgp
         image: "{{ .Values.gobgp.image.repository }}:{{ .Values.gobgp.image.tag }}"
         imagePullPolicy: {{ .Values.gobgp.image.pullPolicy }}
         env:
+        # Under hostNetwork this is the node's primary address. gobgpd
+        # serves its own metrics (bgp_*) on it, port 7475.
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        # Bracketed so an IPv6 node address forms a valid host:port;
+        # k8gobgp's entrypoint builds "${NODE_IP}:7475" unbracketed, which
+        # fails to bind on IPv6. Must follow NODE_IP, which it expands.
+        - name: GOBGP_METRICS_HOST
+          value: "[$(NODE_IP)]:7475"
         - name: NODE_NAME
           valueFrom:
             fieldRef:
@@ -90,11 +103,26 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        - name: USE_UNIX_SOCKET
+          value: "true"
+        - name: GOBGP_SOCKET
+          value: "/var/run/gobgp/gobgp.sock"
+        - name: GOBGP_TARGET
+          value: "unix:///var/run/gobgp/gobgp.sock"
+        - name: PATH
+          value: "/usr/local/bin:/usr/bin:/bin:/sbin"
+        # Port names follow upstream k8gobgp, so its PodMonitors work.
         ports:
+        - containerPort: 179
+          hostPort: 179
+          name: bgp
+          protocol: TCP
         - containerPort: 7473
+          name: metrics
+        - containerPort: 7475
           name: gobgp-metrics
         - containerPort: 7474
-          name: gobgp-health
+          name: health
         startupProbe:
           httpGet:
             path: /readyz
@@ -102,14 +130,22 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 5
           failureThreshold: 12
+          # /readyz now asks gobgpd (GetBgp, up to 3s); kubelet's 1s default
+          # would fail it whenever gobgpd is briefly busy.
+          timeoutSeconds: 5
         livenessProbe:
           httpGet:
             path: /healthz
             port: 7474
+          initialDelaySeconds: 15
+          periodSeconds: 20
         readinessProbe:
           httpGet:
             path: /readyz
             port: 7474
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
         {{- with .Values.gobgp.containerSecurityContext }}
         securityContext:
           {{- toYaml . | nindent 10 }}
@@ -121,6 +157,8 @@ spec:
         volumeMounts:
         - name: gobgp-socket
           mountPath: /var/run/gobgp
+        - name: tmp
+          mountPath: /tmp
         {{- end }}
       hostNetwork: true
       nodeSelector:
@@ -145,5 +183,7 @@ spec:
       {{- if .Values.gobgp.enabled }}
       volumes:
       - name: gobgp-socket
+        emptyDir: {}
+      - name: tmp
         emptyDir: {}
       {{- end }}

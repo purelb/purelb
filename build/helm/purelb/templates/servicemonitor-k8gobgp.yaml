@@ -1,0 +1,39 @@
+{{- if and (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") .Values.gobgp.enabled .Values.Prometheus.gobgp.serviceMonitor.enabled }}
+# Scrapes the k8gobgp sidecar's two endpoints. The node label matches
+# upstream k8gobgp's alert rules, which join the two endpoints on it.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: k8gobgp-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+    {{- if .Values.Prometheus.gobgp.serviceMonitor.extraLabels }}
+    {{ toYaml .Values.Prometheus.gobgp.serviceMonitor.extraLabels | nindent 4 }}
+    {{- end }}
+spec:
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: {{ .Values.Prometheus.gobgp.serviceMonitor.interval }}
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_node_name]
+      targetLabel: node
+  - port: gobgp-metrics
+    path: /metrics
+    interval: {{ .Values.Prometheus.gobgp.serviceMonitor.interval }}
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_node_name]
+      targetLabel: node
+    {{- with .Values.Prometheus.gobgp.serviceMonitor.gobgpdMetricRelabelings }}
+    metricRelabelings:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  namespaceSelector:
+    matchNames:
+    - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: k8gobgp
+{{- end }}
