@@ -193,8 +193,8 @@ The k8gobgp sidecar runs two processes, and each serves its own metrics:
 
 | Endpoint | Served by | Metrics |
 |----------|-----------|---------|
-| `http://<node-ip>:7473/metrics` | k8gobgp controller | `k8gobgp_*`: reconciliation, configuration, RIB size, router ID |
-| `http://<node-primary-ip>:7475/metrics` | gobgpd | `bgp_*`: per-peer session state, messages and routes; BFD; netlink |
+| `http://<node-ip>:7473/metrics` | k8gobgp controller | `k8gobgp_*`: reconciliation, configuration, router ID |
+| `http://<node-primary-ip>:7475/metrics` | gobgpd | `bgp_*`: global RIB size; per-peer session state, messages and routes; BFD; netlink |
 | `http://<node-ip>:7474/healthz` | k8gobgp controller | Liveness |
 | `http://<node-ip>:7474/readyz` | k8gobgp controller | Readiness: gobgpd answers a `GetBgp` request |
 
@@ -208,21 +208,18 @@ Metric | Port | Labels | Description
 -------|------|--------|------------
 `k8gobgp_gobgpd_connection_status` | 7473 | `endpoint` | 1 if the controller can reach gobgpd, 0 otherwise
 `k8gobgp_configured_objects` | 7473 | `kind`, `name`, `namespace` | Objects from the BGPConfiguration pushed to this node's gobgpd, by `kind` (`neighbor`, `peer_group`, `dynamic_neighbor`, `vrf`, `policy`, `defined_set`)
-`k8gobgp_rib_routes` | 7473 | `family` | Routes in the local RIB (`family="ipv4_unicast"`, `"ipv6_unicast"`). Polled every 60s
 `k8gobgp_peer_apply_errors_total` | 7473 | `key`, `op` | Peers gobgpd refused. A refused peer never appears in the `bgp_*` metrics, so this is the only place it shows
 `k8gobgp_global_restart_required` | 7473 | `field`, `name`, `namespace` | 1 when a global setting was edited and only takes effect after the pod restarts
 `k8gobgp_nodestatus_write_total` | 7473 | `result` | BGPNodeStatus writes (`success`, `error`, `skipped`)
 `bgp_peer_state` | 7475 | `peer`, `session_state`, `admin_state` | 1 per peer, labelled with its state. Established peers: `count(bgp_peer_state{session_state="SESSION_STATE_ESTABLISHED"})`
+`bgp_rib_paths` | 7475 | `route_family` | Paths in the global RIB per family (`route_family="ipv4-unicast"`, `"ipv6-unicast"`), including PureLB's own routes, which the per-peer `bgp_routes_*` don't count until a session advertises them
 `bgp_routes_advertised` | 7475 | `peer`, `route_family` | Routes sent to each peer (`route_family="ipv4-unicast"`, `"ipv6-unicast"`)
 `bgp_routes_received`, `bgp_routes_accepted` | 7475 | `peer`, `route_family` | Routes from each peer, before and after import policy
 
-The two endpoints spell the family differently: `family="ipv4_unicast"` on 7473,
-`route_family="ipv4-unicast"` on 7475.
-
 The full list, ready-made queries, a scrape-time filter for 7475 and alert
-rules are in k8gobgp's [metrics documentation](https://github.com/purelb/k8gobgp/blob/v0.2.6/docs/metrics.md),
-[alerts](https://github.com/purelb/k8gobgp/blob/v0.2.6/docs/alerting/k8gobgp-alerts.yaml)
-and [PodMonitors](https://github.com/purelb/k8gobgp/blob/v0.2.6/docs/monitoring/podmonitors.yaml).
+rules are in k8gobgp's [metrics documentation](https://github.com/purelb/k8gobgp/blob/v0.2.7/docs/metrics.md),
+[alerts](https://github.com/purelb/k8gobgp/blob/v0.2.7/docs/alerting/k8gobgp-alerts.yaml)
+and [PodMonitors](https://github.com/purelb/k8gobgp/blob/v0.2.7/docs/monitoring/podmonitors.yaml).
 Upgrading from k8gobgp v0.2.4 renames or removes several metrics; see the
 [v0.17.0 migration guide]({{< relref "/docs/migration/v0-17-0" >}}).
 

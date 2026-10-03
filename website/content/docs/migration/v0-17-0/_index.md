@@ -123,9 +123,9 @@ first write.
 No action is required — the node agents rewrite the annotation as they
 reconcile — but anything parsing it needs updating.
 
-## BGP: k8gobgp v0.2.6
+## BGP: k8gobgp v0.2.7
 
-v0.17.0 ships k8gobgp v0.2.6 (from v0.2.4). It moves to gobgp-netlink v1.3.6
+v0.17.0 ships k8gobgp v0.2.7 (from v0.2.4). It moves to gobgp-netlink v1.3.7
 and changes metrics, validation and some behaviour. Remote pools without BGP are
 unaffected.
 
@@ -136,7 +136,7 @@ remote-VIP traffic to that VIP's address, which breaks when the VIP moves.
 
 ### Check your BGPConfiguration before upgrading
 
-v0.2.6's CRD validates more strictly, and some fields that v0.2.4 accepted and
+v0.2.7's CRD validates more strictly, and some fields that v0.2.4 accepted and
 **ignored** now take effect. Run this before applying the new CRDs:
 
 ```bash
@@ -221,20 +221,23 @@ v0.2.4 (port 7473) | v0.17.0
 `k8gobgp_neighbors_established{name,namespace}` | removed (it was always 0); use the line above
 `k8gobgp_neighbors_total`, `_active`, `_idle` | `count(bgp_peer_state)`, by `session_state` (7475)
 `k8gobgp_neighbors_configured`, `k8gobgp_peer_groups_configured`, `k8gobgp_dynamic_neighbors_configured`, `k8gobgp_vrfs_configured`, `k8gobgp_policies_configured`, `k8gobgp_defined_sets_configured` | `k8gobgp_configured_objects{kind="neighbor"\|"peer_group"\|"dynamic_neighbor"\|"vrf"\|"policy"\|"defined_set"}`
-`k8gobgp_rib_route_count{family}` | `k8gobgp_rib_routes{family}` (same `family` values)
+`k8gobgp_rib_route_count{family}` | `bgp_rib_paths{route_family}` (7475, `route_family="ipv4-unicast"`)
 `k8gobgp_routes_received_total`, `_accepted_total`, `_advertised_total` | `sum(bgp_routes_received)`, `sum(bgp_routes_accepted)`, `sum(bgp_routes_advertised)` (7475, labelled `peer`, `route_family`)
 `k8gobgp_neighbor_routes_*{neighbor,family}` | `bgp_routes_*{peer,route_family}` (7475)
 `k8gobgp_router_id_source{source}` | `count by (source) (k8gobgp_router_id_info)`
 `k8gobgp_nodestatus_last_successful_write_timestamp` | `k8gobgp_nodestatus_last_successful_write_timestamp_seconds`
 `k8gobgp_metrics_collection_skipped_total`, `k8gobgp_metrics_cardinality_limit_hit_total` | removed
+`k8gobgp_metrics_collection_errors_total`, `k8gobgp_metrics_collection_duration_seconds` | removed: there is no polling loop any more. A RIB family gobgpd can't read is counted in `promhttp_metric_handler_errors_total{cause="gathering"}` (7475)
 
-Label values differ between the ports: `family="ipv4_unicast"` on 7473,
-`route_family="ipv4-unicast"` on 7475. `k8gobgp_router_id_info` gained `name`
+Family labels on 7475 are spelled with hyphens: `route_family="ipv4-unicast"`
+(v0.2.4 used `family="ipv4_unicast"`). `k8gobgp_router_id_info` gained `name`
 and `namespace` labels. New on 7473: `k8gobgp_peer_apply_errors_total` (a peer
 gobgpd refused) and `k8gobgp_global_restart_required`.
 
-The k8gobgp metrics poll interval is now 60s (was 15s), so `k8gobgp_rib_routes`
-lags by up to a minute; the `bgp_*` metrics on 7475 are at most 15s old.
+All RIB and per-peer counts now come from gobgpd on 7475 and are at most 15s
+old (gobgpd caches its collector for 15s). The k8gobgp controller no longer
+polls gobgpd, so its `--metrics-poll-interval` flag is gone: if you added it to
+the sidecar's arguments by hand, remove it, or the container exits at startup.
 
 **Port names changed** to match upstream k8gobgp: 7473 is now `metrics` (was
 `gobgp-metrics`), 7474 is `health` (was `gobgp-health`), and the new 7475 is
@@ -269,7 +272,7 @@ kubectl apply -f lbnodeagents-pre-0.17.yaml
 
 **Roll back the BGP CRDs together with the workloads.** The v0.16.x manifests
 carry k8gobgp v0.2.4's CRDs; re-apply them along with the v0.16.x workloads.
-A v0.2.4 sidecar running against v0.2.6's CRDs cannot write an unhealthy
+A v0.2.4 sidecar running against v0.2.7's CRDs cannot write an unhealthy
 node's BGPNodeStatus (`healthy` is now required), so `kubectl get
 bgpnodestatus` would keep showing the last healthy state. Fields added in
 v0.2.5 and later (for example `ebgpMaximumPaths`) are dropped by the older CRD.
