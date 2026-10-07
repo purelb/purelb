@@ -117,35 +117,54 @@ Field | Description
 `timers.config.keepaliveInterval` | Keepalive interval (default: 30s). Changing it resets the session
 `transport.passiveMode` | Wait for peer to initiate (default: false)
 `config.authPasswordSecretRef` | Reference to a Secret containing the BGP authentication password
-`nodeSelector` | Kubernetes label selector to limit which nodes peer with this neighbor
+`nodeSelector` | Node label selector choosing which nodes peer with this neighbor. Used to configure a different peer for each subnet in one configuration; see [Peers on multiple subnets](#peers-on-multiple-subnets)
 
-### Node-Specific Peers
+### Peers on multiple subnets
 
-Use `nodeSelector` to peer different nodes with different routers (e.g., in a multi-rack topology):
+When the cluster's nodes are on more than one subnet, each subnet usually has its own router address, and each node must peer with the router on its own subnet. `nodeSelector` lets a single BGPConfiguration hold all of those peers:
+
+1. List one neighbor per subnet.
+2. Label each node with its subnet.
+3. Give each neighbor a `nodeSelector` that matches the label of the nodes on its subnet.
+
+Each node then peers only with the neighbor whose selector matches its labels.
+
+The labels are your own. k8gobgp doesn't set them or require any particular key: it only matches each neighbor's selector against the node's labels. A neighbor without a `nodeSelector` applies to every node, so a cluster on a single subnet needs neither the selector nor the labels.
+
+```sh
+kubectl label node node-1 node-2 subnet=a   # nodes on 192.0.2.0/24
+kubectl label node node-3 node-4 subnet=b   # nodes on 198.51.100.0/24
+```
 
 ```yaml
 neighbors:
 - config:
-    neighborAddress: "10.1.1.1"
+    neighborAddress: "192.0.2.1"      # router on subnet a
     peerAsn: 65001
-    description: "Rack 1 TOR"
+    description: "Router, subnet a"
   nodeSelector:
     matchLabels:
-      topology.kubernetes.io/zone: rack-1
+      subnet: a
   afiSafis:
   - family: "ipv4-unicast"
+    enabled: true
+  - family: "ipv6-unicast"
     enabled: true
 - config:
-    neighborAddress: "10.2.1.1"
+    neighborAddress: "198.51.100.1"   # router on subnet b
     peerAsn: 65001
-    description: "Rack 2 TOR"
+    description: "Router, subnet b"
   nodeSelector:
     matchLabels:
-      topology.kubernetes.io/zone: rack-2
+      subnet: b
   afiSafis:
   - family: "ipv4-unicast"
     enabled: true
+  - family: "ipv6-unicast"
+    enabled: true
 ```
+
+A node whose labels match none of the selectors has no BGP session. k8gobgp reports this with a `NoMatchingNeighbors` Warning event on the BGPConfiguration. Changing a node's labels adds or drops its session immediately.
 
 ## BGPNodeStatus
 
@@ -217,9 +236,9 @@ Metric | Port | Labels | Description
 `bgp_routes_received`, `bgp_routes_accepted` | 7475 | `peer`, `route_family` | Routes from each peer, before and after import policy
 
 The full list, ready-made queries, a scrape-time filter for 7475 and alert
-rules are in k8gobgp's [metrics documentation](https://github.com/purelb/k8gobgp/blob/v0.2.7/docs/metrics.md),
-[alerts](https://github.com/purelb/k8gobgp/blob/v0.2.7/docs/alerting/k8gobgp-alerts.yaml)
-and [PodMonitors](https://github.com/purelb/k8gobgp/blob/v0.2.7/docs/monitoring/podmonitors.yaml).
+rules are in k8gobgp's [metrics documentation](https://github.com/purelb/k8gobgp/blob/v0.2.8/docs/metrics.md),
+[alerts](https://github.com/purelb/k8gobgp/blob/v0.2.8/docs/alerting/k8gobgp-alerts.yaml)
+and [PodMonitors](https://github.com/purelb/k8gobgp/blob/v0.2.8/docs/monitoring/podmonitors.yaml).
 Upgrading from k8gobgp v0.2.4 renames or removes several metrics; see the
 [v0.17.0 migration guide]({{< relref "/docs/migration/v0-17-0" >}}).
 

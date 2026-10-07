@@ -538,6 +538,119 @@ class Router:
             ssh(self.host, f"sudo rm -f {path} {path}.pid", check=False)
 
 
+    # ------------------------------------------------------------ probes
+    #
+    # Address guard assertions must come from off the cluster: a node
+    # reaching a VIP takes a local path that never crosses the uplink the
+    # guard sits on.
+
+    def tcp_open(self, address: str, port: int, timeout: int = 3) -> bool:
+        """Whether a TCP connection to address:port completes from the router.
+
+        A port the guard drops times out and a closed one is refused; both
+        are False. Tell them apart with the guard's drop counters.
+        """
+        out = ssh(self.host,
+                  f"nc -z -w {timeout} {shlex.quote(address)} {int(port)} >/dev/null 2>&1 "
+                  f"&& echo OPEN || echo closed", check=False)
+        return out.strip() == "OPEN"
+
+    def http_status(self, address: str, path: str = "/", timeout: int = 10,
+                    netns: Optional[str] = None, port: int = 80) -> Tuple[int, int]:
+        """(HTTP status, bytes received) for a GET from the router, or from
+        a network namespace on it. Status 0 means no response."""
+        host = f"[{address}]:{int(port)}" if ":" in address else f"{address}:{int(port)}"
+        prefix = f"sudo ip netns exec {shlex.quote(netns)} " if netns else ""
+        out = ssh(self.host,
+                  f"{prefix}curl -s -o /dev/null -m {int(timeout)} "
+                  f"-w '%{{http_code}} %{{size_download}}' http://{host}{path} || true",
+                  timeout=timeout + 30, check=False).split()
+        try:
+            return int(out[0]), int(out[1])
+        except (IndexError, ValueError):
+            return 0, 0
+
+    def ping(self, address: str) -> bool:
+        flag = "-6" if ":" in address else "-4"
+        out = ssh(self.host, f"ping {flag} -c 1 -W 2 {shlex.quote(address)} >/dev/null 2>&1 "
+                             f"&& echo ok || echo fail", check=False)
+        return out.strip() == "ok"
+
+    def send_icmp(self, address: str, icmp_type: int, count: int = 1) -> None:
+        """Send `count` raw ICMP (IPv4) or ICMPv6 messages of `icmp_type`,
+        code 0, to address. For types `ping` cannot send."""
+        script = f"""
+import socket, struct
+v6 = {":" in address!r}
+def csum(b):
+    b += b"\\0" * (len(b) % 2)
+    s = sum(struct.unpack("!%dH" % (len(b) // 2), b)); s = (s >> 16) + (s & 0xffff); s += s >> 16
+    return ~s & 0xffff
+m = struct.pack("!BBHI", {int(icmp_type)}, 0, 0, 0) + bytes(16)
+if v6:
+    s = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)
+else:
+    m = m[:2] + struct.pack("!H", csum(m)) + m[4:]
+    s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+for _ in range({int(count)}):
+    s.sendto(m, ({address!r}, 0))
+"""
+        ssh(self.host, f"sudo python3 -c {shlex.quote(script)}")
+
+    def send_udp(self, address: str, port: int, count: int = 1) -> None:
+        """Send `count` small UDP datagrams to address:port, each from a
+        different source port (so ECMP spreads them across nodes)."""
+        script = f"""
+import socket
+fam = socket.AF_INET6 if {":" in address!r} else socket.AF_INET
+for i in range({int(count)}):
+    s = socket.socket(fam, socket.SOCK_DGRAM)
+    s.sendto(b"purelb-e2e", ({address!r}, {int(port)}))
+    s.close()
+"""
+        ssh(self.host, f"python3 -c {shlex.quote(script)}")
+
+    @contextlib.contextmanager
+    def pmtu_client(self, mtu: int = 1280) -> Iterator[str]:
+        """A client network namespace on the router, reached through a route
+        locked to `mtu`, so a VIP's full-size replies make the router send
+        it "fragmentation needed" / "packet too big".
+
+        The client's own MTU stays 1500, so it advertises a 1460 MSS and the
+        server really does send packets too big for the path. The nodes'
+        default route is the router, so replies reach the namespace without
+        NAT. Torn down before and after, so a crashed run leaves nothing.
+        """
+        ns, veth = "purelb-pmtu", "purelb-pmtu0"
+        v4net, v6net = "10.199.9", "fd99:9:"
+
+        def teardown() -> None:
+            ssh(self.host, f"sudo ip netns del {ns} 2>/dev/null; sudo ip link del {veth} 2>/dev/null; true",
+                check=False)
+
+        teardown()
+        ssh(self.host, " && ".join([
+            f"sudo ip netns add {ns}",
+            f"sudo ip link add {veth} type veth peer name eth0 netns {ns}",
+            f"sudo ip link set {veth} up",
+            f"sudo ip -n {ns} link set lo up",
+            f"sudo ip -n {ns} link set eth0 up",
+            f"sudo ip addr add {v4net}.1/24 dev {veth}",
+            f"sudo ip -6 addr add {v6net}:1/64 dev {veth} nodad",
+            f"sudo ip -n {ns} addr add {v4net}.2/24 dev eth0",
+            f"sudo ip -n {ns} -6 addr add {v6net}:2/64 dev eth0 nodad",
+            f"sudo ip -n {ns} route add default via {v4net}.1",
+            f"sudo ip -n {ns} -6 route add default via {v6net}:1",
+            f"sudo ip route replace {v4net}.0/24 dev {veth} mtu lock {int(mtu)}",
+            # IPv6 needs the kernel's own (metric 256) connected route
+            # replaced; a second route at another metric is never used.
+            f"sudo ip -6 route replace {v6net}:/64 dev {veth} metric 256 mtu lock {int(mtu)}",
+        ]))
+        try:
+            yield ns
+        finally:
+            teardown()
+
 @dataclass
 class Capture:
     router: Router

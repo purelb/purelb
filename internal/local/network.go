@@ -155,6 +155,48 @@ type AddressOptions struct {
 	// SkipDAD when true sets IFA_F_NODAD to skip IPv6 Duplicate Address
 	// Detection. This is an IPv6-only kernel flag, harmlessly ignored for IPv4.
 	SkipDAD bool
+	// Deprecated marks the address deprecated (preferred lifetime 0), so the
+	// host never selects it as a source address. Set for IPv6 VIPs: a host
+	// that sources traffic from a VIP gets its replies dropped by the address
+	// guard, and flannel would pick it as the node's public address.
+	Deprecated bool
+}
+
+// infiniteLifetime is the kernel's INFINITY_LIFE_TIME: an address whose
+// valid lifetime is this never expires, exactly like a permanent one.
+const infiniteLifetime = 0xFFFFFFFF
+
+// netlinkAddr builds the netlink address for lbIPNet with opts applied.
+func netlinkAddr(lbIPNet net.IPNet, opts AddressOptions) (*netlink.Addr, error) {
+	addr, err := netlink.ParseAddr(lbIPNet.String())
+	if err != nil {
+		return nil, err
+	}
+
+	addr.ValidLft = opts.ValidLft
+	addr.PreferedLft = opts.PreferedLft
+
+	if opts.Deprecated {
+		// netlink sends the lifetimes (IFA_CACHEINFO) only when one of them
+		// is non-zero, so a permanent address (ValidLft 0) with preferred 0
+		// would reach the kernel with no lifetimes at all and be added
+		// permanent and *preferred*. Spelling permanent as the kernel's
+		// infinity sends the lifetimes; the kernel then sets both
+		// IFA_F_PERMANENT and IFA_F_DEPRECATED. opts.ValidLft is left at 0
+		// so renewal scheduling still sees a permanent address.
+		addr.PreferedLft = 0
+		if addr.ValidLft == 0 {
+			addr.ValidLft = infiniteLifetime
+		}
+	}
+
+	if opts.NoPrefixRoute {
+		addr.Flags |= 0x200 // IFA_F_NOPREFIXROUTE
+	}
+	if opts.SkipDAD {
+		addr.Flags |= 0x02 // IFA_F_NODAD
+	}
+	return addr, nil
 }
 
 // addNetworkWithOptions adds lbIPNet to link with the specified options.
@@ -162,19 +204,9 @@ type AddressOptions struct {
 // IFA_F_PERMANENT on the address, which prevents CNI plugins like Flannel
 // from incorrectly selecting VIPs as node addresses.
 func addNetworkWithOptions(lbIPNet net.IPNet, link netlink.Link, opts AddressOptions) error {
-	addr, err := netlink.ParseAddr(lbIPNet.String())
+	addr, err := netlinkAddr(lbIPNet, opts)
 	if err != nil {
 		return err
-	}
-
-	addr.ValidLft = opts.ValidLft
-	addr.PreferedLft = opts.PreferedLft
-
-	if opts.NoPrefixRoute {
-		addr.Flags |= 0x200 // IFA_F_NOPREFIXROUTE
-	}
-	if opts.SkipDAD {
-		addr.Flags |= 0x02 // IFA_F_NODAD
 	}
 
 	if err := netlink.AddrReplace(link, addr); err != nil {

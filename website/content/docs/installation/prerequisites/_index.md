@@ -10,6 +10,7 @@ PureLB requires a Kubernetes cluster with:
 
 - A working [Container Network Interface](https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/) (CNI). The CNI must be operational before PureLB is installed.
 - Linux nodes. PureLB uses the Linux netlink API to configure interfaces and routes.
+- For the optional [address guard](../../configuration/address-guard/): Linux kernel 6.6 or newer, and a container runtime whose default seccomp profile allows `bpf()` for a container with the `BPF` capability (containerd 1.7 does). Without them the guard can't run: with its default `failurePolicy: closed` the affected nodes announce no addresses; with `open` they announce unfiltered.
 
 ## ARP Behavior
 

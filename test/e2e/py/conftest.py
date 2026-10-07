@@ -31,11 +31,11 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
-from typing import Dict, Iterator, List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 import pytest
 
-from purelb_e2e import backend, metrics, topology
+from purelb_e2e import backend, guard, metrics, topology
 from purelb_e2e.cluster import Cluster, utcnow
 from purelb_e2e import nodes as nodes_mod
 from purelb_e2e.nodes import Router, ssh
@@ -62,6 +62,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--show-tests", action="store_true", default=False,
                      help="print every test with its result and what it checked, "
                           "instead of only the progress dots")
+    parser.addoption("--address-guard", action="store", default=None, const="enforce", nargs="?",
+                     choices=["enforce", "monitor"], metavar="MODE",
+                     help="run the whole suite with the address guard on (enforce by "
+                          "default), so every flow doubles as a regression test under it")
     parser.addoption("--report", action="store", default=None, metavar="PATH",
                      help="write a plain-text report of every test, its result "
                           "and any failure detail, to PATH")
@@ -72,6 +76,8 @@ _CONFIG: Dict[str, object] = {}
 
 def pytest_configure(config: pytest.Config) -> None:
     _CONFIG["config"] = config
+    mode = config.getoption("--address-guard")
+    guard.configure({"mode": mode} if mode else None)
     if config.getoption("--show-tests") and config.option.verbose < 1:
         config.option.verbose = 1
     config.addinivalue_line(
@@ -223,22 +229,29 @@ def topo(cluster: Cluster, node_ips: Dict[str, str]) -> topology.Topology:
 
 
 @pytest.fixture(scope="session")
-def lbnodeagent(cluster: Cluster) -> str:
+def lbnodeagent(cluster: Cluster, node_ips: Dict[str, str], agent_metrics) -> str:
     """The default LBNodeAgent, in local mode on the detected interface.
 
     Applied rather than assumed. reset-test-cluster.sh restores one, but a
     suite that depends on an object it did not assert the shape of will
     eventually run against a drifted one -- which is how the multi-interface
     tests left a `default` agent behind that pinned a single interface.
+
+    Under --address-guard the guard must be running before the first test,
+    and its program is loaded only at agent startup: this waits for it,
+    rolling the agents once if they started without it.
     """
     cluster.apply_cr(
         {
             "apiVersion": "purelb.io/v2",
             "kind": "LBNodeAgent",
             "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
-            "spec": {"local": {"localInterface": "default", "dummyInterface": "kube-lb0"}},
+            "spec": {"local": guard.local_spec({"localInterface": "default", "dummyInterface": "kube-lb0"})},
         }
     )
+    session = guard.session_spec()
+    if session is not None:
+        settle_guard(cluster, node_ips, agent_metrics, session.get("hook", "tcx"))
     return "default"
 
 
@@ -422,7 +435,7 @@ def short_address_lifetime(cluster: Cluster, node_ips: Dict[str, str]):
                 "kind": "LBNodeAgent",
                 "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
                 "spec": {
-                    "local": {
+                    "local": guard.local_spec({
                         "localInterface": "default",
                         "dummyInterface": "kube-lb0",
                         "addressConfig": {
@@ -431,7 +444,7 @@ def short_address_lifetime(cluster: Cluster, node_ips: Dict[str, str]):
                                 "preferredLifetime": valid_lifetime,
                             }
                         },
-                    }
+                    })
                 },
             }
         )
@@ -444,9 +457,62 @@ def short_address_lifetime(cluster: Cluster, node_ips: Dict[str, str]):
             "apiVersion": "purelb.io/v2",
             "kind": "LBNodeAgent",
             "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
-            "spec": {"local": {"localInterface": "default", "dummyInterface": "kube-lb0"}},
+            "spec": {"local": guard.local_spec({"localInterface": "default", "dummyInterface": "kube-lb0"})},
         }
     )
+
+
+def settle_guard(cluster: Cluster, node_ips: Dict[str, str], agent_metrics, hook: Optional[str]) -> None:
+    """Wait for a guard config to land on every node: attached with `hook`
+    (None: attached nowhere), rolling the agents first if turning it on
+    needs a restart -- the program is loaded only at agent startup."""
+    def landed(node: str) -> bool:
+        if hook is not None and guard.needs_restart(agent_metrics(node)):
+            return True
+        return guard.applied_everywhere(agent_metrics, [node], hook)
+    wait_until(lambda: all(landed(n) for n in node_ips), timeout=60,
+               description="the address guard config to reach every node")
+    if hook is not None and any(guard.needs_restart(agent_metrics(n)) for n in node_ips):
+        guard.restart_agents(cluster, node_ips)
+    wait_until(
+        lambda: guard.applied_everywhere(agent_metrics, node_ips, hook),
+        timeout=120,
+        description=f"the address guard to be {'off' if hook is None else hook} on every node",
+    )
+
+
+@pytest.fixture
+def address_guard(cluster: Cluster, node_ips: Dict[str, str], agent_metrics, lbnodeagent: str):
+    """Switch the address guard on the `default` LBNodeAgent.
+
+    `set(mode="enforce", hook="tcx", **extra)` applies it and waits until
+    every node reports it attached with that hook (wait=False skips that,
+    for a test where the guard can't attach); the attached gauge is how a
+    test knows it has landed. The program is loaded only at agent startup,
+    so turning the guard on where it isn't loaded rolls the agents; every
+    other change applies live. `set(None)` turns it off, live. The
+    session's setting (from --address-guard) is restored afterwards.
+    """
+    def apply(guard_spec: Optional[Dict[str, Any]], wait: bool = True) -> None:
+        local = {"localInterface": "default", "dummyInterface": "kube-lb0"}
+        body_local = guard.local_spec(local, guard_spec) if guard_spec is not None else local
+        cluster.apply_cr({
+            "apiVersion": "purelb.io/v2",
+            "kind": "LBNodeAgent",
+            "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
+            "spec": {"local": body_local},
+        })
+        hook = (guard_spec or {}).get("hook", "tcx") if guard_spec is not None else None
+        if not wait:
+            return
+        settle_guard(cluster, node_ips, agent_metrics, hook)
+
+    def set_guard(mode: Optional[str] = "enforce", hook: str = "tcx", wait: bool = True, **extra: Any) -> None:
+        apply(None if mode is None else {"mode": mode, "hook": hook, **extra}, wait=wait)
+
+    yield set_guard
+
+    apply(guard.session_spec())
 
 
 @pytest.fixture

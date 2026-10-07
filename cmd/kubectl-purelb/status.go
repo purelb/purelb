@@ -34,8 +34,10 @@ type statusOverview struct {
 	Election   electionStatus  `json:"election"`
 	BGP        bgpStatus       `json:"bgp"`
 	Services   svcStatus       `json:"services"`
-	Overall    string          `json:"overall"`
-	Warnings   []string        `json:"warnings,omitempty"`
+	// AddressGuard counts nodes per address guard mode.
+	AddressGuard string   `json:"addressGuard"`
+	Overall      string   `json:"overall"`
+	Warnings     []string `json:"warnings,omitempty"`
 }
 
 type componentStatus struct {
@@ -101,6 +103,12 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 		bgpNodeStatuses: bgpnsList,
 		lbNodeAgents:    lbnaList,
 		nodes:           nodeList,
+	}
+	// The address guard's configured mode comes from the API; whether it is
+	// actually running, or waiting for a restart, only from the agents.
+	if pods != nil {
+		snap.guard = collectGuardStates(ctx, proxyMetricsFetcher(c), categorizePureLBPods(pods).lbnodeagent,
+			nodeList, decodeLBNodeAgents(lbnaList))
 	}
 	return renderStatus(snap, format)
 }
@@ -242,9 +250,12 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 	// report such a cluster as fully operational.
 	agents := decodeLBNodeAgents(snap.lbNodeAgents)
 	deselected, invalidCfg := 0, 0
+	var guardModes []string
 	if snap.nodes != nil {
 		for i := range snap.nodes.Items {
-			switch resolveNodeConfig(agents, snap.nodes.Items[i].Labels).State {
+			nc := resolveNodeConfig(agents, snap.nodes.Items[i].Labels)
+			guardModes = append(guardModes, nc.Guard)
+			switch nc.State {
 			case configStateDeselected:
 				deselected++
 			case configStateInvalid:
@@ -325,6 +336,10 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 		warnings = append(warnings, fmt.Sprintf("%d IP(s) not announced", unannouncedIPs))
 	}
 
+	// === Address guard ===
+	guardNote, guardWarnings := guardLiveSummary(snap.guard)
+	warnings = append(warnings, guardWarnings...)
+
 	// === Overall ===
 	overall := "OK"
 	if len(warnings) > 0 {
@@ -332,13 +347,14 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 	}
 
 	overview := statusOverview{
-		Components: comp,
-		Pools:      poolStatus{Summary: strings.Join(poolParts, " | ")},
-		Election:   electionStatus{Summary: electionSummaryStr},
-		BGP:        bgpStatus{Summary: bgpSummary},
-		Services:   svcStatus{Summary: fmt.Sprintf("%d services, %d IPs | %d problem(s)", totalSvcs, totalIPs, svcProblems)},
-		Overall:    overall,
-		Warnings:   warnings,
+		Components:   comp,
+		Pools:        poolStatus{Summary: strings.Join(poolParts, " | ")},
+		Election:     electionStatus{Summary: electionSummaryStr},
+		BGP:          bgpStatus{Summary: bgpSummary},
+		Services:     svcStatus{Summary: fmt.Sprintf("%d services, %d IPs | %d problem(s)", totalSvcs, totalIPs, svcProblems)},
+		AddressGuard: guardSummary(guardModes) + guardNote,
+		Overall:      overall,
+		Warnings:     warnings,
 	}
 
 	if format != outputTable {
@@ -359,6 +375,7 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 	fmt.Printf("Election:    %s\n", overview.Election.Summary)
 	fmt.Printf("BGP:         %s\n", overview.BGP.Summary)
 	fmt.Printf("Services:    %s\n", overview.Services.Summary)
+	fmt.Printf("Addr guard:  %s\n", overview.AddressGuard)
 	fmt.Println()
 
 	if overall == "OK" {

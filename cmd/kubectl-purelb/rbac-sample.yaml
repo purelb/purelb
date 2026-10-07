@@ -23,6 +23,15 @@ rules:
   - events
   - endpoints
   verbs: [get, list, watch]
+# Address guard live state (`guard`, and the guard part of `status`): read
+# each lbnodeagent's metrics through the API server's pod proxy. Without it
+# they report the live state as unavailable. pods/proxy reaches any port of
+# any pod it covers; to narrow it, bind this rule with a namespaced Role in
+# the PureLB namespace instead.
+- apiGroups: [""]
+  resources:
+  - pods/proxy
+  verbs: [get]
 - apiGroups: ["discovery.k8s.io"]
   resources:
   - endpointslices
@@ -38,6 +47,17 @@ rules:
   - servicegroups
   - lbnodeagents
   verbs: [get, list, watch]
+# Address guard checks in `validate`: the lbnodeagent capabilities and
+# whether the installed LBNodeAgent CRD knows addressGuard. Without these,
+# validate reports "unable to check" instead of failing.
+- apiGroups: ["apps"]
+  resources:
+  - daemonsets
+  verbs: [get, list]
+- apiGroups: ["apiextensions.k8s.io"]
+  resources:
+  - customresourcedefinitions
+  verbs: [get]
 # BGP CRDs
 - apiGroups: ["bgp.purelb.io"]
   resources:

@@ -516,6 +516,82 @@ type LBNodeAgentLocalSpec struct {
 	// additional subnets in the election.
 	// +optional
 	Interfaces []string `json:"interfaces,omitempty"`
+
+	// AddressGuard filters traffic addressed to PureLB VIPs on this node:
+	// only the Service's ports (plus allowed ICMP and AllowedProtocols)
+	// reach the VIP, so host services such as sshd or the kubelet are not
+	// exposed on it. Absent means disabled. The guard's program is loaded
+	// only when lbnodeagent starts with the guard configured: after adding
+	// or removing addressGuard, restart lbnodeagent. Its other settings
+	// apply live.
+	// +optional
+	AddressGuard *AddressGuardConfig `json:"addressGuard,omitempty"`
+}
+
+// AddressGuardConfig configures the address guard.
+// +kubebuilder:validation:XValidation:rule="!has(self.extraInterfaces) || !has(self.excludeInterfaces) || self.extraInterfaces.all(i, !(i in self.excludeInterfaces))",message="an interface cannot be in both extraInterfaces and excludeInterfaces"
+// +kubebuilder:validation:XValidation:rule="!has(self.extraInterfaces) || !('lo' in self.extraInterfaces)",message="lo cannot be guarded"
+type AddressGuardConfig struct {
+	// Mode is "enforce" (drop traffic to a VIP that isn't for one of its
+	// Service ports) or "monitor" (count what would be dropped, drop
+	// nothing). Use monitor first to see what enforce would block.
+	// +kubebuilder:validation:Enum=enforce;monitor
+	// +kubebuilder:default="enforce"
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
+	// Hook is "tcx" (TC ingress; the default) or "xdp" (native XDP, earlier
+	// and cheaper per dropped packet). Links that refuse XDP use tcx.
+	// +kubebuilder:validation:Enum=tcx;xdp
+	// +kubebuilder:default="tcx"
+	// +optional
+	Hook string `json:"hook,omitempty"`
+
+	// FailurePolicy decides what a node does when the guard is configured
+	// but can't do its job (the program can't load, an interface can't be
+	// guarded, or it hasn't attached yet at startup). "closed": the node
+	// stands down -- it stops being elected for local addresses and
+	// withdraws its remote ones -- so nodes whose guard works carry the
+	// traffic; if none can, the addresses are down. "open": the node keeps
+	// announcing, and its addresses are unfiltered until the guard works.
+	// +kubebuilder:validation:Enum=closed;open
+	// +kubebuilder:default="closed"
+	// +optional
+	FailurePolicy string `json:"failurePolicy,omitempty"`
+
+	// AllowedProtocols lists IP protocol numbers, other than TCP, UDP,
+	// SCTP and ICMP, that may reach a VIP (e.g. 47 for GRE, 50 for ESP).
+	// Allowing a tunnel protocol (4, 41, 47) lets encapsulated traffic to
+	// the VIP be decapsulated, and the inner packets are not filtered.
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:Minimum=0
+	// +kubebuilder:validation:items:Maximum=255
+	// +kubebuilder:validation:XValidation:rule="self.all(p, !(p in [0, 1, 6, 17, 43, 44, 58, 60, 132]))",message="TCP, UDP and SCTP are filtered by port, ICMP by type, and IPv6 extension headers are not protocols"
+	// +listType=set
+	// +optional
+	AllowedProtocols []int32 `json:"allowedProtocols,omitempty"`
+
+	// ExtraInterfaces adds links to guard beyond the automatic set (the
+	// node's physical NICs, bonds and default-route interfaces), for
+	// ingress paths the automatic rule can't know about, such as a tunnel
+	// to an edge router. Names that don't exist on a node are skipped.
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=15
+	// +kubebuilder:validation:items:Pattern=`^[^/\s:]+$`
+	// +listType=set
+	// +optional
+	ExtraInterfaces []string `json:"extraInterfaces,omitempty"`
+
+	// ExcludeInterfaces removes links from the guarded set. Traffic to a
+	// VIP that arrives on an excluded link is NOT filtered.
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=15
+	// +kubebuilder:validation:items:Pattern=`^[^/\s:]+$`
+	// +listType=set
+	// +optional
+	ExcludeInterfaces []string `json:"excludeInterfaces,omitempty"`
 }
 
 // GARPConfig configures Gratuitous ARP behavior for service address announcements.

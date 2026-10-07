@@ -104,6 +104,10 @@ type announcer struct {
 	logger   log.Logger
 	myNode   string
 	election nodeElection
+	// standingDown, when it returns true, means this node must announce
+	// nothing: the address guard is configured fail-closed and isn't
+	// working. nil means never.
+	standingDown func() bool
 
 	// cfg is the current configuration snapshot. A nil pointer means we
 	// are not configured and must not announce; see SetConfig. Loaded
@@ -184,8 +188,12 @@ func init() {
 }
 
 // NewAnnouncer returns a new local Announcer.
-func NewAnnouncer(l log.Logger, node string) lbnodeagent.Announcer {
-	return &announcer{logger: l, myNode: node, svcIngresses: map[string][]v1.LoadBalancerIngress{}}
+//
+// standingDown (may be nil) reports whether the node must announce nothing
+// because the address guard is fail-closed and not working.
+func NewAnnouncer(l log.Logger, node string, standingDown func() bool) lbnodeagent.Announcer {
+	return &announcer{logger: l, myNode: node, svcIngresses: map[string][]v1.LoadBalancerIngress{},
+		standingDown: standingDown}
 }
 
 // SetClient configures this announcer to use the provided client.
@@ -296,18 +304,30 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 	// SetConfig to nil the spec out from under an in-flight announcement.
 	cfg := a.cfg.Load()
 
-	// if we haven't been configured then we won't announce
-	if cfg == nil {
+	// if we haven't been configured then we won't announce; nor will we
+	// while the address guard is fail-closed and not working (the guard
+	// logs that once, at Info, for the node)
+	reason := ""
+	switch {
+	case cfg == nil:
+		reason = "noConfig"
 		logging.Info(l, "event", "noConfig")
+	case a.standingDown != nil && a.standingDown():
+		reason = "addressGuardUnavailable"
+		logging.Debug(l, "event", "addressGuardStandingDown")
+	}
+	if reason != "" {
 		// We are not announcing anything: withdraw any address we may
 		// still hold and drop any slot that still names us. nodeSelector
-		// deselection and config removal land here — the slot alone is
-		// not enough, because a previously-announced VIP would stay on
-		// the NIC with a live renewal timer re-adding it while another
-		// node wins the election (duplicate ARP responders).
+		// deselection, config removal and a fail-closed guard land here —
+		// the slot alone is not enough, because a previously-announced VIP
+		// would stay on the NIC with a live renewal timer re-adding it
+		// while another node wins the election (duplicate ARP responders).
+		// deleteAddress removes the address from every interface, the
+		// dummy included, so remote addresses go too.
 		for _, ingress := range svc.Status.LoadBalancer.Ingress {
 			if lbIP := net.ParseIP(ingress.IP); lbIP != nil {
-				if err := a.deleteAddress(nsName, "noConfig", lbIP); err != nil {
+				if err := a.deleteAddress(nsName, reason, lbIP); err != nil {
 					retErr = err
 				}
 				a.clearOwnAnnounceSlot(svc, lbIP)
@@ -555,12 +575,12 @@ func (a *announcer) announceLocal(cfg *announcerConfig, svc *v1.Service, preferr
 
 	opts := getLocalAddressOptions(cfg)
 	// IPv6 has no IFA_F_SECONDARY equivalent, so flannel can pick VIPs as the
-	// node's public IPv6 address, breaking overlay routing. Setting PreferedLft=0
-	// marks the address as deprecated (IFA_F_DEPRECATED), which flannel's
-	// GetInterfaceIP6Addrs explicitly filters out. The address still receives
-	// inbound traffic normally.
+	// node's public IPv6 address, breaking overlay routing. Deprecating the
+	// address (IFA_F_DEPRECATED) makes flannel's GetInterfaceIP6Addrs filter
+	// it out and keeps the host from sourcing traffic from it. The address
+	// still receives inbound traffic normally.
 	if lbIP.To4() == nil {
-		opts.PreferedLft = 0
+		opts.Deprecated = true
 	}
 	if svc.Annotations[purelbv2.SkipIPv6DADAnnotation] == "true" {
 		opts.SkipDAD = true
@@ -655,6 +675,12 @@ func (a *announcer) announceRemote(cfg *announcerConfig, svc *v1.Service, epSlic
 	// (e.g., bird) will announce routes for it.
 	logging.Debug(l, "msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
 	opts := getDummyAddressOptions(cfg)
+	// A preferred IPv6 VIP on the dummy can win source-address selection --
+	// on a BGP-unnumbered fabric, for the BGP session itself -- and the
+	// address guard would then drop the replies. Deprecated, it never does.
+	if lbIP.To4() == nil {
+		opts.Deprecated = true
+	}
 	lbIPNet, err := addVirtualInt(lbIP, cfg.dummyInt, group.Subnet, group.Aggregation, opts)
 	if err != nil {
 		// Report the failure on the Service. Returning the error alone

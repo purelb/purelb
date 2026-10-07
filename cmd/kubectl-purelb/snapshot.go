@@ -39,6 +39,9 @@ type clusterSnapshot struct {
 	// nodes carries node labels, needed to resolve which LBNodeAgent
 	// (if any) selects each node.
 	nodes *v1.NodeList
+	// guard is the address guard's live state on each node, read from the
+	// agents' metrics; nil when it wasn't read.
+	guard []guardNodeState
 }
 
 // fetchSnapshot fetches all resources needed by the dashboard in parallel.

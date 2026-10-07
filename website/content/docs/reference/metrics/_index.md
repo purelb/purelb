@@ -67,7 +67,23 @@ Metric | Type | Labels | Description
 `purelb_lbnodeagent_na_errors_total` | Counter | | Total Neighbor Advertisement send failures
 `purelb_lbnodeagent_announce_slot_steal_total` | Counter | `from`, `to` | Announcements stolen during preference-driven election flips (tracked for observability, not a warning condition)
 `purelb_lbnodeagent_announced` | Gauge | `service`, `node`, `ip` | Currently announced addresses (1 = announced, 0 = withdrawn). Faceted per VIP, winning node, and IP family
-`purelb_lbnodeagent_selector_state` | Gauge | `state` | Current workload selector state (`healthy`, `degraded`, `unhealthy`). Supplements the config_loaded_bool gauge — config_loaded stays 1 during an invalid-config outage, selector_state goes unhealthy
+`purelb_lbnodeagent_selector_state` | Gauge | `state` | Interface selector state, 1 for the active one: `default`, `configured`, `deselected` (no LBNodeAgent selects the node), `invalid` (the configuration was rejected), `guardUnavailable` (the address guard is fail-closed and isn't working). In every state but `default` and `configured` the node announces nothing. Supplements config_loaded_bool, which stays 1 during an invalid-config outage
+
+## Address Guard Metrics (LBNodeAgent only)
+
+See [Address Guard]({{< relref "/docs/configuration/address-guard" >}}).
+
+Metric | Type | Labels | Description
+-------|------|--------|------------
+`purelb_address_guard_packets_total` | Counter | `action`, `reason`, `family` | Packets addressed to a guarded VIP. `action`: `pass`, `drop`, or `would_drop` (monitor mode). `reason`: `port_allowed`, `proto_allowed`, `icmp`, `fragment`, `port_denied`, `proto_denied`, `icmp_denied`, `malformed`. `family`: `ipv4`, `ipv6`
+`purelb_address_guard_vip_packets_total` | Counter | `ip`, `action` | Dropped (`drop`) or would-be-dropped (`would_drop`) packets per guarded address. A series appears once it is non-zero
+`purelb_address_guard_attached` | Gauge | `interface`, `hook` | 1 for each interface the guard is attached to; `hook` is `tcx` or `xdp`
+`purelb_address_guard_chain_position` | Gauge | `interface` | Where the guard runs in the interface's tcx ingress chain: 1 is first; above 1, other programs run before it. tcx only
+`purelb_address_guard_attach_errors_total` | Counter | `interface` | Times an interface got no hook at all, leaving VIP traffic arriving there unfiltered. An XDP-to-tcx fallback is not an error
+`purelb_address_guard_standing_down` | Gauge | | 1 if the node announces no addresses because the guard is fail-closed (`failurePolicy: closed`) and isn't working
+`purelb_address_guard_unguarded_vips` | Gauge | `reason` | VIPs the configured guard is not filtering on this node: `not_loaded` (program not running) and `map_write_failed` (rules could not be written; retried) under `failurePolicy: open` only, always 0 under `closed`; `restart_pending` (enabled after the agent started, waiting for a restart) under either policy
+`purelb_address_guard_loaded` | Gauge | | 1 if the guard program is loaded. It is loaded only when the agent starts with the guard configured
+`purelb_address_guard_restart_required` | Gauge | | 1 if the guard was enabled or disabled after the agent started; restart `lbnodeagent` to apply it fully
 
 ## LBNodeAgent Election Results
 

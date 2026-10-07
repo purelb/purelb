@@ -47,6 +47,11 @@ var (
 		Version:  "v1",
 		Resource: "bgpnodestatuses",
 	}
+	gvrCRDs = schema.GroupVersionResource{
+		Group:    "apiextensions.k8s.io",
+		Version:  "v1",
+		Resource: "customresourcedefinitions",
+	}
 )
 
 // clients holds all the K8s clients the plugin needs.

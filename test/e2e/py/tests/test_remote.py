@@ -45,8 +45,8 @@ from typing import Dict, Iterator, List, Optional
 
 import pytest
 
-from purelb_e2e import TEST_NAMESPACE, announcing, backend, metrics, nodes, topology
-from purelb_e2e.cluster import Cluster
+from purelb_e2e import TEST_NAMESPACE, announcing, backend, guard, metrics, nodes, topology
+from purelb_e2e.cluster import Cluster, utcnow
 from purelb_e2e.wait import wait_until, wait_while
 
 NAMESPACE = TEST_NAMESPACE
@@ -153,10 +153,14 @@ def remote_group(cluster: Cluster):
     created: List[str] = []
 
     def make(name: str = REMOTE_GROUP, v4: str = POOL_V4, subnet: str = SUBNET_V4,
-             v6: Optional[str] = POOL_V6, v6_subnet: str = SUBNET_V6) -> str:
-        spec: Dict[str, object] = {"v4pools": [{"pool": v4, "subnet": subnet}]}
+             v6: Optional[str] = POOL_V6, v6_subnet: str = SUBNET_V6,
+             aggregation: Optional[str] = None, v6_aggregation: Optional[str] = None) -> str:
+        def pool(p: str, s: str, agg: Optional[str]) -> Dict[str, str]:
+            return {"pool": p, "subnet": s, **({"aggregation": agg} if agg else {})}
+
+        spec: Dict[str, object] = {"v4pools": [pool(v4, subnet, aggregation)]}
         if v6:
-            spec["v6pools"] = [{"pool": v6, "subnet": v6_subnet}]
+            spec["v6pools"] = [pool(v6, v6_subnet, v6_aggregation)]
         cluster.apply_cr(
             {
                 "apiVersion": "purelb.io/v2",
@@ -1179,3 +1183,179 @@ def test_a_remote_ipv6_vip_serves_traffic_from_a_pod(
         )
     finally:
         cluster.core.delete_namespaced_pod(name, NAMESPACE, grace_period_seconds=0)
+
+
+@pytest.mark.requires("router")
+@pytest.mark.parametrize("host_routes", [False, True], ids=["default-aggregation", "host-routes"])
+def test_address_guard_on_remote_addresses(
+    cluster: Cluster, topo: topology.Topology, remote_group, lb_service, address_guard,
+    router, agent_metrics, host_routes: bool,
+):
+    """Remote VIPs sit on kube-lb0 on every node and arrive routed, on any
+    node's uplink: the guard filters them there exactly as it does local
+    ones.
+
+    A pool aggregated wider than a host route (the default takes the
+    subnet's mask) also gets extra local addresses from the kernel -- the
+    IPv4 subnet broadcast and the IPv6 subnet-router anycast -- which would
+    otherwise deliver UDP to every wildcard socket on the host (flannel's
+    VXLAN port among them); the guard filters those. A host route (/32,
+    /128) is its own subnet, so the kernel creates neither.
+
+    The guard is switched on live, with the Service already announced. A
+    node that attaches must not stand down on the way: every node keeps
+    every address. (One used to, for the moment between the config landing
+    and the attach, without the node agent hearing it had -- so the
+    addresses withdrawn in that moment stayed gone until the next informer
+    resync, minutes later.) Switching on live needs the program loaded,
+    which happens only at agent startup: on, then off, gets it there.
+    """
+    address_guard("enforce")
+    address_guard(None)
+    group = remote_group(aggregation="/32" if host_routes else None,
+                         v6_aggregation="/128" if host_routes else None)
+    families = ["IPv4", "IPv6"] if topo.has_ipv6 else ["IPv4"]
+    ips = lb_service("remote-guard", families, annotations={SERVICE_GROUP: group}, timeout=90)
+    for address in ips:
+        wait_every_node_announcing(topo, address, cluster=cluster)
+
+    since = utcnow()
+    address_guard("enforce")
+    # Asserting that something does NOT happen: give a stand-down's
+    # withdrawal, which lands within milliseconds of the attach, time to.
+    time.sleep(5)
+    withdrawn = [line for text in cluster.component_logs("lbnodeagent", since).values()
+                 for line in text.splitlines() if "addressGuardUnavailable" in line]
+    assert not withdrawn, f"switching the guard on live withdrew addresses: {withdrawn}"
+    for address in ips:
+        holders = nodes_announcing(topo, address)
+        assert len(holders) == len(topo.node_ips), (
+            f"{address} is on {holders} only after the guard was switched on live"
+        )
+    for name in topo.node_ips:
+        assert agent_metrics(name).get("purelb_address_guard_standing_down") == 0, f"{name} stood down"
+
+    for vip in ips:
+        assert router.http_status(vip)[0] == 200, f"{vip}:80 did not serve through the guard"
+        for port in (22, 10250):
+            assert not router.tcp_open(vip, port), f"{vip}:{port} answered through the guard"
+        assert router.ping(vip), f"ping to {vip} was dropped"
+        if ipaddress.ip_address(vip).version == 6:
+            node = sorted(topo.node_ips)[0]
+            detail = nodes.address_detail(topo.node_ips[node], vip)
+            assert detail is not None and detail.has_flag("deprecated") and detail.permanent, (
+                f"{vip} on {DUMMY_IFACE} must be permanent and deprecated, so the host "
+                f"never sources traffic (a BGP session, say) from it: {detail}"
+            )
+            prefix = f"{vip}/128" if host_routes else SUBNET_V6
+        else:
+            prefix = f"{vip}/32" if host_routes else SUBNET_V4
+        # Still advertised, by every node: deprecation doesn't stop the import.
+        assert len(router.nexthops(prefix)) == len(topo.node_ips), (
+            f"{prefix} is advertised by {router.nexthops(prefix)}, not every node"
+        )
+
+    def drops(address: str) -> float:
+        return sum(agent_metrics(n).counter("purelb_address_guard_vip_packets_total",
+                                            ip=address, action="drop") for n in topo.node_ips)
+
+    special = [str(ipaddress.ip_network(SUBNET_V4).broadcast_address)]
+    if topo.has_ipv6:
+        special.append(str(ipaddress.ip_network(SUBNET_V6).network_address))
+    if host_routes:
+        for name, ip in sorted(topo.node_ips.items()):
+            routes = nodes.ssh(ip, f"ip -4 route show table local type broadcast dev {DUMMY_IFACE}; "
+                                   f"ip -6 route show table local type anycast dev {DUMMY_IFACE}").split()
+            assert not [a for a in special if a in routes], (
+                f"{name}: host routes got a subnet broadcast/anycast address on {DUMMY_IFACE}"
+            )
+        return
+    for address in special:
+        before = drops(address)
+        router.send_udp(address, 39999, count=6)
+        wait_until(lambda a=address: drops(a) >= before + 1, timeout=15,
+                   description=f"UDP to {address} to be dropped by the guard")
+
+
+@pytest.mark.requires("router")
+def test_address_guard_failure_policy_without_the_bpf_capability(
+    cluster: Cluster, topo: topology.Topology, default_servicegroup: str, remote_group,
+    lb_service, address_guard, router, agent_metrics,
+):
+    """What a node does when the guard can't run, under each failurePolicy.
+
+    Removing CAP_BPF from the agent makes the guard unable to load on every
+    node. Under the default, closed, every node stands down: local and
+    remote addresses are withdrawn and nothing is announced unguarded --
+    with no node able to run the guard, the addresses are down. Switched
+    live to open, the nodes announce again, unfiltered, and say so. One
+    pair of rollouts covers both.
+    """
+    address_guard("enforce")  # failurePolicy omitted: closed, the default
+    local_vip = lb_service("guard-policy-local", ["IPv4"])[0]
+    remote_vip = lb_service("guard-policy-remote", ["IPv4"],
+                            annotations={SERVICE_GROUP: remote_group()}, timeout=90)[0]
+    wait_every_node_announcing(topo, remote_vip, cluster=cluster)
+    ns, ds_name = cluster.purelb_namespace, "lbnodeagent"
+    ds = cluster.apps.read_namespaced_daemon_set(ds_name, ns)
+    container = next(c for c in ds.spec.template.spec.containers if c.name == "lbnodeagent")
+    caps = list(container.security_context.capabilities.add or [])
+    assert "BPF" in caps, f"the agent has no BPF capability to begin with: {caps}"
+
+    def set_caps(add):
+        cluster.apps.patch_namespaced_daemon_set(ds_name, ns, {"spec": {"template": {"spec": {
+            "containers": [{"name": "lbnodeagent", "securityContext": {"capabilities": {"add": add}}}]}}}})
+        wait_until(lambda: cluster.daemonset_ready(ns, ds_name, expect_nodes=len(topo.node_ips)),
+                   timeout=900, interval=5.0, description="the lbnodeagent rollout")
+
+    def on_some_node(address):
+        return [n for n, ip in sorted(topo.node_ips.items()) if nodes.has_address(ip, address)]
+
+    set_caps([c for c in caps if c != "BPF"])
+    try:
+        # closed: every node stands down.
+        for name in topo.node_ips:
+            wait_until(lambda n=name: agent_metrics(n).get("purelb_address_guard_standing_down") == 1,
+                       timeout=60, description=f"{name} to stand down")
+            snap = agent_metrics(name)
+            assert snap.get("purelb_address_guard_loaded") == 0
+            assert snap.get("purelb_lbnodeagent_selector_state", state="guardUnavailable") == 1
+            assert snap.counter("purelb_address_guard_unguarded_vips") == 0, (
+                f"{name}: fail-closed must expose nothing, so nothing is unguarded"
+            )
+        for vip in (local_vip, remote_vip):
+            gone = wait_until(lambda a=vip: not on_some_node(a), timeout=60,
+                              description=f"{vip} withdrawn from every node")
+            assert gone, f"{vip} still on {on_some_node(vip)} although every node stood down"
+            # What fail-closed guarantees: the address is a host address
+            # nowhere, so no host port answers on it. (The local VIP's
+            # Service port can keep answering until the router's ARP entry
+            # ages out: kube-proxy DNATs VIP:port on the old holder whether
+            # or not the address is local. That traffic is only ever the
+            # Service's own.)
+            assert not router.tcp_open(vip, 22), f"{vip}:22 reachable while every node stood down"
+        # The remote address is gone from the network: no node advertises it.
+        wait_until(lambda: not router.nexthops(SUBNET_V4), timeout=60,
+                   description=f"{SUBNET_V4} withdrawn from the router")
+        events = [e.message or "" for e in cluster.core.list_namespaced_event(
+            ns, field_selector="involvedObject.kind=LBNodeAgent,reason=AddressGuardStandingDown").items]
+        assert any("announces no addresses" in m for m in events), f"no stand-down Event: {events}"
+
+        # open, switched live: the nodes announce again, unfiltered, and say so.
+        address_guard("enforce", failurePolicy="open", wait=False)
+        for name in topo.node_ips:
+            wait_until(lambda n=name: agent_metrics(n).get("purelb_address_guard_standing_down") == 0,
+                       timeout=60, description=f"{name} to stop standing down")
+        wait_until(lambda: router.http_status(local_vip, timeout=4)[0] == 200, timeout=90,
+                   description=f"{local_vip} to serve again under failurePolicy open")
+        wait_every_node_announcing(topo, remote_vip, cluster=cluster)
+        assert router.http_status(remote_vip, timeout=4)[0] == 200
+        holders = on_some_node(local_vip)
+        assert holders, f"{local_vip} not announced under failurePolicy open"
+        assert agent_metrics(holders[0]).counter("purelb_address_guard_unguarded_vips", reason="not_loaded") > 0
+    finally:
+        set_caps(caps)
+    address_guard("enforce")
+    wait_until(lambda: router.http_status(local_vip, timeout=4)[0] == 200, timeout=120,
+               description=f"{local_vip} to serve with the guard working again")
+    assert not router.tcp_open(local_vip, 22)

@@ -12,7 +12,7 @@ NOT how you deploy to a cluster.
 
 ## Code Generation
 
-When modifying types in `pkg/apis/purelb/v1/`:
+When modifying types in `pkg/apis/purelb/v2/`:
 
 1. Run `make generate` to update client code in `pkg/generated/`
 2. Run `make crd` to update CRD manifests in `deployments/crds/`

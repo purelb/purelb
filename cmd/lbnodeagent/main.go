@@ -30,11 +30,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 
+	"purelb.io/internal/addrguard"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
+	"purelb.io/pkg/generated/clientset/versioned"
 )
 
 // selectorState reports which interface-selector state this node is
@@ -46,21 +49,56 @@ var selectorState = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Namespace: purelbv2.MetricsNamespace,
 	Subsystem: "lbnodeagent",
 	Name:      "selector_state",
-	Help:      "Interface selector state (1 = active): default, configured, deselected, invalid",
+	Help:      "Interface selector state (1 = active): default, configured, deselected, invalid, guardUnavailable",
 }, []string{"state"})
+
+// selectorStates are the values selector_state reports. guardUnavailable
+// means the address guard is configured fail-closed and isn't working, so
+// the node announces nothing whatever its configuration says.
+var selectorStates = []string{"default", "configured", "deselected", "invalid", "guardUnavailable"}
 
 func init() {
 	prometheus.MustRegister(selectorState)
 }
 
 func recordSelectorState(active string) {
-	for _, state := range []string{"default", "configured", "deselected", "invalid"} {
+	for _, state := range selectorStates {
 		value := 0.0
 		if state == active {
 			value = 1.0
 		}
 		selectorState.WithLabelValues(state).Set(value)
 	}
+}
+
+// selectorReporter publishes selector_state, folding in the address guard:
+// while a fail-closed guard isn't working the node announces nothing, and
+// says so, whatever the last config delivery made of it. Config delivery
+// (CR-controller goroutine) and the guard's attacher both publish through
+// it; the state they share is atomic.
+type selectorReporter struct {
+	standingDown func() bool // nil: never
+	base         atomic.Pointer[string]
+}
+
+// set records the state a config delivery arrived at and publishes the
+// effective one, which it returns.
+func (r *selectorReporter) set(state string) string {
+	r.base.Store(&state)
+	return r.publish()
+}
+
+// publish republishes the effective state, and returns it.
+func (r *selectorReporter) publish() string {
+	state := "default"
+	if b := r.base.Load(); b != nil {
+		state = *b
+	}
+	if r.standingDown != nil && r.standingDown() {
+		state = "guardUnavailable"
+	}
+	recordSelectorState(state)
+	return state
 }
 
 // parseDurationEnv parses a duration from an environment variable, returning
@@ -108,6 +146,7 @@ func newConfigChanged(
 	ctrl configSetter,
 	myNode string,
 	selector *atomic.Pointer[election.InterfaceSelector],
+	report *selectorReporter,
 ) func(*purelbv2.Config) k8s.SyncState {
 	return func(cfg *purelbv2.Config) k8s.SyncState {
 		client := getClient()
@@ -226,12 +265,85 @@ func newConfigChanged(
 				}
 			}
 		}
-		recordSelectorState(state)
+		state = report.set(state)
 		logging.Info(logger, "op", "configChanged", "selectorState", state,
 			"node", myNode, "matchingAgents", fmt.Sprintf("%d", len(cfg.Agents)),
 			"msg", "config delivery evaluated")
 
 		return ret
+	}
+}
+
+// readGuardEnabled reads, directly from the API, whether the address guard
+// is configured for myNode right now. The agent loads the guard program
+// only then, and decides before any informer or goroutine runs, so the
+// program never changes under the goroutines that use it.
+func readGuardEnabled(logger log.Logger, kubeconfig, myNode string) (bool, error) {
+	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		return false, fmt.Errorf("building client config: %w", err)
+	}
+	core, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return false, fmt.Errorf("creating Kubernetes client: %w", err)
+	}
+	cr, err := versioned.NewForConfig(cfg)
+	if err != nil {
+		return false, fmt.Errorf("creating custom resource client: %w", err)
+	}
+	listAgents := func(ctx context.Context) ([]*purelbv2.LBNodeAgent, error) {
+		// Every namespace, as the CR informer lists them.
+		list, err := cr.PurelbV2().LBNodeAgents("").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		agents := make([]*purelbv2.LBNodeAgent, 0, len(list.Items))
+		for i := range list.Items {
+			agents = append(agents, &list.Items[i])
+		}
+		return agents, nil
+	}
+	nodeLabels := func(ctx context.Context) (map[string]string, error) {
+		node, err := core.CoreV1().Nodes().Get(ctx, myNode, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return node.Labels, nil
+	}
+	return guardEnabledAtStartup(logger, listAgents, nodeLabels, 30*time.Second, 2*time.Second)
+}
+
+// guardEnabledAtStartup resolves the address guard configuration the way
+// every config delivery does (addrguard.Enabled), retrying for up to
+// timeout: the agent can't run without the API anyway, and exiting lets the
+// kubelet restart it.
+func guardEnabledAtStartup(
+	logger log.Logger,
+	listAgents func(context.Context) ([]*purelbv2.LBNodeAgent, error),
+	nodeLabels func(context.Context) (map[string]string, error),
+	timeout, interval time.Duration,
+) (bool, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		enabled, err := func() (bool, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			agents, err := listAgents(ctx)
+			if err != nil {
+				return false, fmt.Errorf("listing LBNodeAgents: %w", err)
+			}
+			labels, err := nodeLabels(ctx)
+			if err != nil {
+				return false, fmt.Errorf("reading this node's labels: %w", err)
+			}
+			return addrguard.Enabled(agents, labels), nil
+		}()
+		if err == nil || time.Now().After(deadline) {
+			return enabled, err
+		}
+		logging.Info(logger, "op", "startup", "error", err,
+			"msg", "could not read the address guard configuration, retrying")
+		time.Sleep(interval)
 	}
 }
 
@@ -272,10 +384,19 @@ func main() {
 		close(stopCh)
 	}()
 
+	// The address guard program is loaded only if the guard is configured
+	// for this node, and only at startup: decide before anything runs.
+	guardEnabled, err := readGuardEnabled(logger, *kubeconfig, *myNode)
+	if err != nil {
+		logging.Info(logger, "op", "startup", "error", err, "msg", "could not read the address guard configuration")
+		os.Exit(1)
+	}
+
 	// Set up controller
 	ctrl, err := NewController(
 		logger,
 		*myNode,
+		guardEnabled,
 	)
 	if err != nil {
 		logging.Info(logger, "op", "startup", "error", err, "msg", "failed to create controller")
@@ -296,7 +417,11 @@ func main() {
 	// client.Run(), which happens-after the assignment below.
 	var client *k8s.Client
 
-	configChanged := newConfigChanged(logger, func() nodeClient { return client }, ctrl, *myNode, &selector)
+	// A fail-closed address guard that isn't working takes this node out
+	// of the election (no subnets below) and the announcer withdraws
+	// everything (local.NewAnnouncer is given guard.StandingDown).
+	report := &selectorReporter{standingDown: ctrl.guard.StandingDown}
+	configChanged := newConfigChanged(logger, func() nodeClient { return client }, ctrl, *myNode, &selector, report)
 
 	client, err = k8s.New(&k8s.Config{
 		ProcessName:        "purelb-lbnodeagent",
@@ -335,7 +460,12 @@ func main() {
 			// Runs on the election's renewLoop goroutine every
 			// LeaseDuration/2. Before the first config delivery the
 			// selector is nil and this is default-interface detection,
-			// identical to the historical behavior.
+			// identical to the historical behavior. A node whose
+			// fail-closed address guard isn't working advertises no
+			// subnets, so no node -- this one included -- elects it.
+			if ctrl.guard.StandingDown() {
+				return []string{}, nil
+			}
 			return election.GetSelectedSubnets(selector.Load(), logger)
 		},
 	})
@@ -345,6 +475,17 @@ func main() {
 	}
 
 	ctrl.SetElection(elect)
+
+	// The guard calls this from its attacher goroutine whenever standing
+	// down changes. Re-sync every Service, so the announcer withdraws or
+	// re-announces now rather than at the next resync; the lease's subnets
+	// follow at its next renewal.
+	ctrl.guard.SetStandDownHook(func(down bool) {
+		state := report.publish()
+		logging.Info(logger, "op", "addressGuard", "standingDown", down, "selectorState", state,
+			"msg", "re-syncing services")
+		client.ForceSync()
+	})
 
 	// Start the election (creates lease, starts informer)
 	if err := elect.Start(); err != nil {

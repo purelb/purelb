@@ -99,6 +99,7 @@ Useful flags:
 | `--require a,b` | a missing capability **fails** instead of skipping — for release runs |
 | `--show-tests` | every test with its result and **what it checked**, instead of progress dots |
 | `--report PATH` | write a plain-text report of the whole run to `PATH` |
+| `--address-guard [MODE]` | run the whole suite with the address guard on (`enforce`, or `monitor`), so every flow is also a regression test under it. Every LBNodeAgent the suite writes goes through `purelb_e2e.guard.local_spec`, so the setting survives the fixtures that replace the agent. The guard's own tests (`-k address_guard`) run with or without it, and need `--router-host`: VIP probes have to come from off the cluster |
 | `-x` | stop at the first failure |
 | `--maxfail=N` | stop after N failures. Worth setting in a loop that runs the suite repeatedly: a systemic breakage otherwise burns the full run, and every allocation test waits out its 45s timeout before failing |
 | `--durations=20` | the 20 slowest tests, which is how to find out what a full run costs on your cluster |

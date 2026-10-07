@@ -14,3 +14,7 @@ spec:
     garpConfig:
       {{- toYaml . | nindent 6 }}
     {{- end }}
+    {{- with .Values.lbnodeagent.addressGuard }}
+    addressGuard:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}

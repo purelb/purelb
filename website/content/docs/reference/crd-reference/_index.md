@@ -107,6 +107,18 @@ Field | Type | Default | Description
 `interfaces` | []string | | Additional interfaces, by exact name, for election subnet detection and announcement. Tried in listed order; missing names are skipped.
 `garpConfig` | GARPConfig | | Gratuitous announcement configuration (GARP for IPv4, unsolicited Neighbor Advertisement for IPv6)
 `addressConfig` | AddressConfig | | Address lifetime and flag configuration
+`addressGuard` | AddressGuardConfig | | Filter traffic to LoadBalancer addresses to their Service ports. Absent means off. See [Address Guard]({{< relref "/docs/configuration/address-guard" >}})
+
+### AddressGuardConfig
+
+Field | Type | Default | Description
+------|------|---------|------------
+`mode` | string | `"enforce"` | `enforce` drops traffic to a VIP that isn't for one of its Service ports; `monitor` only counts it
+`hook` | string | `"tcx"` | `tcx` (TC ingress) or `xdp` (native XDP on links whose driver supports it; others use tcx)
+`failurePolicy` | string | `"closed"` | When the guard can't run on a node: `closed` makes the node announce no addresses until it can; `open` keeps announcing, unfiltered
+`allowedProtocols` | []int | | IP protocol numbers (0-255, at most 32) allowed to reach VIPs besides TCP, UDP, SCTP and ICMP, e.g. `47` (GRE). Port-filtered and ICMP protocols and IPv6 extension-header numbers are rejected
+`extraInterfaces` | []string | | Interfaces to guard in addition to the automatic set (physical NICs, bonds, default-route interfaces). At most 64; missing names are skipped
+`excludeInterfaces` | []string | | Interfaces not to guard. VIP traffic arriving on them is not filtered. At most 64; a name can't be in both lists
 
 ### GARPConfig
 
@@ -179,7 +191,7 @@ Field | Type | Description
 `timers.config.holdTime` | int | BGP hold time (seconds). Changing it resets the session
 `timers.config.keepaliveInterval` | int | Keepalive interval (seconds). Changing it resets the session
 `transport.passiveMode` | bool | Wait for peer to initiate
-`nodeSelector` | LabelSelector | Limit which nodes peer with this neighbor
+`nodeSelector` | LabelSelector | Nodes that peer with this neighbor, matched on node labels. Used to give each subnet its own peer in one configuration (see [Peers on multiple subnets](../../configuration/bgp/#peers-on-multiple-subnets)). Omitted: every node peers with it
 
 ---
 

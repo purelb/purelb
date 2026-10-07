@@ -55,6 +55,18 @@ Prometheus:
           summary: "Pool {{ $labels.pool }} is over 90% utilized"
 ```
 
+The address guard ships its own alerts: `PurelbAddressGuardStandingDown` (a fail-closed node's guard isn't working, so the node announces no addresses), `PurelbAddressGuardUnguardedVIPs` (under `failurePolicy: open`, some VIPs on a node are not being filtered, `purelb_address_guard_unguarded_vips > 0` for 5 minutes) `PurelbAddressGuardAttachErrors` (it could not attach to an interface) and `PurelbAddressGuardRestartRequired` (the guard was enabled or disabled after `lbnodeagent` started, and the agents haven't been restarted for 15 minutes: an enabled guard filters nothing until they are). Turn them on alongside your own rules:
+
+```yaml
+Prometheus:
+  lbnodeagent:
+    prometheusRules:
+      enabled: true
+      addressGuardAlerts: true
+```
+
+Without Helm, apply `monitoring/prometheusrules-address-guard.yaml` from the repository.
+
 ## Useful PromQL Queries
 
 **Pool utilization percentage:**

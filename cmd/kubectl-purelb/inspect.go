@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 type inspectResult struct {
@@ -43,7 +46,22 @@ type inspectResult struct {
 	Endpoints     endpointsInfo      `json:"endpoints"`
 	BGP           []bgpRouteCheck    `json:"bgp,omitempty"`
 	BGPNote       string             `json:"bgpNote,omitempty"` // canonical sentence when BGP state is NotEnabled / NotConfigured
+	AddressGuard  *guardInfo         `json:"addressGuard,omitempty"`
 	Diagnosis     *diagnosisInfo     `json:"diagnosis,omitempty"`
+}
+
+// guardInfo is what the address guard does for this Service's addresses.
+type guardInfo struct {
+	// Mode is the guard mode where the addresses are filtered: on the
+	// announcing node(s) for a local pool, across all nodes for a remote one.
+	Mode    string     `json:"mode"`
+	Allowed []guardVIP `json:"allowed,omitempty"`
+}
+
+// guardVIP is what reaches one address through the guard.
+type guardVIP struct {
+	IP    string   `json:"ip"`
+	Ports []string `json:"ports"`
 }
 
 type allocationInfo struct {
@@ -351,11 +369,28 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 			}
 		}
 
+		allSvcs, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
+
+		// Address guard: the mode where these addresses are filtered, and
+		// what it lets through to each.
+		lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+		nodeList, _ := c.core.CoreV1().Nodes().List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+		if nodeList != nil {
+			gi := &guardInfo{Mode: guardModeFor(poolType, result.Announcements, nodeList.Items, decodeLBNodeAgents(lbnaList))}
+			if allSvcs != nil {
+				for _, ingress := range ingresses {
+					if ingress.IP != "" {
+						gi.Allowed = append(gi.Allowed, guardVIP{IP: ingress.IP, Ports: guardPorts(ingress.IP, allSvcs.Items)})
+					}
+				}
+			}
+			result.AddressGuard = gi
+		}
+
 		// Sharing info
 		if sharingKey != "" {
 			si := &sharingInfo{Key: sharingKey}
 			// Find other services with the same sharing key
-			allSvcs, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
 			if allSvcs != nil {
 				for _, other := range allSvcs.Items {
 					otherNsName := other.Namespace + "/" + other.Name
@@ -463,6 +498,21 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 				}
 				fmt.Printf("  Route %s in RIB on %s: %s, Advertised: %s\n",
 					b.IP, b.Node, ribStr, advStr)
+			}
+		}
+	}
+
+	// Address guard
+	if g := result.AddressGuard; g != nil {
+		fmt.Println()
+		fmt.Printf("Address guard: %s\n", g.Mode)
+		if g.Mode != guardOff {
+			for _, v := range g.Allowed {
+				ports := "no ports"
+				if len(v.Ports) > 0 {
+					ports = strings.Join(v.Ports, ", ")
+				}
+				fmt.Printf("  %s: allows %s, plus allowed ICMP\n", v.IP, ports)
 			}
 		}
 	}
@@ -744,4 +794,80 @@ func checkRouteAdvertised(bgpns *unstructured.Unstructured, ipStr string) bool {
 	}
 
 	return false
+}
+
+// guardModeFor is the address guard mode where a Service's addresses are
+// filtered: on the announcing node(s) for a local pool, and across every
+// node for a remote pool (all of them hold the address).
+func guardModeFor(poolType string, announcements []announcementInfo, nodes []v1.Node, agents []*purelbv2.LBNodeAgent) string {
+	byName := map[string]v1.Node{}
+	for _, n := range nodes {
+		byName[n.Name] = n
+	}
+	if poolType != poolTypeRemote && len(announcements) > 0 {
+		var parts []string
+		seen := map[string]bool{}
+		for _, a := range announcements {
+			if seen[a.Node] {
+				continue
+			}
+			seen[a.Node] = true
+			n, ok := byName[a.Node]
+			if !ok {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("%s on %s", resolveNodeConfig(agents, n.Labels).Guard, a.Node))
+		}
+		if len(parts) > 0 {
+			sort.Strings(parts)
+			return strings.Join(parts, ", ")
+		}
+	}
+	var modes []string
+	for _, n := range nodes {
+		modes = append(modes, resolveNodeConfig(agents, n.Labels).Guard)
+	}
+	return guardSummary(modes)
+}
+
+// guardPorts is what the address guard allows to ip: the Service ports of
+// every PureLB Service holding it (a shared address allows all of them),
+// mapped exactly as the node agent maps them -- TCP, UDP and SCTP, the
+// Service port and never the NodePort.
+func guardPorts(ip string, svcs []v1.Service) []string {
+	want, err := netip.ParseAddr(ip)
+	if err != nil {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, svc := range svcs {
+		if svc.Annotations[annotationAllocatedBy] != brandPureLB {
+			continue
+		}
+		holds := false
+		for _, ing := range svc.Status.LoadBalancer.Ingress {
+			if a, err := netip.ParseAddr(ing.IP); err == nil && a.Unmap() == want.Unmap() {
+				holds = true
+			}
+		}
+		if !holds {
+			continue
+		}
+		for _, p := range svc.Spec.Ports {
+			proto := p.Protocol
+			if proto == "" {
+				proto = v1.ProtocolTCP
+			}
+			switch proto {
+			case v1.ProtocolTCP, v1.ProtocolUDP, v1.ProtocolSCTP:
+				set[fmt.Sprintf("%s/%d", proto, p.Port)] = true
+			}
+		}
+	}
+	ports := make([]string, 0, len(set))
+	for p := range set {
+		ports = append(ports, p)
+	}
+	sort.Strings(ports)
+	return ports
 }

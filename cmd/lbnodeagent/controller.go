@@ -16,6 +16,9 @@
 package main
 
 import (
+	"slices"
+
+	"purelb.io/internal/addrguard"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
@@ -33,17 +36,30 @@ type controller struct {
 	logger     log.Logger
 	myNode     string
 	announcers []lbnodeagent.Announcer
+	// guard is also announcers[0], kept typed for the node agent's
+	// fail-closed wiring (StandingDown, SetStandDownHook). nil in tests.
+	guard *addrguard.Guard
 }
 
 // NewController configures a new controller. If error is non-nil then
-// the controller object shouldn't be used.
-func NewController(l log.Logger, myNode string) (*controller, error) {
+// the controller object shouldn't be used. guardEnabled is whether the
+// address guard is configured for this node at startup: its program is
+// loaded only then.
+func NewController(l log.Logger, myNode string, guardEnabled bool) (*controller, error) {
+	guard := addrguard.NewAnnouncer(l, myNode, guardEnabled)
 	con := &controller{
 		logger: l,
 		myNode: myNode,
+		// The address guard comes first: SetBalancer runs the announcers
+		// in order, so a VIP's guard rules exist before the local announcer
+		// adds the address. DeleteBalancer and Shutdown run them in
+		// reverse, so the rules outlive the address. The local announcer
+		// asks the guard whether this node must stand down (fail-closed).
 		announcers: []lbnodeagent.Announcer{
-			local.NewAnnouncer(l, myNode),
+			guard,
+			local.NewAnnouncer(l, myNode, guard.StandingDown),
 		},
+		guard: guard,
 	}
 
 	return con, nil
@@ -92,8 +108,10 @@ func (c *controller) ServiceChanged(svc *v1.Service, epSlices []*discoveryv1.End
 		return k8s.SyncStateSuccess
 	}
 
-	// If we didn't allocate the address then we shouldn't announce it.
-	if svc.Annotations != nil && svc.Annotations[purelbv2.BrandAnnotation] != purelbv2.Brand {
+	// If we didn't allocate the address then we shouldn't announce it. A
+	// Service with no annotations at all was not allocated by us either
+	// (indexing a nil map is safe and yields "").
+	if svc.Annotations[purelbv2.BrandAnnotation] != purelbv2.Brand {
 		logging.Debug(c.logger, "msg", "notAllocatedByPureLB", "node", c.myNode, "service", nsName)
 		return k8s.SyncStateSuccess
 	}
@@ -122,7 +140,7 @@ func (c *controller) DeleteBalancer(nsName string, _ string) k8s.SyncState {
 
 	logging.Debug(c.logger, "op", "deleteBalancer", "name", nsName)
 
-	for _, announcer := range c.announcers {
+	for _, announcer := range slices.Backward(c.announcers) {
 		if err := announcer.DeleteBalancer(nsName, "cluster event", nil); err != nil {
 			logging.Info(c.logger, "op", "deleteBalancer", "error", err, "msg", "failed to clear balancer state")
 			retval = k8s.SyncStateError
@@ -152,7 +170,7 @@ func (c *controller) SetElection(election *election.Election) {
 }
 
 func (c *controller) Shutdown() {
-	for _, announcer := range c.announcers {
+	for _, announcer := range slices.Backward(c.announcers) {
 		announcer.Shutdown()
 	}
 }

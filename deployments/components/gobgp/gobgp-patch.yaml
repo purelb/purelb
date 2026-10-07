@@ -13,7 +13,7 @@ spec:
         emptyDir: {}
       containers:
       - name: k8gobgp
-        image: ghcr.io/purelb/k8gobgp:0.2.7
+        image: ghcr.io/purelb/k8gobgp:0.2.8
         imagePullPolicy: IfNotPresent
         env:
         # Under hostNetwork this is the node's primary address. gobgpd

@@ -33,13 +33,14 @@ kubectl purelb version
 
 Command | Description
 --------|------------
-`kubectl purelb status` | Cluster-wide health overview: components, pools, election, BGP, services
+`kubectl purelb status` | Cluster-wide health overview: components, pools, election, BGP, services, address guard
 `kubectl purelb pools` | ServiceGroup pool utilization (total, used, free per range)
 `kubectl purelb services` | All PureLB-managed services with announcer info
 `kubectl purelb election` | Node Lease status, subnet coverage, health
 `kubectl purelb bgp sessions` | BGP neighbor state per node
 `kubectl purelb bgp dataplane` | Route pipeline: netlinkImport -> RIB -> advertise -> netlinkExport
-`kubectl purelb inspect <ns/svc>` | Deep-dive single service diagnosis
+`kubectl purelb inspect <ns/svc>` | Deep-dive single service diagnosis, including what the address guard allows on each address
+`kubectl purelb guard` | Address guard state per node, live from the agents: loaded, attached, restart pending, drops
 `kubectl purelb validate` | Configuration consistency checks
 `kubectl purelb gobgp <args>` | Proxy the gobgp CLI into the k8gobgp sidecar
 `kubectl purelb ip <args>` | Proxy the `ip` command into a lbnodeagent pod

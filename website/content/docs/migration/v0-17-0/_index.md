@@ -8,7 +8,7 @@ This page covers upgrading an install that is **already on `purelb.io/v2`**
 (v0.16.x) to v0.17.0.
 
 If you are coming from v0.13 or any other pre-`v2` release, follow the
-[v1 to v2 migration guide]({{< ref "/docs/migration" >}}) instead — it
+[v1 to v2 migration guide]({{< ref "/docs/migration/v1-to-v2" >}}) instead — it
 supersedes this page and installs v0.17.0 directly.
 
 ## Read this first
@@ -123,9 +123,9 @@ first write.
 No action is required — the node agents rewrite the annotation as they
 reconcile — but anything parsing it needs updating.
 
-## BGP: k8gobgp v0.2.7
+## BGP: k8gobgp v0.2.8
 
-v0.17.0 ships k8gobgp v0.2.7 (from v0.2.4). It moves to gobgp-netlink v1.3.7
+v0.17.0 ships k8gobgp v0.2.8 (from v0.2.4). It moves to gobgp-netlink v1.3.8
 and changes metrics, validation and some behaviour. Remote pools without BGP are
 unaffected.
 
@@ -136,7 +136,7 @@ remote-VIP traffic to that VIP's address, which breaks when the VIP moves.
 
 ### Check your BGPConfiguration before upgrading
 
-v0.2.7's CRD validates more strictly, and some fields that v0.2.4 accepted and
+v0.2.8's CRD validates more strictly, and some fields that v0.2.4 accepted and
 **ignored** now take effect. Run this before applying the new CRDs:
 
 ```bash
@@ -257,6 +257,51 @@ While the rollout is in progress, an old v0.2.4 pod cannot write an unhealthy
 node's BGPNodeStatus against the new CRD (`healthy` is now required); this
 clears as each pod is replaced.
 
+## Address guard, and changes that apply without it
+
+v0.17.0 adds the [address guard]({{< relref "/docs/configuration/address-guard" >}}):
+an opt-in eBPF filter that lets only a Service's ports reach its
+LoadBalancer addresses, so host services such as sshd and the kubelet no
+longer answer on them. It is **off** until you add `addressGuard` to an
+LBNodeAgent and restart `lbnodeagent`: its program is loaded only when the
+agent starts with the guard configured, so nodes that don't use it load no
+guard code at all. Its default `failurePolicy` is `closed`: a node on which the
+guard can't run (Linux older than 6.6, or no `BPF` capability) announces no
+addresses until it can. Set `failurePolicy: open` to keep such nodes
+announcing, unfiltered. Some changes that ship with it apply whether or not you turn it
+on:
+
+- **The lbnodeagent container gains the `BPF` capability** in the manifests
+  and the Helm chart. If you override the chart's
+  `lbnodeagent.containerSecurityContext`, or an admission policy restricts
+  capabilities, allow `BPF`; without it a configured guard can't load, and
+  the node stands down (`failurePolicy: closed`) or announces unfiltered
+  (`open`), and says so. A node without the guard configured needs nothing.
+- **A LoadBalancer Service with no annotations at all is no longer
+  announced.** The node agent skipped Services another controller had
+  allocated, but only when they carried *some* annotations; one with none,
+  such as a k3s ServiceLB Service, had its addresses announced by PureLB.
+- **IPv6 LoadBalancer addresses are now always added deprecated**
+  (`preferred_lft 0`), including local addresses with `validLifetime: 0` and
+  every address on `kube-lb0`. The node never chooses one as the source of its
+  own connections. They still receive traffic, and k8gobgp still advertises
+  them.
+
+The LBNodeAgent CRD gains `spec.local.addressGuard`. **Helm does not upgrade
+CRDs**: apply the v0.17.0 CRDs before configuring the guard, or the API server
+silently drops the field. `kubectl purelb validate` warns when the installed
+CRD is too old.
+
+Turning the guard on in `enforce` mode changes what reaches your addresses:
+anything that relied on a non-Service port of a VIP stops working. In
+particular, with kube-proxy in iptables mode, NodePorts and `hostPort`s are no
+longer reachable *through a VIP* (they still are on node addresses). Use
+`mode: monitor` first to see what would be dropped. The guard needs Linux 6.6
+or newer on the nodes.
+
+Rolling back needs nothing for the guard: it detaches when the v0.17.0 agent
+exits, and an older agent ignores the field.
+
 ## Rolling back to v0.16.x
 
 Reinstall the v0.16.x CRDs and workloads.
@@ -272,7 +317,7 @@ kubectl apply -f lbnodeagents-pre-0.17.yaml
 
 **Roll back the BGP CRDs together with the workloads.** The v0.16.x manifests
 carry k8gobgp v0.2.4's CRDs; re-apply them along with the v0.16.x workloads.
-A v0.2.4 sidecar running against v0.2.7's CRDs cannot write an unhealthy
+A v0.2.4 sidecar running against v0.2.8's CRDs cannot write an unhealthy
 node's BGPNodeStatus (`healthy` is now required), so `kubectl get
 bgpnodestatus` would keep showing the last healthy state. Fields added in
 v0.2.5 and later (for example `ebgpMaximumPaths`) are dropped by the older CRD.

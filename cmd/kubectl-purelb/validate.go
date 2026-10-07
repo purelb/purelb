@@ -24,12 +24,17 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+
+	"purelb.io/internal/kernelversion"
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 type checkResult struct {
@@ -409,6 +414,15 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 		}
 	}
 
+	// ========== Address guard checks ==========
+	dsList, dsErr := c.core.AppsV1().DaemonSets(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
+	lbnaCRD, crdErr := c.dynamic.Resource(gvrCRDs).Get(ctx, "lbnodeagents.purelb.io", metav1.GetOptions{})
+	var guardNodes []v1.Node
+	if nodeList != nil {
+		guardNodes = nodeList.Items
+	}
+	checks = append(checks, addressGuardChecks(agents, guardNodes, dsList, dsErr, lbnaCRD, crdErr)...)
+
 	// ========== BGP checks ==========
 	if bgpConfigList != nil && len(bgpConfigList.Items) > 0 {
 		for _, bgpCfg := range bgpConfigList.Items {
@@ -559,4 +573,145 @@ func countMatchingNodes(selectorRaw interface{}, nodes []v1.Node) (int, error) {
 		}
 	}
 	return count, nil
+}
+
+// addressGuardChecks are the checks for the address guard, from data the
+// API already has: what the CRD accepts, which nodes can run the guard, and
+// whether the agent has the capability to load it.
+func addressGuardChecks(agents []*purelbv2.LBNodeAgent, nodes []v1.Node, dsList *appsv1.DaemonSetList, dsErr error,
+	lbnaCRD *unstructured.Unstructured, crdErr error) []checkResult {
+	var checks []checkResult
+
+	// An out-of-date CRD drops the field silently: the guard looks
+	// configured in the user's YAML and isn't, and the agents never see it.
+	// So a readable CRD without the field is flagged whether or not any
+	// agent configures the guard -- that is exactly when nobody would
+	// notice. An unreadable CRD is only worth a warning when the guard is
+	// in use; otherwise it would add noise for everyone with the older
+	// plugin RBAC.
+	if crdErr == nil && !crdHasAddressGuard(lbnaCRD) {
+		checks = append(checks, checkResult{"WARN",
+			"The installed LBNodeAgent CRD has no addressGuard field: the API server silently drops it. Upgrade the CRDs (Helm does not upgrade CRDs)"})
+	}
+
+	configured := false
+	for _, a := range agents {
+		if a.Spec.Local == nil || a.Spec.Local.AddressGuard == nil {
+			continue
+		}
+		configured = true
+		name := agentName(a)
+		if ex := a.Spec.Local.AddressGuard.ExcludeInterfaces; len(ex) > 0 {
+			checks = append(checks, checkResult{"WARN", fmt.Sprintf(
+				"LBNodeAgent %q: address guard excludes %s: traffic to VIPs arriving there is not filtered on the nodes it selects",
+				name, strings.Join(ex, ", "))})
+		} else {
+			checks = append(checks, checkResult{"PASS", fmt.Sprintf("LBNodeAgent %q: address guard %s, failurePolicy %s", name, guardMode(a), guardPolicy(a))})
+		}
+	}
+	if !configured {
+		return checks
+	}
+	if crdErr != nil {
+		checks = append(checks, checkResult{"WARN", fmt.Sprintf("Address guard: unable to check the LBNodeAgent CRD schema: %v", reason(crdErr))})
+	}
+
+	// A node that can't run the guard either stands down (fail-closed: it
+	// announces nothing, which is a FAIL) or announces unfiltered
+	// (fail-open: a WARN).
+	tooOld := map[string][]string{}
+	anyClosed := false
+	for _, n := range nodes {
+		nc := resolveNodeConfig(agents, n.Labels)
+		if nc.Guard == guardOff {
+			continue
+		}
+		anyClosed = anyClosed || nc.GuardPolicy == "closed"
+		release := n.Status.NodeInfo.KernelVersion
+		v, err := kernelversion.Parse(release)
+		switch {
+		case err != nil:
+			tooOld[nc.GuardPolicy] = append(tooOld[nc.GuardPolicy], fmt.Sprintf("%s (unrecognised kernel %q)", n.Name, release))
+		case !v.AtLeast(kernelversion.AddressGuardMin):
+			tooOld[nc.GuardPolicy] = append(tooOld[nc.GuardPolicy], fmt.Sprintf("%s (%s)", n.Name, release))
+		}
+	}
+	if old := tooOld["closed"]; len(old) > 0 {
+		checks = append(checks, checkResult{"FAIL", fmt.Sprintf(
+			"%d node(s) can't run the address guard (needs kernel %s or newer) and its failurePolicy is closed, so they announce no addresses: %s",
+			len(old), kernelversion.AddressGuardMin, strings.Join(old, ", "))})
+	}
+	if old := tooOld["open"]; len(old) > 0 {
+		checks = append(checks, checkResult{"WARN", fmt.Sprintf(
+			"%d node(s) can't run the address guard (needs kernel %s or newer), so VIPs there are not filtered (failurePolicy: open): %s",
+			len(old), kernelversion.AddressGuardMin, strings.Join(old, ", "))})
+	}
+
+	if dsErr != nil {
+		checks = append(checks, checkResult{"WARN", fmt.Sprintf("Address guard: unable to check the lbnodeagent capabilities: %v", reason(dsErr))})
+		return checks
+	}
+	found := false
+	for _, ds := range dsList.Items {
+		for _, ctr := range ds.Spec.Template.Spec.Containers {
+			if ctr.Name != "lbnodeagent" {
+				continue
+			}
+			found = true
+			if !hasCapability(ctr.SecurityContext, "BPF") {
+				if anyClosed {
+					checks = append(checks, checkResult{"FAIL", fmt.Sprintf(
+						"DaemonSet %q: the lbnodeagent container lacks the BPF capability, so the address guard can't load and nodes with failurePolicy closed announce no addresses",
+						ds.Name)})
+				} else {
+					checks = append(checks, checkResult{"WARN", fmt.Sprintf(
+						"DaemonSet %q: the lbnodeagent container lacks the BPF capability, so the address guard can't load and VIPs are not filtered",
+						ds.Name)})
+				}
+			}
+		}
+	}
+	if !found {
+		checks = append(checks, checkResult{"WARN", fmt.Sprintf(
+			"Address guard: no lbnodeagent DaemonSet in namespace %q; unable to check its capabilities", purelbNamespace)})
+	}
+	return checks
+}
+
+// reason shortens a Forbidden error to what the user needs to act on.
+func reason(err error) string {
+	if apierrors.IsForbidden(err) {
+		return "forbidden (see rbac-sample.yaml)"
+	}
+	return err.Error()
+}
+
+// crdHasAddressGuard reports whether the LBNodeAgent CRD's v2 schema knows
+// spec.local.addressGuard.
+func crdHasAddressGuard(crd *unstructured.Unstructured) bool {
+	versions, _, _ := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	for _, raw := range versions {
+		v, ok := raw.(map[string]interface{})
+		if !ok || v["name"] != "v2" {
+			continue
+		}
+		_, found, _ := unstructured.NestedMap(v, "schema", "openAPIV3Schema", "properties",
+			"spec", "properties", "local", "properties", "addressGuard")
+		return found
+	}
+	return false
+}
+
+// hasCapability reports whether a container's security context adds cap
+// (with or without the CAP_ prefix).
+func hasCapability(sc *v1.SecurityContext, cap string) bool {
+	if sc == nil || sc.Capabilities == nil {
+		return false
+	}
+	for _, c := range sc.Capabilities.Add {
+		if strings.TrimPrefix(string(c), "CAP_") == cap {
+			return true
+		}
+	}
+	return false
 }
