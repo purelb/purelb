@@ -142,6 +142,33 @@ make check           # go vet + race tests (also regenerates client stubs)
 make test-coverage   # coverage profile plus a per-package summary
 ```
 
+### Address guard eBPF tests
+
+The tests that load the real eBPF program and run packets through it need
+`CAP_BPF` and `CAP_NET_ADMIN`, so they skip under `make check`. Run them with
+exactly the agent's capabilities, as CI's `bpf-test` job does:
+
+```shell
+go test -c -o addrguard.test ./internal/addrguard/
+sudo env ADDRGUARD_BPF_TESTS=required ADDRGUARD_BPF_BUDGET=enforce \
+  setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin -- \
+  ./addrguard.test -test.v -test.skip TestAttacherInNetns
+# The attacher test needs CAP_SYS_ADMIN as well, to create a network namespace:
+sudo env ADDRGUARD_BPF_TESTS=required ADDRGUARD_NETNS_TESTS=required \
+  setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin -- \
+  ./addrguard.test -test.v -test.run TestAttacherInNetns
+```
+
+`ADDRGUARD_BPF_TESTS=required` turns a skip into a failure.
+`ADDRGUARD_BPF_BUDGET=enforce` makes `TestBPFNonVIPBudget` assert the 50 ns
+per-packet budget on the path non-VIP traffic takes; without it the test only
+logs the cost. Enforce it on hardware you know. CI doesn't: a shared runner
+measured the same program on the same kernel 4–6× slower.
+
+`make bpf` regenerates the program from `internal/addrguard/bpf/addrguard.c`
+in a pinned builder image (needs Docker). The output is reproducible, and
+CI's `bpf-generate` job fails if the committed object differs.
+
 ### End-to-end tests
 
 The e2e suite is pytest, in [test/e2e/py/](test/e2e/py/). It runs against a
