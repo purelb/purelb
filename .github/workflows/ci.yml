@@ -81,6 +81,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # pkg/generated is not checked in, and internal/addrguard imports
+      # internal/k8s, which needs it.
+      - name: Generate Kubernetes client code
+        run: make generate
+
       - name: Build the test binary
         run: go test -c -o addrguard.test ./internal/addrguard/
 
