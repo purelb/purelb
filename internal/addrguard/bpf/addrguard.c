@@ -113,6 +113,17 @@ struct {
 /* Verdict returned by the shared parser. */
 enum verdict { V_PASS = 0, V_DROP = 1 };
 
+/* Reads len bytes at off into to.
+ *
+ * The buffers read after a packet has matched a VIP (extension headers,
+ * ICMP type, ports) are zero-initialised by their callers. Linux 6.17's
+ * verifier, for a loader without CAP_PERFMON (the agent has CAP_BPF and
+ * CAP_NET_ADMIN only), wants a speculation barrier after a helper writes
+ * into stack the program hasn't written yet, and then rejects the load
+ * because a helper call is a jump ("verifier bug: speculation barrier after
+ * jump instruction"). Writing the buffer first avoids that. The buffers on
+ * the path every packet takes (VLAN tag, IP header) are left alone: they
+ * don't trigger it, and zeroing costs a barrier per packet. */
 static __always_inline int load(void *ctx, int xdp, __u32 off, void *to, __u32 len)
 {
 	struct __sk_buff *skb = ctx;
@@ -251,7 +262,7 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off)
 #pragma unroll
 		for (int i = 0; i < MAX_EXT_HDRS; i++) {
 			if (l4proto == IPPROTO_FRAGMENT_) {
-				__u8 h[4]; /* next header, reserved, offset+flags */
+				__u8 h[4] = {}; /* next header, reserved, offset+flags */
 
 				if (load(ctx, xdp, l4off, h, sizeof(h)) < 0)
 					return decide(vc, 0, R_MALFORMED, fam);
@@ -260,7 +271,7 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off)
 				l4proto = h[0];
 				l4off += 8;
 			} else if (is_ext_hdr(l4proto)) {
-				__u8 h[2]; /* next header, length in 8-octet units - 1 */
+				__u8 h[2] = {}; /* next header, length in 8-octet units - 1 */
 
 				if (load(ctx, xdp, l4off, h, sizeof(h)) < 0)
 					return decide(vc, 0, R_MALFORMED, fam);
@@ -283,7 +294,7 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off)
 
 	if ((fam == FAM_V4 && l4proto == IPPROTO_ICMP) ||
 	    (fam == FAM_V6 && l4proto == IPPROTO_ICMPV6_)) {
-		__u8 type;
+		__u8 type = 0;
 
 		if (load(ctx, xdp, l4off, &type, sizeof(type)) < 0)
 			return decide(vc, 0, R_MALFORMED, fam);
@@ -293,7 +304,7 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off)
 	}
 
 	if (l4proto == IPPROTO_TCP || l4proto == IPPROTO_UDP || l4proto == IPPROTO_SCTP) {
-		__be16 ports[2]; /* source, destination: same layout in all three */
+		__be16 ports[2] = {}; /* source, destination: same layout in all three */
 
 		/* A first fragment too short to carry the ports cannot be
 		 * checked, and the rest of the datagram would pass as non-first
