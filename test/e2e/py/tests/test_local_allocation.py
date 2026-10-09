@@ -630,8 +630,14 @@ def test_address_guard_passes_pmtud_and_filters_icmp(
         # can arrive with even its IP header outside the linear area; one
         # the guard can't read passes uncounted -- unfiltered -- so 50
         # full-size disallowed ones must all be counted as dropped, too.
-        router.send_icmp(vip, 2 if v6 else 3, count=50, payload=1232)
+        # A real error quotes the VIP's own packet.
+        router.send_icmp(vip, 2 if v6 else 3, count=50, payload=1232, quote_src=vip)
         router.send_icmp(vip, 137 if v6 else 13, count=50, payload=1232)
+        # An error quoting the node's own traffic, sent to the VIP, is
+        # forged: the node would act on it (path MTU, socket errors).
+        own = topo.node_ips6.get(node) if v6 else topo.node_ips[node]
+        assert own, f"{node} has no address of its own in {fam}"
+        router.send_icmp(vip, 2 if v6 else 3, count=5, payload=1232, quote_src=own)
         after_pass = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="pass", reason="icmp", family=fam)
         after_bad = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="drop", reason="malformed", family=fam)
         after_deny = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="drop", reason="icmp_denied", family=fam)
@@ -641,7 +647,7 @@ def test_address_guard_passes_pmtud_and_filters_icmp(
         assert sum(after_pass.values()) >= sum(before_pass.values()) + 50, (
             f"the guard didn't pass the PMTUD ICMP for {vip} (holder {node}); before {before_pass}, after {after_pass}"
         )
-        assert_guard_dropped(before_deny, after_deny, f"disallowed ICMP to {vip}", node, min_delta=3 + 50)
+        assert_guard_dropped(before_deny, after_deny, f"disallowed and forged ICMP to {vip}", node, min_delta=3 + 50 + 5)
 
 
 @pytest.mark.requires("router")

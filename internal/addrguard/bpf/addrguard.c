@@ -227,6 +227,14 @@ static __always_inline int icmp_allowed(__u8 type, __u32 fam)
 	       type == 135 || type == 136;
 }
 
+/* ICMP error messages: they quote the packet that caused them. */
+static __always_inline int icmp_error(__u8 type, __u32 fam)
+{
+	if (fam == FAM_V4)
+		return type == 3 || type == 11 || type == 12;
+	return type >= 1 && type <= 4;
+}
+
 /* Extension headers walked to find the transport header. The fragment
  * header (44) is one too; AH (51) is deliberately not -- it is treated as
  * a plain protocol in both families. */
@@ -337,9 +345,32 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off, __
 
 		if (load(ctx, xdp, l4off, &type, sizeof(type)) < 0)
 			return decide(vc, 0, R_MALFORMED, fam);
-		if (icmp_allowed(type, fam))
-			return decide(vc, 1, R_ICMP, fam);
-		return decide(vc, 0, R_ICMP_DENIED, fam);
+		if (!icmp_allowed(type, fam))
+			return decide(vc, 0, R_ICMP_DENIED, fam);
+		if (icmp_error(type, fam)) {
+			/* An error quotes, after the 8-byte ICMP header, the packet
+			 * that caused it, and the kernel acts on the quote: path
+			 * MTU for the quoted destination, the socket matching the
+			 * quoted addresses. An error about this VIP's own traffic
+			 * quotes a packet from this VIP; any other source is
+			 * someone else's traffic -- the node's own, say -- and the
+			 * error is forged. */
+			__u32 qsrc[4] = {};
+
+			if (fam == FAM_V4) {
+				if (load(ctx, xdp, l4off + 8 + 12, qsrc, 4) < 0)
+					return decide(vc, 0, R_MALFORMED, fam);
+				if (qsrc[0] != pk.addr[0])
+					return decide(vc, 0, R_ICMP_DENIED, fam);
+			} else {
+				if (load(ctx, xdp, l4off + 8 + 8, qsrc, 16) < 0)
+					return decide(vc, 0, R_MALFORMED, fam);
+				if (qsrc[0] != pk.addr[0] || qsrc[1] != pk.addr[1] ||
+				    qsrc[2] != pk.addr[2] || qsrc[3] != pk.addr[3])
+					return decide(vc, 0, R_ICMP_DENIED, fam);
+			}
+		}
+		return decide(vc, 1, R_ICMP, fam);
 	}
 
 	if (l4proto == IPPROTO_TCP || l4proto == IPPROTO_UDP || l4proto == IPPROTO_SCTP) {

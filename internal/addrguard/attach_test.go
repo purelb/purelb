@@ -251,7 +251,9 @@ func TestAttacherInNetns(t *testing.T) {
 	expect(reason(actPass, reasonPortAllowed, famV6), 1, "IPv6, IP header in a fragment, allowed port")
 	send(frame(0x86dd, nil, ipv6(client6, vip6, protoUDP, udp(81))), 14)
 	expect(reason(actDrop, reasonPortDenied, famV6), 1, "IPv6, IP header in a fragment, denied port")
-	send(frame(0x86dd, nil, ipv6(client6, vip6, protoICMPv6, append(icmpMsg(2, 0), big...))), 14)
+	// Packet too big quotes the VIP's own oversized reply.
+	quote := ipv6(vip6, client6, protoUDP, l4(80))[:48]
+	send(frame(0x86dd, nil, ipv6(client6, vip6, protoICMPv6, append(append(icmpMsg(2, 0), quote...), big...))), 14)
 	expect(reason(actPass, reasonICMP, famV6), 1, "IPv6 packet too big, header in a fragment")
 	send(frame(0x0800, nil, ipv4(client4, other4, protoUDP, v4opts{}, udp(81))), 14)
 	time.Sleep(100 * time.Millisecond)

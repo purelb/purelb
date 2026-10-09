@@ -576,18 +576,32 @@ class Router:
                              f"&& echo ok || echo fail", check=False)
         return out.strip() == "ok"
 
-    def send_icmp(self, address: str, icmp_type: int, count: int = 1, payload: int = 16) -> None:
+    def send_icmp(self, address: str, icmp_type: int, count: int = 1, payload: int = 16,
+                  quote_src: Optional[str] = None) -> None:
         """Send `count` raw ICMP (IPv4) or ICMPv6 messages of `icmp_type`,
         code 0, with `payload` bytes after the header, to address. For types
-        `ping` cannot send."""
+        `ping` cannot send. For an error type, `quote_src` makes the payload
+        start with the packet the error is about, as a router's would: an IP
+        header from quote_src (to this router) and 8 bytes of UDP."""
         script = f"""
 import socket, struct
 v6 = {":" in address!r}
+quote_src = {quote_src!r}
 def csum(b):
     b += b"\\0" * (len(b) % 2)
     s = sum(struct.unpack("!%dH" % (len(b) // 2), b)); s = (s >> 16) + (s & 0xffff); s += s >> 16
     return ~s & 0xffff
-m = struct.pack("!BBHI", {int(icmp_type)}, 0, 0, 0) + bytes({int(payload)})
+body = bytes({int(payload)})
+if quote_src:
+    udp = struct.pack("!HHHH", 80, 40000, 8, 0)
+    if v6:
+        q = struct.pack("!IHBB16s16s", 0x60000000, 8, 17, 64, socket.inet_pton(socket.AF_INET6, quote_src),
+                        socket.inet_pton(socket.AF_INET6, "2001:db8::1")) + udp
+    else:
+        q = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 28, 0, 0, 64, 17, 0, socket.inet_aton(quote_src),
+                        socket.inet_aton("192.0.2.1")) + udp
+    body = (q + body)[:max(len(body), len(q))]
+m = struct.pack("!BBHI", {int(icmp_type)}, 0, 0, 0) + body
 if v6:
     s = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)
 else:

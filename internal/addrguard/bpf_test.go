@@ -458,12 +458,18 @@ func TestBPFFragments(t *testing.T) {
 
 func TestBPFICMPAllowList(t *testing.T) {
 	h := guarded(t)
-	icmp4 := func(typ, code uint8) []byte {
-		return frame(0x0800, nil, ipv4(client4, vip4, protoICMP, v4opts{}, icmpMsg(typ, code)))
+	// An error message quotes the packet that caused it: a VIP's own
+	// traffic, so a packet from the VIP (the IP header and 8 more bytes).
+	quote4 := func(src netip.Addr) []byte { return ipv4(src, client4, protoUDP, v4opts{}, l4(80))[:28] }
+	quote6 := func(src netip.Addr) []byte { return ipv6(src, client6, protoUDP, l4(80))[:48] }
+	icmp4q := func(typ, code uint8, quote []byte) []byte {
+		return frame(0x0800, nil, ipv4(client4, vip4, protoICMP, v4opts{}, append(icmpMsg(typ, code), quote...)))
 	}
-	icmp6 := func(typ uint8) []byte {
-		return frame(0x86dd, nil, ipv6(client6, vip6, protoICMPv6, icmpMsg(typ, 0)))
+	icmp6q := func(typ uint8, quote []byte) []byte {
+		return frame(0x86dd, nil, ipv6(client6, vip6, protoICMPv6, append(icmpMsg(typ, 0), quote...)))
 	}
+	icmp4 := func(typ, code uint8) []byte { return icmp4q(typ, code, quote4(vip4)) }
+	icmp6 := func(typ uint8) []byte { return icmp6q(typ, quote6(vip6)) }
 	h.assertPass(icmp4(3, 4), "IPv4 fragmentation needed (PMTUD)")
 	h.assertPass(icmp6(2), "IPv6 packet too big (PMTUD)")
 	for _, typ := range []uint8{0, 3, 8, 11, 12} {
@@ -481,11 +487,26 @@ func TestBPFICMPAllowList(t *testing.T) {
 	assert.Equal(t, uint64(12), h.reason(actDrop, reasonICMPDenied, famV4))
 	assert.Equal(t, uint64(10), h.reason(actDrop, reasonICMPDenied, famV6))
 
-	// An ICMP header too short to hold its type can't be checked.
+	// An error quoting someone else's packet -- the node's own traffic,
+	// say -- is forged: the kernel would act on the quote (path MTU for
+	// its destination, the socket matching its addresses).
+	for _, typ := range []uint8{3, 11, 12} {
+		h.assertDrop(icmp4q(typ, 4, quote4(other4)), fmt.Sprintf("ICMP error type %d quoting another address", typ))
+	}
+	for _, typ := range []uint8{1, 2, 3, 4} {
+		h.assertDrop(icmp6q(typ, quote6(other6)), fmt.Sprintf("ICMPv6 error type %d quoting another address", typ))
+	}
+	assert.Equal(t, uint64(12+6), h.reason(actDrop, reasonICMPDenied, famV4))
+	assert.Equal(t, uint64(10+8), h.reason(actDrop, reasonICMPDenied, famV6))
+
+	// An ICMP header too short to hold its type can't be checked, nor an
+	// error too short to hold the quote's source.
 	h.assertDrop(frame(0x0800, nil, ipv4(client4, vip4, protoICMP, v4opts{}, nil)), "truncated ICMP")
 	h.assertDrop(frame(0x86dd, nil, ipv6(client6, vip6, protoICMPv6, nil)), "truncated ICMPv6")
-	assert.Equal(t, uint64(2), h.reason(actDrop, reasonMalformed, famV4))
-	assert.Equal(t, uint64(2), h.reason(actDrop, reasonMalformed, famV6))
+	h.assertDrop(icmp4q(3, 4, quote4(vip4)[:14]), "ICMP error with its quote cut short")
+	h.assertDrop(icmp6q(2, quote6(vip6)[:20]), "ICMPv6 error with its quote cut short")
+	assert.Equal(t, uint64(4), h.reason(actDrop, reasonMalformed, famV4))
+	assert.Equal(t, uint64(4), h.reason(actDrop, reasonMalformed, famV6))
 }
 
 func TestBPFNonPortProtocols(t *testing.T) {

@@ -9,7 +9,7 @@ PureLB puts each LoadBalancer address (VIP) on a node interface: the node's NIC 
 The address guard closes that. It is a small eBPF program on each node's uplinks that, for packets addressed to a PureLB VIP, lets through only:
 
 * the Service's ports (TCP, UDP and SCTP; the Service `port`, never the NodePort). When several Services share an address, the ports of all of them;
-* ICMP needed for the network to work: echo (ping), destination unreachable (including IPv4 "fragmentation needed", which path MTU discovery depends on), time exceeded, parameter problem, IPv6 packet too big, and IPv6 neighbor solicitation/advertisement;
+* ICMP needed for the network to work: echo (ping), destination unreachable (including IPv4 "fragmentation needed", which path MTU discovery depends on), time exceeded, parameter problem, IPv6 packet too big, and IPv6 neighbor solicitation/advertisement. An error message (unreachable, packet too big, time exceeded, parameter problem) must be about the VIP's own traffic: it quotes the packet that caused it, and the quoted packet's source must be the VIP. One quoting any other address, such as the node's own, is forged, and dropped (`icmp_denied`), since the kernel would act on the quote: lowering the path MTU to the quoted destination, or reporting an error to the socket it matches;
 * IP protocols you list in `allowedProtocols`.
 
 Everything else addressed to the VIP is dropped and counted. Traffic to the node's own addresses is not touched. IPv4 and IPv6 are handled alike.
