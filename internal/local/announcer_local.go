@@ -108,6 +108,17 @@ type announcer struct {
 	// nothing: the address guard is configured fail-closed and isn't
 	// working. nil means never.
 	standingDown func() bool
+	// withheld, when it returns true for an address, means this node must
+	// not announce it: the fail-closed address guard couldn't write the
+	// address's rules. nil means never.
+	withheld func(net.IP) bool
+
+	// quietWithdrawn records, per renewalKey, the reason an address was
+	// last withdrawn for while the node announces nothing (or withholds
+	// it). A stand-down can last indefinitely and every Service sync lands
+	// in it again: the address is withdrawn once per reason, not on every
+	// sync. Written only on the service-sync goroutine.
+	quietWithdrawn map[string]string
 
 	// cfg is the current configuration snapshot. A nil pointer means we
 	// are not configured and must not announce; see SetConfig. Loaded
@@ -190,10 +201,30 @@ func init() {
 // NewAnnouncer returns a new local Announcer.
 //
 // standingDown (may be nil) reports whether the node must announce nothing
-// because the address guard is fail-closed and not working.
-func NewAnnouncer(l log.Logger, node string, standingDown func() bool) lbnodeagent.Announcer {
+// because the address guard is fail-closed and not working. withheld (may
+// be nil) reports whether one address must not be announced because the
+// fail-closed guard couldn't write its rules.
+func NewAnnouncer(l log.Logger, node string, standingDown func() bool, withheld func(net.IP) bool) lbnodeagent.Announcer {
 	return &announcer{logger: l, myNode: node, svcIngresses: map[string][]v1.LoadBalancerIngress{},
-		standingDown: standingDown}
+		standingDown: standingDown, withheld: withheld}
+}
+
+// withdrawQuietly withdraws lbIP for reason unless it already was, for the
+// same reason, since it was last announced (see quietWithdrawn), and drops
+// any slot that still names this node.
+func (a *announcer) withdrawQuietly(svc *v1.Service, nsName, reason string, lbIP net.IP) error {
+	key := renewalKey(nsName, lbIP.String())
+	var err error
+	if a.quietWithdrawn[key] != reason {
+		if err = a.deleteAddress(nsName, reason, lbIP); err == nil {
+			if a.quietWithdrawn == nil {
+				a.quietWithdrawn = map[string]string{}
+			}
+			a.quietWithdrawn[key] = reason
+		}
+	}
+	a.clearOwnAnnounceSlot(svc, lbIP)
+	return err
 }
 
 // SetClient configures this announcer to use the provided client.
@@ -327,10 +358,9 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 		// dummy included, so remote addresses go too.
 		for _, ingress := range svc.Status.LoadBalancer.Ingress {
 			if lbIP := net.ParseIP(ingress.IP); lbIP != nil {
-				if err := a.deleteAddress(nsName, reason, lbIP); err != nil {
+				if err := a.withdrawQuietly(svc, nsName, reason, lbIP); err != nil {
 					retErr = err
 				}
-				a.clearOwnAnnounceSlot(svc, lbIP)
 			}
 		}
 		return retErr
@@ -352,6 +382,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			retErr = err
 		}
 		a.clearOwnAnnounceSlot(svc, oldIP)
+		delete(a.quietWithdrawn, renewalKey(nsName, oldIP.String()))
 		dropped = append(dropped, oldIP)
 	}
 
@@ -375,6 +406,21 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			logging.Info(l, "op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
 			continue
 		}
+
+		// The fail-closed address guard couldn't write this address's
+		// rules (the guard logs why): it can't be filtered, so it isn't
+		// announced from this node until a retry writes them.
+		if a.withheld != nil && a.withheld(lbIP) {
+			if a.quietWithdrawn[renewalKey(nsName, lbIP.String())] != "addressGuardWithheld" {
+				logging.Info(l, "event", "addressGuardWithheld", "ip", lbIP,
+					"msg", "not announcing: the address guard could not write this address's rules")
+			}
+			if err := a.withdrawQuietly(svc, nsName, "addressGuardWithheld", lbIP); err != nil {
+				retErr = err
+			}
+			continue
+		}
+		delete(a.quietWithdrawn, renewalKey(nsName, lbIP.String()))
 
 		if cfg.localNameRegex != nil {
 			// The user specified an announcement interface regex so use it to
@@ -736,6 +782,11 @@ func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 
 	// delete this service from our announcement database
 	delete(a.svcIngresses, nsName)
+	for _, in := range ingress {
+		if ip := net.ParseIP(in.IP); ip != nil {
+			delete(a.quietWithdrawn, renewalKey(nsName, ip.String()))
+		}
+	}
 
 	// Every address is attempted before returning, and failures are
 	// reported: a swallowed error here leaves the VIP on the NIC after the

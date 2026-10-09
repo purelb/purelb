@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -88,8 +89,20 @@ func (r *selectorReporter) set(state string) string {
 	return r.publish()
 }
 
-// publish republishes the effective state, and returns it.
+// publish republishes the effective state, and returns it. Both goroutines
+// publish, and each writes several series: if the inputs changed while
+// this one wrote, it writes again, so the last write is always current.
 func (r *selectorReporter) publish() string {
+	for {
+		state := r.effective()
+		recordSelectorState(state)
+		if r.effective() == state {
+			return state
+		}
+	}
+}
+
+func (r *selectorReporter) effective() string {
 	state := "default"
 	if b := r.base.Load(); b != nil {
 		state = *b
@@ -97,7 +110,6 @@ func (r *selectorReporter) publish() string {
 	if r.standingDown != nil && r.standingDown() {
 		state = "guardUnavailable"
 	}
-	recordSelectorState(state)
 	return state
 }
 
@@ -278,7 +290,7 @@ func newConfigChanged(
 // is configured for myNode right now. The agent loads the guard program
 // only then, and decides before any informer or goroutine runs, so the
 // program never changes under the goroutines that use it.
-func readGuardEnabled(logger log.Logger, kubeconfig, myNode string) (bool, error) {
+func readGuardEnabled(logger log.Logger, kubeconfig, myNode string, stop <-chan struct{}) (bool, error) {
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return false, fmt.Errorf("building client config: %w", err)
@@ -310,7 +322,7 @@ func readGuardEnabled(logger log.Logger, kubeconfig, myNode string) (bool, error
 		}
 		return node.Labels, nil
 	}
-	return guardEnabledAtStartup(logger, listAgents, nodeLabels, 30*time.Second, 2*time.Second)
+	return guardEnabledAtStartup(logger, listAgents, nodeLabels, 30*time.Second, 2*time.Second, stop)
 }
 
 // guardEnabledAtStartup resolves the address guard configuration the way
@@ -322,6 +334,7 @@ func guardEnabledAtStartup(
 	listAgents func(context.Context) ([]*purelbv2.LBNodeAgent, error),
 	nodeLabels func(context.Context) (map[string]string, error),
 	timeout, interval time.Duration,
+	stop <-chan struct{},
 ) (bool, error) {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -343,7 +356,11 @@ func guardEnabledAtStartup(
 		}
 		logging.Info(logger, "op", "startup", "error", err,
 			"msg", "could not read the address guard configuration, retrying")
-		time.Sleep(interval)
+		select {
+		case <-stop:
+			return false, errors.New("stopped while reading the address guard configuration")
+		case <-time.After(interval):
+		}
 	}
 }
 
@@ -386,7 +403,7 @@ func main() {
 
 	// The address guard program is loaded only if the guard is configured
 	// for this node, and only at startup: decide before anything runs.
-	guardEnabled, err := readGuardEnabled(logger, *kubeconfig, *myNode)
+	guardEnabled, err := readGuardEnabled(logger, *kubeconfig, *myNode, stopCh)
 	if err != nil {
 		logging.Info(logger, "op", "startup", "error", err, "msg", "could not read the address guard configuration")
 		os.Exit(1)
@@ -485,6 +502,10 @@ func main() {
 		logging.Info(logger, "op", "addressGuard", "standingDown", down, "selectorState", state,
 			"msg", "re-syncing services")
 		client.ForceSync()
+		// The lease advertises this node's subnets, none while it stands
+		// down: renew it now, or the other nodes keep electing it (and its
+		// addresses stay dark) until the next renewal.
+		elect.RenewNow()
 	})
 
 	// Start the election (creates lease, starts informer)

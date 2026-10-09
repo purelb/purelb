@@ -55,7 +55,15 @@ Prometheus:
           summary: "Pool {{ $labels.pool }} is over 90% utilized"
 ```
 
-The address guard ships its own alerts: `PurelbAddressGuardStandingDown` (a fail-closed node's guard isn't working, so the node announces no addresses), `PurelbAddressGuardUnguardedVIPs` (under `failurePolicy: open`, some VIPs on a node are not being filtered, `purelb_address_guard_unguarded_vips > 0` for 5 minutes) `PurelbAddressGuardAttachErrors` (it could not attach to an interface) and `PurelbAddressGuardRestartRequired` (the guard was enabled or disabled after `lbnodeagent` started, and the agents haven't been restarted for 15 minutes: an enabled guard filters nothing until they are). Turn them on alongside your own rules:
+The address guard ships its own alerts:
+
+* `PurelbAddressGuardStandingDown`: a fail-closed node's guard isn't working, so the node announces no addresses (2 minutes).
+* `PurelbAddressGuardUnguardedVIPs`: under `failurePolicy: open`, some VIPs on a node are not being filtered because the program isn't running or their rules couldn't be written (5 minutes). A guard enabled after `lbnodeagent` started is `PurelbAddressGuardRestartRequired` instead.
+* `PurelbAddressGuardAttachErrors`: the guard isn't attached to an interface it should be on (5 minutes).
+* `PurelbAddressGuardFailedVIPs`: under `failurePolicy: closed`, some VIPs' rules couldn't be written, so they aren't announced from that node or a Service port is blocked (5 minutes).
+* `PurelbAddressGuardRestartRequired`: the guard was enabled or disabled after `lbnodeagent` started, and the agents haven't been restarted for 15 minutes: an enabled guard filters nothing until they are.
+
+Turn them on alongside your own rules:
 
 ```yaml
 Prometheus:

@@ -95,7 +95,7 @@ Value | Type | Default | Description
 `Prometheus.lbnodeagent.serviceMonitor.extraLabels` | object | `{}` | Additional labels on ServiceMonitor
 `Prometheus.lbnodeagent.prometheusRules.enabled` | bool | `false` | Create PrometheusRules for lbnodeagent
 `Prometheus.lbnodeagent.prometheusRules.rules` | []object | `[]` | Alert rules
-`Prometheus.lbnodeagent.prometheusRules.addressGuardAlerts` | bool | `false` | Add the address guard alerts (`PurelbAddressGuardStandingDown`, `PurelbAddressGuardUnguardedVIPs`, `PurelbAddressGuardAttachErrors`) to the lbnodeagent PrometheusRules
+`Prometheus.lbnodeagent.prometheusRules.addressGuardAlerts` | bool | `false` | Add the address guard alerts (`PurelbAddressGuardStandingDown`, `PurelbAddressGuardUnguardedVIPs`, `PurelbAddressGuardAttachErrors`, `PurelbAddressGuardFailedVIPs`, `PurelbAddressGuardRestartRequired`) to the lbnodeagent PrometheusRules. Needs `prometheusRules.enabled` too
 `Prometheus.gobgp.serviceMonitor.enabled` | bool | `false` | Create a ServiceMonitor for the k8gobgp sidecar: port 7473 (`k8gobgp_*`) and 7475 (gobgpd's `bgp_*`). Also creates the headless k8gobgp metrics Service. Requires `gobgp.enabled`
 `Prometheus.gobgp.serviceMonitor.extraLabels` | object | `{}` | Additional labels on the ServiceMonitor
 `Prometheus.gobgp.serviceMonitor.interval` | string | `30s` | Scrape interval for both endpoints. gobgpd caches its collector for 15s, so faster scraping only replays the cache

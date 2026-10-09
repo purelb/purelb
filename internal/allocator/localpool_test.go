@@ -16,6 +16,7 @@ package allocator
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"sort"
 	"strings"
@@ -387,8 +388,13 @@ func sameStrings(t *testing.T, want []string, got []string) {
 	assert.Equal(t, want, got)
 }
 
-func mustLocalPool(_ *testing.T, name string, r string) LocalPool {
-	pool := &purelbv2.AddressPool{Pool: r, Subnet: r}
+func mustLocalPool(t *testing.T, name string, r string) LocalPool {
+	return mustLocalPoolIn(t, name, r, r)
+}
+
+// mustLocalPoolIn is a local pool whose range r is part of a larger subnet.
+func mustLocalPoolIn(_ *testing.T, name, r, subnet string) LocalPool {
+	pool := &purelbv2.AddressPool{Pool: r, Subnet: subnet}
 	// Detect if this is an IPv6 range by checking for ':'
 	var v4Pool, v6Pool *purelbv2.AddressPool
 	if strings.Contains(r, ":") {
@@ -916,5 +922,105 @@ func TestInUseByFamilyColonTest(t *testing.T) {
 		key := c.ip.String()
 		assert.Equal(t, c.isIPv6, strings.Contains(key, ":"),
 			"family test disagrees with net.IP for key %q", key)
+	}
+}
+
+// The kernel makes one address in each announced prefix special: the IPv4
+// broadcast (prefixes up to /30) and the IPv6 subnet-router anycast (up to
+// /126). Neither is handed out, assigned, or accepted on request; the
+// prefix is the subnet's, or a remote pool's aggregation.
+func TestReservedAddresses(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, pool, subnet, aggregation, poolType string
+		reserved                                  []string // refused
+		allowed                                   []string // assignable
+	}{
+		{"local v4 /24", "10.9.0.250-10.9.0.255", "10.9.0.0/24", "", purelbv2.PoolTypeLocal,
+			[]string{"10.9.0.255"}, []string{"10.9.0.250", "10.9.0.254"}},
+		{"local v6 /64", "fd09::-fd09::3", "fd09::/64", "", purelbv2.PoolTypeLocal,
+			[]string{"fd09::"}, []string{"fd09::1", "fd09::3"}},
+		{"remote v4, aggregation /28: every block's broadcast", "10.9.1.0-10.9.1.31", "10.9.1.0/24", "/28", purelbv2.PoolTypeRemote,
+			[]string{"10.9.1.15", "10.9.1.31"}, []string{"10.9.1.0", "10.9.1.16"}},
+		{"remote v6, aggregation /124: every block's anycast", "fd09:1::-fd09:1::1f", "fd09:1::/64", "/124", purelbv2.PoolTypeRemote,
+			[]string{"fd09:1::", "fd09:1::10"}, []string{"fd09:1::1", "fd09:1::f"}},
+		{"remote v4 /32 host routes: nothing special", "10.9.2.255-10.9.2.255", "10.9.2.0/24", "/32", purelbv2.PoolTypeRemote,
+			nil, []string{"10.9.2.255"}},
+		{"remote v6 /128 host routes: nothing special", "fd09:2::-fd09:2::", "fd09:2::/64", "/128", purelbv2.PoolTypeRemote,
+			nil, []string{"fd09:2::"}},
+		{"local v4 /31: no broadcast", "10.9.3.0-10.9.3.1", "10.9.3.0/31", "", purelbv2.PoolTypeLocal,
+			nil, []string{"10.9.3.1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ap := purelbv2.AddressPool{Pool: tc.pool, Subnet: tc.subnet, Aggregation: tc.aggregation}
+			var v4, v6 []purelbv2.AddressPool
+			if strings.Contains(tc.subnet, ":") {
+				v6 = append(v6, ap)
+			} else {
+				v4 = append(v4, ap)
+			}
+			p, err := NewLocalPool("unittest", allocatorTestLogger, nil, nil, v4, v6, tc.poolType, false, false, false)
+			if !assert.NoError(t, err) {
+				return
+			}
+			size := p.Size()
+			assert.Equal(t, size, p.SizeV4()+p.SizeV6())
+			handedOut := uint64(0)
+			for _, ip := range tc.reserved {
+				svc := service("requested", ports("tcp/80"), "")
+				assert.ErrorContains(t, p.Assign(ctx, net.ParseIP(ip), &svc), "can't be a LoadBalancer address", ip)
+			}
+			for _, ip := range tc.allowed {
+				svc := service("ok-"+ip, ports("tcp/80"), "")
+				assert.NoError(t, p.Assign(ctx, net.ParseIP(ip), &svc), ip)
+				handedOut++
+			}
+			// Allocation skips them too: drain the pool.
+			for i := 0; ; i++ {
+				svc := service(fmt.Sprintf("next%d", i), ports("tcp/80"), "")
+				if strings.Contains(tc.subnet, ":") {
+					svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol}
+				} else {
+					svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+				}
+				if p.AssignNext(ctx, &svc) != nil {
+					break
+				}
+				handedOut++
+				for _, in := range svc.Status.LoadBalancer.Ingress {
+					assert.NotContains(t, tc.reserved, net.ParseIP(in.IP).String(), "allocated a reserved address")
+				}
+			}
+			assert.Equal(t, size, handedOut, "the pool's size is what it can hand out")
+		})
+	}
+}
+
+// A pool's size leaves out its reserved addresses, counted, not iterated:
+// one per announced prefix in the range.
+func TestReservedAddressesInSize(t *testing.T) {
+	for _, tc := range []struct {
+		name, pool, subnet, aggregation, poolType string
+		size                                      uint64
+	}{
+		{"local v4 range not reaching the broadcast", "10.9.4.0-10.9.5.255", "10.9.4.0/22", "", purelbv2.PoolTypeLocal, 512},
+		{"remote v4, two /24 blocks", "10.9.4.0-10.9.5.255", "10.9.4.0/22", "/24", purelbv2.PoolTypeRemote, 510},
+		{"local v6 range starting at the anycast", "fd09::-fd09::ff", "fd09::/64", "", purelbv2.PoolTypeLocal, 255},
+		{"remote v6, sixteen /124 blocks", "fd09:1::-fd09:1::ff", "fd09:1::/64", "/124", purelbv2.PoolTypeRemote, 240},
+		{"v6 too large to count", "fd09:2::/48", "fd09:2::/48", "", purelbv2.PoolTypeLocal, math.MaxUint64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ap := purelbv2.AddressPool{Pool: tc.pool, Subnet: tc.subnet, Aggregation: tc.aggregation}
+			var v4, v6 []purelbv2.AddressPool
+			if strings.Contains(tc.subnet, ":") {
+				v6 = append(v6, ap)
+			} else {
+				v4 = append(v4, ap)
+			}
+			p, err := NewLocalPool("unittest", allocatorTestLogger, nil, nil, v4, v6, tc.poolType, false, false, false)
+			if assert.NoError(t, err) {
+				assert.Equal(t, tc.size, p.Size())
+			}
+		})
 	}
 }

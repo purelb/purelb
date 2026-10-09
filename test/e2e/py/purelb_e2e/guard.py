@@ -95,6 +95,12 @@ def needs_restart(snap: metrics.Snapshot) -> bool:
     return snap.get(RESTART_REQUIRED) == 1 and snap.get(LOADED) == 0
 
 
+def restart_required(snap: metrics.Snapshot) -> bool:
+    """Whether this agent's guard config differs from what it loaded at
+    startup -- enabled since, or disabled since and still loaded."""
+    return snap.get(RESTART_REQUIRED) == 1
+
+
 def restart_agents(cluster, node_names: Iterable[str]) -> None:
     """Roll the lbnodeagent DaemonSet and wait for every node's agent."""
     count = len(list(node_names))

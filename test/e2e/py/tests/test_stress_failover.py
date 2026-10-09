@@ -37,13 +37,14 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Dict, List
+import urllib.request
+from typing import Callable, Dict, List, TypeVar
 
 import pytest
 
 from purelb_e2e import TEST_NAMESPACE, nodes, topology
 from purelb_e2e.cluster import Cluster
-from purelb_e2e.wait import wait_until, wait_while
+from purelb_e2e.wait import WaitTimeout, wait_until, wait_while
 
 NAMESPACE = TEST_NAMESPACE
 ITERATIONS = int(os.environ.get("PURELB_STRESS_ITERATIONS", 3))
@@ -57,6 +58,62 @@ VARIATIONS = [
 ]
 
 pytestmark = pytest.mark.requires("multi-node")
+
+
+T = TypeVar("T")
+
+
+def agent_diagnostics(cluster: Cluster, topo: topology.Topology, vip: str) -> str:
+    """What every agent pod, node and the VIP look like now: attached to a
+    timeout so a failure that only happens inside a full run explains
+    itself, rather than needing its evidence (pods, Events) to survive."""
+    out: List[str] = []
+    ns = cluster.purelb_namespace
+    for pod in cluster.pods(ns, "component=lbnodeagent"):
+        md, st = pod.metadata, pod.status
+        out.append(f"pod {md.name} on {pod.spec.node_name}: phase={st.phase}"
+                   f"{' DELETING' if md.deletion_timestamp else ''}")
+        for cs in st.container_statuses or []:
+            state = cs.state
+            now = ("running since " + str(state.running.started_at) if state.running else
+                   f"waiting {state.waiting.reason}: {state.waiting.message}" if state.waiting else
+                   f"terminated {state.terminated.reason} ({state.terminated.exit_code})" if state.terminated else "?")
+            last = cs.last_state.terminated if cs.last_state else None
+            out.append(f"  {cs.name}: ready={cs.ready} restarts={cs.restart_count} {now}"
+                       + (f"; last terminated {last.reason} ({last.exit_code}) at {last.finished_at}" if last else ""))
+            if not cs.ready:
+                try:
+                    log = cluster.pod_log_text(ns, md.name, container=cs.name, since_seconds=600)
+                except Exception as exc:  # noqa: BLE001 - diagnostics must not raise
+                    log = f"(log unavailable: {exc!r})"
+                for line in log.strip().splitlines()[-20:]:
+                    out.append(f"    | {line}")
+    for name, ip in sorted(topo.node_ips.items()):
+        try:
+            with urllib.request.urlopen(f"http://{ip}:7474/readyz?verbose", timeout=3) as r:
+                ready = f"{r.status} {r.read().decode(errors='replace').strip().splitlines()[-1:]}"
+        except Exception as exc:  # noqa: BLE001
+            ready = repr(exc)[:200]
+        try:
+            holds = nodes.has_address(ip, vip)
+        except Exception as exc:  # noqa: BLE001
+            holds = repr(exc)[:80]
+        out.append(f"node {name}: taints={cluster.taint_keys(name)} holds {vip}={holds} k8gobgp readyz: {ready}")
+    try:
+        events = cluster.core.list_namespaced_event(ns, field_selector="type=Warning").items
+        for e in sorted(events, key=lambda e: e.last_timestamp or e.event_time or e.metadata.creation_timestamp)[-10:]:
+            out.append(f"event {e.last_timestamp} {e.involved_object.kind}/{e.involved_object.name} {e.reason}: {e.message}")
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"events unavailable: {exc!r}")
+    return "\n".join(out)
+
+
+def wait_or_explain(cluster: Cluster, topo: topology.Topology, vip: str, predicate: Callable[[], T], **kw) -> T:
+    """wait_until, with agent_diagnostics on a timeout."""
+    try:
+        return wait_until(predicate, **kw)
+    except WaitTimeout as exc:
+        raise WaitTimeout(f"{exc}\n--- state at the timeout ---\n{agent_diagnostics(cluster, topo, vip)}") from exc
 
 
 @pytest.mark.requires("multi-node")
@@ -110,7 +167,8 @@ def test_repeated_failover_never_strands_or_duplicates_the_address(
                         cluster.purelb_namespace, victim.metadata.name, grace_seconds=0
                     )
 
-        moved = wait_until(
+        moved = wait_or_explain(
+            cluster, topo, vip,
             lambda c=current: (lambda f: f if f and f[0] != c else None)(
                 nodes.announcing_node(topo.node_ips, vip)
             ),
@@ -142,7 +200,8 @@ def test_repeated_failover_never_strands_or_duplicates_the_address(
 
         history.append(new_holder)
         cluster.remove_taint(current, "purelb-test")
-        wait_until(
+        wait_or_explain(
+            cluster, topo, vip,
             lambda: cluster.daemonset_ready(
                 cluster.purelb_namespace, "lbnodeagent", expect_nodes=len(topo.node_ips)
             ) or None,

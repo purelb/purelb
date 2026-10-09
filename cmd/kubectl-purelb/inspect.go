@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +58,9 @@ type guardInfo struct {
 	// announcing node(s) for a local pool, across all nodes for a remote one.
 	Mode    string     `json:"mode"`
 	Allowed []guardVIP `json:"allowed,omitempty"`
+	// AllowedProtocols are the non-port IP protocols allowed to every VIP
+	// on those nodes (allowedProtocols).
+	AllowedProtocols []int32 `json:"allowedProtocols,omitempty"`
 }
 
 // guardVIP is what reaches one address through the guard.
@@ -376,7 +381,11 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 		lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 		nodeList, _ := c.core.CoreV1().Nodes().List(ctx, metav1.ListOptions{ResourceVersion: "0"})
 		if nodeList != nil {
-			gi := &guardInfo{Mode: guardModeFor(poolType, result.Announcements, nodeList.Items, decodeLBNodeAgents(lbnaList))}
+			agents := decodeLBNodeAgents(lbnaList)
+			gi := &guardInfo{
+				Mode:             guardModeFor(poolType, result.Announcements, nodeList.Items, agents),
+				AllowedProtocols: guardProtocolsFor(poolType, result.Announcements, nodeList.Items, agents),
+			}
 			if allSvcs != nil {
 				for _, ingress := range ingresses {
 					if ingress.IP != "" {
@@ -507,12 +516,26 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 		fmt.Println()
 		fmt.Printf("Address guard: %s\n", g.Mode)
 		if g.Mode != guardOff {
+			verb := "allows"
+			if strings.Contains(g.Mode, "monitor") {
+				// Monitor drops nothing: this is what enforce would let in.
+				fmt.Println("  monitor mode drops nothing; enforce would allow only:")
+				verb = "would allow"
+			}
+			protos := ""
+			if len(g.AllowedProtocols) > 0 {
+				var ps []string
+				for _, p := range g.AllowedProtocols {
+					ps = append(ps, strconv.Itoa(int(p)))
+				}
+				protos = ", and IP protocols " + strings.Join(ps, ", ")
+			}
 			for _, v := range g.Allowed {
 				ports := "no ports"
 				if len(v.Ports) > 0 {
 					ports = strings.Join(v.Ports, ", ")
 				}
-				fmt.Printf("  %s: allows %s, plus allowed ICMP\n", v.IP, ports)
+				fmt.Printf("  %s: %s %s, plus allowed ICMP%s\n", v.IP, verb, ports, protos)
 			}
 		}
 	}
@@ -800,34 +823,65 @@ func checkRouteAdvertised(bgpns *unstructured.Unstructured, ipStr string) bool {
 // filtered: on the announcing node(s) for a local pool, and across every
 // node for a remote pool (all of them hold the address).
 func guardModeFor(poolType string, announcements []announcementInfo, nodes []v1.Node, agents []*purelbv2.LBNodeAgent) string {
-	byName := map[string]v1.Node{}
-	for _, n := range nodes {
-		byName[n.Name] = n
-	}
-	if poolType != poolTypeRemote && len(announcements) > 0 {
+	filtering, announcing := guardNodes(poolType, announcements, nodes)
+	if announcing {
 		var parts []string
-		seen := map[string]bool{}
-		for _, a := range announcements {
-			if seen[a.Node] {
-				continue
-			}
-			seen[a.Node] = true
-			n, ok := byName[a.Node]
-			if !ok {
-				continue
-			}
-			parts = append(parts, fmt.Sprintf("%s on %s", resolveNodeConfig(agents, n.Labels).Guard, a.Node))
+		for _, n := range filtering {
+			parts = append(parts, fmt.Sprintf("%s on %s", resolveNodeConfig(agents, n.Labels).Guard, n.Name))
 		}
-		if len(parts) > 0 {
-			sort.Strings(parts)
-			return strings.Join(parts, ", ")
-		}
+		sort.Strings(parts)
+		return strings.Join(parts, ", ")
 	}
 	var modes []string
-	for _, n := range nodes {
+	for _, n := range filtering {
 		modes = append(modes, resolveNodeConfig(agents, n.Labels).Guard)
 	}
 	return guardSummary(modes)
+}
+
+// guardProtocolsFor is every allowedProtocols entry configured on the nodes
+// guardModeFor reports, sorted and without duplicates.
+func guardProtocolsFor(poolType string, announcements []announcementInfo, nodes []v1.Node, agents []*purelbv2.LBNodeAgent) []int32 {
+	filtering, _ := guardNodes(poolType, announcements, nodes)
+	set := map[int32]bool{}
+	for _, n := range filtering {
+		local := purelbv2.FirstLocalAgent(purelbv2.AgentsForNode(agents, n.Labels))
+		if local == nil || local.Spec.Local.AddressGuard == nil {
+			continue
+		}
+		for _, p := range local.Spec.Local.AddressGuard.AllowedProtocols {
+			set[p] = true
+		}
+	}
+	var out []int32
+	for p := range set {
+		out = append(out, p)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// guardNodes is where a Service's addresses are filtered: the announcing
+// nodes for a local pool (announcing true) when they are known, else every
+// node -- for a remote pool, all of them hold the address.
+func guardNodes(poolType string, announcements []announcementInfo, nodes []v1.Node) (filtering []v1.Node, announcing bool) {
+	if poolType != poolTypeRemote && len(announcements) > 0 {
+		byName := map[string]v1.Node{}
+		for _, n := range nodes {
+			byName[n.Name] = n
+		}
+		seen := map[string]bool{}
+		for _, a := range announcements {
+			if n, ok := byName[a.Node]; ok && !seen[a.Node] {
+				seen[a.Node] = true
+				filtering = append(filtering, n)
+			}
+		}
+		if len(filtering) > 0 {
+			return filtering, true
+		}
+	}
+	return nodes, false
 }
 
 // guardPorts is what the address guard allows to ip: the Service ports of

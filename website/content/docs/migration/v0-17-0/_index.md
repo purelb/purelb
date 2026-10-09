@@ -286,6 +286,15 @@ on:
   every address on `kube-lb0`. The node never chooses one as the source of its
   own connections. They still receive traffic, and k8gobgp still advertises
   them.
+- **The allocator no longer hands out a prefix's IPv4 broadcast or IPv6
+  subnet-router anycast address** (the last address of a /30-or-shorter IPv4
+  prefix, the first of a /126-or-shorter IPv6 one; the prefix is the pool's
+  `subnet`, or a remote pool's `aggregation`). Neither works as a unicast
+  address. A Service that already holds one keeps it; a new one, or one
+  requested with `purelb.io/addresses`, isn't given it. A pool that is exactly
+  its own subnet, such as `pool: 10.0.0.0/30` in `subnet: 10.0.0.0/30`, has one
+  address fewer to hand out (see [Address Pool
+  Fields]({{< relref "/docs/configuration/service-groups#address-pool-fields" >}})).
 
 The LBNodeAgent CRD gains `spec.local.addressGuard`. **Helm does not upgrade
 CRDs**: apply the v0.17.0 CRDs before configuring the guard, or the API server

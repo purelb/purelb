@@ -317,9 +317,11 @@ func TestPoolAllocation(t *testing.T) {
 	// available in other pools.
 	pools := map[string]Pool{
 		"not_this_one": mustLocalPool(t, "not_this_one", "192.168.0.0/16"),
-		"test":         mustLocalPool(t, "test", "1.2.3.4/30"),
-		"testV6":       mustLocalPool(t, "testV6", "1000::/126"),
-		"test2":        mustLocalPool(t, "test2", "10.20.30.0/24"),
+		// Ranges inside larger subnets: a range that is its own subnet
+		// loses the broadcast / subnet-router anycast address.
+		"test":   mustLocalPoolIn(t, "test", "1.2.3.4/30", "1.2.3.0/24"),
+		"testV6": mustLocalPoolIn(t, "testV6", "1000::4/126", "1000::/64"),
+		"test2":  mustLocalPool(t, "test2", "10.20.30.0/24"),
 	}
 	alloc.state.Store(&allocatorState{pools: pools})
 	_ = alloc.Snapshot()
@@ -331,10 +333,10 @@ func TestPoolAllocation(t *testing.T) {
 		"1.2.3.7": true,
 	}
 	validIP6s := map[string]bool{
-		"1000::":  true,
-		"1000::1": true,
-		"1000::2": true,
-		"1000::3": true,
+		"1000::4": true,
+		"1000::5": true,
+		"1000::6": true,
+		"1000::7": true,
 	}
 
 	tests := []struct {
@@ -614,9 +616,11 @@ func TestPoolMetrics(t *testing.T) {
 		},
 		Spec: purelbv2.ServiceGroupSpec{
 			Local: &purelbv2.ServiceGroupLocalSpec{
+				// Inside a larger subnet: a range that is its own subnet
+				// loses the broadcast address, and capacity with it.
 				V4Pool: &purelbv2.AddressPool{
 					Pool:   "1.2.3.4/30",
-					Subnet: "1.2.3.4/30",
+					Subnet: "1.2.3.0/24",
 				},
 			},
 		},

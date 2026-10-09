@@ -57,7 +57,7 @@ func NewController(l log.Logger, myNode string, guardEnabled bool) (*controller,
 		// asks the guard whether this node must stand down (fail-closed).
 		announcers: []lbnodeagent.Announcer{
 			guard,
-			local.NewAnnouncer(l, myNode, guard.StandingDown),
+			local.NewAnnouncer(l, myNode, guard.StandingDown, guard.Withheld),
 		},
 		guard: guard,
 	}

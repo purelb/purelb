@@ -129,6 +129,9 @@ type Election struct {
 
 	// renewTicker triggers periodic lease renewal
 	renewTicker *time.Ticker
+	// renewNow asks renewLoop to renew at once (RenewNow); one pending
+	// request is enough, so it holds one.
+	renewNow chan struct{}
 
 	// winnerCache remembers the last-recorded non-empty winner per key for
 	// change detection. Observability only — nothing reads this back to make
@@ -170,6 +173,7 @@ func New(cfg Config) (*Election, error) {
 		leaseName: purelbv2.LeasePrefix + cfg.NodeName,
 		ctx:       ctx,
 		cancel:    cancel,
+		renewNow:  make(chan struct{}, 1),
 	}
 
 	// Initialize with empty state
@@ -780,6 +784,16 @@ func (e *Election) renewLease() error {
 	return nil
 }
 
+// RenewNow renews this node's lease at once rather than at the next
+// interval, so a change in GetLocalSubnets reaches the other nodes now.
+// Safe from any goroutine; never blocks.
+func (e *Election) RenewNow() {
+	select {
+	case e.renewNow <- struct{}{}:
+	default: // a renewal is already pending
+	}
+}
+
 // renewLoop periodically renews our lease
 func (e *Election) renewLoop() {
 	for {
@@ -787,6 +801,11 @@ func (e *Election) renewLoop() {
 		case <-e.renewTicker.C:
 			if err := e.renewLease(); err != nil {
 				logging.Info(e.config.Logger, "op", "election", "action", "renewLoop",
+					"error", err, "msg", "lease renewal failed")
+			}
+		case <-e.renewNow:
+			if err := e.renewLease(); err != nil {
+				logging.Info(e.config.Logger, "op", "election", "action", "renewNow",
 					"error", err, "msg", "lease renewal failed")
 			}
 		case <-e.ctx.Done():

@@ -75,6 +75,16 @@ func newClients(flags *genericclioptions.ConfigFlags) (*clients, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building REST config: %w", err)
 	}
+	// client-go's defaults (5 QPS, burst 10) are for controllers. `guard`
+	// and `status` read every node agent's metrics at once, and at the
+	// defaults most nodes of a large cluster would time out waiting for
+	// the rate limiter.
+	if config.QPS == 0 {
+		config.QPS = 50
+	}
+	if config.Burst == 0 {
+		config.Burst = 100
+	}
 
 	coreClient, err := kubernetes.NewForConfig(config)
 	if err != nil {

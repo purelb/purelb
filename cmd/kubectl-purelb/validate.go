@@ -703,9 +703,15 @@ func crdHasAddressGuard(crd *unstructured.Unstructured) bool {
 }
 
 // hasCapability reports whether a container's security context adds cap
-// (with or without the CAP_ prefix).
+// (with or without the CAP_ prefix). A privileged container has them all.
 func hasCapability(sc *v1.SecurityContext, cap string) bool {
-	if sc == nil || sc.Capabilities == nil {
+	if sc == nil {
+		return false
+	}
+	if sc.Privileged != nil && *sc.Privileged {
+		return true
+	}
+	if sc.Capabilities == nil {
 		return false
 	}
 	for _, c := range sc.Capabilities.Add {

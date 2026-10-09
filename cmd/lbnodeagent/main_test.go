@@ -355,6 +355,19 @@ func TestSelectorReporterFoldsInTheGuard(t *testing.T) {
 	assertSelectorState(t, "deselected")
 }
 
+// Two goroutines publish, each writing several series. A publish whose
+// inputs change while it writes writes again, so the last write is current.
+func TestSelectorReporterRepublishesWhenItsInputsChange(t *testing.T) {
+	calls := 0
+	// Standing down when the first publish reads it, no longer by the time
+	// it has written: the attacher's own publish of the change already ran.
+	r := &selectorReporter{standingDown: func() bool { calls++; return calls == 1 }}
+	configured := "configured"
+	r.base.Store(&configured)
+	assert.Equal(t, "configured", r.publish())
+	assertSelectorState(t, "configured")
+}
+
 // The startup read decides whether to load the guard program: the same
 // resolution as a config delivery, retried while the API isn't answering.
 func TestGuardEnabledAtStartup(t *testing.T) {
@@ -370,16 +383,25 @@ func TestGuardEnabledAtStartup(t *testing.T) {
 		}
 		return guarded, nil
 	}
-	enabled, err := guardEnabledAtStartup(log.NewNopLogger(), flaky, labels, time.Second, time.Millisecond)
+	enabled, err := guardEnabledAtStartup(log.NewNopLogger(), flaky, labels, time.Second, time.Millisecond, nil)
 	require.NoError(t, err)
 	assert.True(t, enabled, "retried past the failure")
 
 	none := func(context.Context) ([]*purelbv2.LBNodeAgent, error) { return nil, nil }
-	enabled, err = guardEnabledAtStartup(log.NewNopLogger(), none, labels, time.Second, time.Millisecond)
+	enabled, err = guardEnabledAtStartup(log.NewNopLogger(), none, labels, time.Second, time.Millisecond, nil)
 	require.NoError(t, err)
 	assert.False(t, enabled, "no LBNodeAgent: nothing to load")
 
 	down := func(context.Context) ([]*purelbv2.LBNodeAgent, error) { return nil, errors.New("connection refused") }
-	_, err = guardEnabledAtStartup(log.NewNopLogger(), down, labels, 20*time.Millisecond, time.Millisecond)
+	_, err = guardEnabledAtStartup(log.NewNopLogger(), down, labels, 20*time.Millisecond, time.Millisecond, nil)
 	assert.ErrorContains(t, err, "listing LBNodeAgents: connection refused", "gives up after the timeout")
+
+	// A SIGTERM while retrying stops the wait, rather than sitting out the
+	// timeout.
+	stop := make(chan struct{})
+	close(stop)
+	start := time.Now()
+	_, err = guardEnabledAtStartup(log.NewNopLogger(), down, labels, time.Minute, time.Minute, stop)
+	assert.ErrorContains(t, err, "stopped")
+	assert.Less(t, time.Since(start), 5*time.Second)
 }

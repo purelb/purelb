@@ -17,7 +17,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -61,15 +63,23 @@ func TestGuardStateFrom(t *testing.T) {
 		`purelb_address_guard_chain_position{interface="eth1"} 2`,
 		"# TYPE purelb_address_guard_vip_packets_total counter",
 		`purelb_address_guard_vip_packets_total{action="drop",ip="10.255.7.100"} 12`,
-		`purelb_address_guard_vip_packets_total{action="drop",ip="2001:db8::1"} 3`,
+		`purelb_address_guard_vip_packets_total{action="drop",ip="2001:db8::1"} 9`,
+		`purelb_address_guard_vip_packets_total{action="would_drop",ip="2001:db8::1"} 5`,
+		"# TYPE purelb_address_guard_unattached_interfaces gauge",
+		`purelb_address_guard_unattached_interfaces{interface="eth2"} 1`,
+		"# TYPE purelb_address_guard_failed_vips gauge",
+		`purelb_address_guard_failed_vips{effect="withheld"} 2`,
+		`purelb_address_guard_failed_vips{effect="incomplete"} 0`,
 	), nil)
 	assert.Equal(t, guardStateEnforcing, s.State)
 	assert.True(t, s.Loaded)
 	assert.Equal(t, map[string]string{"eth0": "xdp", "eth1": "tcx"}, s.Attached)
 	assert.Equal(t, 15.0, s.Drops, "drops only, not passes")
 	assert.Equal(t, map[string]int{"eth1": 2}, s.ChainPosition, "tcx only: eth0 is XDP")
-	assert.Equal(t, "10.255.7.100", s.TopVIP)
-	assert.Equal(t, 12.0, s.TopVIPPackets)
+	assert.Equal(t, "2001:db8::1", s.TopVIP, "the top VIP is the per-address total over every action")
+	assert.Equal(t, 14.0, s.TopVIPPackets)
+	assert.Equal(t, []string{"eth2"}, s.Unattached)
+	assert.Equal(t, map[string]float64{"withheld": 2}, s.FailedVIPs, "non-zero effects only")
 
 	assert.Equal(t, guardStateMonitoring, guardStateFrom("n1", "monitor", agentMetricsText(1, 0, 0, eth), nil).State)
 	assert.Equal(t, guardOff, guardStateFrom("n1", guardOff, agentMetricsText(0, 0, 0, nil), nil).State,
@@ -107,6 +117,7 @@ func agentPod(name, node string) v1.Pod {
 			Name:  "lbnodeagent",
 			Ports: []v1.ContainerPort{{Name: "monitoring", ContainerPort: 7472}},
 		}}},
+		Status: v1.PodStatus{Phase: v1.PodRunning},
 	}
 }
 
@@ -130,6 +141,51 @@ func TestCollectGuardStates(t *testing.T) {
 	assert.Equal(t, guardStateEnforcing, states[0].State)
 	assert.Equal(t, "enforce", states[0].Mode, "the configured mode comes from the LBNodeAgent")
 	assert.Equal(t, "timeout", states[1].Error, "one unreachable agent doesn't hide the others")
+	assert.NoError(t, noStateRead(states))
+
+	// During a rollout a node has a terminating pod and a new one: one row,
+	// read from the new pod. A node whose only pod isn't running says so,
+	// without a read.
+	old := agentPod("old", "node-a")
+	old.DeletionTimestamp = &metav1.Time{}
+	pending := agentPod("p", "node-d")
+	pending.Status.Phase = v1.PodPending
+	var read []string
+	fetch = func(_ context.Context, pod v1.Pod) ([]byte, error) {
+		read = append(read, pod.Name)
+		return agentMetricsText(1, 0, 0, map[string]string{"eth1": "tcx"}), nil
+	}
+	states = collectGuardStates(context.Background(), fetch, []v1.Pod{old, agentPod("new", "node-a"), pending}, nodes, agents)
+	require.Len(t, states, 2)
+	assert.Equal(t, guardStateEnforcing, states[0].State)
+	assert.Equal(t, "lbnodeagent pod p is pending", states[1].Error)
+	assert.Equal(t, []string{"new"}, read)
+
+	// Every read failed: the command fails.
+	assert.ErrorContains(t, noStateRead([]guardNodeState{{Node: "a", Error: "forbidden"}}), "from any node")
+}
+
+// More agents than workers: every one is read, each within its own
+// timeout, however long the queue.
+func TestCollectGuardStatesManyNodes(t *testing.T) {
+	var pods []v1.Pod
+	for i := range 1000 {
+		pods = append(pods, agentPod(fmt.Sprintf("p%d", i), fmt.Sprintf("node-%04d", i)))
+	}
+	var inFlight, peak atomic.Int32
+	fetch := func(_ context.Context, pod v1.Pod) ([]byte, error) {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+		}
+		return agentMetricsText(1, 0, 0, map[string]string{"eth1": "tcx"}), nil
+	}
+	states := collectGuardStates(context.Background(), fetch, pods, nil, nil)
+	require.Len(t, states, 1000)
+	for _, s := range states {
+		require.Empty(t, s.Error, s.Node)
+	}
+	assert.LessOrEqual(t, peak.Load(), int32(guardFetchWorkers), "at most guardFetchWorkers reads at once")
 }
 
 func TestGuardLiveSummary(t *testing.T) {

@@ -7,7 +7,13 @@
 # different object even from identical source.
 FROM golang:1.26.8-trixie@sha256:eae2aaa6add2936cbf350dd0d2628b363461542f0c4b3c0b558957e0f2997379
 
-RUN apt-get update \
+# The live mirror keeps only the current version of each package, so exact
+# pins against it break at the next point or security release. A dated
+# snapshot of the archive keeps these versions installable.
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+ && echo 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261003T000000Z trixie main' \
+      > /etc/apt/sources.list \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
       clang-19=1:19.1.7-3+b1 \
       llvm-19=1:19.1.7-3+b1 \

@@ -7,6 +7,17 @@
 // One parser, two entry points: tcx ingress (the default) and native XDP
 // (opt-in). Packets not addressed to a guarded address take the fast path:
 // one header read and one map lookup, uncounted.
+//
+// Every packet gets a verdict from what the guard has read: it never passes
+// a packet because it couldn't read it. Headers are read wherever they lie
+// in the packet (linear area or page fragments); a frame too short to hold
+// the headers it claims, or with more VLAN tags than QinQ uses, is dropped
+// and counted (ag_unread).
+//
+// tcx has two programs, one per kind of link: the network header's offset
+// is a constant in each, so finding it costs nothing per packet (a BPF
+// program can't read it from the skb without CAP_PERFMON). The agent
+// attaches the one that fits the link, and refuses links of any other kind.
 
 #include <linux/bpf.h>
 #include <linux/pkt_cls.h>
@@ -22,6 +33,8 @@
 #define ETH_P_IP_BE     bpf_htons(0x0800)
 #define ETH_P_IPV6_BE   bpf_htons(0x86DD)
 
+/* At most QinQ: two tags in all, counting one the kernel has already moved
+ * to skb metadata before tcx runs. */
 #define MAX_VLAN_TAGS   2
 #define MAX_EXT_HDRS    8
 
@@ -45,6 +58,14 @@ enum reason {
 	REASON_MAX,
 };
 enum family { FAM_V4 = 0, FAM_V6 = 1 };
+
+/* Index layout of ag_unread: reason * 2 + (0 drop, 1 would_drop). The
+ * destination isn't known, so there is no family or per-VIP counter. */
+enum unread_reason {
+	U_TRUNCATED = 0,  /* shorter than the VLAN tag or IP header it claims */
+	U_VLAN_DEPTH,     /* more VLAN tags than MAX_VLAN_TAGS */
+	U_MAX,
+};
 enum mode { MODE_ENFORCE = 0, MODE_MONITOR = 1 };
 
 struct vip_counters {
@@ -110,10 +131,21 @@ struct {
 	__type(value, __u64);
 } ag_reasons SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, U_MAX * 2);
+	__type(key, __u32);
+	__type(value, __u64);
+} ag_unread SEC(".maps");
+
+
 /* Verdict returned by the shared parser. */
 enum verdict { V_PASS = 0, V_DROP = 1 };
 
-/* Reads len bytes at off into to.
+/* Reads len bytes at off -- from the start of the packet as the hook sees
+ * it -- into to. Both helpers read across page fragments, so a header
+ * outside the linear area reads like any other, with no pull and no
+ * allocation; they fail only when the packet is shorter than off + len.
  *
  * The buffers read after a packet has matched a VIP (extension headers,
  * ICMP type, ports) are zero-initialised by their callers. Linux 6.17's
@@ -121,33 +153,18 @@ enum verdict { V_PASS = 0, V_DROP = 1 };
  * CAP_NET_ADMIN only), wants a speculation barrier after a helper writes
  * into stack the program hasn't written yet, and then rejects the load
  * because a helper call is a jump ("verifier bug: speculation barrier after
- * jump instruction"). Writing the buffer first avoids that. The buffers on
- * the path every packet takes (VLAN tag, IP header) are left alone: they
- * don't trigger it, and zeroing costs a barrier per packet. */
+ * jump instruction"). Writing the buffer first avoids that. Which loads
+ * trigger it depends on which paths the verifier explores speculatively,
+ * so on the code the compiler generates as well as on the kernel: with the
+ * pinned clang 19, the buffers on the path every packet takes (VLAN tag,
+ * IP header) don't, and are left alone -- zeroing them costs a barrier per
+ * packet. A compiler or kernel change can move it: bpf-test loads the
+ * program on CI's kernel. */
 static __always_inline int load(void *ctx, int xdp, __u32 off, void *to, __u32 len)
 {
-	struct __sk_buff *skb = ctx;
-	__u32 want;
-
 	if (xdp)
 		return bpf_xdp_load_bytes(ctx, off, to, len);
-	/* Relative to the network header, so L3 devices (no Ethernet header)
-	 * read the same way as L2 ones. */
-	if (bpf_skb_load_bytes_relative(ctx, off, to, len, BPF_HDR_START_NET) == 0)
-		return 0;
-	/* bpf_skb_load_bytes_relative reads only the skb's linear area, and
-	 * nothing pulls a non-TCP/UDP transport header there before tc runs:
-	 * a 1280-byte ICMPv6 Packet Too Big can arrive with its type byte in
-	 * a page fragment. Reading it as malformed dropped the PMTUD messages
-	 * the guard exists to pass. Pull enough to cover the read -- counted
-	 * from skb->data, which at tc ingress is the MAC header -- and try
-	 * again. Only a packet whose headers aren't already linear gets here. */
-	want = off + len + ETH_HLEN;
-	if (want > skb->len)
-		want = skb->len;
-	if (bpf_skb_pull_data(skb, want) < 0)
-		return -1;
-	return bpf_skb_load_bytes_relative(ctx, off, to, len, BPF_HDR_START_NET);
+	return bpf_skb_load_bytes(ctx, off, to, len);
 }
 
 static __always_inline void count(__u32 action, __u32 reason, __u32 fam)
@@ -165,6 +182,19 @@ static __always_inline int monitoring(void)
 	struct guard_config *cfg = bpf_map_lookup_elem(&ag_config, &zero);
 
 	return cfg && cfg->mode == MODE_MONITOR;
+}
+
+/* A frame the guard can't read (see enum unread_reason): dropped, or in
+ * monitor mode counted as would_drop and passed. */
+static __always_inline int unread(__u32 reason)
+{
+	int mon = monitoring();
+	__u32 idx = reason * 2 + (mon ? 1 : 0);
+	__u64 *c = bpf_map_lookup_elem(&ag_unread, &idx);
+
+	if (c)
+		*c += 1;
+	return mon ? V_PASS : V_DROP;
 }
 
 /* Record the outcome for a guarded address and turn it into a verdict. */
@@ -207,8 +237,10 @@ static __always_inline int is_ext_hdr(__u8 p)
 }
 
 /* proto is the L3 ethertype (network order) and off the offset of the
- * header it describes, both as the hook presents them. */
-static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off)
+ * header it describes from the start of the packet, both as the hook
+ * presents them; tags is the number of VLAN tags already taken out of the
+ * packet (tcx: the one the kernel moved to metadata). */
+static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off, __u32 tags)
 {
 	struct vip_counters *vc;
 	struct port_key pk;
@@ -216,25 +248,30 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off)
 	__u8 l4proto;
 
 	/* Skip in-band VLAN tags: each is [TCI][encapsulated ethertype]. With
-	 * tcx the kernel has already moved the outer tag to metadata, so only
-	 * an inner (QinQ) tag is still here. */
+	 * tcx the kernel has already moved the outer tag to metadata (tags), so
+	 * at most one more is in the packet; XDP sees every tag in-band. */
 #pragma unroll
 	for (int i = 0; i < MAX_VLAN_TAGS; i++) {
 		if (proto != ETH_P_8021Q_BE && proto != ETH_P_8021AD_BE)
 			break;
+		if (tags >= MAX_VLAN_TAGS)
+			return unread(U_VLAN_DEPTH);
 		__be16 tag[2];
 
 		if (load(ctx, xdp, off, tag, sizeof(tag)) < 0)
-			return V_PASS;
+			return unread(U_TRUNCATED);
 		proto = tag[1];
 		off += 4;
+		tags++;
 	}
+	if (proto == ETH_P_8021Q_BE || proto == ETH_P_8021AD_BE)
+		return unread(U_VLAN_DEPTH);
 
 	if (proto == ETH_P_IP_BE) {
 		struct iphdr ip;
 
 		if (load(ctx, xdp, off, &ip, sizeof(ip)) < 0)
-			return V_PASS;
+			return unread(U_TRUNCATED);
 		vc = bpf_map_lookup_elem(&ag_vip4, &ip.daddr);
 		if (!vc)
 			return V_PASS;
@@ -251,11 +288,13 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off)
 		struct ipv6hdr ip6;
 
 		if (load(ctx, xdp, off, &ip6, sizeof(ip6)) < 0)
-			return V_PASS;
+			return unread(U_TRUNCATED);
 		vc = bpf_map_lookup_elem(&ag_vip6, &ip6.daddr);
 		if (!vc)
 			return V_PASS;
 		fam = FAM_V6;
+		if (ip6.version != 6)
+			return decide(vc, 0, R_MALFORMED, fam);
 		l4off = off + sizeof(ip6);
 		l4proto = ip6.nexthdr;
 
@@ -288,7 +327,7 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off)
 		__builtin_memset(&pk, 0, sizeof(pk));
 		__builtin_memcpy(pk.addr, &ip6.daddr, sizeof(pk.addr));
 	} else {
-		/* Not IP, or more VLAN tags than we skip. */
+		/* Not IP: ARP, LLDP and the like, never addressed to a VIP. */
 		return V_PASS;
 	}
 
@@ -327,12 +366,30 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off)
 	return decide(vc, 0, R_PROTO_DENIED, fam);
 }
 
+/* off is where the network header starts, from the start of the packet
+ * as tcx sees it. A tag the kernel has moved to metadata counts towards
+ * the VLAN limit. */
+static __always_inline int tcx_guard(struct __sk_buff *skb, __u32 off)
+{
+	int v = guard(skb, 0, skb->protocol, off, skb->vlan_present ? 1 : 0);
+
+	return v == V_DROP ? TCX_DROP : TCX_NEXT;
+}
+
+/* Ethernet links: the network header follows the 14-byte Ethernet header
+ * (an inner QinQ tag, if any, is in-band at 14). */
 SEC("tcx/ingress")
 int ag_tcx(struct __sk_buff *skb)
 {
-	if (guard(skb, 0, skb->protocol, 0) == V_DROP)
-		return TCX_DROP;
-	return TCX_NEXT;
+	return tcx_guard(skb, ETH_HLEN);
+}
+
+/* Links with no link-layer header (IP tunnels, tun, WireGuard): the packet
+ * starts with the network header. */
+SEC("tcx/ingress")
+int ag_tcx_l3(struct __sk_buff *skb)
+{
+	return tcx_guard(skb, 0);
 }
 
 SEC("xdp.frags")
@@ -340,11 +397,13 @@ int ag_xdp(struct xdp_md *ctx)
 {
 	__be16 proto;
 
+	int v;
+
 	if (bpf_xdp_load_bytes(ctx, 12, &proto, sizeof(proto)) < 0)
-		return XDP_PASS;
-	if (guard(ctx, 1, proto, ETH_HLEN) == V_DROP)
-		return XDP_DROP;
-	return XDP_PASS;
+		v = unread(U_TRUNCATED);
+	else
+		v = guard(ctx, 1, proto, ETH_HLEN, 0);
+	return v == V_DROP ? XDP_DROP : XDP_PASS;
 }
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

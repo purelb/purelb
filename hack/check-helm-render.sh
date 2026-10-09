@@ -44,6 +44,12 @@ out=$(render lbnodeagent.yaml --set lbnodeagent.addressGuard.mode=monitor --set 
 expect "LBNodeAgent: addressGuard rendered when set" "^    addressGuard:" "$out"
 expect "LBNodeAgent: its fields are carried" "mode: monitor" "$out"
 
+out=$(render lbnodeagent.yaml --set-json 'lbnodeagent.addressGuard={}')
+expect "LBNodeAgent: addressGuard: {} (all defaults) enables the guard" "^    addressGuard:" "$out"
+
+out=$(render lbnodeagent.yaml --set-json 'lbnodeagent.addressGuard=null')
+refuse "LBNodeAgent: addressGuard: null leaves it off" "addressGuard" "$out"
+
 out=$(render daemonset.yaml)
 expect "DaemonSet: lbnodeagent has the BPF capability" "^ *- BPF$" "$out"
 
@@ -56,6 +62,20 @@ expect "PrometheusRule: guard alerts render with no user rules" "alert: PurelbAd
 expect "PrometheusRule: attach-error alert" "alert: PurelbAddressGuardAttachErrors" "$out"
 expect "PrometheusRule: stand-down alert" "alert: PurelbAddressGuardStandingDown" "$out"
 expect "PrometheusRule: restart-required alert" "alert: PurelbAddressGuardRestartRequired" "$out"
+expect "PrometheusRule: failed-VIPs alert" "alert: PurelbAddressGuardFailedVIPs" "$out"
+
+# The chart's guard rules and the manifest install's must be the same rules:
+# compare them as rendered into purelb-system, from the first guard alert on.
+guard_rules() { sed -n '/- alert: PurelbAddressGuardUnguardedVIPs/,$p'; }
+helm_rules=$(render prometheusrules-lbnodeagent.yaml "${rules[@]}" --namespace purelb-system \
+	--set Prometheus.lbnodeagent.prometheusRules.addressGuardAlerts=true | guard_rules)
+if diff <(echo "$helm_rules") <(guard_rules <monitoring/prometheusrules-address-guard.yaml) >/dev/null; then
+	echo "ok   PrometheusRule: Helm and monitoring/prometheusrules-address-guard.yaml rules are identical"
+else
+	echo "FAIL PrometheusRule: Helm and monitoring/ guard rules differ:" >&2
+	diff <(echo "$helm_rules") <(guard_rules <monitoring/prometheusrules-address-guard.yaml) >&2 || true
+	fail=1
+fi
 expect "PrometheusRule: Prometheus templating survives Helm" '\{\{ \$labels.instance \}\}' "$out"
 
 out=$(render prometheusrules-lbnodeagent.yaml "${rules[@]}" --set Prometheus.lbnodeagent.prometheusRules.addressGuardAlerts=true \

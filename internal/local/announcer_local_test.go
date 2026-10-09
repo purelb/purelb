@@ -1651,30 +1651,64 @@ func TestDeleteBalancerForgetsOnlyUnreferencedIP(t *testing.T) {
 // again, the same delivery announces normally (not asserted here: that
 // path needs netlink).
 func TestSetBalancerWithdrawsWhileGuardStandsDown(t *testing.T) {
-	const slotKey = "purelb.io/announcing-IPv4"
-	a := withdrawalTestAnnouncer(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "default"})
-	down := true
-	a.standingDown = func() bool { return down }
-	// The reason is what tells this path apart: a TEST-NET address has no
-	// local interface, so without the stand-down the announcer would still
-	// withdraw it -- as noLocalInterface.
-	var logs strings.Builder
-	a.logger = log.NewLogfmtLogger(&logs)
+	for _, tc := range []struct{ ip, slotKey string }{
+		{"192.0.2.1", "purelb.io/announcing-IPv4"},
+		{"2001:db8::1", "purelb.io/announcing-IPv6"},
+	} {
+		t.Run(tc.ip, func(t *testing.T) {
+			a := withdrawalTestAnnouncer(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "default"})
+			down, withheld := true, false
+			a.standingDown = func() bool { return down }
+			a.withheld = func(net.IP) bool { return withheld }
+			// The reason is what tells this path apart: a TEST-NET address has
+			// no local interface, so without the stand-down the announcer would
+			// still withdraw it -- as noLocalInterface.
+			var logs strings.Builder
+			a.logger = log.NewLogfmtLogger(&logs)
+			withdrawals := func(reason string) int {
+				return strings.Count(logs.String(), "event=withdrawAddress ip="+tc.ip+" service=default/test-svc reason="+reason)
+			}
 
-	svc := lbSvc("192.0.2.1")
-	svc.Namespace = "default"
-	svc.Name = "test-svc"
-	svc.Annotations = map[string]string{slotKey: "node-a,eth0,192.0.2.1"}
-	announceForTest(a, "default/test-svc", "192.0.2.1")
+			svc := lbSvc(tc.ip)
+			svc.Namespace = "default"
+			svc.Name = "test-svc"
+			svc.Annotations = map[string]string{tc.slotKey: "node-a,eth0," + tc.ip}
+			announceForTest(a, "default/test-svc", tc.ip)
 
-	assert.NoError(t, a.SetBalancer(svc, nil))
+			assert.NoError(t, a.SetBalancer(svc, nil))
 
-	key := renewalKey("default/test-svc", "192.0.2.1")
-	_, announced := a.announced.Load(key)
-	assert.False(t, announced, "announced entry must be removed")
-	_, timerAlive := a.addressRenewals.Load(key)
-	assert.False(t, timerAlive, "renewal timer must be cancelled")
-	assert.Empty(t, svc.Annotations[slotKey], "announce slot must be cleared")
-	assert.Contains(t, logs.String(), "reason=addressGuardUnavailable",
-		"withdrawn because the guard stands down, not for some other reason")
+			key := renewalKey("default/test-svc", tc.ip)
+			_, announced := a.announced.Load(key)
+			assert.False(t, announced, "announced entry must be removed")
+			_, timerAlive := a.addressRenewals.Load(key)
+			assert.False(t, timerAlive, "renewal timer must be cancelled")
+			assert.Empty(t, svc.Annotations[tc.slotKey], "announce slot must be cleared")
+			assert.Equal(t, 1, withdrawals("addressGuardUnavailable"),
+				"withdrawn because the guard stands down, not for some other reason")
+
+			// A stand-down can last indefinitely, and every sync lands here
+			// again: the address is withdrawn once, not on every sync.
+			assert.NoError(t, a.SetBalancer(svc, nil))
+			assert.Equal(t, 1, withdrawals("addressGuardUnavailable"), "withdrawn once per stand-down")
+
+			// Back up, but the guard couldn't write this address's rules:
+			// withheld, withdrawn once for that reason.
+			down, withheld = false, true
+			svc.Annotations[tc.slotKey] = "node-a,eth0," + tc.ip
+			assert.NoError(t, a.SetBalancer(svc, nil))
+			assert.NoError(t, a.SetBalancer(svc, nil))
+			assert.Equal(t, 1, withdrawals("addressGuardWithheld"))
+			assert.Equal(t, 1, strings.Count(logs.String(), "event=addressGuardWithheld"), "logged once")
+			assert.Empty(t, svc.Annotations[tc.slotKey], "a withheld address's slot is cleared")
+
+			// Written: back on the normal path, and a later stand-down
+			// withdraws again.
+			withheld = false
+			assert.NoError(t, a.SetBalancer(svc, nil))
+			assert.Equal(t, 1, withdrawals("noLocalInterface"), "the normal path again")
+			down = true
+			assert.NoError(t, a.SetBalancer(svc, nil))
+			assert.Equal(t, 2, withdrawals("addressGuardUnavailable"), "a new stand-down withdraws again")
+		})
+	}
 }

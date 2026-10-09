@@ -83,8 +83,13 @@ type Guard struct {
 	// agent and the local announcer.
 	vipCount    atomic.Int64
 	failedCount atomic.Int64
-	configured  atomic.Bool
-	closed      atomic.Bool // failurePolicy: closed
+	// Under failurePolicy closed, failed VIPs that aren't announced
+	// (withheld) and ones filtered by rules that don't match the Service
+	// yet (incomplete).
+	withheldCount   atomic.Int64
+	incompleteCount atomic.Int64
+	configured      atomic.Bool
+	closed          atomic.Bool // failurePolicy: closed
 	// down is the stand-down verdict StandingDown returns. The attacher
 	// decides it (publish) and calls the hook whenever it changes, so every
 	// stand-down a Service sync acts on is followed by a re-sync when it
@@ -332,9 +337,17 @@ func (g *Guard) update(nsName string, want svcState) error {
 			touched = append(touched, v)
 		}
 	}
+	// Every failed VIP is retried, not just this Service's: a VIP whose
+	// removal failed belongs to no Service any more, so nothing else would
+	// ever touch it again.
+	for v := range g.failed {
+		if !slices.Contains(touched, v) {
+			touched = append(touched, v)
+		}
+	}
 	// Called on every EndpointSlice change: an unchanged Service costs no
-	// syscalls, unless one of its VIPs is waiting for a retry.
-	if had && old.equal(want) && !slices.ContainsFunc(touched, func(v netip.Addr) bool { return g.failed[v] }) {
+	// syscalls, unless a VIP is waiting for a retry.
+	if had && old.equal(want) && len(g.failed) == 0 {
 		return nil
 	}
 
@@ -354,7 +367,33 @@ func (g *Guard) update(nsName string, want svcState) error {
 	}
 	g.vipCount.Store(int64(len(g.vipRefs)))
 	g.failedCount.Store(int64(len(g.failed)))
+	var withheld, incomplete int64
+	for v := range g.failed {
+		if g.withheld(v) {
+			withheld++
+		} else if g.closed.Load() && g.installedVIP[v] {
+			incomplete++
+		}
+	}
+	g.withheldCount.Store(withheld)
+	g.incompleteCount.Store(incomplete)
 	return errs
+}
+
+// Withheld reports whether ip must not be announced: under failurePolicy
+// closed, a VIP whose key couldn't be written to the map can't be
+// filtered, so it isn't announced until a retry writes it. The local
+// announcer asks, on the Service-sync goroutine that owns this state,
+// right after the guard's SetBalancer for the same Service.
+func (g *Guard) Withheld(ip net.IP) bool {
+	v, ok := netip.AddrFromSlice(ip)
+	return ok && g.withheld(v.Unmap())
+}
+
+func (g *Guard) withheld(v netip.Addr) bool {
+	_, noMaps := g.dp.(nopDataplane)
+	return !noMaps && g.closed.Load() && g.configured.Load() &&
+		g.vipRefs[v] > 0 && !g.installedVIP[v]
 }
 
 func (g *Guard) contribute(s svcState, delta int) {
@@ -410,8 +449,13 @@ func (g *Guard) reconcileVIP(v netip.Addr) error {
 				delete(g.installedVIP, v)
 			}
 		}
+		if g.failed[v] {
+			logging.Debug(g.logger, "op", "addressGuard", "event", "guardMapWriteFailed", "ip", v, "write", op, "error", err)
+		} else {
+			logging.Info(g.logger, "op", "addressGuard", "event", "guardMapWriteFailed", "ip", v, "write", op, "error", err,
+				"withheld", g.withheld(v))
+		}
 		g.failed[v] = true
-		logging.Info(g.logger, "op", "addressGuard", "event", "guardMapWriteFailed", "ip", v, "write", op, "error", err)
 		return fmt.Errorf("address guard %s for %s: %w", op, v, err)
 	}
 

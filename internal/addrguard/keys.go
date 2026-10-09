@@ -44,9 +44,22 @@ const (
 	reasonMalformed    = 7
 	reasonMax          = 8
 
+	// ag_unread reasons (enum unread_reason).
+	unreadTruncated = 0
+	unreadVLANDepth = 1
+	unreadMax       = 2
+
 	modeEnforce = 0
 	modeMonitor = 1
 )
+
+// unreadIndex is the ag_unread slot for (reason, monitor).
+func unreadIndex(reason uint32, monitor bool) uint32 {
+	if monitor {
+		return reason*2 + 1
+	}
+	return reason * 2
+}
 
 // reasonIndex is the ag_reasons slot for (action, reason, family).
 func reasonIndex(action, reason, fam uint32) uint32 {

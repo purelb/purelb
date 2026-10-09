@@ -15,6 +15,7 @@
 package addrguard
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -44,6 +45,7 @@ type attachment struct {
 	name string
 	hook string // what is attached
 	want string // what was asked for; differs after an XDP->tcx fallback
+	l3   bool   // tcx: ag_tcx_l3 (no link-layer header), not ag_tcx
 }
 
 // attacher is the state owned by the attacher goroutine.
@@ -68,6 +70,46 @@ type attacher struct {
 	// is attached to, by ifindex: 1 means it runs first.
 	chainPos map[int]int
 	tcxID    ebpf.ProgramID
+	tcxL3ID  ebpf.ProgramID
+	xdpID    ebpf.ProgramID
+	// cfgErr is the last failure writing the config map (mode, allowed
+	// protocols); while set the guard isn't working as configured, and the
+	// chain-check tick retries the write.
+	cfgErr error
+	// setConfig writes the config map; nil means md.setConfig. Tests
+	// replace it to make the write fail.
+	setConfig func(*Spec) error
+	// pending: a reconcile couldn't complete because a netlink dump failed
+	// (or stayed interrupted); the tick runs it again until one does.
+	pending bool
+	// linksOK and linksWhy are reconcileLinks' last complete result,
+	// returned unchanged when a reconcile has to be deferred.
+	linksOK  bool
+	linksWhy string
+}
+
+// The link and route dumps, replaceable in tests.
+var (
+	linkList  = netlink.LinkList
+	routeList = netlink.RouteListFiltered
+)
+
+// dumpAttempts is how often an interrupted netlink dump is tried. The
+// kernel interrupts a dump when what it lists changes underneath it -- pod
+// veths come and go constantly -- so it says nothing about the guard: the
+// dump is simply run again.
+const dumpAttempts = 3
+
+// dump runs f until it isn't interrupted, dumpAttempts at most.
+func dump[T any](f func() (T, error)) (T, error) {
+	var v T
+	var err error
+	for range dumpAttempts {
+		if v, err = f(); !errors.Is(err, netlink.ErrDumpInterrupted) {
+			return v, err
+		}
+	}
+	return v, err
 }
 
 // run is the attacher goroutine. It alone touches attachments, the config
@@ -79,6 +121,7 @@ func (g *Guard) run() {
 		attached:    map[int]*attachment{},
 		special:     map[netip.Addr]bool{},
 		warnedLinks: map[string]bool{},
+		linksWhy:    "not attached yet",
 	}
 	if g.objs != nil {
 		a.md = &mapDataplane{objs: g.objs}
@@ -101,7 +144,7 @@ func (g *Guard) run() {
 		case u := <-g.cfgCh:
 			a.apply(u)
 		case <-tick.C:
-			a.checkChain()
+			a.retry()
 		case lu, ok := <-linkCh:
 			if !ok {
 				a.rewatch()
@@ -161,9 +204,7 @@ func (a *attacher) apply(u configUpdate) {
 		a.publish(false, fmt.Sprintf("not running: %v", a.g.loadErr))
 		return
 	}
-	if err := a.md.setConfig(a.spec); err != nil {
-		logging.Info(a.g.logger, "op", "addressGuard", "event", "guardMapWriteFailed", "write", "config", "error", err)
-	}
+	a.writeConfig()
 	if a.watch == nil {
 		a.watch = newWatcher(a.g)
 	}
@@ -199,8 +240,57 @@ func (a *attacher) noteRestartRequired() {
 func (a *attacher) reconcileAndPublish(logConfig bool) {
 	ok, why := a.reconcileLinks(logConfig)
 	a.reconcileSpecial()
-	a.checkChain()
+	if a.checkChain() {
+		// A link lost its program underneath us: attach it again now.
+		ok, why = a.reconcileLinks(false)
+	}
+	if ok && a.cfgErr != nil {
+		ok, why = false, fmt.Sprintf("writing the guard's configuration: %v", a.cfgErr)
+	}
 	a.publish(ok, why)
+}
+
+// writeConfig writes the mode and allowed protocols to the config map. A
+// failure leaves the program running with the previous ones -- enforcing
+// in monitor mode, or the reverse -- so it counts as the guard not working
+// until a retry succeeds.
+func (a *attacher) writeConfig() {
+	set := a.setConfig
+	if set == nil {
+		set = a.md.setConfig
+	}
+	err := set(a.spec)
+	switch {
+	case err != nil && a.cfgErr == nil:
+		logging.Info(a.g.logger, "op", "addressGuard", "event", "guardMapWriteFailed", "write", "config", "error", err)
+	case err != nil:
+		logging.Debug(a.g.logger, "op", "addressGuard", "event", "guardMapWriteFailed", "write", "config", "error", err)
+	case a.cfgErr != nil:
+		logging.Info(a.g.logger, "op", "addressGuard", "event", "guardConfigWritten", "msg", "the config map write succeeded on retry")
+	}
+	a.cfgErr = err
+}
+
+// retry runs on the chain-check tick: it retries what has no event to
+// trigger it again -- a config map write, a netlink subscription that
+// failed -- and checks every attachment is still in place.
+func (a *attacher) retry() {
+	if a.spec == nil || a.md == nil {
+		a.checkChain()
+		return
+	}
+	retried := false
+	if a.cfgErr != nil {
+		a.writeConfig()
+		retried = true
+	}
+	if a.watch != nil && a.watch.failed {
+		a.rewatch() // reconciles
+		return
+	}
+	if a.checkChain() || retried || a.pending {
+		a.reconcileAndPublish(false)
+	}
 }
 
 // chainCheckInterval is how often the attacher checks that the guard still
@@ -221,6 +311,18 @@ var queryTCX = func(ifindex int) ([]ebpf.ProgramID, error) {
 	return ids, nil
 }
 
+// queryXDP returns the program attached to a link's XDP hook, 0 if none.
+var queryXDP = func(ifindex int) (ebpf.ProgramID, error) {
+	l, err := netlink.LinkByIndex(ifindex)
+	if err != nil {
+		return 0, err
+	}
+	if x := l.Attrs().Xdp; x != nil && x.Attached {
+		return ebpf.ProgramID(x.ProgId), nil
+	}
+	return 0, nil
+}
+
 // chainPosition is ours' place in ids, counting from 1; 0 if absent.
 func chainPosition(ids []ebpf.ProgramID, ours ebpf.ProgramID) int {
 	for i, id := range ids {
@@ -237,9 +339,13 @@ func chainPosition(ids []ebpf.ProgramID, ours ebpf.ProgramID) int {
 // Reported in the chain_position metric, and on a change in the log and as
 // an Event naming the programs in front (bpftool prog show id N on the node
 // says what they are). XDP has a single slot per link: no order to report.
-func (a *attacher) checkChain() {
+//
+// It also returns whether any attachment has lost its program -- detached
+// by something else, which the kernel doesn't tell us about -- after
+// dropping it from attached, so the caller's reconcile attaches it again.
+func (a *attacher) checkChain() (lost bool) {
 	if a.g.objs == nil {
-		return
+		return false
 	}
 	if a.chainPos == nil {
 		a.chainPos = map[int]int{}
@@ -248,13 +354,38 @@ func (a *attacher) checkChain() {
 		info, err := a.g.objs.AgTcx.Info()
 		if err != nil {
 			logging.Debug(a.g.logger, "op", "addressGuard", "event", "chainCheckFailed", "error", err)
-			return
+			return false
 		}
 		a.tcxID, _ = info.ID()
+	}
+	if a.tcxL3ID == 0 {
+		info, err := a.g.objs.AgTcxL3.Info()
+		if err != nil {
+			logging.Debug(a.g.logger, "op", "addressGuard", "event", "chainCheckFailed", "error", err)
+			return false
+		}
+		a.tcxL3ID, _ = info.ID()
+	}
+	if a.xdpID == 0 {
+		info, err := a.g.objs.AgXdp.Info()
+		if err != nil {
+			logging.Debug(a.g.logger, "op", "addressGuard", "event", "chainCheckFailed", "error", err)
+			return false
+		}
+		a.xdpID, _ = info.ID()
 	}
 	for idx, at := range a.attached {
 		if at.hook != hookTCX {
 			a.forgetChain(idx, at.name)
+			id, err := queryXDP(idx)
+			if err != nil {
+				logging.Debug(a.g.logger, "op", "addressGuard", "event", "chainCheckFailed", "interface", at.name, "error", err)
+				continue // gone, most likely: the link watch reconciles it
+			}
+			if id != a.xdpID {
+				a.lose(idx, at)
+				lost = true
+			}
 			continue
 		}
 		ids, err := queryTCX(idx)
@@ -262,9 +393,15 @@ func (a *attacher) checkChain() {
 			logging.Debug(a.g.logger, "op", "addressGuard", "event", "chainCheckFailed", "interface", at.name, "error", err)
 			continue
 		}
-		pos := chainPosition(ids, a.tcxID)
+		ours := a.tcxID
+		if at.l3 {
+			ours = a.tcxL3ID
+		}
+		pos := chainPosition(ids, ours)
 		if pos == 0 {
-			continue // detached underneath us; the next reconcile re-attaches
+			a.lose(idx, at)
+			lost = true
+			continue
 		}
 		chainPositionVec.WithLabelValues(at.name).Set(float64(pos))
 		prev := a.chainPos[idx]
@@ -282,6 +419,19 @@ func (a *attacher) checkChain() {
 				"msg", "the address guard runs first in the tcx chain again")
 		}
 	}
+	return lost
+}
+
+// lose drops an attachment whose program something else detached.
+func (a *attacher) lose(idx int, at *attachment) {
+	logging.Info(a.g.logger, "op", "addressGuard", "event", "guardDetachedExternally", "interface", at.name, "hook", at.hook,
+		"msg", "something else detached the address guard; attaching it again")
+	a.warn("AddressGuardDetached", "on node %s, something detached the address guard from %s (%s); it is being attached again",
+		a.g.myNode, at.name, at.hook)
+	_ = at.link.Close()
+	attachedVec.DeleteLabelValues(at.name, at.hook)
+	a.forgetChain(idx, at.name)
+	delete(a.attached, idx)
 }
 
 // forgetChain drops idx's chain position when it no longer applies.
@@ -438,13 +588,26 @@ func (a *attacher) reconcileLinks(logExcluded bool) (bool, string) {
 		for idx := range a.attached {
 			a.detach(idx)
 		}
+		unattachedVec.Reset()
 		return false, "not configured"
 	}
-	links, err := netlink.LinkList()
+	links, err := dump(linkList)
+	if errors.Is(err, netlink.ErrDumpInterrupted) {
+		// Still interrupted: the list may be missing links, and acting on
+		// it could detach a link that's there. Change nothing -- the
+		// attachments stay, and so does whether the guard is working --
+		// and try again on the tick.
+		a.pending = true
+		reconcileDeferred.WithLabelValues("links").Inc()
+		logging.Debug(a.g.logger, "op", "addressGuard", "event", "reconcileDeferred", "dump", "links", "error", err)
+		return a.linksOK, a.linksWhy
+	}
 	if err != nil {
+		a.pending = true
 		logging.Info(a.g.logger, "op", "addressGuard", "event", "linkListFailed", "error", err)
 		return false, fmt.Sprintf("listing links: %v", err)
 	}
+	a.pending = false
 	a.defaults = defaultIfindexes()
 	want, excluded := selectLinks(links, a.defaults, a.spec.Extra, a.spec.Exclude)
 	if logExcluded {
@@ -467,7 +630,7 @@ func (a *attacher) reconcileLinks(logExcluded bool) (bool, string) {
 		if old != nil && old.want == hook {
 			continue
 		}
-		at, err := a.attach(l, hook)
+		at, err := a.attach(l, hook, old)
 		if err != nil {
 			name := l.Attrs().Name
 			if old == nil {
@@ -483,6 +646,12 @@ func (a *attacher) reconcileLinks(logExcluded bool) (bool, string) {
 			continue
 		}
 		delete(a.warnedLinks, at.name)
+		if old != nil && at.link == old.link {
+			a.attached[idx] = at
+			logging.Debug(a.g.logger, "op", "addressGuard", "event", "guardAttachmentKept", "interface", at.name,
+				"hook", at.hook, "want", at.want)
+			continue
+		}
 		// Make before break: the new hook is in place before the old one
 		// goes, so a hook change opens no window.
 		if old != nil {
@@ -507,16 +676,60 @@ func (a *attacher) reconcileLinks(logExcluded bool) (bool, string) {
 			"hook", map[bool]string{true: hookXDP, false: hookTCX}[a.spec.XDP], "failurePolicy", policy,
 			"interfaces", names)
 	}
+	// The state, for alerting: attach_errors_total says only that an attempt
+	// failed, not whether the interface is unguarded now.
+	unattachedVec.Reset()
+	for _, name := range unguarded {
+		unattachedVec.WithLabelValues(name).Set(1)
+	}
+	a.linksOK, a.linksWhy = true, ""
 	if len(unguarded) > 0 {
 		slices.Sort(unguarded)
-		return false, fmt.Sprintf("could not attach to %s", strings.Join(unguarded, ", "))
+		a.linksOK, a.linksWhy = false, fmt.Sprintf("could not attach to %s", strings.Join(unguarded, ", "))
 	}
-	return true, ""
+	return a.linksOK, a.linksWhy
 }
 
-func (a *attacher) attach(l netlink.Link, hook string) (*attachment, error) {
+// arphrdNone is how netlink names ARPHRD_NONE, the link type of tun devices
+// and WireGuard: no link-layer header.
+const arphrdNone = "none"
+
+// linkLayer reports which tcx program fits l: ag_tcx for Ethernet, whose
+// network header follows a 14-byte Ethernet header, or ag_tcx_l3 (l3 true)
+// for links with no link-layer header, whose packets start with it. Each
+// type here was measured at tcx ingress (QinQ included: its inner tag sits
+// at 14); the guard refuses any other type rather than read a link it
+// can't parse.
+func linkLayer(l netlink.Link) (l3 bool, err error) {
+	switch l.Attrs().EncapType {
+	case "ether":
+		return false, nil
+	case "ipip", "tunnel6", "sit", "gre":
+		return true, nil
+	}
+	switch l.Type() {
+	case "ip6gre": // netlink has no name for ARPHRD_IP6GRE
+		return true, nil
+	case "wireguard", "tuntap":
+		if l.Attrs().EncapType == arphrdNone { // a tap is "ether", above
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("the address guard can't parse %s links (link type %s)", l.Type(), l.Attrs().EncapType)
+}
+
+// attach attaches at hook, falling back to tcx where native XDP isn't
+// available. old is what is attached to l now, or nil. If tcx is the result
+// and old is already the tcx attachment, old's link is kept: the kernel
+// refuses to put one program into a tcx chain twice (EEXIST).
+func (a *attacher) attach(l netlink.Link, hook string, old *attachment) (*attachment, error) {
 	attrs := l.Attrs()
 	at := &attachment{name: attrs.Name, want: hook}
+	l3, err := linkLayer(l)
+	if err != nil {
+		return nil, err
+	}
+	at.l3 = l3
 	if hook == hookXDP {
 		lk, err := link.AttachXDP(link.XDPOptions{Program: a.g.objs.AgXdp, Interface: attrs.Index, Flags: link.XDPDriverMode})
 		if err == nil {
@@ -525,8 +738,16 @@ func (a *attacher) attach(l netlink.Link, hook string) (*attachment, error) {
 		}
 		logging.Info(a.g.logger, "op", "addressGuard", "event", "xdpFallbackToTcx", "interface", attrs.Name, "error", err)
 	}
+	if old != nil && old.hook == hookTCX && old.l3 == l3 {
+		at.link, at.hook = old.link, hookTCX
+		return at, nil
+	}
+	prog := a.g.objs.AgTcx
+	if l3 {
+		prog = a.g.objs.AgTcxL3
+	}
 	lk, err := link.AttachTCX(link.TCXOptions{
-		Program:   a.g.objs.AgTcx,
+		Program:   prog,
 		Interface: attrs.Index,
 		Attach:    ebpf.AttachTCXIngress,
 		Anchor:    link.Head(),
@@ -559,10 +780,20 @@ func (a *attacher) reconcileSpecial() {
 		if dummy, err := netlink.LinkByName(a.spec.Dummy); err == nil {
 			filter := &netlink.Route{Table: unix.RT_TABLE_LOCAL, LinkIndex: dummy.Attrs().Index}
 			for _, fam := range []int{nl.FAMILY_V4, nl.FAMILY_V6} {
-				routes, err := netlink.RouteListFiltered(fam, filter, netlink.RT_FILTER_TABLE|netlink.RT_FILTER_OIF)
+				routes, err := dump(func() ([]netlink.Route, error) {
+					return routeList(fam, filter, netlink.RT_FILTER_TABLE|netlink.RT_FILTER_OIF)
+				})
 				if err != nil {
-					logging.Info(a.g.logger, "op", "addressGuard", "event", "routeListFailed", "error", err)
-					continue
+					// An incomplete list would unguard the addresses missing
+					// from it: change nothing, and try again on the tick.
+					a.pending = true
+					if errors.Is(err, netlink.ErrDumpInterrupted) {
+						reconcileDeferred.WithLabelValues("routes").Inc()
+						logging.Debug(a.g.logger, "op", "addressGuard", "event", "reconcileDeferred", "dump", "routes", "error", err)
+					} else {
+						logging.Info(a.g.logger, "op", "addressGuard", "event", "routeListFailed", "error", err)
+					}
+					return
 				}
 				for _, r := range routes {
 					if (r.Type != unix.RTN_BROADCAST && r.Type != unix.RTN_ANYCAST) || r.Dst == nil {
@@ -612,6 +843,10 @@ type watcher struct {
 	links  chan netlink.LinkUpdate
 	routes chan netlink.RouteUpdate
 	done   chan struct{}
+	// Which subscriptions are running. netlink closes a running one's
+	// channel when it stops; a failed one is retried on the tick.
+	linksOK, routesOK bool
+	failed            bool
 }
 
 func newWatcher(g *Guard) *watcher {
@@ -624,17 +859,42 @@ func newWatcher(g *Guard) *watcher {
 		logging.Debug(g.logger, "op", "addressGuard", "event", "netlinkWatchError", "error", err)
 	}
 	if err := netlink.LinkSubscribeWithOptions(w.links, w.done, netlink.LinkSubscribeOptions{ErrorCallback: onErr}); err != nil {
-		logging.Info(g.logger, "op", "addressGuard", "event", "linkSubscribeFailed", "error", err)
+		logging.Info(g.logger, "op", "addressGuard", "event", "linkSubscribeFailed", "error", err,
+			"msg", "new or changed interfaces go unnoticed until the retry succeeds")
+	} else {
+		w.linksOK = true
 	}
 	if err := netlink.RouteSubscribeWithOptions(w.routes, w.done, netlink.RouteSubscribeOptions{ErrorCallback: onErr}); err != nil {
-		logging.Info(g.logger, "op", "addressGuard", "event", "routeSubscribeFailed", "error", err)
+		logging.Info(g.logger, "op", "addressGuard", "event", "routeSubscribeFailed", "error", err,
+			"msg", "default-route moves and new pool subnets go unnoticed until the retry succeeds")
+	} else {
+		w.routesOK = true
 	}
+	w.failed = !w.linksOK || !w.routesOK
 	return w
 }
 
 // close is safe on a nil watcher.
+//
+// netlink's receive goroutine sends on its channel without watching done,
+// so a goroutine blocked on a full channel nobody reads any more would
+// never exit: each running subscription's channel is drained until
+// netlink closes it, which it does once done has closed its socket.
 func (w *watcher) close() {
-	if w != nil {
-		close(w.done)
+	if w == nil {
+		return
+	}
+	close(w.done)
+	if w.linksOK {
+		go func() {
+			for range w.links {
+			}
+		}()
+	}
+	if w.routesOK {
+		go func() {
+			for range w.routes {
+			}
+		}()
 	}
 }

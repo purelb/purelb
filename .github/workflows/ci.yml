@@ -89,20 +89,27 @@ jobs:
       - name: Build the test binary
         run: go test -c -o addrguard.test ./internal/addrguard/
 
+      # The verifier's behaviour depends on the kernel: record which one ran.
       - name: Run the BPF tests with the agent's capabilities
         run: |
+          uname -r
           sudo env ADDRGUARD_BPF_TESTS=required \
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin -- \
             ./addrguard.test -test.v -test.skip TestAttacherInNetns
 
       # Attaching to real links, in a throwaway network namespace so the
       # runner's own interfaces are untouched. Creating the namespace needs
-      # CAP_SYS_ADMIN on top of the agent's capabilities.
+      # CAP_SYS_ADMIN on top of the agent's capabilities, and sending the
+      # test's frames (an AF_PACKET socket) CAP_NET_RAW; the guard itself
+      # loads and attaches with the agent's.
       - name: Run the attacher test in a network namespace
         run: |
+          set -o pipefail
           sudo env ADDRGUARD_BPF_TESTS=required ADDRGUARD_NETNS_TESTS=required \
-            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin -- \
-            ./addrguard.test -test.v -test.run TestAttacherInNetns
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
+            ./addrguard.test -test.v -test.run '^TestAttacherInNetns$' | tee netns.out
+          # A renamed test would otherwise pass as "no tests to run".
+          grep -q -- '--- PASS: TestAttacherInNetns' netns.out
 
   build-images:
     runs-on: ubuntu-latest

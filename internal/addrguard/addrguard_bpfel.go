@@ -48,9 +48,11 @@ const (
 	addrguardMapAgPorts   = "ag_ports"
 	addrguardMapAgProtos  = "ag_protos"
 	addrguardMapAgReasons = "ag_reasons"
+	addrguardMapAgUnread  = "ag_unread"
 	addrguardMapAgVip4    = "ag_vip4"
 	addrguardMapAgVip6    = "ag_vip6"
 	addrguardProgAgTcx    = "ag_tcx"
+	addrguardProgAgTcxL3  = "ag_tcx_l3"
 	addrguardProgAgXdp    = "ag_xdp"
 )
 
@@ -96,8 +98,9 @@ type addrguardSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type addrguardProgramSpecs struct {
-	AgTcx *ebpf.ProgramSpec `ebpf:"ag_tcx"`
-	AgXdp *ebpf.ProgramSpec `ebpf:"ag_xdp"`
+	AgTcx   *ebpf.ProgramSpec `ebpf:"ag_tcx"`
+	AgTcxL3 *ebpf.ProgramSpec `ebpf:"ag_tcx_l3"`
+	AgXdp   *ebpf.ProgramSpec `ebpf:"ag_xdp"`
 }
 
 // addrguardMapSpecs contains maps before they are loaded into the kernel.
@@ -108,6 +111,7 @@ type addrguardMapSpecs struct {
 	AgPorts   *ebpf.MapSpec `ebpf:"ag_ports"`
 	AgProtos  *ebpf.MapSpec `ebpf:"ag_protos"`
 	AgReasons *ebpf.MapSpec `ebpf:"ag_reasons"`
+	AgUnread  *ebpf.MapSpec `ebpf:"ag_unread"`
 	AgVip4    *ebpf.MapSpec `ebpf:"ag_vip4"`
 	AgVip6    *ebpf.MapSpec `ebpf:"ag_vip6"`
 }
@@ -142,6 +146,7 @@ type addrguardMaps struct {
 	AgPorts   *ebpf.Map `ebpf:"ag_ports"`
 	AgProtos  *ebpf.Map `ebpf:"ag_protos"`
 	AgReasons *ebpf.Map `ebpf:"ag_reasons"`
+	AgUnread  *ebpf.Map `ebpf:"ag_unread"`
 	AgVip4    *ebpf.Map `ebpf:"ag_vip4"`
 	AgVip6    *ebpf.Map `ebpf:"ag_vip6"`
 }
@@ -152,6 +157,7 @@ func (m *addrguardMaps) Close() error {
 		m.AgPorts,
 		m.AgProtos,
 		m.AgReasons,
+		m.AgUnread,
 		m.AgVip4,
 		m.AgVip6,
 	)
@@ -167,13 +173,15 @@ type addrguardVariables struct {
 //
 // It can be passed to loadAddrguardObjects or ebpf.CollectionSpec.LoadAndAssign.
 type addrguardPrograms struct {
-	AgTcx *ebpf.Program `ebpf:"ag_tcx"`
-	AgXdp *ebpf.Program `ebpf:"ag_xdp"`
+	AgTcx   *ebpf.Program `ebpf:"ag_tcx"`
+	AgTcxL3 *ebpf.Program `ebpf:"ag_tcx_l3"`
+	AgXdp   *ebpf.Program `ebpf:"ag_xdp"`
 }
 
 func (p *addrguardPrograms) Close() error {
 	return _AddrguardClose(
 		p.AgTcx,
+		p.AgTcxL3,
 		p.AgXdp,
 	)
 }

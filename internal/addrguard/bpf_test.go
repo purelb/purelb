@@ -87,6 +87,19 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
+// unread is an ag_unread counter: frames dropped (or, in monitor mode,
+// passed) because they couldn't be read.
+func (h *harness) unread(reason uint32, monitor bool) uint64 {
+	h.t.Helper()
+	var per []uint64
+	require.NoError(h.t, h.objs.AgUnread.Lookup(unreadIndex(reason, monitor), &per))
+	var n uint64
+	for _, v := range per {
+		n += v
+	}
+	return n
+}
+
 func (h *harness) addVIP(a netip.Addr) {
 	h.t.Helper()
 	zero := make([]addrguardVipCounters, h.ncpu)
@@ -248,7 +261,15 @@ func ipv6(src, dst netip.Addr, next uint8, payload []byte) []byte {
 
 // extHdr is a generic IPv6 extension header (hop-by-hop, routing, or
 // destination options) of 8 octets.
-func extHdr(next uint8) []byte { return []byte{next, 0, 1, 4, 0, 0, 0, 0} }
+func extHdr(next uint8) []byte { return extHdrN(next, 0) }
+
+// extHdrN is one of (n+1)*8 octets: the length field counts 8-octet units
+// after the first.
+func extHdrN(next, n uint8) []byte {
+	b := make([]byte, (int(n)+1)*8)
+	b[0], b[1] = next, n
+	return b
+}
 
 // fragHdr is an IPv6 fragment header.
 func fragHdr(next uint8, offset uint16, more bool) []byte {
@@ -352,7 +373,10 @@ func TestBPFIPv4Header(t *testing.T) {
 	h.assertPass(opt(15, 80), "maximum options, allowed port found past them")
 	h.assertDrop(opt(15, 22), "maximum options, denied port found past them")
 	h.assertDrop(opt(4, 80), "IHL below 5")
-	assert.Equal(t, uint64(2), h.reason(actDrop, reasonMalformed, famV4))
+	v5 := opt(5, 80)
+	v5[14] = 0x55 // version 5
+	h.assertDrop(v5, "IPv4 header with a version other than 4")
+	assert.Equal(t, uint64(4), h.reason(actDrop, reasonMalformed, famV4))
 }
 
 func TestBPFIPv6ExtensionHeaders(t *testing.T) {
@@ -377,7 +401,24 @@ func TestBPFIPv6ExtensionHeaders(t *testing.T) {
 	h.assertPass(chain(8, 80), "8 extension headers, allowed port")
 	h.assertDrop(chain(8, 22), "8 extension headers, denied port")
 	h.assertDrop(chain(9, 80), "9 extension headers exceeds the walk")
-	assert.Equal(t, uint64(2), h.reason(actDrop, reasonMalformed, famV6))
+
+	// The length field: a 24-octet destination options header, then TCP.
+	long := func(port uint16) []byte {
+		return frame(0x86dd, nil, ipv6(client6, vip6, 60, append(extHdrN(protoTCP, 2), l4(port)...)))
+	}
+	h.assertPass(long(80), "a longer extension header, allowed port found past it")
+	h.assertDrop(long(22), "a longer extension header, denied port found past it")
+	routing := func(port uint16) []byte {
+		return frame(0x86dd, nil, ipv6(client6, vip6, 43, append(extHdr(protoTCP), l4(port)...)))
+	}
+	h.assertPass(routing(80), "routing header, allowed port")
+	h.assertDrop(routing(22), "routing header, denied port")
+	h.assertDrop(frame(0x86dd, nil, ipv6(client6, vip6, 0, extHdr(60))),
+		"a chain that runs off the end of the packet")
+	v4 := frame(0x86dd, nil, ipv6(client6, vip6, protoTCP, l4(80)))
+	v4[14] = 0x40 // version 4 in an IPv6 frame
+	h.assertDrop(v4, "IPv6 header with a version other than 6")
+	assert.Equal(t, uint64(6), h.reason(actDrop, reasonMalformed, famV6))
 }
 
 func TestBPFFragments(t *testing.T) {
@@ -400,8 +441,19 @@ func TestBPFFragments(t *testing.T) {
 		"IPv6 first fragment, denied port")
 	h.assertDrop(frame(0x86dd, nil, ipv6(client6, vip6, 44, append(fragHdr(protoTCP, 0, true), 1, 2))),
 		"IPv6 first fragment too short for ports")
+	// A fragment header after other extension headers is found by the walk.
+	h.assertPass(frame(0x86dd, nil, ipv6(client6, vip6, 0, append(extHdr(44), append(fragHdr(protoTCP, 100, false), 1, 2)...))),
+		"IPv6 non-first fragment behind a hop-by-hop header")
+	h.assertDrop(frame(0x86dd, nil, ipv6(client6, vip6, 0, append(extHdr(44), append(fragHdr(protoTCP, 0, true), l4(22)...)...))),
+		"IPv6 first fragment behind a hop-by-hop header, denied port")
+	// An atomic fragment (offset 0, no more fragments) is a whole datagram:
+	// its ports are checked.
+	h.assertPass(frame(0x86dd, nil, ipv6(client6, vip6, 44, append(fragHdr(protoTCP, 0, false), l4(80)...))),
+		"IPv6 atomic fragment, allowed port")
+	h.assertDrop(frame(0x86dd, nil, ipv6(client6, vip6, 44, append(fragHdr(protoTCP, 0, false), l4(22)...))),
+		"IPv6 atomic fragment, denied port")
 	assert.Equal(t, uint64(2), h.reason(actPass, reasonFragment, famV4))
-	assert.Equal(t, uint64(2), h.reason(actPass, reasonFragment, famV6))
+	assert.Equal(t, uint64(4), h.reason(actPass, reasonFragment, famV6))
 }
 
 func TestBPFICMPAllowList(t *testing.T) {
@@ -428,6 +480,12 @@ func TestBPFICMPAllowList(t *testing.T) {
 	}
 	assert.Equal(t, uint64(12), h.reason(actDrop, reasonICMPDenied, famV4))
 	assert.Equal(t, uint64(10), h.reason(actDrop, reasonICMPDenied, famV6))
+
+	// An ICMP header too short to hold its type can't be checked.
+	h.assertDrop(frame(0x0800, nil, ipv4(client4, vip4, protoICMP, v4opts{}, nil)), "truncated ICMP")
+	h.assertDrop(frame(0x86dd, nil, ipv6(client6, vip6, protoICMPv6, nil)), "truncated ICMPv6")
+	assert.Equal(t, uint64(2), h.reason(actDrop, reasonMalformed, famV4))
+	assert.Equal(t, uint64(2), h.reason(actDrop, reasonMalformed, famV6))
 }
 
 func TestBPFNonPortProtocols(t *testing.T) {
@@ -458,10 +516,42 @@ func TestBPFVLANTags(t *testing.T) {
 		denied6 := frame(0x86dd, vlans, ipv6(client6, vip6, protoTCP, l4(22)))
 		h.assertDrop(denied6, fmt.Sprintf("%d tags, IPv6 denied port", n))
 	}
+	// More than QinQ's two tags is dropped as unread, whatever the
+	// destination: the guard never passes a frame it hasn't parsed. (Test
+	// runs don't move a tag into metadata, so both hooks see all three
+	// in-band; netns tests cover the tag a real tcx link sees in metadata.)
 	before := h.totalReasons()
-	h.assertPass(frame(0x0800, []uint16{1, 2, 3}, ipv4(client4, vip4, protoTCP, v4opts{}, l4(22))),
-		"more than 2 tags passes (documented)")
-	assert.Equal(t, before, h.totalReasons(), "a frame we don't parse is not counted")
+	h.assertDrop(frame(0x0800, []uint16{1, 2, 3}, ipv4(client4, vip4, protoTCP, v4opts{}, l4(80))),
+		"3 tags, even to an allowed port")
+	h.assertDrop(frame(0x0800, []uint16{1, 2, 3}, ipv4(client4, other4, protoTCP, v4opts{}, l4(22))),
+		"3 tags, even to a non-VIP")
+	assert.Equal(t, uint64(4), h.unread(unreadVLANDepth, false))
+	assert.Equal(t, before, h.totalReasons(), "the destination was never read: no per-VIP counter")
+}
+
+// A frame too short for the headers it claims is dropped, not passed
+// unread, whatever its destination would have been; in monitor mode it is
+// counted as would_drop and passed, like any other drop.
+func TestBPFUnreadable(t *testing.T) {
+	h := guarded(t)
+	h.assertDrop(frame(0x8100, nil, []byte{0, 100}), "VLAN tag cut short")
+	// A test run refuses to give the tcx program an IP frame shorter than
+	// its header (EINVAL before the program runs), so these are XDP only
+	// here; TestAttacherInNetns sends them to tcx across a veth.
+	xdp := func(pkt []byte) uint32 {
+		rx, err := h.objs.AgXdp.Run(&ebpf.RunOptions{Data: pkt})
+		require.NoError(t, err)
+		return rx
+	}
+	assert.Equal(t, uint32(xdpDrop), xdp(frame(0x0800, nil, make([]byte, 10))), "IPv4 header cut short")
+	assert.Equal(t, uint32(xdpDrop), xdp(frame(0x86dd, nil, make([]byte, 30))), "IPv6 header cut short")
+	assert.Equal(t, uint64(4), h.unread(unreadTruncated, false), "VLAN on both hooks, IPv4 and IPv6 on XDP")
+	assert.Zero(t, h.totalReasons(), "the destination was never read: no per-VIP counter")
+
+	h.setMode(modeMonitor)
+	h.assertPass(frame(0x8100, nil, []byte{0, 100}), "monitor passes an unreadable frame")
+	assert.Equal(t, uint64(2), h.unread(unreadTruncated, true))
+	assert.Equal(t, uint64(4), h.unread(unreadTruncated, false), "and drops nothing")
 }
 
 func TestBPFMonitorMode(t *testing.T) {

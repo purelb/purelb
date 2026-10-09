@@ -37,15 +37,17 @@ import (
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
-// fakeDataplane records map writes, in order, and can fail the Nth write.
+// fakeDataplane records map writes, in order, and can fail the Nth write,
+// or every write of one kind.
 type fakeDataplane struct {
 	calls  []string
-	failAt int // 1-based write number to fail; 0 = never
+	failAt int    // 1-based write number to fail; 0 = never
+	failOp string // fail every write of this kind ("putVIP", "delVIP", ...)
 }
 
 func (f *fakeDataplane) do(call string) error {
 	f.calls = append(f.calls, call)
-	if f.failAt == len(f.calls) {
+	if f.failAt == len(f.calls) || (f.failOp != "" && strings.HasPrefix(call, f.failOp+" ")) {
 		return errors.New("map full")
 	}
 	return nil
@@ -176,21 +178,32 @@ func TestGuardFailureAfterPublishUnguards(t *testing.T) {
 // gauge reads one unguarded_vips series from the collector.
 func unguarded(t *testing.T, g *Guard, reason string) float64 {
 	t.Helper()
+	return collected(t, g, "purelb_address_guard_unguarded_vips", "reason", reason)
+}
+
+func failedVIPs(t *testing.T, g *Guard, effect string) float64 {
+	t.Helper()
+	return collected(t, g, "purelb_address_guard_failed_vips", "effect", effect)
+}
+
+// collected is the collector's value for the gauge name{label=value}.
+func collected(t *testing.T, g *Guard, name, label, value string) float64 {
+	t.Helper()
 	reg := prometheus.NewPedanticRegistry()
 	require.NoError(t, reg.Register(collector{g}))
 	mfs, err := reg.Gather()
 	require.NoError(t, err)
 	for _, mf := range mfs {
-		if mf.GetName() != "purelb_address_guard_unguarded_vips" {
+		if mf.GetName() != name {
 			continue
 		}
 		for _, m := range mf.GetMetric() {
-			if labelValue(m, "reason") == reason {
+			if labelValue(m, label) == value {
 				return m.GetGauge().GetValue()
 			}
 		}
 	}
-	t.Fatalf("no unguarded_vips{reason=%q}", reason)
+	t.Fatalf("no %s{%s=%q}", name, label, value)
 	return 0
 }
 
@@ -459,6 +472,66 @@ func TestFailClosedKeepsAFailedVIPFiltered(t *testing.T) {
 	assert.NotContains(t, f.calls, "delVIP 192.0.2.1", "fail-closed never unguards a VIP to get around a write failure")
 }
 
+// A full map, under each policy, in both families. Closed never announces
+// an address it can't filter: a VIP whose key can't be written is withheld
+// from the local announcer; a VIP missing a port stays filtered and is
+// reported incomplete. Open announces unfiltered and says so.
+func TestFullMapUnderEachPolicy(t *testing.T) {
+	for _, ip := range []string{"192.0.2.1", "2001:db8::1"} {
+		vip := netip.MustParseAddr(ip)
+		s := svc("a", []string{ip}, port(v1.ProtocolTCP, 80, 0))
+		for _, tc := range []struct {
+			name, failOp       string
+			closed             bool
+			withheld, keyed    bool
+			withheldN, incompN float64
+			unguardedN         float64
+		}{
+			{"closed, VIP map full", "putVIP", true, true, false, 1, 0, 0},
+			{"closed, port map full", "putPort", true, false, true, 0, 1, 0},
+			{"open, VIP map full", "putVIP", false, false, false, 0, 0, 1},
+			{"open, port map full", "putPort", false, false, false, 0, 0, 1},
+		} {
+			t.Run(ip+" "+tc.name, func(t *testing.T) {
+				g, f := testGuard()
+				g.configured.Store(true)
+				g.closed.Store(tc.closed)
+				f.failOp = tc.failOp
+				require.Error(t, g.SetBalancer(s, nil))
+				assert.Equal(t, tc.withheld, g.Withheld(net.ParseIP(ip)), "withheld")
+				assert.Equal(t, tc.keyed, g.installedVIP[vip], "VIP key installed")
+				assert.Equal(t, tc.withheldN, failedVIPs(t, g, "withheld"))
+				assert.Equal(t, tc.incompN, failedVIPs(t, g, "incomplete"))
+				assert.Equal(t, tc.unguardedN, unguarded(t, g, "map_write_failed"))
+
+				// Room again: any Service sync retries it.
+				f.failOp = ""
+				require.NoError(t, g.SetBalancer(svc("other", []string{"198.51.100.1"}), nil))
+				assert.False(t, g.Withheld(net.ParseIP(ip)))
+				assert.True(t, g.installedVIP[vip])
+				assert.Equal(t, 0.0, failedVIPs(t, g, "withheld")+failedVIPs(t, g, "incomplete"))
+				assert.Equal(t, 0.0, unguarded(t, g, "map_write_failed"))
+			})
+		}
+	}
+}
+
+// A VIP whose removal failed belongs to no Service any more; it is still
+// retried, by whatever Service syncs next.
+func TestFailedRemovalIsRetried(t *testing.T) {
+	for _, ip := range []string{"192.0.2.1", "2001:db8::1"} {
+		g, f := testGuard()
+		require.NoError(t, g.SetBalancer(svc("a", []string{ip}, port(v1.ProtocolTCP, 80, 0)), nil))
+		f.failOp = "delVIP"
+		require.Error(t, g.DeleteBalancer("ns/a", "", nil))
+		f.failOp, f.calls = "", nil
+		require.NoError(t, g.SetBalancer(svc("other", []string{"198.51.100.1"}), nil))
+		assert.Contains(t, f.calls, "delVIP "+ip, "the failed removal is retried")
+		assert.Empty(t, g.failed)
+		assert.False(t, g.installedVIP[netip.MustParseAddr(ip)])
+	}
+}
+
 func TestCollectorUnderFailClosed(t *testing.T) {
 	g, _ := testGuard() // not loaded
 	require.NoError(t, g.SetBalancer(svc("a", []string{"192.0.2.1"}, port(v1.ProtocolTCP, 80, 0)), nil))
@@ -621,11 +694,13 @@ func TestChainPosition(t *testing.T) {
 func TestCheckChainReportsProgramsInFront(t *testing.T) {
 	var logs strings.Builder
 	g := newGuard(log.NewLogfmtLogger(&logs), "node1", true, &addrguardObjects{}, nil)
-	a := &attacher{g: g, tcxID: 7, attached: map[int]*attachment{
+	a := &attacher{g: g, tcxID: 7, tcxL3ID: 9, xdpID: 8, attached: map[int]*attachment{
 		3: {name: "eth1-chain", hook: hookTCX},
 		4: {name: "eth2-chain", hook: hookXDP},
 	}}
 	chain := []ebpf.ProgramID{7}
+	defer func(orig func(int) (ebpf.ProgramID, error)) { queryXDP = orig }(queryXDP)
+	queryXDP = func(int) (ebpf.ProgramID, error) { return 8, nil }
 	defer func(orig func(int) ([]ebpf.ProgramID, error)) { queryTCX = orig }(queryTCX)
 	queryTCX = func(ifindex int) ([]ebpf.ProgramID, error) {
 		require.Equal(t, 3, ifindex, "XDP has one slot: no chain to query")
@@ -653,4 +728,93 @@ func TestCheckChainReportsProgramsInFront(t *testing.T) {
 	a.attached[3].hook = hookXDP // switched to XDP: the series goes
 	a.checkChain()
 	assert.Zero(t, testutil.CollectAndCount(chainPositionVec, "purelb_address_guard_chain_position"))
+}
+
+// An interrupted netlink dump is retried at once; one that stays
+// interrupted changes nothing -- no link detached, no special entry
+// removed, no change to standing down -- and the tick runs the reconcile
+// again until one completes. A dump that fails outright stands a
+// fail-closed node down only until the tick's retry succeeds.
+//
+// The attachments and special entries here have no kernel objects behind
+// them: detaching or removing one would panic, failing the test.
+func TestInterruptedDumps(t *testing.T) {
+	defer func(l func() ([]netlink.Link, error), r func(int, *netlink.Route, uint64) ([]netlink.Route, error)) {
+		linkList, routeList = l, r
+	}(linkList, routeList)
+	g := newGuard(log.NewNopLogger(), "node1", true, nil, nil)
+	a := &attacher{g: g, md: &mapDataplane{}, spec: &Spec{Closed: true, Dummy: "lo"},
+		attached: map[int]*attachment{}, special: map[netip.Addr]bool{}, warnedLinks: map[string]bool{},
+		linksWhy: "not attached yet"}
+	linkCalls := 0
+	links := func(err error) func() ([]netlink.Link, error) {
+		return func() ([]netlink.Link, error) { linkCalls++; return nil, err }
+	}
+	routes := func(err error) func(int, *netlink.Route, uint64) ([]netlink.Route, error) {
+		return func(int, *netlink.Route, uint64) ([]netlink.Route, error) { return nil, err }
+	}
+	deferred := func(dump string) float64 { return testutil.ToFloat64(reconcileDeferred.WithLabelValues(dump)) }
+	routeList = routes(nil)
+
+	// Interrupted twice, then complete: one reconcile, nothing deferred.
+	n := 0
+	linkList = func() ([]netlink.Link, error) {
+		if n++; n <= 2 {
+			return nil, netlink.ErrDumpInterrupted
+		}
+		return nil, nil
+	}
+	a.reconcileLinks(false)
+	assert.False(t, a.pending, "a dump interrupted twice is retried, not deferred")
+	assert.Equal(t, 3, n)
+	a.linksOK, a.linksWhy = false, "not attached yet"
+
+	// Startup, and every dump interrupted: retried, then deferred. Nothing
+	// is attached yet, so a fail-closed node is down -- as at any startup.
+	linkList = links(netlink.ErrDumpInterrupted)
+	before := deferred("links")
+	a.reconcileAndPublish(false)
+	assert.Equal(t, dumpAttempts, linkCalls, "retried before deferring")
+	assert.Equal(t, before+1, deferred("links"))
+	assert.True(t, a.pending)
+	assert.True(t, g.StandingDown(), "not attached yet")
+
+	// The tick completes it.
+	linkList = links(nil)
+	a.retry()
+	assert.False(t, a.pending)
+	assert.False(t, g.StandingDown())
+
+	// Working, then interrupted: the attachment stays, and so does the
+	// node -- an interrupted dump says nothing about the guard.
+	a.attached[7] = &attachment{name: "eth7", hook: hookTCX}
+	linkList = links(netlink.ErrDumpInterrupted)
+	a.reconcileAndPublish(false)
+	assert.Contains(t, a.attached, 7, "nothing detached on an incomplete list")
+	assert.False(t, g.StandingDown(), "no stand-down for an interrupted dump")
+	assert.True(t, a.pending)
+	delete(a.attached, 7) // the next, complete, list wouldn't have it
+
+	// Special entries: an interrupted route dump removes none of them.
+	special := netip.MustParseAddr("10.255.77.255")
+	a.special[special] = true
+	routeList = routes(netlink.ErrDumpInterrupted)
+	before = deferred("routes")
+	a.reconcileSpecial()
+	assert.True(t, a.special[special], "an incomplete route list unguards nothing")
+	assert.Equal(t, before+1, deferred("routes"))
+	routeList = routes(errors.New("boom"))
+	a.reconcileSpecial()
+	assert.True(t, a.special[special], "nor does a failed one")
+	delete(a.special, special)
+	routeList = routes(nil)
+
+	// A link dump that fails outright: a fail-closed node stands down, and
+	// is back as soon as the tick's retry succeeds.
+	linkList = links(errors.New("boom"))
+	a.reconcileAndPublish(false)
+	assert.True(t, g.StandingDown())
+	linkList = links(nil)
+	a.retry()
+	assert.False(t, g.StandingDown(), "recovered on the tick, not on some unrelated event")
 }

@@ -576,9 +576,10 @@ class Router:
                              f"&& echo ok || echo fail", check=False)
         return out.strip() == "ok"
 
-    def send_icmp(self, address: str, icmp_type: int, count: int = 1) -> None:
+    def send_icmp(self, address: str, icmp_type: int, count: int = 1, payload: int = 16) -> None:
         """Send `count` raw ICMP (IPv4) or ICMPv6 messages of `icmp_type`,
-        code 0, to address. For types `ping` cannot send."""
+        code 0, with `payload` bytes after the header, to address. For types
+        `ping` cannot send."""
         script = f"""
 import socket, struct
 v6 = {":" in address!r}
@@ -586,7 +587,7 @@ def csum(b):
     b += b"\\0" * (len(b) % 2)
     s = sum(struct.unpack("!%dH" % (len(b) // 2), b)); s = (s >> 16) + (s & 0xffff); s += s >> 16
     return ~s & 0xffff
-m = struct.pack("!BBHI", {int(icmp_type)}, 0, 0, 0) + bytes(16)
+m = struct.pack("!BBHI", {int(icmp_type)}, 0, 0, 0) + bytes({int(payload)})
 if v6:
     s = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)
 else:
@@ -609,6 +610,64 @@ for i in range({int(count)}):
     s.close()
 """
         ssh(self.host, f"python3 -c {shlex.quote(script)}")
+
+    def send_malformed(self, iface: str, dst_mac: str, address: str, count: int = 5) -> int:
+        """Send `count` of each malformed-frame variant for `address`'s
+        family to `dst_mac` out `iface`, as raw L2 frames. Returns how many
+        were sent in all.
+
+        The guard's malformed verdict -- a bad IP version or ihl, an IPv6
+        extension-header chain that runs past the frame -- is the one path
+        no port or ICMP probe reaches: those carry a valid header by
+        construction. The kernel will not source an IP packet with a bad
+        version, and a router will not forward one, so the frame is built
+        whole, Ethernet header included, and put on the wire with AF_PACKET
+        addressed to the announcing node's uplink MAC -- the only way the
+        malformation arrives at the guard's ingress intact. AF_PACKET is
+        why this, unlike send_icmp/send_udp, cannot let the kernel build the
+        header.
+
+        v4: version=5, then ihl=4 (<5). v6: version=5, then a hop-by-hop
+        header whose length points past the frame end.
+        """
+        v6 = ipaddress.ip_address(address).version == 6
+        script = f"""
+import socket, struct, fcntl
+iface = {iface!r}
+dst = bytes(int(b, 16) for b in {dst_mac!r}.split(":"))
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+s.bind((iface, 0))
+src = fcntl.ioctl(s.fileno(), 0x8927, struct.pack("256s", iface.encode()[:15]))[18:24]
+def eth(etype): return dst + src + struct.pack("!H", etype)
+frames = []
+"""
+        if v6:
+            script += f"""
+vip = socket.inet_pton(socket.AF_INET6, {address!r})
+def ip6(first, nexthdr, payload=b""):
+    h = struct.pack("!BBHHBB", first, 0, 0, len(payload), nexthdr, 64)
+    return h + socket.inet_pton(socket.AF_INET6, "::") + vip + payload
+frames.append(eth(0x86DD) + ip6(0x50, 59))                             # version 5
+frames.append(eth(0x86DD) + ip6(0x60, 0, struct.pack("!BB", 0, 0xff)))  # hop-by-hop len past end
+"""
+        else:
+            script += f"""
+vip = socket.inet_aton({address!r})
+def ip4(first):
+    return struct.pack("!BBHHHBBH4s4s", first, 0, 20, 0x1234, 0, 64, 6, 0,
+                       socket.inet_aton("0.0.0.0"), vip)
+frames.append(eth(0x0800) + ip4(0x55))  # version 5
+frames.append(eth(0x0800) + ip4(0x44))  # ihl 4 (<5)
+"""
+        script += f"""
+for f in frames:
+    for _ in range({int(count)}):
+        s.send(f)
+s.close()
+print(len(frames) * {int(count)})
+"""
+        out = ssh(self.host, f"sudo python3 -c {shlex.quote(script)}")
+        return int(out.strip())
 
     @contextlib.contextmanager
     def pmtu_client(self, mtu: int = 1280) -> Iterator[str]:

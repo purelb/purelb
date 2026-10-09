@@ -32,6 +32,20 @@ var (
 		Help:      "1 for each interface the address guard is attached to, by hook (tcx or xdp).",
 	}, []string{"interface", "hook"})
 
+	unattachedVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "unattached_interfaces",
+		Help:      "1 for each interface the address guard should be attached to and isn't, because attaching failed: VIP traffic arriving there is not filtered.",
+	}, []string{"interface"})
+
+	reconcileDeferred = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "reconcile_deferred_total",
+		Help:      "Reconciles put off to the next 30s check because a netlink dump (links or routes) stayed interrupted -- what it listed was changing -- or failed. Nothing changes meanwhile: no interface is detached and the node doesn't stand down.",
+	}, []string{"dump"})
+
 	attachErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
@@ -58,6 +72,11 @@ var (
 		"Packets addressed to a guarded VIP, by verdict (pass, drop, or would_drop in monitor mode), reason and family.",
 		[]string{"action", "reason", "family"}, nil)
 
+	unreadDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(purelbv2.MetricsNamespace, subsystem, "unread_packets_total"),
+		"Frames the guard could not read, so dropped (would_drop in monitor mode) whatever their destination: truncated (shorter than the VLAN tag or IP header they claim), vlan_depth (more VLAN tags than QinQ's two).",
+		[]string{"reason", "action"}, nil)
+
 	vipPacketsDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(purelbv2.MetricsNamespace, subsystem, "vip_packets_total"),
 		"Packets to one guarded address that were dropped, or would be dropped in monitor mode. Zero series are omitted.",
@@ -73,6 +92,11 @@ var (
 		"VIPs the configured address guard is not filtering on this node: not_loaded when the program isn't running, map_write_failed when a VIP's rules could not be written, restart_pending when the guard was enabled after lbnodeagent started.",
 		[]string{"reason"}, nil)
 
+	failedVIPsDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(purelbv2.MetricsNamespace, subsystem, "failed_vips"),
+		"Under failurePolicy closed, VIPs whose rules could not be written to the guard's maps (a map full, or out of memory): withheld VIPs are not announced from this node; incomplete VIPs are filtered by rules that don't match their Services yet, so a Service port may be dropped. Retried on every Service sync.",
+		[]string{"effect"}, nil)
+
 	restartRequiredDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(purelbv2.MetricsNamespace, subsystem, "restart_required"),
 		"1 if the address guard was enabled or disabled after lbnodeagent started on this node: it is loaded only at startup, so the change takes full effect when lbnodeagent is restarted.",
@@ -80,7 +104,7 @@ var (
 )
 
 func init() {
-	prometheus.MustRegister(attachedVec, attachErrors, chainPositionVec, loadedGauge)
+	prometheus.MustRegister(attachedVec, unattachedVec, reconcileDeferred, attachErrors, chainPositionVec, loadedGauge)
 }
 
 var reasonNames = [reasonMax]string{
@@ -96,6 +120,11 @@ var reasonNames = [reasonMax]string{
 
 var familyNames = [2]string{famV4: "ipv4", famV6: "ipv6"}
 
+var unreadNames = [unreadMax]string{
+	unreadTruncated: "truncated",
+	unreadVLANDepth: "vlan_depth",
+}
+
 // collector reports what lives in the BPF maps, reading them at scrape
 // time. It touches no Guard state except atomics, so it is safe on the
 // HTTP goroutine.
@@ -110,9 +139,11 @@ func registerCollector(g *Guard) {
 
 func (c collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- packetsDesc
+	ch <- unreadDesc
 	ch <- vipPacketsDesc
 	ch <- standingDownDesc
 	ch <- unguardedDesc
+	ch <- failedVIPsDesc
 	ch <- restartRequiredDesc
 }
 
@@ -146,10 +177,27 @@ func (c collector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(unguardedDesc, prometheus.GaugeValue, notLoaded, "not_loaded")
 	ch <- prometheus.MustNewConstMetric(unguardedDesc, prometheus.GaugeValue, writeFailed, "map_write_failed")
 	ch <- prometheus.MustNewConstMetric(unguardedDesc, prometheus.GaugeValue, restartPending, "restart_pending")
+	ch <- prometheus.MustNewConstMetric(failedVIPsDesc, prometheus.GaugeValue, float64(g.withheldCount.Load()), "withheld")
+	ch <- prometheus.MustNewConstMetric(failedVIPsDesc, prometheus.GaugeValue, float64(g.incompleteCount.Load()), "incomplete")
 
 	if g.objs == nil {
 		return
 	}
+	for r := uint32(0); r < unreadMax; r++ {
+		for _, monitor := range []bool{false, true} {
+			var per []uint64
+			if err := g.objs.AgUnread.Lookup(unreadIndex(r, monitor), &per); err != nil {
+				continue
+			}
+			var n uint64
+			for _, v := range per {
+				n += v
+			}
+			ch <- prometheus.MustNewConstMetric(unreadDesc, prometheus.CounterValue, float64(n),
+				unreadNames[r], map[bool]string{false: "drop", true: "would_drop"}[monitor])
+		}
+	}
+
 	// Only the combinations the program can produce: pass with an allow
 	// reason, drop and would_drop with a deny reason.
 	for fam := uint32(0); fam < 2; fam++ {

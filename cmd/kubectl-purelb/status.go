@@ -26,6 +26,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+
+	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 type statusOverview struct {
@@ -105,12 +107,73 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 		nodes:           nodeList,
 	}
 	// The address guard's configured mode comes from the API; whether it is
-	// actually running, or waiting for a restart, only from the agents.
+	// actually running, or waiting for a restart, only from the agents --
+	// one read per agent, so only when one might have something to say.
 	if pods != nil {
-		snap.guard = collectGuardStates(ctx, proxyMetricsFetcher(c), categorizePureLBPods(pods).lbnodeagent,
-			nodeList, decodeLBNodeAgents(lbnaList))
+		agentPods := categorizePureLBPods(pods).lbnodeagent
+		agents := decodeLBNodeAgents(lbnaList)
+		var events *v1.EventList
+		if !guardConfigured(agents) {
+			events, _ = c.core.CoreV1().Events(purelbNamespace).List(ctx, metav1.ListOptions{
+				ResourceVersion: "0", FieldSelector: "reason=AddressGuardRestartRequired"})
+		}
+		if guardReadNeeded(agents, lbnaList, events, agentPods) {
+			snap.guard = collectGuardStates(ctx, proxyMetricsFetcher(c), agentPods, nodeList, agents)
+		}
 	}
 	return renderStatus(snap, format)
+}
+
+// guardReadNeeded decides whether status reads the agents' guard state:
+// when some LBNodeAgent configures the guard, or when it may have been
+// removed since an agent started -- the program stays loaded until that
+// agent restarts, and only the agent can say so. Removed since an agent
+// started shows as an LBNodeAgent changed after the oldest agent pod
+// started (an edit), or an AddressGuardRestartRequired Event after it (an
+// edit or a deletion, while the API server keeps Events: an hour by
+// default).
+func guardReadNeeded(agents []*purelbv2.LBNodeAgent, lbnaList *unstructured.UnstructuredList,
+	events *v1.EventList, agentPods []v1.Pod) bool {
+	if guardConfigured(agents) {
+		return true
+	}
+	var oldest time.Time
+	for _, p := range agentPods {
+		if p.Status.StartTime != nil && (oldest.IsZero() || p.Status.StartTime.Time.Before(oldest)) {
+			oldest = p.Status.StartTime.Time
+		}
+	}
+	if oldest.IsZero() {
+		return false
+	}
+	if lbnaList != nil {
+		for _, a := range lbnaList.Items {
+			changed := a.GetCreationTimestamp().Time
+			for _, mf := range a.GetManagedFields() {
+				if mf.Time != nil && mf.Time.After(changed) {
+					changed = mf.Time.Time
+				}
+			}
+			if changed.After(oldest) {
+				return true
+			}
+		}
+	}
+	if events != nil {
+		for _, e := range events.Items {
+			at := e.LastTimestamp.Time
+			if at.IsZero() {
+				at = e.EventTime.Time
+			}
+			if at.IsZero() {
+				at = e.CreationTimestamp.Time
+			}
+			if at.After(oldest) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // renderStatus produces the status output from pre-fetched data.

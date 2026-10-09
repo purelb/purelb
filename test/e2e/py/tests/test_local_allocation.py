@@ -152,7 +152,11 @@ def test_allocates_announces_and_serves(
         # from off the cluster, and only the Service port may answer.
         if guard_enforcing() and router is not None:
             assert router.http_status(address)[0] == 200, f"{address}:80 did not serve through the guard"
+            # Counted, so "closed" can't be a port nothing listens on.
+            before_drop = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=address, action="drop")
             assert not router.tcp_open(address, 22), f"{address}:22 answered with the guard enforcing"
+            after_drop = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=address, action="drop")
+            assert_guard_dropped(before_drop, after_drop, f"{address}:22", node)
 
     # Annotations PureLB sets on a service it allocated for.
     svc = cluster.service(NAMESPACE, name)
@@ -487,6 +491,10 @@ def test_address_guard_filters_host_ports(
     listen on all addresses, and a VIP is a host address). The guard drops
     that traffic at the uplink, counts it, and leaves the node's own
     address alone.
+
+    Malformed frames to the VIP are dropped and classified too -- the
+    parser's verdict-from-what-it-read path, which no valid-header probe
+    above can reach.
     """
     if family == "v6" and not topo.has_ipv6:
         pytest.skip("cluster has no IPv6 on the node subnets")
@@ -502,16 +510,38 @@ def test_address_guard_filters_host_ports(
         before = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="drop", reason="port_denied", family=fam)
         before_vip = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=vip, action="drop")
         assert router.http_status(vip)[0] == 200, f"{vip}:80 (the Service port) did not serve"
+        # The node's own address in the VIP's family is the control.
+        node_ip = topo.node_ips6.get(node) if fam == "ipv6" else topo.node_ips[node]
+        assert node_ip, f"{node} has no IPv6 address of its own to check against"
         for port in (22, 10250):
             assert not router.tcp_open(vip, port), f"{vip}:{port} answered through the guard"
-            assert router.tcp_open(topo.node_ips[node], port), (
-                f"{node}:{port} stopped answering on the node IP: the guard must touch only VIPs"
+            assert router.tcp_open(node_ip, port), (
+                f"{node_ip}:{port} ({node}) stopped answering on the node address: the guard must touch only VIPs"
             )
         assert router.ping(vip), f"ping to {vip} was dropped; ICMP must pass"
         after = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="drop", reason="port_denied", family=fam)
         after_vip = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=vip, action="drop")
         assert_guard_dropped(before, after, f"{vip}:22 and :10250 ({fam} port_denied)", node, min_delta=2)
         assert_guard_dropped(before_vip, after_vip, f"traffic to {vip}", node, min_delta=2)
+
+        # Malformed frames are dropped and counted as such. Sent from the
+        # router as raw L2 frames to the announcing node's uplink MAC: the
+        # kernel won't source a bad-version IP packet and a router won't
+        # forward one, so an on-link L2 send is the only way the malformation
+        # reaches the guard intact (see Router.send_malformed).
+        mac = nodes.mac_for_address(topo.node_ips[node], vip)
+        assert mac, f"no uplink MAC for {vip} on {node}"
+        before_bad = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="drop", reason="malformed", family=fam)
+        before_bad_vip = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=vip, action="drop")
+        sent = router.send_malformed(router.interface_for_subnet(vip), mac, vip, count=5)
+        wait_until(
+            lambda s=sent, b=before_bad: sum(guard_drops(
+                agent_metrics, topo, GUARD_PACKETS, action="drop", reason="malformed", family=fam
+            ).values()) >= sum(b.values()) + s,
+            timeout=15, description=f"the guard to drop {sent} malformed {fam} frames to {vip}",
+        )
+        after_bad_vip = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=vip, action="drop")
+        assert_guard_dropped(before_bad_vip, after_bad_vip, f"malformed frames to {vip}", node, min_delta=sent)
 
         if fam == "ipv6":
             detail = nodes.address_detail(topo.node_ips[node], vip)
@@ -570,12 +600,19 @@ def test_address_guard_passes_pmtud_and_filters_icmp(
     for vip, node in holders.items():
         v6 = ipaddress.ip_address(vip).version == 6
         fam = FAMILY_LABEL[6 if v6 else 4]
-        before_pass = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="pass", reason="icmp", family=fam)
         before_deny = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="drop", reason="icmp_denied", family=fam)
 
         assert router.ping(vip)
         # Redirect (v6 137) and timestamp (v4 13) are not on the allow-list.
         router.send_icmp(vip, 137 if v6 else 13, count=3)
+        # Taken after the ping: an echo request is passed ICMP too, and
+        # would satisfy the check below without any PMTUD message.
+        before_pass = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="pass", reason="icmp", family=fam)
+        # A PMTUD message can arrive with its ICMP header outside the skb's
+        # linear area (virtio does this some of the time); the guard must
+        # pull it in rather than drop it as malformed. Any malformed drop
+        # here is that, whether or not the transfer happened to survive it.
+        before_bad = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="drop", reason="malformed", family=fam)
 
         bpf = "(icmp6 and ip6[40]==2)" if v6 else "(icmp and icmp[0]==3 and icmp[1]==4)"
         with router.capture("any", bpf, seconds=60) as cap:
@@ -587,12 +624,24 @@ def test_address_guard_passes_pmtud_and_filters_icmp(
         )
         assert cap.count() > 0, f"the router sent no PMTUD message to {vip}; the test proved nothing"
 
+        # One transfer brings only a couple of PMTUD messages, and only some
+        # arrive non-linear: 50 full-size ones (the size of an IPv6 packet
+        # too big) make one that does all but certain. A full-size packet
+        # can arrive with even its IP header outside the linear area; one
+        # the guard can't read passes uncounted -- unfiltered -- so 50
+        # full-size disallowed ones must all be counted as dropped, too.
+        router.send_icmp(vip, 2 if v6 else 3, count=50, payload=1232)
+        router.send_icmp(vip, 137 if v6 else 13, count=50, payload=1232)
         after_pass = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="pass", reason="icmp", family=fam)
+        after_bad = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="drop", reason="malformed", family=fam)
         after_deny = guard_drops(agent_metrics, topo, GUARD_PACKETS, action="drop", reason="icmp_denied", family=fam)
-        assert sum(after_pass.values()) > sum(before_pass.values()), (
-            f"no node passed the PMTUD ICMP for {vip} (holder {node}); before {before_pass}, after {after_pass}"
+        assert after_bad == before_bad, (
+            f"the guard dropped traffic to {vip} as malformed during PMTUD: before {before_bad}, after {after_bad}"
         )
-        assert_guard_dropped(before_deny, after_deny, f"disallowed ICMP to {vip}", node, min_delta=3)
+        assert sum(after_pass.values()) >= sum(before_pass.values()) + 50, (
+            f"the guard didn't pass the PMTUD ICMP for {vip} (holder {node}); before {before_pass}, after {after_pass}"
+        )
+        assert_guard_dropped(before_deny, after_deny, f"disallowed ICMP to {vip}", node, min_delta=3 + 50)
 
 
 @pytest.mark.requires("router")
@@ -623,8 +672,9 @@ def test_address_guard_monitor_mode_then_xdp(
     assert all('"event":"guardNotLoaded"' in t and '"event":"guardLoaded"' not in t for t in logs.values()), (
         "every agent started without the guard must say it didn't load it, and not load it"
     )
-    holders = guarded_holders(topo, lb_service, "guard-modes", ["IPv4"])
-    vip = next(iter(holders))
+    families = ["IPv4", "IPv6"] if topo.has_ipv6 else ["IPv4"]
+    holders = guarded_holders(topo, lb_service, "guard-modes", families,
+                              policy="RequireDualStack" if topo.has_ipv6 else None)
 
     # Enabled live: nothing is filtered until a restart, the node keeps
     # announcing, and the agent says a restart is needed.
@@ -636,9 +686,10 @@ def test_address_guard_monitor_mode_then_xdp(
         snap = agent_metrics(name)
         assert snap.get(guard.LOADED) == 0 and not guard.attached(snap), f"{name}: {guard.attached(snap)}"
         assert snap.get("purelb_address_guard_standing_down") == 0, f"{name} stood down for a guard it never loaded"
-        assert (snap.get("purelb_address_guard_unguarded_vips", reason="restart_pending") or 0) >= 1
-    assert announced_on(topo, vip), f"{vip} was withdrawn although the guard isn't loaded"
-    assert router.tcp_open(vip, 22), f"{vip}:22 filtered before the restart that loads the guard"
+        assert (snap.get("purelb_address_guard_unguarded_vips", reason="restart_pending") or 0) >= len(holders)
+    for vip in holders:
+        assert announced_on(topo, vip), f"{vip} was withdrawn although the guard isn't loaded"
+        assert router.tcp_open(vip, 22), f"{vip}:22 filtered before the restart that loads the guard"
     events = [e.message or "" for e in cluster.core.list_namespaced_event(
         cluster.purelb_namespace, field_selector="involvedObject.kind=LBNodeAgent,reason=AddressGuardRestartRequired").items]
     assert any("takes effect when lbnodeagent is restarted" in m for m in events), f"no restart Event: {events}"
@@ -669,20 +720,28 @@ def test_address_guard_monitor_mode_then_xdp(
     for name in topo.node_ips:
         snap = agent_metrics(name)
         assert snap.get(guard.RESTART_REQUIRED) == 1 and snap.get(guard.LOADED) == 1, name
+    # No LBNodeAgent configures the guard now, but status still notices the
+    # program loaded on every node.
+    status = guard.plugin_json(kube_context, "status")
+    assert any("need an lbnodeagent restart for the address guard" in w for w in status["warnings"]), status["warnings"]
 
     # Re-enabled while loaded: live, no restart.
     address_guard("monitor")
     assert all(agent_metrics(n).get(guard.RESTART_REQUIRED) == 0 for n in topo.node_ips)
-    node = wait_until(lambda: announced_on(topo, vip), timeout=45, description=f"{vip} to be announced")[0]
-
-    before = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=vip, action="would_drop")
-    assert router.tcp_open(vip, 22), f"monitor mode dropped {vip}:22"
-    after = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=vip, action="would_drop")
-    assert_guard_dropped(before, after, f"{vip}:22 as would_drop", node)
+    for vip in holders:
+        node = wait_until(lambda v=vip: announced_on(topo, v), timeout=45, description=f"{vip} to be announced")[0]
+        before = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=vip, action="would_drop")
+        assert router.tcp_open(vip, 22), f"monitor mode dropped {vip}:22"
+        after = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=vip, action="would_drop")
+        assert_guard_dropped(before, after, f"{vip}:22 as would_drop", node)
 
     address_guard("enforce", hook="xdp")
-    assert router.http_status(vip)[0] == 200
-    assert not router.tcp_open(vip, 22), f"{vip}:22 answered under the XDP hook"
+    for vip, node in holders.items():
+        assert router.http_status(vip)[0] == 200, f"{vip}:80 did not serve under the XDP hook"
+        before = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=vip, action="drop")
+        assert not router.tcp_open(vip, 22), f"{vip}:22 answered under the XDP hook"
+        after = guard_drops(agent_metrics, topo, GUARD_VIP_PACKETS, ip=vip, action="drop")
+        assert_guard_dropped(before, after, f"{vip}:22 under the XDP hook", node)
     for name in topo.node_ips:
         snap = agent_metrics(name)
         assert set(guard.attached(snap).values()) == {"xdp"}, f"{name}: {guard.attached(snap)}"
@@ -741,6 +800,8 @@ def test_address_guard_configured_interfaces(
         assert err.value.status == 422
     finally:
         cluster.delete_cr("lbnodeagent", canary)
+        # Only there if the CRD wrongly accepted it.
+        cluster.delete_cr("lbnodeagent", "guard-invalid")
         nodes.ssh(host, "sudo ip link del ag-e2e0 2>/dev/null; true", check=False)
     wait_until(lambda: set(guard.attached(agent_metrics(node))) == uplinks(host),
                timeout=60, description=f"{node} back on its uplinks")

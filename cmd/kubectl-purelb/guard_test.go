@@ -18,6 +18,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
@@ -204,4 +205,72 @@ func TestAddressGuardChecks(t *testing.T) {
 		out := messages(addressGuardChecks(excl, nodes[:1], goodDS, nil, lbnaCRDWith(true), nil))
 		assert.Contains(t, out, "WARN LBNodeAgent \"purelb-system/default\": address guard excludes eth2")
 	})
+}
+
+// inspect reports the protocols allowed where the addresses are filtered:
+// the announcing nodes for a local pool, every node for a remote one.
+func TestGuardProtocolsFor(t *testing.T) {
+	agents := decodeLBNodeAgents(lbnaListOf(
+		makeLBNA("default", guardSpec(map[string]interface{}{"allowedProtocols": []interface{}{int64(47)}}, nil)),
+		makeLBNA("edge", guardSpec(map[string]interface{}{"allowedProtocols": []interface{}{int64(50), int64(47)}},
+			map[string]interface{}{"role": "edge"})),
+	))
+	nodes := []v1.Node{
+		guardNode("node-a", "6.12.0", nil),
+		guardNode("node-b", "6.12.0", map[string]string{"role": "edge"}),
+	}
+	onA := []announcementInfo{{Node: "node-a"}}
+	assert.Equal(t, []int32{47}, guardProtocolsFor("local", onA, nodes, agents), "only the announcing node's agent")
+	assert.Equal(t, []int32{47, 50}, guardProtocolsFor(poolTypeRemote, onA, nodes, agents), "every node holds a remote address")
+	assert.Equal(t, "enforce on node-a", guardModeFor("local", onA, nodes, agents))
+}
+
+func TestHasCapability(t *testing.T) {
+	assert.False(t, hasCapability(nil, "BPF"))
+	assert.True(t, hasCapability(&v1.SecurityContext{Capabilities: &v1.Capabilities{Add: []v1.Capability{"CAP_BPF"}}}, "BPF"))
+	assert.False(t, hasCapability(&v1.SecurityContext{Capabilities: &v1.Capabilities{Add: []v1.Capability{"NET_ADMIN"}}}, "BPF"))
+	privileged := true
+	assert.True(t, hasCapability(&v1.SecurityContext{Privileged: &privileged}, "BPF"), "a privileged container has every capability")
+}
+
+func TestGuardConfigured(t *testing.T) {
+	assert.False(t, guardConfigured(nil))
+	assert.False(t, guardConfigured(decodeLBNodeAgents(lbnaListOf(makeLBNA("default", localSpec("default"))))))
+	assert.True(t, guardConfigured(decodeLBNodeAgents(lbnaListOf(
+		makeLBNA("default", localSpec("default")),
+		makeLBNA("edge", guardSpec(map[string]interface{}{}, map[string]interface{}{"role": "edge"}))))))
+}
+
+// status reads the agents while the guard is configured, and also when it
+// may have been removed since an agent started: until that agent restarts
+// the program is still loaded, and only the agent can say so.
+func TestGuardReadNeeded(t *testing.T) {
+	started := metav1.NewTime(time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC))
+	before, after := metav1.NewTime(started.Add(-time.Hour)), metav1.NewTime(started.Add(time.Minute))
+	pod := agentPod("a", "node-a")
+	pod.Status.StartTime = &started
+	pods := []v1.Pod{pod}
+	lbna := func(changed metav1.Time, guard bool) *unstructured.UnstructuredList {
+		var g map[string]interface{}
+		if guard {
+			g = map[string]interface{}{}
+		}
+		a := makeLBNA("default", guardSpec(g, nil))
+		a.SetCreationTimestamp(before)
+		a.SetManagedFields([]metav1.ManagedFieldsEntry{{Manager: "kubectl", Time: &changed}})
+		return lbnaListOf(a)
+	}
+	event := func(at metav1.Time) *v1.EventList {
+		return &v1.EventList{Items: []v1.Event{{Reason: "AddressGuardRestartRequired", LastTimestamp: at}}}
+	}
+	need := func(list *unstructured.UnstructuredList, events *v1.EventList, pods []v1.Pod) bool {
+		return guardReadNeeded(decodeLBNodeAgents(list), list, events, pods)
+	}
+
+	assert.True(t, need(lbna(before, true), nil, pods), "configured")
+	assert.False(t, need(lbna(before, false), nil, pods), "never touched since the agents started")
+	assert.True(t, need(lbna(after, false), nil, pods), "edited since an agent started: the guard may have been removed")
+	assert.True(t, need(lbna(before, false), event(after), pods), "an agent said a restart is required since")
+	assert.False(t, need(lbna(before, false), event(before), pods), "a restart since then cleared it")
+	assert.False(t, need(lbna(after, false), event(after), nil), "no agents to read")
 }

@@ -68,12 +68,17 @@ type guardNodeState struct {
 	RestartRequired bool               `json:"restartRequired"`
 	StandingDown    bool               `json:"standingDown"`
 	UnguardedVIPs   map[string]float64 `json:"unguardedVIPs,omitempty"` // reason -> VIPs, non-zero only
-	AttachErrors    float64            `json:"attachErrors"`
-	Drops           float64            `json:"drops"`
-	WouldDrops      float64            `json:"wouldDrops"`
-	TopVIP          string             `json:"topVIP,omitempty"`
-	TopVIPPackets   float64            `json:"topVIPPackets,omitempty"`
-	Error           string             `json:"error,omitempty"`
+	// FailedVIPs are, under failurePolicy closed, VIPs whose rules couldn't
+	// be written: effect (withheld, incomplete) -> VIPs, non-zero only.
+	FailedVIPs map[string]float64 `json:"failedVIPs,omitempty"`
+	// Unattached are the interfaces the guard should be on and isn't.
+	Unattached    []string `json:"unattached,omitempty"`
+	AttachErrors  float64  `json:"attachErrors"`
+	Drops         float64  `json:"drops"`
+	WouldDrops    float64  `json:"wouldDrops"`
+	TopVIP        string   `json:"topVIP,omitempty"`
+	TopVIPPackets float64  `json:"topVIPPackets,omitempty"`
+	Error         string   `json:"error,omitempty"`
 }
 
 // metricsFetcher returns one agent pod's metrics in the text exposition
@@ -140,10 +145,35 @@ func runGuard(ctx context.Context, c *clients, node string, format outputFormat)
 	}
 	states := collectGuardStates(ctx, proxyMetricsFetcher(c), agentPods, nodes, decodeLBNodeAgents(lbna))
 	if format != outputTable {
-		return printStructured(format, states)
+		if err := printStructured(format, states); err != nil {
+			return err
+		}
+	} else {
+		renderGuardTable(states)
 	}
-	renderGuardTable(states)
-	return nil
+	return noStateRead(states)
+}
+
+// guardConfigured reports whether any LBNodeAgent configures the guard.
+func guardConfigured(agents []*purelbv2.LBNodeAgent) bool {
+	for _, a := range agents {
+		if a.Spec.Local != nil && a.Spec.Local.AddressGuard != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// noStateRead fails the command when no node's state could be read --
+// forbidden, unreachable, or no agents -- so a script can tell "nothing
+// known" from a cluster whose guard reports nothing wrong.
+func noStateRead(states []guardNodeState) error {
+	for _, s := range states {
+		if s.Error == "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("could not read the address guard state from any node")
 }
 
 // proxyMetricsFetcher reads an agent's metrics through the API server's pod
@@ -183,8 +213,15 @@ func agentMetricsPort(pod v1.Pod) string {
 	return defaultAgentMetricsPort
 }
 
-// collectGuardStates reads every agent's metrics concurrently; each
-// goroutine writes only its own slot.
+// guardFetchWorkers bounds how many agents are read at once. Each read's
+// timeout starts when it is sent, not when the command starts, so a large
+// cluster takes longer but doesn't time out waiting its turn.
+const guardFetchWorkers = 32
+
+// collectGuardStates reads every node's agent's metrics, guardFetchWorkers
+// at a time; each read writes only its own slot. One row per node: during
+// a rollout a node has a terminating and a new pod, and only a running
+// pod that isn't terminating is read.
 func collectGuardStates(ctx context.Context, fetch metricsFetcher, agentPods []v1.Pod,
 	nodes *v1.NodeList, agents []*purelbv2.LBNodeAgent) []guardNodeState {
 	labels := map[string]map[string]string{}
@@ -193,21 +230,66 @@ func collectGuardStates(ctx context.Context, fetch metricsFetcher, agentPods []v
 			labels[n.Name] = n.Labels
 		}
 	}
-	states := make([]guardNodeState, len(agentPods))
-	done := make(chan struct{}, len(agentPods))
-	for i, pod := range agentPods {
+	pods := agentPerNode(agentPods)
+	states := make([]guardNodeState, len(pods))
+	work := make(chan int)
+	done := make(chan struct{})
+	for range min(guardFetchWorkers, len(pods)) {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			mode := resolveNodeConfig(agents, labels[pod.Spec.NodeName]).Guard
-			body, err := fetch(ctx, pod)
-			states[i] = guardStateFrom(pod.Spec.NodeName, mode, body, err)
+			for i := range work {
+				pod := pods[i]
+				mode := resolveNodeConfig(agents, labels[pod.Spec.NodeName]).Guard
+				if !agentReadable(pod) {
+					states[i] = guardNodeState{Node: pod.Spec.NodeName, Mode: mode, State: guardStateUnknown,
+						Error: fmt.Sprintf("lbnodeagent pod %s is %s", pod.Name, podCondition(pod))}
+					continue
+				}
+				body, err := fetch(ctx, pod)
+				states[i] = guardStateFrom(pod.Spec.NodeName, mode, body, err)
+			}
 		}()
 	}
-	for range agentPods {
+	for i := range pods {
+		work <- i
+	}
+	close(work)
+	for range min(guardFetchWorkers, len(pods)) {
 		<-done
 	}
 	sort.Slice(states, func(a, b int) bool { return states[a].Node < states[b].Node })
 	return states
+}
+
+// agentPerNode picks one agent pod per node: a readable one if there is
+// one, else any (whose row then says why it can't be read).
+func agentPerNode(agentPods []v1.Pod) []v1.Pod {
+	byNode := map[string]int{}
+	var out []v1.Pod
+	for _, p := range agentPods {
+		i, seen := byNode[p.Spec.NodeName]
+		switch {
+		case !seen:
+			byNode[p.Spec.NodeName] = len(out)
+			out = append(out, p)
+		case !agentReadable(out[i]) && agentReadable(p):
+			out[i] = p
+		}
+	}
+	return out
+}
+
+// agentReadable is a pod whose metrics can be read: running, and not on
+// its way out.
+func agentReadable(p v1.Pod) bool {
+	return p.Status.Phase == v1.PodRunning && p.DeletionTimestamp == nil
+}
+
+func podCondition(p v1.Pod) string {
+	if p.DeletionTimestamp != nil {
+		return "terminating"
+	}
+	return strings.ToLower(string(p.Status.Phase))
 }
 
 // guardStateFrom turns one agent's metrics into its guard state.
@@ -253,6 +335,20 @@ func guardStateFrom(node, mode string, body []byte, fetchErr error) guardNodeSta
 			s.UnguardedVIPs[metricLabel(m, "reason")] = v
 		}
 	}
+	for _, m := range guardMetrics(fams, "purelb_address_guard_failed_vips") {
+		if v := m.GetGauge().GetValue(); v > 0 {
+			if s.FailedVIPs == nil {
+				s.FailedVIPs = map[string]float64{}
+			}
+			s.FailedVIPs[metricLabel(m, "effect")] = v
+		}
+	}
+	for _, m := range guardMetrics(fams, "purelb_address_guard_unattached_interfaces") {
+		if m.GetGauge().GetValue() == 1 {
+			s.Unattached = append(s.Unattached, metricLabel(m, "interface"))
+		}
+	}
+	sort.Strings(s.Unattached)
 	for _, m := range guardMetrics(fams, "purelb_address_guard_attach_errors_total") {
 		s.AttachErrors += m.GetCounter().GetValue()
 	}
@@ -264,9 +360,15 @@ func guardStateFrom(node, mode string, body []byte, fetchErr error) guardNodeSta
 			s.WouldDrops += m.GetCounter().GetValue()
 		}
 	}
+	// TOP VIP is the address with the most packets counted, over every
+	// action (drop, would_drop): one series per action.
+	perVIP := map[string]float64{}
 	for _, m := range guardMetrics(fams, "purelb_address_guard_vip_packets_total") {
-		if v := m.GetCounter().GetValue(); v > s.TopVIPPackets {
-			s.TopVIP, s.TopVIPPackets = metricLabel(m, "ip"), v
+		perVIP[metricLabel(m, "ip")] += m.GetCounter().GetValue()
+	}
+	for _, ip := range sortedKeys(perVIP) {
+		if v := perVIP[ip]; v > s.TopVIPPackets {
+			s.TopVIP, s.TopVIPPackets = ip, v
 		}
 	}
 
@@ -361,8 +463,16 @@ func renderGuardTable(states []guardNodeState) {
 					s.Node, n, iface, iface)
 			}
 		}
-		if s.AttachErrors > 0 {
-			fmt.Printf("%s: %.0f attach error(s): an interface has no hook\n", s.Node, s.AttachErrors)
+		if len(s.Unattached) > 0 {
+			fmt.Printf("%s: not attached to %s: VIP traffic arriving there is not filtered (or, under failurePolicy closed, the node stands down)\n",
+				s.Node, strings.Join(s.Unattached, ", "))
+		}
+		for _, effect := range sortedKeys(s.FailedVIPs) {
+			what := map[string]string{
+				"withheld":   "not announced: their rules couldn't be written",
+				"incomplete": "filtered by rules that don't match their Services yet: a Service port may be dropped",
+			}[effect]
+			fmt.Printf("%s: %.0f VIP(s) %s (%s)\n", s.Node, s.FailedVIPs[effect], what, effect)
 		}
 	}
 	if restart {
@@ -408,7 +518,7 @@ func chainUnreported(attached map[string]string, pos map[string]int) bool {
 	return false
 }
 
-func sortedKeys(m map[string]int) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

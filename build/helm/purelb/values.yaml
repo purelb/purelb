@@ -109,8 +109,10 @@ Prometheus:
       ##       summary: PureLB instance {{ "{{ $labels.instance }}" }} down
       ##       description: Redis&trade; instance {{ "{{ $labels.instance }}" }} is down
       rules: []
-      ## Add PureLB's address guard alerts (VIPs left unfiltered, interfaces
-      ## the guard couldn't attach to) alongside any rules above.
+      ## Add PureLB's address guard alerts alongside any rules above (needs
+      ## enabled: true): a node standing down, VIPs left unfiltered,
+      ## interfaces the guard isn't attached to, VIP rules that couldn't be
+      ## written, and a restart pending after enabling or disabling it.
       addressGuardAlerts: false
 
   # k8gobgp sidecar: 7473 (k8gobgp_* controller metrics) and 7475 (gobgpd's

@@ -1292,10 +1292,13 @@ def test_address_guard_failure_policy_without_the_bpf_capability(
     pair of rollouts covers both.
     """
     address_guard("enforce")  # failurePolicy omitted: closed, the default
-    local_vip = lb_service("guard-policy-local", ["IPv4"])[0]
-    remote_vip = lb_service("guard-policy-remote", ["IPv4"],
-                            annotations={SERVICE_GROUP: remote_group()}, timeout=90)[0]
-    wait_every_node_announcing(topo, remote_vip, cluster=cluster)
+    families = ["IPv4", "IPv6"] if topo.has_ipv6 else ["IPv4"]
+    subnets = [SUBNET_V4, SUBNET_V6] if topo.has_ipv6 else [SUBNET_V4]
+    local_vips = lb_service("guard-policy-local", families)
+    remote_vips = lb_service("guard-policy-remote", families,
+                             annotations={SERVICE_GROUP: remote_group()}, timeout=90)
+    for vip in remote_vips:
+        wait_every_node_announcing(topo, vip, cluster=cluster)
     ns, ds_name = cluster.purelb_namespace, "lbnodeagent"
     ds = cluster.apps.read_namespaced_daemon_set(ds_name, ns)
     container = next(c for c in ds.spec.template.spec.containers if c.name == "lbnodeagent")
@@ -1311,19 +1314,22 @@ def test_address_guard_failure_policy_without_the_bpf_capability(
     def on_some_node(address):
         return [n for n, ip in sorted(topo.node_ips.items()) if nodes.has_address(ip, address)]
 
+    since = utcnow()
     set_caps([c for c in caps if c != "BPF"])
     try:
-        # closed: every node stands down.
+        # closed: every node stands down, and says why.
         for name in topo.node_ips:
             wait_until(lambda n=name: agent_metrics(n).get("purelb_address_guard_standing_down") == 1,
                        timeout=60, description=f"{name} to stand down")
             snap = agent_metrics(name)
             assert snap.get("purelb_address_guard_loaded") == 0
             assert snap.get("purelb_lbnodeagent_selector_state", state="guardUnavailable") == 1
-            assert snap.counter("purelb_address_guard_unguarded_vips") == 0, (
-                f"{name}: fail-closed must expose nothing, so nothing is unguarded"
-            )
-        for vip in (local_vip, remote_vip):
+        logs = cluster.component_logs("lbnodeagent", since)
+        assert len(logs) == len(topo.node_ips), f"agent pods: {sorted(logs)}"
+        for pod, text in logs.items():
+            assert '"event":"guardUnavailable"' in text, f"{pod} didn't log why the guard isn't running"
+            assert '"event":"guardStandingDown"' in text, f"{pod} didn't log that it stood down"
+        for vip in [*local_vips, *remote_vips]:
             gone = wait_until(lambda a=vip: not on_some_node(a), timeout=60,
                               description=f"{vip} withdrawn from every node")
             assert gone, f"{vip} still on {on_some_node(vip)} although every node stood down"
@@ -1334,9 +1340,10 @@ def test_address_guard_failure_policy_without_the_bpf_capability(
             # or not the address is local. That traffic is only ever the
             # Service's own.)
             assert not router.tcp_open(vip, 22), f"{vip}:22 reachable while every node stood down"
-        # The remote address is gone from the network: no node advertises it.
-        wait_until(lambda: not router.nexthops(SUBNET_V4), timeout=60,
-                   description=f"{SUBNET_V4} withdrawn from the router")
+        # The remote addresses are gone from the network: no node advertises them.
+        for subnet in subnets:
+            wait_until(lambda s=subnet: not router.nexthops(s), timeout=60,
+                       description=f"{subnet} withdrawn from the router")
         events = [e.message or "" for e in cluster.core.list_namespaced_event(
             ns, field_selector="involvedObject.kind=LBNodeAgent,reason=AddressGuardStandingDown").items]
         assert any("announces no addresses" in m for m in events), f"no stand-down Event: {events}"
@@ -1346,16 +1353,22 @@ def test_address_guard_failure_policy_without_the_bpf_capability(
         for name in topo.node_ips:
             wait_until(lambda n=name: agent_metrics(n).get("purelb_address_guard_standing_down") == 0,
                        timeout=60, description=f"{name} to stop standing down")
-        wait_until(lambda: router.http_status(local_vip, timeout=4)[0] == 200, timeout=90,
-                   description=f"{local_vip} to serve again under failurePolicy open")
-        wait_every_node_announcing(topo, remote_vip, cluster=cluster)
-        assert router.http_status(remote_vip, timeout=4)[0] == 200
-        holders = on_some_node(local_vip)
-        assert holders, f"{local_vip} not announced under failurePolicy open"
-        assert agent_metrics(holders[0]).counter("purelb_address_guard_unguarded_vips", reason="not_loaded") > 0
+        for vip in local_vips:
+            wait_until(lambda v=vip: router.http_status(v, timeout=4)[0] == 200, timeout=90,
+                       description=f"{vip} to serve again under failurePolicy open")
+            holders = on_some_node(vip)
+            assert holders, f"{vip} not announced under failurePolicy open"
+            assert agent_metrics(holders[0]).counter("purelb_address_guard_unguarded_vips", reason="not_loaded") > 0
+        for vip in remote_vips:
+            wait_every_node_announcing(topo, vip, cluster=cluster)
+            assert router.http_status(vip, timeout=4)[0] == 200
+        for subnet in subnets:
+            wait_until(lambda s=subnet: router.nexthops(s), timeout=60,
+                       description=f"{subnet} advertised again under failurePolicy open")
     finally:
         set_caps(caps)
     address_guard("enforce")
-    wait_until(lambda: router.http_status(local_vip, timeout=4)[0] == 200, timeout=120,
-               description=f"{local_vip} to serve with the guard working again")
-    assert not router.tcp_open(local_vip, 22)
+    for vip in local_vips:
+        wait_until(lambda v=vip: router.http_status(v, timeout=4)[0] == 200, timeout=120,
+                   description=f"{vip} to serve with the guard working again")
+        assert not router.tcp_open(vip, 22)

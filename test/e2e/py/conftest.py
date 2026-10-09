@@ -236,7 +236,7 @@ def topo(cluster: Cluster, node_ips: Dict[str, str]) -> topology.Topology:
 
 
 @pytest.fixture(scope="session")
-def lbnodeagent(cluster: Cluster, node_ips: Dict[str, str], agent_metrics) -> str:
+def lbnodeagent(cluster: Cluster, node_ips: Dict[str, str], agent_metrics) -> Iterator[str]:
     """The default LBNodeAgent, in local mode on the detected interface.
 
     Applied rather than assumed. reset-test-cluster.sh restores one, but a
@@ -247,19 +247,41 @@ def lbnodeagent(cluster: Cluster, node_ips: Dict[str, str], agent_metrics) -> st
     Under --address-guard the guard must be running before the first test,
     and its program is loaded only at agent startup: this waits for it,
     rolling the agents once if they started without it.
+
+    Afterwards the address guard is put back as it was before the run --
+    whatever the tests or --address-guard did to it -- and the agents are
+    rolled if that leaves any of them needing a restart, so a run leaves
+    no node with restart_required set (and no RestartRequired alert).
     """
+    local = {"localInterface": "default", "dummyInterface": "kube-lb0"}
+    before = cluster.get_cr("lbnodeagent", "default", cluster.purelb_namespace) or {}
+    prior_guard = ((before.get("spec") or {}).get("local") or {}).get("addressGuard")
     cluster.apply_cr(
         {
             "apiVersion": "purelb.io/v2",
             "kind": "LBNodeAgent",
             "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
-            "spec": {"local": guard.local_spec({"localInterface": "default", "dummyInterface": "kube-lb0"})},
+            "spec": {"local": guard.local_spec(local)},
         }
     )
     session = guard.session_spec()
     if session is not None:
         settle_guard(cluster, node_ips, agent_metrics, session.get("hook", "tcx"))
-    return "default"
+    yield "default"
+
+    body_local = {**local, "addressGuard": prior_guard} if prior_guard is not None else local
+    cluster.apply_cr({
+        "apiVersion": "purelb.io/v2",
+        "kind": "LBNodeAgent",
+        "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
+        "spec": {"local": body_local},
+    })
+    hook = (prior_guard or {}).get("hook", "tcx") if prior_guard is not None else None
+    settle_guard(cluster, node_ips, agent_metrics, hook)
+    if any(guard.restart_required(agent_metrics(n)) for n in node_ips):
+        guard.restart_agents(cluster, node_ips)
+    wait_until(lambda: not any(guard.restart_required(agent_metrics(n)) for n in node_ips), timeout=120,
+               description="no node to need an lbnodeagent restart for the address guard after the run")
 
 
 @pytest.fixture(scope="session")
