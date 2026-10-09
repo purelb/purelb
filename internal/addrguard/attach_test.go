@@ -284,13 +284,28 @@ func TestAttacherInNetns(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, netlink.LinkSetUp(tun))
 	// And a link the guard can't parse (netlink monitor) is refused, and
-	// reported unattached, rather than read wrongly.
-	require.NoError(t, netlink.LinkAdd(&netlink.GenericLink{LinkAttrs: netlink.LinkAttrs{Name: "agn0"}, LinkType: "nlmon"}))
-	a.spec.Extra = []string{"agv0", "agd0", "agx0", "agt0", "agn0"}
+	// reported unattached, rather than read wrongly. nlmon is a module some
+	// kernels don't ship (CI's Azure kernel among them); the refusal itself
+	// is TestLinkLayer's, and reporting an unattached link is checked with
+	// the broken attacher below.
+	extra := []string{"agv0", "agd0", "agx0", "agt0"}
+	err = netlink.LinkAdd(&netlink.GenericLink{LinkAttrs: netlink.LinkAttrs{Name: "agn0"}, LinkType: "nlmon"})
+	nlmon := err == nil
+	if !nlmon {
+		require.ErrorIs(t, err, unix.EOPNOTSUPP, "creating an nlmon link")
+		t.Logf("no nlmon on this kernel (%v): skipping the unsupported-link step", err)
+	} else {
+		extra = append(extra, "agn0")
+	}
+	a.spec.Extra = extra
 	ok, why := a.reconcileLinks(false)
-	assert.False(t, ok)
-	assert.Contains(t, why, "agn0")
-	assert.Equal(t, 1.0, testutil.ToFloat64(unattachedVec.WithLabelValues("agn0")))
+	if nlmon {
+		assert.False(t, ok)
+		assert.Contains(t, why, "agn0")
+		assert.Equal(t, 1.0, testutil.ToFloat64(unattachedVec.WithLabelValues("agn0")))
+	} else {
+		assert.True(t, ok, why)
+	}
 	require.Contains(t, a.attached, tun.Attrs().Index)
 	assert.True(t, a.attached[tun.Attrs().Index].l3, "tun gets the program for links without a link-layer header")
 	_, err = unix.Write(tunFd, ipv4(client4, vip4, protoUDP, v4opts{}, l4(81)))
@@ -302,8 +317,9 @@ func TestAttacherInNetns(t *testing.T) {
 	a.spec.Extra = []string{"agv0", "agd0"}
 	a.reconcileLinks(false)
 	for _, name := range []string{"agn0", "agx0"} {
-		l, _ := netlink.LinkByName(name)
-		require.NoError(t, netlink.LinkDel(l))
+		if l, err := netlink.LinkByName(name); err == nil {
+			require.NoError(t, netlink.LinkDel(l))
+		}
 	}
 
 	// An interface the guard can't attach to is reported as unattached for
