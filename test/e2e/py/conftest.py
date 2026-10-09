@@ -66,6 +66,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                      choices=["enforce", "monitor"], metavar="MODE",
                      help="run the whole suite with the address guard on (enforce by "
                           "default), so every flow doubles as a regression test under it")
+    parser.addoption("--address-guard-hook", action="store", default=None,
+                     choices=["tcx", "xdp"], metavar="HOOK",
+                     help="with --address-guard: the hook the guard attaches with "
+                          "(tcx, the guard's default, or xdp)")
     parser.addoption("--report", action="store", default=None, metavar="PATH",
                      help="write a plain-text report of every test, its result "
                           "and any failure detail, to PATH")
@@ -77,7 +81,10 @@ _CONFIG: Dict[str, object] = {}
 def pytest_configure(config: pytest.Config) -> None:
     _CONFIG["config"] = config
     mode = config.getoption("--address-guard")
-    guard.configure({"mode": mode} if mode else None)
+    hook = config.getoption("--address-guard-hook")
+    if hook and not mode:
+        raise pytest.UsageError("--address-guard-hook needs --address-guard")
+    guard.configure({"mode": mode, **({"hook": hook} if hook else {})} if mode else None)
     if config.getoption("--show-tests") and config.option.verbose < 1:
         config.option.verbose = 1
     config.addinivalue_line(
