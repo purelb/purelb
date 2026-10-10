@@ -138,6 +138,21 @@ struct {
 	__type(value, __u64);
 } ag_unread SEC(".maps");
 
+/* Where load() puts what is read after a packet has matched a VIP: one
+ * entry, per CPU. See load() for why these aren't on the stack. */
+struct scratch {
+	__u32 qsrc[4];
+	__be16 ports[2];
+	__u8 h[4];
+	__u8 type;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct scratch);
+} ag_scratch SEC(".maps");
 
 /* Verdict returned by the shared parser. */
 enum verdict { V_PASS = 0, V_DROP = 1 };
@@ -147,19 +162,25 @@ enum verdict { V_PASS = 0, V_DROP = 1 };
  * outside the linear area reads like any other, with no pull and no
  * allocation; they fail only when the packet is shorter than off + len.
  *
- * The buffers read after a packet has matched a VIP (extension headers,
- * ICMP type, ports) are zero-initialised by their callers. Linux 6.17's
- * verifier, for a loader without CAP_PERFMON (the agent has CAP_BPF and
- * CAP_NET_ADMIN only), wants a speculation barrier after a helper writes
- * into stack the program hasn't written yet, and then rejects the load
- * because a helper call is a jump ("verifier bug: speculation barrier after
- * jump instruction"). Writing the buffer first avoids that. Which loads
- * trigger it depends on which paths the verifier explores speculatively,
- * so on the code the compiler generates as well as on the kernel: with the
- * pinned clang 19, the buffers on the path every packet takes (VLAN tag,
- * IP header) don't, and are left alone -- zeroing them costs a barrier per
- * packet. A compiler or kernel change can move it: bpf-test loads the
- * program on CI's kernel. */
+ * Where to is on the stack matters. For a loader without CAP_PERFMON (the
+ * agent has CAP_BPF and CAP_NET_ADMIN only) the verifier mitigates
+ * Spectre v4 on the stack: an instruction writing a stack slot that
+ * doesn't already hold plain data is marked for a speculation barrier, and
+ * a helper writing into the stack marks its call. Linux 6.17, 6.18 before
+ * 6.18.14 and 6.19 before 6.19.4 then reject the whole load if that call
+ * is reached on a path the verifier explores speculatively ("verifier bug:
+ * speculation barrier after jump instruction"; fixed by cd3b6a3d49f8).
+ * Zeroing the buffer first doesn't help -- an aligned zeroing store isn't
+ * plain data either, and costs a barrier of its own on every packet.
+ *
+ * So everything read after a packet has matched a VIP (extension headers,
+ * ICMP type and quote, ports), the deepest code and the likeliest to be
+ * reached speculatively, goes to the per-CPU ag_scratch map, which the
+ * mitigation doesn't cover. The reads every packet makes (VLAN tag, IP
+ * header, XDP's ethertype) stay on the stack: on the generated code they
+ * aren't reached speculatively, and moving them costs every packet a map
+ * lookup. A program change can alter that: make bpf-vm-test loads the
+ * program on an affected kernel with the agent's capabilities. */
 static __always_inline int load(void *ctx, int xdp, __u32 off, void *to, __u32 len)
 {
 	if (xdp)
@@ -252,7 +273,8 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off, __
 {
 	struct vip_counters *vc;
 	struct port_key pk;
-	__u32 fam, l4off;
+	struct scratch *s;
+	__u32 fam, l4off, zero = 0;
 	__u8 l4proto;
 
 	/* Skip in-band VLAN tags: each is [TCI][encapsulated ethertype]. With
@@ -292,6 +314,9 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off, __
 		l4proto = ip.protocol;
 		__builtin_memset(&pk, 0, sizeof(pk));
 		pk.addr[0] = ip.daddr;
+		s = bpf_map_lookup_elem(&ag_scratch, &zero);
+		if (!s) /* never: key 0 of a one-entry array */
+			return decide(vc, 0, R_MALFORMED, fam);
 	} else if (proto == ETH_P_IPV6_BE) {
 		struct ipv6hdr ip6;
 
@@ -303,24 +328,27 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off, __
 		fam = FAM_V6;
 		if (ip6.version != 6)
 			return decide(vc, 0, R_MALFORMED, fam);
+		s = bpf_map_lookup_elem(&ag_scratch, &zero);
+		if (!s) /* never: key 0 of a one-entry array */
+			return decide(vc, 0, R_MALFORMED, fam);
 		l4off = off + sizeof(ip6);
 		l4proto = ip6.nexthdr;
 
 #pragma unroll
 		for (int i = 0; i < MAX_EXT_HDRS; i++) {
 			if (l4proto == IPPROTO_FRAGMENT_) {
-				__u8 h[4] = {}; /* next header, reserved, offset+flags */
+				__u8 *h = s->h; /* next header, reserved, offset+flags */
 
-				if (load(ctx, xdp, l4off, h, sizeof(h)) < 0)
+				if (load(ctx, xdp, l4off, h, 4) < 0)
 					return decide(vc, 0, R_MALFORMED, fam);
 				if ((((__u16)h[2] << 8) | h[3]) & 0xfff8)
 					return decide(vc, 1, R_FRAGMENT, fam);
 				l4proto = h[0];
 				l4off += 8;
 			} else if (is_ext_hdr(l4proto)) {
-				__u8 h[2] = {}; /* next header, length in 8-octet units - 1 */
+				__u8 *h = s->h; /* next header, length in 8-octet units - 1 */
 
-				if (load(ctx, xdp, l4off, h, sizeof(h)) < 0)
+				if (load(ctx, xdp, l4off, h, 2) < 0)
 					return decide(vc, 0, R_MALFORMED, fam);
 				l4proto = h[0];
 				l4off += ((__u32)h[1] + 1) * 8;
@@ -341,13 +369,11 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off, __
 
 	if ((fam == FAM_V4 && l4proto == IPPROTO_ICMP) ||
 	    (fam == FAM_V6 && l4proto == IPPROTO_ICMPV6_)) {
-		__u8 type = 0;
-
-		if (load(ctx, xdp, l4off, &type, sizeof(type)) < 0)
+		if (load(ctx, xdp, l4off, &s->type, sizeof(s->type)) < 0)
 			return decide(vc, 0, R_MALFORMED, fam);
-		if (!icmp_allowed(type, fam))
+		if (!icmp_allowed(s->type, fam))
 			return decide(vc, 0, R_ICMP_DENIED, fam);
-		if (icmp_error(type, fam)) {
+		if (icmp_error(s->type, fam)) {
 			/* An error quotes, after the 8-byte ICMP header, the packet
 			 * that caused it, and the kernel acts on the quote: path
 			 * MTU for the quoted destination, the socket matching the
@@ -355,7 +381,7 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off, __
 			 * quotes a packet from this VIP; any other source is
 			 * someone else's traffic -- the node's own, say -- and the
 			 * error is forged. */
-			__u32 qsrc[4] = {};
+			__u32 *qsrc = s->qsrc;
 
 			if (fam == FAM_V4) {
 				if (load(ctx, xdp, l4off + 8 + 12, qsrc, 4) < 0)
@@ -374,12 +400,12 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off, __
 	}
 
 	if (l4proto == IPPROTO_TCP || l4proto == IPPROTO_UDP || l4proto == IPPROTO_SCTP) {
-		__be16 ports[2] = {}; /* source, destination: same layout in all three */
+		__be16 *ports = s->ports; /* source, destination: same layout in all three */
 
 		/* A first fragment too short to carry the ports cannot be
 		 * checked, and the rest of the datagram would pass as non-first
 		 * fragments: drop it. */
-		if (load(ctx, xdp, l4off, ports, sizeof(ports)) < 0)
+		if (load(ctx, xdp, l4off, ports, sizeof(s->ports)) < 0)
 			return decide(vc, 0, R_MALFORMED, fam);
 		pk.port = ports[1];
 		pk.proto = l4proto;

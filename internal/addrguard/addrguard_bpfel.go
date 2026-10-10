@@ -34,6 +34,15 @@ type addrguardPortKey struct {
 	Family uint8
 }
 
+type addrguardScratch struct {
+	_     structs.HostLayout
+	Qsrc  [4]uint32
+	Ports [2]uint16
+	H     [4]uint8
+	Type  uint8
+	_     [3]byte
+}
+
 type addrguardVipCounters struct {
 	_         structs.HostLayout
 	Drop      uint64
@@ -48,6 +57,7 @@ const (
 	addrguardMapAgPorts   = "ag_ports"
 	addrguardMapAgProtos  = "ag_protos"
 	addrguardMapAgReasons = "ag_reasons"
+	addrguardMapAgScratch = "ag_scratch"
 	addrguardMapAgUnread  = "ag_unread"
 	addrguardMapAgVip4    = "ag_vip4"
 	addrguardMapAgVip6    = "ag_vip6"
@@ -111,6 +121,7 @@ type addrguardMapSpecs struct {
 	AgPorts   *ebpf.MapSpec `ebpf:"ag_ports"`
 	AgProtos  *ebpf.MapSpec `ebpf:"ag_protos"`
 	AgReasons *ebpf.MapSpec `ebpf:"ag_reasons"`
+	AgScratch *ebpf.MapSpec `ebpf:"ag_scratch"`
 	AgUnread  *ebpf.MapSpec `ebpf:"ag_unread"`
 	AgVip4    *ebpf.MapSpec `ebpf:"ag_vip4"`
 	AgVip6    *ebpf.MapSpec `ebpf:"ag_vip6"`
@@ -146,6 +157,7 @@ type addrguardMaps struct {
 	AgPorts   *ebpf.Map `ebpf:"ag_ports"`
 	AgProtos  *ebpf.Map `ebpf:"ag_protos"`
 	AgReasons *ebpf.Map `ebpf:"ag_reasons"`
+	AgScratch *ebpf.Map `ebpf:"ag_scratch"`
 	AgUnread  *ebpf.Map `ebpf:"ag_unread"`
 	AgVip4    *ebpf.Map `ebpf:"ag_vip4"`
 	AgVip6    *ebpf.Map `ebpf:"ag_vip6"`
@@ -157,6 +169,7 @@ func (m *addrguardMaps) Close() error {
 		m.AgPorts,
 		m.AgProtos,
 		m.AgReasons,
+		m.AgScratch,
 		m.AgUnread,
 		m.AgVip4,
 		m.AgVip6,
