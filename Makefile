@@ -123,6 +123,10 @@ bpf:  ## Regenerate the address guard eBPF object (needs Docker)
 	  -v $(CURDIR):/src -w /src/internal/addrguard \
 	  $(BPF_BUILDER) go generate ./...
 
+.PHONY: bpf-vm-test
+bpf-vm-test: generate ## Run the address guard BPF tests on a kernel matrix in VMs (needs qemu, KVM)
+	hack/bpf-vm/test.sh
+
 crd: $(CRDS) ## Generate CRDs from golang api structs
 $(CRDS) &: pkg/apis/purelb/v2/*.go
 	$(CONTROLLER_GEN) crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
