@@ -36,9 +36,127 @@ jobs:
       - name: Run tests
         run: make check
 
+  # The address guard's eBPF object is generated and committed. Rebuild it
+  # in the same pinned image (hack/bpf-builder) and fail on any byte
+  # difference, so the committed binary always matches its source.
+  bpf-generate:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Regenerate the eBPF object
+        run: make bpf
+
+      - name: Fail if it differs from the committed object
+        run: git diff --exit-code -- internal/addrguard/
+
+  # Load the address guard into the runner's kernel and run crafted packets
+  # through it, with exactly the lbnodeagent container's BPF-relevant
+  # capabilities (CAP_BPF + CAP_NET_ADMIN, no CAP_PERFMON) so the verifier
+  # applies the same rules it will in the pod. ADDRGUARD_BPF_TESTS=required
+  # turns a skip into a failure: this job can't pass without running them.
+  bpf-test:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # pkg/generated is not checked in, and internal/addrguard imports
+      # internal/k8s, which needs it.
+      - name: Generate Kubernetes client code
+        run: make generate
+
+      - name: Build the test binary
+        run: go test -c -o addrguard.test ./internal/addrguard/
+
+      # The verifier's behaviour depends on the kernel: record which one ran.
+      - name: Run the BPF tests with the agent's capabilities
+        run: |
+          uname -r
+          sudo env ADDRGUARD_BPF_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin -- \
+            ./addrguard.test -test.v -test.skip TestAttacherInNetns
+
+      # Attaching to real links, in a throwaway network namespace so the
+      # runner's own interfaces are untouched. Creating the namespace needs
+      # CAP_SYS_ADMIN on top of the agent's capabilities, and sending the
+      # test's frames (an AF_PACKET socket) CAP_NET_RAW. CAP_SYS_ADMIN counts
+      # as CAP_PERFMON to the verifier: loading exactly as the agent does is
+      # the step above's.
+      - name: Run the attacher test in a network namespace
+        run: |
+          set -o pipefail
+          sudo env ADDRGUARD_BPF_TESTS=required ADDRGUARD_NETNS_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
+            ./addrguard.test -test.v -test.run '^TestAttacherInNetns$' | tee netns.out
+          # A renamed test would otherwise pass as "no tests to run".
+          grep -q -- '--- PASS: TestAttacherInNetns' netns.out
+
+  # The same tests on a matrix of distribution kernels, each in a QEMU VM:
+  # the verifier differs between kernels, and the runner's tests one.
+  bpf-vm-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 cpio
+
+      # The kernel packages are pinned in kernels.sh.
+      - name: Cache kernels
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/purelb-bpf-vm
+          key: bpf-vm-${{ hashFiles('hack/bpf-vm/kernels.sh') }}
+
+      - name: Generate Kubernetes client code
+        run: make generate
+
+      - name: Run the BPF tests on each kernel
+        run: hack/bpf-vm/test.sh
+
   build-images:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, bpf-generate, bpf-test, bpf-vm-test]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     timeout-minutes: 30
     permissions:

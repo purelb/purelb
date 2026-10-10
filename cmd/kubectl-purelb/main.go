@@ -15,7 +15,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -56,6 +55,7 @@ func main() {
 		newElectionCmd(flags),
 		newBGPCmd(flags),
 		newInspectCmd(flags),
+		newGuardCmd(flags),
 		newValidateCmd(flags),
 		newVersionCmd(flags),
 		newGoBGPCmd(flags),
@@ -63,8 +63,8 @@ func main() {
 		newDashboardCmd(flags),
 	)
 
+	// cobra prints the error (and, for an unknown command, the --help hint).
 	if err := root.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }

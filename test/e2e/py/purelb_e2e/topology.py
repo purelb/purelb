@@ -159,6 +159,9 @@ class Topology:
     node_ips: Dict[str, str]
     node_iface: Dict[str, str]
     secondaries: List[SecondaryInterface] = field(default_factory=list)
+    # node -> a global IPv6 address of its own on the InternalIP's
+    # interface, for nodes that have one.
+    node_ips6: Dict[str, str] = field(default_factory=dict)
 
     @property
     def dual_homed(self) -> Optional[SecondaryInterface]:
@@ -209,6 +212,7 @@ def discover(node_ips: Dict[str, str]) -> Topology:
     """
     by_v4: Dict[str, Subnet] = {}
     node_iface: Dict[str, str] = {}
+    node_ips6: Dict[str, str] = {}
 
     for node, ip in sorted(node_ips.items()):
         out = ssh(ip, "ip -br addr show")
@@ -219,6 +223,9 @@ def discover(node_ips: Dict[str, str]) -> Topology:
                 f"`ip -br addr show` said:\n{out}"
             )
         node_iface[node] = iface
+        own6 = _own_global_v6(ssh(ip, f"ip -6 -o addr show dev {iface} scope global -deprecated"))
+        if own6:
+            node_ips6[node] = own6
         network = str(ipaddress.ip_interface(cidr).network)
         subnet = by_v4.setdefault(network, Subnet(v4=network))
         subnet.nodes.append(node)
@@ -236,6 +243,7 @@ def discover(node_ips: Dict[str, str]) -> Topology:
         subnets=[by_v4[k] for k in sorted(by_v4)],
         node_ips=dict(node_ips),
         node_iface=node_iface,
+        node_ips6=node_ips6,
     )
     topo.secondaries = _discover_secondaries(node_ips, node_iface)
     return topo
@@ -305,6 +313,19 @@ def _iface_carrying(brief: str, ip: str):
             if candidate.ip == want:
                 return iface, tok
     return None, None
+
+
+def _own_global_v6(out: str) -> Optional[str]:
+    """The first address in `ip -6 -o addr show ... -deprecated` output.
+
+    PureLB adds its IPv6 VIPs deprecated, so they're filtered out there:
+    what is left is the node's own.
+    """
+    for line in out.splitlines():
+        parts = line.split()
+        if "inet6" in parts and parts.index("inet6") + 1 < len(parts):
+            return str(ipaddress.ip_interface(parts[parts.index("inet6") + 1]).ip)
+    return None
 
 
 def _global_v6_on(brief: str, iface: str) -> Optional[str]:

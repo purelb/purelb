@@ -10,3 +10,4 @@ PureLB is configured using Custom Resources in the `purelb-system` namespace.
 * [LBNodeAgent](lbnodeagent) -- Configure node agent behavior: interface selection, GARP, and address lifetimes.
 * [BGP Routing](bgp) -- Configure k8gobgp for BGP route advertisement of remote addresses.
 * [External IPAM](external-ipam) -- Delegate address allocation to an external IPAM system (Netbox, Infoblox, or your own) through a sidecar.
+* [Address Guard](address-guard) -- Let only Service ports reach LoadBalancer addresses, so host services aren't exposed on them.

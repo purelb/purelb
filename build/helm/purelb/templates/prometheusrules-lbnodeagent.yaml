@@ -31,10 +31,85 @@ metadata:
   namespace: {{ .Release.Namespace }}
   {{- end }}
 spec:
-  {{- with .Values.Prometheus.lbnodeagent.prometheusRules.rules }}
+  {{- $rules := .Values.Prometheus.lbnodeagent.prometheusRules.rules }}
+  {{- $guard := .Values.Prometheus.lbnodeagent.prometheusRules.addressGuardAlerts }}
+  {{- if or $rules $guard }}
   groups:
+    {{- with $rules }}
     - name: purelb
       rules: {{- tpl (toYaml .) $ | nindent 8 }}
+    {{- end }}
+    {{- if $guard }}
+    - name: purelb-address-guard
+      rules:
+        - alert: PurelbAddressGuardUnguardedVIPs
+          expr: purelb_address_guard_unguarded_vips{reason!="restart_pending"} > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: PureLB address guard is not filtering VIPs on {{`{{ $labels.instance }}`}}
+            description: >-
+              {{`{{ $value }}`}} VIP(s) on {{`{{ $labels.instance }}`}} are not filtered
+              ({{`{{ $labels.reason }}`}}), so host services are reachable on them.
+              not_loaded: the guard is configured but its program isn't running
+              (kernel older than 6.6, or the BPF capability is missing);
+              map_write_failed: a VIP's rules could not be written.
+              Only failurePolicy open announces unfiltered VIPs. A guard enabled
+              after lbnodeagent started (restart_pending) is
+              PurelbAddressGuardRestartRequired.
+        - alert: PurelbAddressGuardStandingDown
+          expr: purelb_address_guard_standing_down == 1
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: PureLB node {{`{{ $labels.instance }}`}} announces no addresses
+            description: >-
+              The address guard on {{`{{ $labels.instance }}`}} is configured with
+              failurePolicy closed and isn't working, so the node has stood down:
+              other nodes carry its addresses. If every node stands down, the
+              addresses are unreachable. The node's Warning Events and
+              guardStandingDown log say why.
+        - alert: PurelbAddressGuardAttachErrors
+          expr: purelb_address_guard_unattached_interfaces == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: PureLB address guard is not attached to {{`{{ $labels.interface }}`}} on {{`{{ $labels.instance }}`}}
+            description: >-
+              The address guard could not attach to {{`{{ $labels.interface }}`}} on
+              {{`{{ $labels.instance }}`}}. Under failurePolicy open, VIP traffic arriving
+              on that interface is not filtered; under closed, the node stands down
+              (PurelbAddressGuardStandingDown). The guardAttachFailed log says why.
+        - alert: PurelbAddressGuardFailedVIPs
+          expr: purelb_address_guard_failed_vips > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: PureLB address guard could not write VIP rules on {{`{{ $labels.instance }}`}}
+            description: >-
+              {{`{{ $value }}`}} VIP(s) on {{`{{ $labels.instance }}`}} have rules the address
+              guard could not write to its maps (a map full, or out of memory).
+              withheld: not announced from this node, since they can't be filtered;
+              incomplete: filtered by rules that don't match their Services yet,
+              so a Service port may be dropped. The guardMapWriteFailed log names them.
+        - alert: PurelbAddressGuardRestartRequired
+          expr: purelb_address_guard_restart_required == 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: PureLB address guard change on {{`{{ $labels.instance }}`}} needs an lbnodeagent restart
+            description: >-
+              The address guard was enabled or disabled after lbnodeagent started
+              on {{`{{ $labels.instance }}`}}. The guard program is loaded only at startup: an
+              enabled guard filters nothing, and a disabled one stays loaded,
+              until lbnodeagent is restarted (kubectl -n {{ .Release.Namespace }} rollout
+              restart daemonset/lbnodeagent).
+    {{- end }}
   {{- end }}
 
 {{- end }}

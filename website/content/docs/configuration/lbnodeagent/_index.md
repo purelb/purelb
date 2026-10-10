@@ -249,6 +249,10 @@ spec:
         noPrefixRoute: false
 ```
 
+## Address Guard
+
+`addressGuard` lets only Service ports reach the LoadBalancer addresses on the nodes an LBNodeAgent selects, so host services such as sshd and the kubelet are not exposed on them. It is off unless configured. See [Address Guard]({{< relref "/docs/configuration/address-guard" >}}).
+
 ## Complete Field Reference
 
 See the [CRD Reference]({{< relref "/docs/reference/crd-reference#lbnodeagent" >}}) for the complete field-by-field specification.

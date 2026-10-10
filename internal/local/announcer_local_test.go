@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -701,6 +702,82 @@ func TestAddressOptions_SkipDAD(t *testing.T) {
 	assert.True(t, opts.SkipDAD, "SkipDAD should be true when explicitly set")
 	assert.Equal(t, 300, opts.ValidLft, "other fields should be unaffected")
 	assert.True(t, opts.NoPrefixRoute, "other fields should be unaffected")
+}
+
+// A permanent deprecated address must reach netlink with a non-zero valid
+// lifetime: netlink sends IFA_CACHEINFO only when a lifetime is non-zero,
+// and without it the kernel adds the address permanent and *preferred* --
+// the bug that left validLifetime:0 IPv6 VIPs and every kube-lb0 IPv6 VIP
+// eligible as a source address.
+func TestNetlinkAddrDeprecated(t *testing.T) {
+	ipNet := net.IPNet{IP: net.ParseIP("2001:db8::1"), Mask: net.CIDRMask(64, 128)}
+
+	tests := []struct {
+		name                     string
+		opts                     AddressOptions
+		wantValid, wantPreferred int
+	}{
+		{"permanent deprecated", AddressOptions{Deprecated: true}, infiniteLifetime, 0},
+		{"finite deprecated", AddressOptions{ValidLft: 300, PreferedLft: 300, Deprecated: true}, 300, 0},
+		{"permanent preferred", AddressOptions{}, 0, 0},
+		{"finite preferred", AddressOptions{ValidLft: 300, PreferedLft: 150}, 300, 150},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, err := netlinkAddr(ipNet, tt.opts)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantValid, addr.ValidLft)
+			assert.Equal(t, tt.wantPreferred, addr.PreferedLft)
+		})
+	}
+
+	addr, err := netlinkAddr(ipNet, AddressOptions{Deprecated: true, NoPrefixRoute: true, SkipDAD: true})
+	require.NoError(t, err)
+	assert.Equal(t, 0x200|0x02, addr.Flags, "deprecation must not disturb the other flags")
+}
+
+// Deprecating a permanent address must not make it look finite to the
+// renewal scheduler: the infinite lifetime lives only in the netlink
+// address, never in the options renewal reads.
+func TestScheduleRenewal_PermanentDeprecated(t *testing.T) {
+	a := &announcer{logger: log.NewNopLogger()}
+	lbIPNet := net.IPNet{IP: net.ParseIP("2001:db8::1"), Mask: net.CIDRMask(64, 128)}
+
+	a.scheduleRenewal("default/test-svc", lbIPNet, nil, AddressOptions{Deprecated: true})
+
+	_, exists := a.addressRenewals.Load(renewalKey("default/test-svc", "2001:db8::1"))
+	assert.False(t, exists, "a permanent deprecated address needs no renewal")
+}
+
+// What the kernel actually records for a permanent deprecated IPv6 address.
+// Needs CAP_NET_ADMIN; skipped without it. The dummy is named distinctively
+// and removed on cleanup so a root run leaves nothing behind.
+func TestDeprecatedAddressKernelFlags(t *testing.T) {
+	const tmpDummy = "purelb-dep0" // IFNAMSIZ: at most 15 characters
+	const ifaPermanent, ifaDeprecated = 0x80, 0x20
+
+	link, err := addDummyInterface(tmpDummy)
+	if errors.Is(err, syscall.EPERM) {
+		t.Skipf("needs CAP_NET_ADMIN: %v", err)
+	}
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = removeInterface(link) })
+
+	ipNet := net.IPNet{IP: net.ParseIP("2001:db8:dead::1"), Mask: net.CIDRMask(64, 128)}
+	require.NoError(t, addNetworkWithOptions(ipNet, link, AddressOptions{Deprecated: true, SkipDAD: true}))
+
+	addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
+	require.NoError(t, err)
+	for _, a := range addrs {
+		if !a.IP.Equal(ipNet.IP) {
+			continue
+		}
+		assert.NotZero(t, a.Flags&ifaPermanent, "address must be permanent, flags=%#x", a.Flags)
+		assert.NotZero(t, a.Flags&ifaDeprecated, "address must be deprecated, flags=%#x", a.Flags)
+		assert.Equal(t, 0, a.PreferedLft)
+		return
+	}
+	t.Fatalf("%s not found on %s", ipNet.IP, tmpDummy)
 }
 
 func TestSkipDADFromServiceAnnotation(t *testing.T) {
@@ -1566,4 +1643,74 @@ func TestDeleteBalancerForgetsOnlyUnreferencedIP(t *testing.T) {
 	a.svcIngresses["default/three"] = []v1.LoadBalancerIngress{{IP: "192.0.2.6"}}
 	a.WithdrawAll()
 	assert.Empty(t, fe.forgot, "shutdown must not forget keys")
+}
+
+// A node whose fail-closed address guard isn't working announces nothing,
+// even with a perfectly good config: every address is withdrawn and the
+// slot cleared, exactly as for a deselected node. When the guard works
+// again, the same delivery announces normally (not asserted here: that
+// path needs netlink).
+func TestSetBalancerWithdrawsWhileGuardStandsDown(t *testing.T) {
+	for _, tc := range []struct{ ip, slotKey string }{
+		{"192.0.2.1", "purelb.io/announcing-IPv4"},
+		{"2001:db8::1", "purelb.io/announcing-IPv6"},
+	} {
+		t.Run(tc.ip, func(t *testing.T) {
+			a := withdrawalTestAnnouncer(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "default"})
+			down, withheld := true, false
+			a.standingDown = func() bool { return down }
+			a.withheld = func(net.IP) bool { return withheld }
+			// The reason is what tells this path apart: a TEST-NET address has
+			// no local interface, so without the stand-down the announcer would
+			// still withdraw it -- as noLocalInterface.
+			var logs strings.Builder
+			a.logger = log.NewLogfmtLogger(&logs)
+			withdrawals := func(reason string) int {
+				return strings.Count(logs.String(), "event=withdrawAddress ip="+tc.ip+" service=default/test-svc reason="+reason)
+			}
+
+			svc := lbSvc(tc.ip)
+			svc.Namespace = "default"
+			svc.Name = "test-svc"
+			svc.Annotations = map[string]string{tc.slotKey: "node-a,eth0," + tc.ip}
+			announceForTest(a, "default/test-svc", tc.ip)
+
+			assert.NoError(t, a.SetBalancer(svc, nil))
+
+			key := renewalKey("default/test-svc", tc.ip)
+			_, announced := a.announced.Load(key)
+			assert.False(t, announced, "announced entry must be removed")
+			_, timerAlive := a.addressRenewals.Load(key)
+			assert.False(t, timerAlive, "renewal timer must be cancelled")
+			assert.Empty(t, svc.Annotations[tc.slotKey], "announce slot must be cleared")
+			assert.Equal(t, 1, withdrawals("addressGuardUnavailable"),
+				"withdrawn because the guard stands down, not for some other reason")
+
+			// A stand-down can last indefinitely, and every sync lands here
+			// again: the address is withdrawn once, not on every sync.
+			assert.NoError(t, a.SetBalancer(svc, nil))
+			assert.Equal(t, 1, withdrawals("addressGuardUnavailable"), "withdrawn once per stand-down")
+
+			// Back up, but the guard couldn't write this address's rules:
+			// withheld, withdrawn once for that reason.
+			down, withheld = false, true
+			svc.Annotations[tc.slotKey] = "node-a,eth0," + tc.ip
+			assert.NoError(t, a.SetBalancer(svc, nil))
+			assert.NoError(t, a.SetBalancer(svc, nil))
+			assert.Equal(t, 1, withdrawals("addressGuardWithheld"))
+			assert.Equal(t, 1, strings.Count(logs.String(), "event=addressGuardWithheld"), "logged once")
+			assert.Empty(t, svc.Annotations[tc.slotKey], "a withheld address's slot is cleared")
+
+			// Written: back on the normal path (what it does with a TEST-NET
+			// address depends on the host's routes, so only its effect on
+			// what follows is checked), and a later stand-down withdraws
+			// again.
+			withheld = false
+			_ = a.SetBalancer(svc, nil)
+			withheld = true
+			assert.NoError(t, a.SetBalancer(svc, nil))
+			assert.Equal(t, 2, withdrawals("addressGuardWithheld"),
+				"withheld again after the normal path: withdrawn again, not skipped as already done")
+		})
+	}
 }

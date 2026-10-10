@@ -40,7 +40,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pytest
 
-from purelb_e2e import TEST_NAMESPACE, topology
+from purelb_e2e import TEST_NAMESPACE, guard, topology
 from purelb_e2e.cluster import Cluster
 
 NAMESPACE = TEST_NAMESPACE
@@ -277,7 +277,7 @@ def test_a_node_selector_matching_nothing_is_reported(
             "metadata": {"name": "selects-nothing", "namespace": cluster.purelb_namespace},
             "spec": {
                 "nodeSelector": {"matchLabels": {"purelb-nonexistent-label": "nope"}},
-                "local": {"localInterface": "default", "dummyInterface": "kube-lb0"},
+                "local": guard.local_spec({"localInterface": "default", "dummyInterface": "kube-lb0"}),
             },
         }
     )

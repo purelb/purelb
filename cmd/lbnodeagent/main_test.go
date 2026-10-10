@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -108,7 +109,7 @@ func newHarness(t *testing.T, node *corev1.Node, ret k8s.SyncState) *harness {
 		selector: &atomic.Pointer[election.InterfaceSelector]{},
 	}
 	h.deliver = newConfigChanged(log.NewNopLogger(),
-		func() nodeClient { return h.client }, h.ctrl, testNode, h.selector)
+		func() nodeClient { return h.client }, h.ctrl, testNode, h.selector, &selectorReporter{})
 	return h
 }
 
@@ -117,7 +118,7 @@ func newHarness(t *testing.T, node *corev1.Node, ret k8s.SyncState) *harness {
 // reported every state at once.
 func assertSelectorState(t *testing.T, want string) {
 	t.Helper()
-	for _, state := range []string{"default", "configured", "deselected", "invalid"} {
+	for _, state := range selectorStates {
 		expected := 0.0
 		if state == want {
 			expected = 1.0
@@ -291,7 +292,7 @@ func TestConfigChangedInvalidLocalInterfaceRegex(t *testing.T) {
 }
 
 func TestRecordSelectorState(t *testing.T) {
-	for _, state := range []string{"default", "configured", "deselected", "invalid"} {
+	for _, state := range selectorStates {
 		t.Run(state, func(t *testing.T) {
 			recordSelectorState(state)
 			assertSelectorState(t, state)
@@ -300,7 +301,7 @@ func TestRecordSelectorState(t *testing.T) {
 
 	t.Run("unknown state clears every label", func(t *testing.T) {
 		recordSelectorState("not-a-state")
-		for _, state := range []string{"default", "configured", "deselected", "invalid"} {
+		for _, state := range selectorStates {
 			assert.Zero(t, ptu.ToFloat64(selectorState.WithLabelValues(state)))
 		}
 	})
@@ -332,4 +333,75 @@ func TestParseDurationEnv(t *testing.T) {
 		t.Setenv(key, "10")
 		assert.Equal(t, def, parseDurationEnv(key, def))
 	})
+}
+
+// A fail-closed address guard that isn't working overrides whatever the
+// config delivery decided: the node reports guardUnavailable, and goes back
+// to the delivery's state once the guard works.
+func TestSelectorReporterFoldsInTheGuard(t *testing.T) {
+	down := false
+	r := &selectorReporter{standingDown: func() bool { return down }}
+
+	assert.Equal(t, "configured", r.set("configured"))
+	assertSelectorState(t, "configured")
+
+	down = true
+	assert.Equal(t, "guardUnavailable", r.publish())
+	assertSelectorState(t, "guardUnavailable")
+	assert.Equal(t, "guardUnavailable", r.set("deselected"), "a config delivery doesn't hide the stand-down")
+
+	down = false
+	assert.Equal(t, "deselected", r.publish(), "the last delivery's state returns")
+	assertSelectorState(t, "deselected")
+}
+
+// Two goroutines publish, each writing several series. A publish whose
+// inputs change while it writes writes again, so the last write is current.
+func TestSelectorReporterRepublishesWhenItsInputsChange(t *testing.T) {
+	calls := 0
+	// Standing down when the first publish reads it, no longer by the time
+	// it has written: the attacher's own publish of the change already ran.
+	r := &selectorReporter{standingDown: func() bool { calls++; return calls == 1 }}
+	configured := "configured"
+	r.base.Store(&configured)
+	assert.Equal(t, "configured", r.publish())
+	assertSelectorState(t, "configured")
+}
+
+// The startup read decides whether to load the guard program: the same
+// resolution as a config delivery, retried while the API isn't answering.
+func TestGuardEnabledAtStartup(t *testing.T) {
+	guarded := []*purelbv2.LBNodeAgent{{Spec: purelbv2.LBNodeAgentSpec{Local: &purelbv2.LBNodeAgentLocalSpec{
+		AddressGuard: &purelbv2.AddressGuardConfig{}}}}}
+	labels := func(context.Context) (map[string]string, error) { return nil, nil }
+
+	failures := 1
+	flaky := func(context.Context) ([]*purelbv2.LBNodeAgent, error) {
+		if failures > 0 {
+			failures--
+			return nil, errors.New("connection refused")
+		}
+		return guarded, nil
+	}
+	enabled, err := guardEnabledAtStartup(log.NewNopLogger(), flaky, labels, time.Second, time.Millisecond, nil)
+	require.NoError(t, err)
+	assert.True(t, enabled, "retried past the failure")
+
+	none := func(context.Context) ([]*purelbv2.LBNodeAgent, error) { return nil, nil }
+	enabled, err = guardEnabledAtStartup(log.NewNopLogger(), none, labels, time.Second, time.Millisecond, nil)
+	require.NoError(t, err)
+	assert.False(t, enabled, "no LBNodeAgent: nothing to load")
+
+	down := func(context.Context) ([]*purelbv2.LBNodeAgent, error) { return nil, errors.New("connection refused") }
+	_, err = guardEnabledAtStartup(log.NewNopLogger(), down, labels, 20*time.Millisecond, time.Millisecond, nil)
+	assert.ErrorContains(t, err, "listing LBNodeAgents: connection refused", "gives up after the timeout")
+
+	// A SIGTERM while retrying stops the wait, rather than sitting out the
+	// timeout.
+	stop := make(chan struct{})
+	close(stop)
+	start := time.Now()
+	_, err = guardEnabledAtStartup(log.NewNopLogger(), down, labels, time.Minute, time.Minute, stop)
+	assert.ErrorContains(t, err, "stopped")
+	assert.Less(t, time.Since(start), 5*time.Second)
 }

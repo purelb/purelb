@@ -109,6 +109,11 @@ Prometheus:
       ##       summary: PureLB instance {{ "{{ $labels.instance }}" }} down
       ##       description: Redis&trade; instance {{ "{{ $labels.instance }}" }} is down
       rules: []
+      ## Add PureLB's address guard alerts alongside any rules above (needs
+      ## enabled: true): a node standing down, VIPs left unfiltered,
+      ## interfaces the guard isn't attached to, VIP rules that couldn't be
+      ## written, and a restart pending after enabling or disabling it.
+      addressGuardAlerts: false
 
   # k8gobgp sidecar: 7473 (k8gobgp_* controller metrics) and 7475 (gobgpd's
   # own bgp_* metrics). Requires gobgp.enabled and Prometheus Operator.
@@ -223,6 +228,21 @@ lbnodeagent:
   #   count: 3
   #   interval: 500ms
   #   initialDelay: 100ms
+  # Optional address guard: drop traffic to a VIP unless it is for one of the
+  # Service's ports, so host services (sshd, the kubelet) aren't exposed on
+  # VIPs. Needs kernel 6.6+ and the BPF capability below. Start in monitor
+  # mode to see what enforce would block. Absent means disabled.
+  # See https://purelb.io/docs/configuration/address-guard/
+  # The guard's program is loaded only when lbnodeagent starts with it
+  # configured: after adding or removing addressGuard, restart lbnodeagent.
+  # addressGuard:
+  #   mode: monitor            # enforce | monitor
+  #   hook: tcx                # tcx | xdp
+  #   failurePolicy: closed    # closed: a node whose guard isn't working announces
+  #                            #   nothing; open: it announces unfiltered
+  #   allowedProtocols: []     # e.g. [47] to let GRE reach VIPs
+  #   extraInterfaces: []      # links to guard beyond the automatic set
+  #   excludeInterfaces: []    # links NOT to guard (VIP traffic there is unfiltered)
   containerSecurityContext:
     runAsUser: 0
     runAsGroup: 0
@@ -230,9 +250,12 @@ lbnodeagent:
     appArmorProfile:
       type: Unconfined
     capabilities:
+      # BPF is for the address guard. If you override this list, keep it,
+      # or the guard (when configured) can't load and VIPs stay unfiltered.
       add:
       - NET_ADMIN
       - NET_RAW
+      - BPF
       drop:
       - ALL
     readOnlyRootFilesystem: false
@@ -290,7 +313,7 @@ gobgp:
 
   image:
     repository: ghcr.io/purelb/k8gobgp
-    tag: "0.2.7"
+    tag: "0.2.8"
     pullPolicy: IfNotPresent
 
   containerSecurityContext:

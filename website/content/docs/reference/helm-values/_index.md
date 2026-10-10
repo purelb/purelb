@@ -47,11 +47,12 @@ Value | Type | Default | Description
 `lbnodeagent.localInterface` | string | `"default"` | Interface for local address announcement
 `lbnodeagent.dummyInterface` | string | `"kube-lb0"` | Dummy interface for remote addresses
 `lbnodeagent.garpConfig` | object | (not set) | GARP configuration: `enabled`, `count`, `interval`, `initialDelay`
+`lbnodeagent.addressGuard` | object | (not set) | [Address guard](/docs/configuration/address-guard/): `mode`, `hook`, `failurePolicy`, `allowedProtocols`, `extraInterfaces`, `excludeInterfaces`. Not set means off
 `lbnodeagent.containerSecurityContext` | object | (see below) | Container security context
 `lbnodeagent.tolerations` | []object | `[]` | Pod tolerations
 `lbnodeagent.nodeSelector` | object | | Node selector labels
 
-Default lbnodeagent security context: `runAsUser: 0`, `capabilities: [NET_ADMIN, NET_RAW]`, `readOnlyRootFilesystem: false`.
+Default lbnodeagent security context: `runAsUser: 0`, `capabilities: [NET_ADMIN, NET_RAW, BPF]`, `readOnlyRootFilesystem: false`. `BPF` is for the address guard: if you override `containerSecurityContext`, keep it, or a configured guard can't load and VIPs are not filtered.
 
 ## Allocator
 
@@ -69,7 +70,7 @@ Value | Type | Default | Description
 ------|------|---------|------------
 `gobgp.enabled` | bool | `true` | Enable k8gobgp BGP sidecar in the lbnodeagent DaemonSet
 `gobgp.image.repository` | string | `ghcr.io/purelb/k8gobgp` | k8gobgp container image
-`gobgp.image.tag` | string | `"0.2.7"` | k8gobgp image tag
+`gobgp.image.tag` | string | `"0.2.8"` | k8gobgp image tag
 `gobgp.image.pullPolicy` | string | `IfNotPresent` | Image pull policy
 `gobgp.containerSecurityContext` | object | (see below) | Container security context
 `gobgp.resources.requests.cpu` | string | `250m` | CPU request
@@ -94,6 +95,7 @@ Value | Type | Default | Description
 `Prometheus.lbnodeagent.serviceMonitor.extraLabels` | object | `{}` | Additional labels on ServiceMonitor
 `Prometheus.lbnodeagent.prometheusRules.enabled` | bool | `false` | Create PrometheusRules for lbnodeagent
 `Prometheus.lbnodeagent.prometheusRules.rules` | []object | `[]` | Alert rules
+`Prometheus.lbnodeagent.prometheusRules.addressGuardAlerts` | bool | `false` | Add the address guard alerts (`PurelbAddressGuardStandingDown`, `PurelbAddressGuardUnguardedVIPs`, `PurelbAddressGuardAttachErrors`, `PurelbAddressGuardFailedVIPs`, `PurelbAddressGuardRestartRequired`) to the lbnodeagent PrometheusRules. Needs `prometheusRules.enabled` too
 `Prometheus.gobgp.serviceMonitor.enabled` | bool | `false` | Create a ServiceMonitor for the k8gobgp sidecar: port 7473 (`k8gobgp_*`) and 7475 (gobgpd's `bgp_*`). Also creates the headless k8gobgp metrics Service. Requires `gobgp.enabled`
 `Prometheus.gobgp.serviceMonitor.extraLabels` | object | `{}` | Additional labels on the ServiceMonitor
 `Prometheus.gobgp.serviceMonitor.interval` | string | `30s` | Scrape interval for both endpoints. gobgpd caches its collector for 15s, so faster scraping only replays the cache

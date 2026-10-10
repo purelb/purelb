@@ -174,6 +174,8 @@ Field | Type | Required | Description
 `subnet` | string | Yes | CIDR of the network containing the pool (e.g., `192.168.1.0/24`). All pool addresses must be within this subnet.
 `aggregation` | string | No | Controls the address mask. `default` uses the subnet mask. A value like `/32` or `/128` creates host routes.
 
+One address in each prefix an address is added with is never handed out, because the kernel makes it special when it adds an address with that prefix: the IPv4 broadcast address (the last one, for prefixes of /30 and shorter) and the IPv6 subnet-router anycast address (the first one, for prefixes of /126 and shorter). The prefix is the `subnet`'s, or a remote pool's `aggregation`. So a pool `192.168.1.240-192.168.1.255` in subnet `192.168.1.0/24` hands out `.240` to `.254`, and a remote pool aggregated to `/28` skips the last address of every `/28` block. Requesting one with `purelb.io/addresses` fails with an explanation.
+
 ### Singular vs Array Fields
 
 For convenience, you can use singular fields when you have one pool per family:

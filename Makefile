@@ -9,8 +9,8 @@ COMMANDS = $(shell find cmd -maxdepth 1 -mindepth 1 -type d)
 NETBOX_USER_TOKEN = no-op
 NETBOX_BASE_URL = http://192.168.1.40:30080/
 GOBGP_IMAGE     ?= ghcr.io/purelb/k8gobgp
-GOBGP_TAG       ?= v0.2.7
-GOBGP_IMAGE_TAG ?= 0.2.7
+GOBGP_TAG       ?= v0.2.8
+GOBGP_IMAGE_TAG ?= 0.2.8
 # Where fetch-gobgp-crd writes the CRDs; check-deps points it at a temp dir.
 GOBGP_CRD_DIR   ?= deployments/components/gobgp
 CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml
@@ -40,7 +40,7 @@ help: ## Display help message
 all: check crd image ## Build it all!
 
 .PHONY: check
-check: generate check-deps check-helm-rbac-source check-gofmt ## Run "short" tests + bundled-dep consistency check
+check: generate check-deps check-helm-rbac-source check-helm-render check-gofmt ## Run "short" tests + bundled-dep consistency check
 	go vet ./...
 	go test -race -short ./...
 
@@ -108,6 +108,24 @@ proto:  ## Regenerate sidecar IPAM gRPC stubs (needs protoc on PATH)
 	  --go_out=. --go_opt=module=purelb.io \
 	  --go-grpc_out=. --go-grpc_opt=module=purelb.io \
 	  api/ipam/v1/ipam.proto
+
+# The address guard eBPF object. Like `proto`, not part of `generate`/
+# `check`: the generated .go/.o are committed, and the bpf-generate CI job
+# rebuilds them in the same pinned image and fails on any byte difference.
+# Needs Docker. Runs as the invoking user so the outputs aren't root-owned.
+BPF_BUILDER := purelb-bpf-builder:local
+.PHONY: bpf
+bpf:  ## Regenerate the address guard eBPF object (needs Docker)
+	docker build -q -t $(BPF_BUILDER) hack/bpf-builder >/dev/null
+	docker run --rm --user $$(id -u):$$(id -g) \
+	  -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOTOOLCHAIN=local \
+	  -e GOMODCACHE=/gomodcache -v $$(go env GOMODCACHE):/gomodcache \
+	  -v $(CURDIR):/src -w /src/internal/addrguard \
+	  $(BPF_BUILDER) go generate ./...
+
+.PHONY: bpf-vm-test
+bpf-vm-test: generate ## Run the address guard BPF tests on a kernel matrix in VMs (needs qemu, KVM)
+	hack/bpf-vm/test.sh
 
 crd: $(CRDS) ## Generate CRDs from golang api structs
 $(CRDS) &: pkg/apis/purelb/v2/*.go
@@ -193,6 +211,10 @@ fetch-gobgp-crd:  ## Fetch CRDs from k8gobgp ${GOBGP_TAG} release (writes 1 file
 	  exit 1
 	fi
 	echo "OK: extracted $$IN CRD(s) from k8gobgp ${GOBGP_TAG}"
+
+.PHONY: check-helm-render
+check-helm-render:  ## Render the chart's address guard pieces and check them
+	HELM="$(HELM)" hack/check-helm-render.sh
 
 .PHONY: check-helm-rbac-source
 check-helm-rbac-source:  ## Verify Helm RBAC template injects rules from kustomize source

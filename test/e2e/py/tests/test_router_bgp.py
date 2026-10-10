@@ -838,7 +838,7 @@ def test_gobgp_reports_no_collection_or_connection_errors(
     family gobgpd can't read (bgp_rib_paths) is a gathering error.
 
     The k8gobgp counters are labelled and only exported once incremented;
-    their names were checked against k8gobgp v0.2.7's controllers/metrics.go.
+    their names were checked against k8gobgp v0.2.8's controllers/metrics.go.
     promhttp exports the gathering counter from the start, so it must exist.
     """
     for node in sorted(topo.node_ips):

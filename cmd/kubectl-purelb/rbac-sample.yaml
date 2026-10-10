@@ -1,11 +1,26 @@
-# Sample ClusterRole for kubectl-purelb plugin users.
-# This provides read-only access to all resources the plugin queries.
-# No pod exec required — all BGP data comes from BGPNodeStatus CRDs.
+# Sample RBAC for kubectl-purelb plugin users.
+#
+# The ClusterRole is read-only access to the resources the plugin queries.
+# No pod exec required -- all BGP data comes from BGPNodeStatus CRDs.
+#
+# The Role, in the PureLB namespace only, adds get on pods/proxy: the
+# address guard's live state (`guard`, and the guard part of `status`) is
+# read from each lbnodeagent's metrics through the API server's pod proxy.
+# That is more than read-only. pods/proxy lets its holder send an HTTP GET
+# to ANY port of any pod in the namespace, and lbnodeagent runs with
+# hostNetwork, so its pod IP is the node's IP: any HTTP service on a node's
+# address that the API server can reach. Bind it only to users who should
+# have that; without it, the plugin reports the live state as unavailable
+# and everything else works.
 #
 # Usage:
 #   kubectl apply -f rbac-sample.yaml
 #   kubectl create clusterrolebinding purelb-viewer \
 #     --clusterrole=purelb:plugin-viewer \
+#     --user=<your-user>
+#   # optional: the address guard's live state
+#   kubectl -n purelb-system create rolebinding purelb-viewer-metrics \
+#     --role=purelb:plugin-metrics \
 #     --user=<your-user>
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -38,9 +53,35 @@ rules:
   - servicegroups
   - lbnodeagents
   verbs: [get, list, watch]
+# Address guard checks in `validate`: the lbnodeagent capabilities and
+# whether the installed LBNodeAgent CRD knows addressGuard. Without these,
+# validate reports "unable to check" instead of failing.
+- apiGroups: ["apps"]
+  resources:
+  - daemonsets
+  verbs: [get, list]
+- apiGroups: ["apiextensions.k8s.io"]
+  resources:
+  - customresourcedefinitions
+  verbs: [get]
 # BGP CRDs
 - apiGroups: ["bgp.purelb.io"]
   resources:
   - configs
   - bgpnodestatuses
   verbs: [get, list, watch]
+---
+# The address guard's live state: see the header. Namespaced, so it reaches
+# only PureLB's own pods.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: purelb:plugin-metrics
+  namespace: purelb-system
+  labels:
+    app: purelb
+rules:
+- apiGroups: [""]
+  resources:
+  - pods/proxy
+  verbs: [get]

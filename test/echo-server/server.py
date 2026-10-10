@@ -127,6 +127,17 @@ class H(http.server.BaseHTTPRequestHandler):
             v = (SELF + "\n").encode()
             self.send_response(200); self.send_header("Content-Length", str(len(v)))
             self.end_headers(); self.wfile.write(v); return
+        # A body of n bytes (capped at 1 MiB), for tests that need segments
+        # larger than a path MTU -- the address guard's PMTUD test.
+        # Uncounted, like the probes above.
+        if route == "/bytes":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                size = min(max(int(q.get("n", ["0"])[0]), 0), 1 << 20)
+            except ValueError:
+                size = 0
+            self.send_response(200); self.send_header("Content-Length", str(size))
+            self.end_headers(); self.wfile.write(b"x" * size); return
         n = next_count()
         peer = self.connection.getpeername()   # kernel: packet SOURCE addr/port
         loc  = self.connection.getsockname()   # kernel: local (pod-side) addr/port

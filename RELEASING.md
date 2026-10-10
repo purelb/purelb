@@ -88,7 +88,7 @@ release worth picking up.
       - `BUILDING.md`: example tag in the CI/CD section (cosmetic; bump anyway)
       - `website/content/docs/installation/manifest/_index.md`
       - `website/content/docs/installation/helm/_index.md`
-      - `website/content/docs/migration/_index.md` (NOTE: leave `v0.15.x`
+      - `website/content/docs/migration/v1-to-v2/_index.md` (NOTE: leave `v0.15.x`
         and other "migrating FROM" historical references alone — only bump
         current-version strings)
 - [ ] Re-run the grep; expected hit count = 0.
@@ -169,6 +169,21 @@ kubectl get bgpnodestatus -A                                   # one row per nod
                                                                # writing the CRD that the
                                                                # plugin reads)
 
+# Address guard: loads, attaches, and validates (monitor mode drops nothing).
+# On kind/k3d the node's uplink is a veth holding the default route, which
+# the attach rule covers.
+kubectl -n purelb-system patch lbnodeagent default --type merge \
+  -p '{"spec":{"local":{"addressGuard":{"mode":"monitor"}}}}'
+# Loaded only at agent startup: restart the agents to load it.
+kubectl -n purelb-system rollout restart daemonset/lbnodeagent
+kubectl -n purelb-system rollout status daemonset/lbnodeagent
+sleep 10
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' | cut -d' ' -f1)
+curl -s http://$NODE_IP:7472/metrics | grep '^purelb_address_guard_loaded'    # 1
+curl -s http://$NODE_IP:7472/metrics | grep '^purelb_address_guard_attached'  # at least one interface
+curl -s http://$NODE_IP:7472/metrics | grep '^purelb_address_guard_restart_required'  # 0
+kubectl purelb validate | grep -i guard                        # PASS, no WARN/FAIL
+
 # Both k8gobgp metrics endpoints answer, and gobgpd bound its listener
 # (a failed bind is only logged; the pod stays Ready):
 NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' | cut -d' ' -f1)
@@ -217,6 +232,21 @@ kubectl apply -f deployments/samples/sample-nginx-lb.yaml
 kubectl get svc nginx                                          # EXTERNAL-IP populated
 kubectl purelb status                                          # no errors
 kubectl get bgpnodestatus -A                                   # one row per node
+
+# Address guard: loads, attaches, and validates (monitor mode drops nothing).
+# On kind/k3d the node's uplink is a veth holding the default route, which
+# the attach rule covers.
+kubectl -n purelb-system patch lbnodeagent default --type merge \
+  -p '{"spec":{"local":{"addressGuard":{"mode":"monitor"}}}}'
+# Loaded only at agent startup: restart the agents to load it.
+kubectl -n purelb-system rollout restart daemonset/lbnodeagent
+kubectl -n purelb-system rollout status daemonset/lbnodeagent
+sleep 10
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' | cut -d' ' -f1)
+curl -s http://$NODE_IP:7472/metrics | grep '^purelb_address_guard_loaded'    # 1
+curl -s http://$NODE_IP:7472/metrics | grep '^purelb_address_guard_attached'  # at least one interface
+curl -s http://$NODE_IP:7472/metrics | grep '^purelb_address_guard_restart_required'  # 0
+kubectl purelb validate | grep -i guard                        # PASS, no WARN/FAIL
 ```
 
 Tear down:

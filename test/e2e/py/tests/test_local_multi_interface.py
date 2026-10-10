@@ -46,7 +46,7 @@ from typing import Dict, Iterator, List
 
 import pytest
 
-from purelb_e2e import TEST_NAMESPACE, metrics, nodes, topology
+from purelb_e2e import TEST_NAMESPACE, guard, metrics, nodes, topology
 from purelb_e2e.cluster import Cluster
 from purelb_e2e.wait import wait_until, wait_while
 
@@ -99,7 +99,7 @@ def scoped_agent(cluster: Cluster, topo: topology.Topology):
                 "metadata": {"name": name, "namespace": cluster.purelb_namespace},
                 "spec": {
                     "nodeSelector": {"matchLabels": {LABEL: "multi-if"}},
-                    "local": {
+                    "local": guard.local_spec({
                         "localInterface": "default",
                         "dummyInterface": "kube-lb0",
                         "interfaces": interfaces,
@@ -110,7 +110,7 @@ def scoped_agent(cluster: Cluster, topo: topology.Topology):
                                 "preferredLifetime": SHORT_LIFETIME,
                             }
                         },
-                    },
+                    }),
                 },
             }
         )
@@ -163,6 +163,8 @@ def selector_probe(cluster: Cluster, topo: topology.Topology):
     def make(name: str, node: str, spec: Dict[str, object]) -> str:
         cluster.label_node(node, LABEL, "multi-if")
         labelled.append(node)
+        if "local" in spec:
+            spec = {**spec, "local": guard.local_spec(spec["local"])}
         cluster.apply_cr(
             {
                 "apiVersion": "purelb.io/v2",
@@ -533,7 +535,7 @@ def test_a_deselected_node_advertises_nothing(
                 "apiVersion": "purelb.io/v2",
                 "kind": "LBNodeAgent",
                 "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
-                "spec": {"local": {"localInterface": "default", "dummyInterface": "kube-lb0"}},
+                "spec": {"local": guard.local_spec({"localInterface": "default", "dummyInterface": "kube-lb0"})},
             }
         )
 
@@ -599,7 +601,7 @@ def test_an_agent_with_no_local_spec_leaves_the_node_on_default_detection(
                 "apiVersion": "purelb.io/v2",
                 "kind": "LBNodeAgent",
                 "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
-                "spec": {"local": {"localInterface": "default", "dummyInterface": "kube-lb0"}},
+                "spec": {"local": guard.local_spec({"localInterface": "default", "dummyInterface": "kube-lb0"})},
             }
         )
 
@@ -689,11 +691,11 @@ def test_affinity_placed_address_announces_itself(
             "kind": "LBNodeAgent",
             "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
             "spec": {
-                "local": {
+                "local": guard.local_spec({
                     "localInterface": "default",
                     "dummyInterface": "kube-lb0",
                     "garpConfig": {"enabled": True},
-                }
+                })
             },
         }
     )
@@ -728,7 +730,7 @@ def test_affinity_placed_address_announces_itself(
                 "apiVersion": "purelb.io/v2",
                 "kind": "LBNodeAgent",
                 "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
-                "spec": {"local": {"localInterface": "default", "dummyInterface": "kube-lb0"}},
+                "spec": {"local": guard.local_spec({"localInterface": "default", "dummyInterface": "kube-lb0"})},
             }
         )
 

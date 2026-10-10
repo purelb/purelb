@@ -59,6 +59,8 @@ kubectl purelb inspect <namespace>/<service>
 
 3. **No pods running.** Local pools use `externalTrafficPolicy: Cluster` so all nodes forward traffic. If traffic still doesn't reach pods, check that kube-proxy is healthy.
 
+4. **The address guard is dropping the port.** With the [address guard]({{< relref "/docs/configuration/address-guard" >}}) enforcing, only the Service's own ports reach the address. `kubectl purelb inspect <namespace>/<service>` lists what it allows on each address; a client using any other port (or a NodePort on the VIP) is dropped by design. `purelb_address_guard_vip_packets_total{ip="<vip>"}` on the node's `:7472/metrics` shows the drops. Switch to `mode: monitor` to confirm: the traffic then flows and is counted as `would_drop`. A node can also have **stood down**: with the guard's default `failurePolicy: closed`, a node whose guard isn't working announces nothing. Conversely, if the guard seems to do nothing, it may be waiting for an agent restart: it is loaded only when the agent starts. `kubectl purelb guard` shows both, per node (`STANDING DOWN`, `RESTART REQUIRED`), along with where the guard is attached and whether another program runs before it; see [Checking it with kubectl purelb]({{< relref "/docs/configuration/address-guard#checking-it-with-kubectl-purelb" >}}). `kubectl purelb validate` says why a guard can't run, and the LBNodeAgent's Warning Events say what happened.
+
 ## Address Not Reachable (Remote Pool)
 
 The Service has an external IP on kube-lb0 but clients cannot reach it.
@@ -87,6 +89,8 @@ kubectl purelb bgp dataplane --check
 3. **Upstream router not accepting routes.** Some routers reject `/32` routes by default. Check the router's BGP RIB.
 
 4. **ECMP not enabled.** The upstream router must have ECMP enabled to use multiple next-hops.
+
+5. **The address guard is dropping the port.** With the [address guard]({{< relref "/docs/configuration/address-guard" >}}) enforcing, only the Service's own ports reach the address. `kubectl purelb inspect <namespace>/<service>` lists what it allows on each address; a client using any other port (or a NodePort on the VIP) is dropped by design. `purelb_address_guard_vip_packets_total{ip="<vip>"}` on the node's `:7472/metrics` shows the drops. Switch to `mode: monitor` to confirm: the traffic then flows and is counted as `would_drop`. A node can also have **stood down**: with the guard's default `failurePolicy: closed`, a node whose guard isn't working announces nothing. Conversely, if the guard seems to do nothing, it may be waiting for an agent restart: it is loaded only when the agent starts. `kubectl purelb guard` shows both, per node (`STANDING DOWN`, `RESTART REQUIRED`), along with where the guard is attached and whether another program runs before it; see [Checking it with kubectl purelb]({{< relref "/docs/configuration/address-guard#checking-it-with-kubectl-purelb" >}}). `kubectl purelb validate` says why a guard can't run, and the LBNodeAgent's Warning Events say what happened.
 
 ## Election Issues
 

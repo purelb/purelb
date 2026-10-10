@@ -17,6 +17,7 @@ package election
 import (
 	"context"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -389,6 +390,42 @@ func TestCreateOrUpdateLease(t *testing.T) {
 	// Update the lease (should work without error)
 	err = e.createOrUpdateLease()
 	require.NoError(t, err)
+}
+
+// RenewNow publishes a change in this node's subnets at once -- a node
+// whose address guard stands down advertises none -- instead of at the next
+// renewal interval. Repeated requests while one is pending never block.
+func TestRenewNow(t *testing.T) {
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test-node", UID: "test-node-uid"}}
+	client := fake.NewSimpleClientset(node)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	var subnets atomic.Pointer[[]string]
+	subnets.Store(&[]string{"192.168.1.0/24", "2001:db8::/64"})
+	e, err := New(Config{
+		Namespace: "purelb", NodeName: "test-node", Client: client, StopCh: stopCh,
+		LeaseDuration: time.Hour, RenewDeadline: time.Minute, RetryPeriod: time.Second,
+		GetLocalSubnets: func() ([]string, error) { return *subnets.Load(), nil },
+	})
+	require.NoError(t, err)
+	require.NoError(t, e.createOrUpdateLease())
+	e.renewTicker = time.NewTicker(time.Hour) // the interval never fires here
+	defer e.renewTicker.Stop()
+	go e.renewLoop()
+	defer e.cancel()
+
+	annotation := func() string {
+		lease, err := client.CoordinationV1().Leases("purelb").Get(context.Background(), "purelb-node-test-node", metav1.GetOptions{})
+		require.NoError(t, err)
+		return lease.Annotations[purelbv2.SubnetsAnnotation]
+	}
+	assert.Equal(t, "192.168.1.0/24,2001:db8::/64", annotation())
+
+	subnets.Store(&[]string{})
+	e.RenewNow()
+	e.RenewNow() // already pending: must not block
+	assert.Eventually(t, func() bool { return annotation() == "" }, 5*time.Second, 10*time.Millisecond,
+		"the lease advertises no subnets without waiting for the interval")
 }
 
 // TestDeleteOurLease tests lease deletion

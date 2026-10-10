@@ -142,6 +142,57 @@ make check           # go vet + race tests (also regenerates client stubs)
 make test-coverage   # coverage profile plus a per-package summary
 ```
 
+### Address guard eBPF tests
+
+The tests that load the real eBPF program and run packets through it need
+`CAP_BPF` and `CAP_NET_ADMIN`, so they skip under `make check`. Run them with
+exactly the agent's capabilities, as CI's `bpf-test` job does:
+
+```shell
+go test -c -o addrguard.test ./internal/addrguard/
+sudo env ADDRGUARD_BPF_TESTS=required ADDRGUARD_BPF_BUDGET=enforce \
+  setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin -- \
+  ./addrguard.test -test.v -test.skip TestAttacherInNetns
+# The attacher test also needs CAP_SYS_ADMIN, to create a network namespace,
+# and CAP_NET_RAW, to send its frames:
+sudo env ADDRGUARD_BPF_TESTS=required ADDRGUARD_NETNS_TESTS=required \
+  setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
+  ./addrguard.test -test.v -test.run TestAttacherInNetns
+```
+
+`ADDRGUARD_BPF_TESTS=required` turns a skip into a failure.
+`ADDRGUARD_BPF_BUDGET=enforce` makes `TestBPFNonVIPBudget` assert the 50 ns
+per-packet budget on the path non-VIP traffic takes; without it the test only
+logs the cost. Enforce it on hardware you know. CI doesn't: a shared runner
+measured the same program on the same kernel 4–6× slower.
+
+#### On other kernels
+
+Those runs test your own kernel, and the verifier differs between kernels:
+Linux 6.17, 6.18 before 6.18.14 and 6.19 before 6.19.4 reject programs the
+others load. Before pushing a change to the BPF program or the attacher, run
+both test sets on a matrix of distribution kernels, each booted in a throwaway
+QEMU VM with the agent's capabilities:
+
+```shell
+make bpf-vm-test
+BPF_VM_KERNELS=ubuntu-6.17.0-1022-azure make bpf-vm-test   # one kernel
+```
+
+The kernels, listed in `hack/bpf-vm/kernels.sh`, are Debian 13's 6.12 and its
+6.18 backport, and Ubuntu 24.04's 6.8 and 6.17 (CI's runner kernel). It needs
+`qemu-system-x86_64`, `cpio`, `curl` and `dpkg-deb`, and read-write access to
+`/dev/kvm`; without KVM, QEMU emulates and a run takes far longer. The first
+run downloads about 370 MB of kernel packages, pinned by checksum, and keeps
+what the tests need (about 55 MB) in `~/.cache/purelb-bpf-vm`. With the
+kernels cached, a run takes under half a minute. A failing kernel's last
+console lines are printed, along with the path of its full log. CI's
+`bpf-vm-test` job runs the same matrix.
+
+`make bpf` regenerates the program from `internal/addrguard/bpf/addrguard.c`
+in a pinned builder image (needs Docker). The output is reproducible, and
+CI's `bpf-generate` job fails if the committed object differs.
+
 ### End-to-end tests
 
 The e2e suite is pytest, in [test/e2e/py/](test/e2e/py/). It runs against a

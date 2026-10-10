@@ -107,6 +107,57 @@ type nodeConfig struct {
 	// default-plus-override pattern and resolves unambiguously.
 	Contested bool   `json:"contested,omitempty"`
 	Reason    string `json:"reason,omitempty"`
+	// Guard is the address guard mode on the node: off, enforce or monitor.
+	Guard string `json:"addressGuard"`
+	// GuardPolicy is the guard's failurePolicy (closed or open) when it is
+	// on: what the node does when the guard can't run.
+	GuardPolicy string `json:"addressGuardFailurePolicy,omitempty"`
+}
+
+// Address guard modes as the plugin reports them; enforce and monitor are
+// the CRD's own values.
+const (
+	guardOff     = "off"
+	guardEnforce = "enforce"
+)
+
+// guardSummary counts nodes per address guard mode: "off" when the guard is
+// off everywhere, otherwise e.g. "enforce 3 | monitor 1 | off 1".
+func guardSummary(modes []string) string {
+	counts := map[string]int{}
+	for _, m := range modes {
+		counts[m]++
+	}
+	if len(counts) == 0 || (len(counts) == 1 && counts[guardOff] > 0) {
+		return guardOff
+	}
+	var parts []string
+	for _, m := range []string{guardEnforce, "monitor", guardOff} {
+		if counts[m] > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", m, counts[m]))
+		}
+	}
+	return strings.Join(parts, " | ")
+}
+
+// guardPolicy is the address guard failurePolicy an agent configures:
+// closed (the CRD default) or open.
+func guardPolicy(a *purelbv2.LBNodeAgent) string {
+	if p := a.Spec.Local.AddressGuard.FailurePolicy; p != "" {
+		return p
+	}
+	return "closed"
+}
+
+// guardMode is the address guard mode an agent's local spec configures.
+func guardMode(a *purelbv2.LBNodeAgent) string {
+	if a == nil || a.Spec.Local == nil || a.Spec.Local.AddressGuard == nil {
+		return guardOff
+	}
+	if m := a.Spec.Local.AddressGuard.Mode; m != "" {
+		return m
+	}
+	return guardEnforce
 }
 
 // announces reports whether a node in this state announces local addresses.
@@ -120,7 +171,7 @@ func (c nodeConfig) announces() bool {
 // order), then take the first match carrying a local spec.
 func resolveNodeConfig(agents []*purelbv2.LBNodeAgent, nodeLabels map[string]string) nodeConfig {
 	if len(agents) == 0 {
-		return nodeConfig{State: configStateNoConfig, Reason: "no LBNodeAgent resources exist"}
+		return nodeConfig{State: configStateNoConfig, Reason: "no LBNodeAgent resources exist", Guard: guardOff}
 	}
 
 	matched := purelbv2.AgentsForNode(agents, nodeLabels)
@@ -128,10 +179,11 @@ func resolveNodeConfig(agents []*purelbv2.LBNodeAgent, nodeLabels map[string]str
 		return nodeConfig{
 			State:  configStateDeselected,
 			Reason: "no LBNodeAgent nodeSelector matches this node",
+			Guard:  guardOff,
 		}
 	}
 
-	cfg := nodeConfig{}
+	cfg := nodeConfig{Guard: guardOff}
 	for _, extra := range matched[1:] {
 		cfg.Ignored = append(cfg.Ignored, agentName(extra))
 	}
@@ -155,6 +207,10 @@ func resolveNodeConfig(agents []*purelbv2.LBNodeAgent, nodeLabels map[string]str
 	}
 
 	cfg.Agent = agentName(local)
+	cfg.Guard = guardMode(local)
+	if cfg.Guard != guardOff {
+		cfg.GuardPolicy = guardPolicy(local)
+	}
 	if invalid, _ := localInterfaceIssues(local.Spec.Local.LocalInterface); invalid {
 		cfg.State = configStateInvalid
 		cfg.Reason = fmt.Sprintf("localInterface %q is not a valid regex", local.Spec.Local.LocalInterface)

@@ -104,6 +104,21 @@ type announcer struct {
 	logger   log.Logger
 	myNode   string
 	election nodeElection
+	// standingDown, when it returns true, means this node must announce
+	// nothing: the address guard is configured fail-closed and isn't
+	// working. nil means never.
+	standingDown func() bool
+	// withheld, when it returns true for an address, means this node must
+	// not announce it: the fail-closed address guard couldn't write the
+	// address's rules. nil means never.
+	withheld func(net.IP) bool
+
+	// quietWithdrawn records, per renewalKey, the reason an address was
+	// last withdrawn for while the node announces nothing (or withholds
+	// it). A stand-down can last indefinitely and every Service sync lands
+	// in it again: the address is withdrawn once per reason, not on every
+	// sync. Written only on the service-sync goroutine.
+	quietWithdrawn map[string]string
 
 	// cfg is the current configuration snapshot. A nil pointer means we
 	// are not configured and must not announce; see SetConfig. Loaded
@@ -184,8 +199,32 @@ func init() {
 }
 
 // NewAnnouncer returns a new local Announcer.
-func NewAnnouncer(l log.Logger, node string) lbnodeagent.Announcer {
-	return &announcer{logger: l, myNode: node, svcIngresses: map[string][]v1.LoadBalancerIngress{}}
+//
+// standingDown (may be nil) reports whether the node must announce nothing
+// because the address guard is fail-closed and not working. withheld (may
+// be nil) reports whether one address must not be announced because the
+// fail-closed guard couldn't write its rules.
+func NewAnnouncer(l log.Logger, node string, standingDown func() bool, withheld func(net.IP) bool) lbnodeagent.Announcer {
+	return &announcer{logger: l, myNode: node, svcIngresses: map[string][]v1.LoadBalancerIngress{},
+		standingDown: standingDown, withheld: withheld}
+}
+
+// withdrawQuietly withdraws lbIP for reason unless it already was, for the
+// same reason, since it was last announced (see quietWithdrawn), and drops
+// any slot that still names this node.
+func (a *announcer) withdrawQuietly(svc *v1.Service, nsName, reason string, lbIP net.IP) error {
+	key := renewalKey(nsName, lbIP.String())
+	var err error
+	if a.quietWithdrawn[key] != reason {
+		if err = a.deleteAddress(nsName, reason, lbIP); err == nil {
+			if a.quietWithdrawn == nil {
+				a.quietWithdrawn = map[string]string{}
+			}
+			a.quietWithdrawn[key] = reason
+		}
+	}
+	a.clearOwnAnnounceSlot(svc, lbIP)
+	return err
 }
 
 // SetClient configures this announcer to use the provided client.
@@ -296,21 +335,32 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 	// SetConfig to nil the spec out from under an in-flight announcement.
 	cfg := a.cfg.Load()
 
-	// if we haven't been configured then we won't announce
-	if cfg == nil {
+	// if we haven't been configured then we won't announce; nor will we
+	// while the address guard is fail-closed and not working (the guard
+	// logs that once, at Info, for the node)
+	reason := ""
+	switch {
+	case cfg == nil:
+		reason = "noConfig"
 		logging.Info(l, "event", "noConfig")
+	case a.standingDown != nil && a.standingDown():
+		reason = "addressGuardUnavailable"
+		logging.Debug(l, "event", "addressGuardStandingDown")
+	}
+	if reason != "" {
 		// We are not announcing anything: withdraw any address we may
 		// still hold and drop any slot that still names us. nodeSelector
-		// deselection and config removal land here — the slot alone is
-		// not enough, because a previously-announced VIP would stay on
-		// the NIC with a live renewal timer re-adding it while another
-		// node wins the election (duplicate ARP responders).
+		// deselection, config removal and a fail-closed guard land here —
+		// the slot alone is not enough, because a previously-announced VIP
+		// would stay on the NIC with a live renewal timer re-adding it
+		// while another node wins the election (duplicate ARP responders).
+		// deleteAddress removes the address from every interface, the
+		// dummy included, so remote addresses go too.
 		for _, ingress := range svc.Status.LoadBalancer.Ingress {
 			if lbIP := net.ParseIP(ingress.IP); lbIP != nil {
-				if err := a.deleteAddress(nsName, "noConfig", lbIP); err != nil {
+				if err := a.withdrawQuietly(svc, nsName, reason, lbIP); err != nil {
 					retErr = err
 				}
-				a.clearOwnAnnounceSlot(svc, lbIP)
 			}
 		}
 		return retErr
@@ -332,6 +382,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			retErr = err
 		}
 		a.clearOwnAnnounceSlot(svc, oldIP)
+		delete(a.quietWithdrawn, renewalKey(nsName, oldIP.String()))
 		dropped = append(dropped, oldIP)
 	}
 
@@ -355,6 +406,21 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			logging.Info(l, "op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
 			continue
 		}
+
+		// The fail-closed address guard couldn't write this address's
+		// rules (the guard logs why): it can't be filtered, so it isn't
+		// announced from this node until a retry writes them.
+		if a.withheld != nil && a.withheld(lbIP) {
+			if a.quietWithdrawn[renewalKey(nsName, lbIP.String())] != "addressGuardWithheld" {
+				logging.Info(l, "event", "addressGuardWithheld", "ip", lbIP,
+					"msg", "not announcing: the address guard could not write this address's rules")
+			}
+			if err := a.withdrawQuietly(svc, nsName, "addressGuardWithheld", lbIP); err != nil {
+				retErr = err
+			}
+			continue
+		}
+		delete(a.quietWithdrawn, renewalKey(nsName, lbIP.String()))
 
 		if cfg.localNameRegex != nil {
 			// The user specified an announcement interface regex so use it to
@@ -555,12 +621,12 @@ func (a *announcer) announceLocal(cfg *announcerConfig, svc *v1.Service, preferr
 
 	opts := getLocalAddressOptions(cfg)
 	// IPv6 has no IFA_F_SECONDARY equivalent, so flannel can pick VIPs as the
-	// node's public IPv6 address, breaking overlay routing. Setting PreferedLft=0
-	// marks the address as deprecated (IFA_F_DEPRECATED), which flannel's
-	// GetInterfaceIP6Addrs explicitly filters out. The address still receives
-	// inbound traffic normally.
+	// node's public IPv6 address, breaking overlay routing. Deprecating the
+	// address (IFA_F_DEPRECATED) makes flannel's GetInterfaceIP6Addrs filter
+	// it out and keeps the host from sourcing traffic from it. The address
+	// still receives inbound traffic normally.
 	if lbIP.To4() == nil {
-		opts.PreferedLft = 0
+		opts.Deprecated = true
 	}
 	if svc.Annotations[purelbv2.SkipIPv6DADAnnotation] == "true" {
 		opts.SkipDAD = true
@@ -655,6 +721,12 @@ func (a *announcer) announceRemote(cfg *announcerConfig, svc *v1.Service, epSlic
 	// (e.g., bird) will announce routes for it.
 	logging.Debug(l, "msg", "subnet", "node", a.myNode, "service", nsName, "pool", group)
 	opts := getDummyAddressOptions(cfg)
+	// A preferred IPv6 VIP on the dummy can win source-address selection --
+	// on a BGP-unnumbered fabric, for the BGP session itself -- and the
+	// address guard would then drop the replies. Deprecated, it never does.
+	if lbIP.To4() == nil {
+		opts.Deprecated = true
+	}
 	lbIPNet, err := addVirtualInt(lbIP, cfg.dummyInt, group.Subnet, group.Aggregation, opts)
 	if err != nil {
 		// Report the failure on the Service. Returning the error alone
@@ -710,6 +782,11 @@ func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 
 	// delete this service from our announcement database
 	delete(a.svcIngresses, nsName)
+	for _, in := range ingress {
+		if ip := net.ParseIP(in.IP); ip != nil {
+			delete(a.quietWithdrawn, renewalKey(nsName, ip.String()))
+		}
+	}
 
 	// Every address is attempted before returning, and failures are
 	// reported: a swallowed error here leaves the VIP on the NIC after the

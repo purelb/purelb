@@ -14,3 +14,9 @@ spec:
     garpConfig:
       {{- toYaml . | nindent 6 }}
     {{- end }}
+    {{- /* Not "with": an empty map is false to it, and addressGuard: {}
+           (every default) must enable the guard, as it does in a CR. */}}
+    {{- if kindIs "map" .Values.lbnodeagent.addressGuard }}
+    addressGuard:
+      {{- toYaml .Values.lbnodeagent.addressGuard | nindent 6 }}
+    {{- end }}

@@ -60,5 +60,5 @@ Restrict `create` and `patch` on `servicegroups.purelb.io` to cluster administra
 Component | Runs As | Capabilities | Network
 ----------|---------|-------------|--------
 Allocator | Non-root (UID 65534), read-only filesystem | None | Cluster-internal only
-LBNodeAgent | Root (required for netlink) | `NET_ADMIN`, `NET_RAW` | Host network
+LBNodeAgent | Root (required for netlink) | `NET_ADMIN`, `NET_RAW`, `BPF` (for the [address guard](../../configuration/address-guard/)) | Host network
 k8gobgp | Root (required for BGP port 179) | `NET_ADMIN`, `NET_BIND_SERVICE`, `NET_RAW` | Host network

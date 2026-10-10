@@ -84,7 +84,7 @@ from typing import Dict, List, Optional
 
 import pytest
 
-from purelb_e2e import nodes, topology
+from purelb_e2e import guard, nodes, topology
 from purelb_e2e.cluster import Cluster
 from purelb_e2e.nodes import Router
 from purelb_e2e.wait import wait_until
@@ -200,11 +200,11 @@ def _apply_agent(cluster: Cluster, topo: topology.Topology,
             "kind": "LBNodeAgent",
             "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
             "spec": {
-                "local": {
+                "local": guard.local_spec({
                     "localInterface": "default",
                     "dummyInterface": "kube-lb0",
                     **({"garpConfig": garp} if garp is not None else {}),
-                }
+                })
             },
         }
     )

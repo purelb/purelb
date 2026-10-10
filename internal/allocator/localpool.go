@@ -18,8 +18,11 @@ package allocator
 import (
 	"context"
 	"fmt"
+	"math"
+	"math/big"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/go-kit/log"
@@ -70,6 +73,12 @@ type LocalPool struct {
 
 	// v6Subnets stores the subnet CIDR for each v6Range, in parallel.
 	v6Subnets []string
+
+	// v4Prefix and v6Prefix are, for each range in parallel, the prefix
+	// length the announcer adds an address from that range with: the
+	// subnet's, or a remote pool's aggregation. See reserved.
+	v4Prefix []int
+	v6Prefix []int
 
 	// Map of the addresses that have been assigned.
 	addressesInUse map[string]map[string]bool // ip.String() -> svc name -> true
@@ -129,8 +138,13 @@ func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6P
 			return pool, fmt.Errorf("IPV6 range %s not contained by network %s", iprange, subnet)
 		}
 
+		prefix, err := announcedPrefix(subnet, poolType, v6pool.Aggregation)
+		if err != nil {
+			return pool, err
+		}
 		pool.v6Ranges = append(pool.v6Ranges, &iprange)
 		pool.v6Subnets = append(pool.v6Subnets, v6pool.Subnet)
+		pool.v6Prefix = append(pool.v6Prefix, prefix)
 	}
 
 	// See if there's an IPV4 range in the spec
@@ -149,8 +163,13 @@ func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6P
 			return pool, fmt.Errorf("IPV4 range %s not contained by network %s", iprange, subnet)
 		}
 
+		prefix, err := announcedPrefix(subnet, poolType, v4pool.Aggregation)
+		if err != nil {
+			return pool, err
+		}
 		pool.v4Ranges = append(pool.v4Ranges, &iprange)
 		pool.v4Subnets = append(pool.v4Subnets, v4pool.Subnet)
+		pool.v4Prefix = append(pool.v4Prefix, prefix)
 	}
 
 	// Last check: if we don't have *any* valid range then it's a bad spec
@@ -360,6 +379,9 @@ func (p LocalPool) assignFamily(ctx context.Context, family int, service *v1.Ser
 
 // Assign assigns a service to an IP.
 func (p LocalPool) Assign(ctx context.Context, ip net.IP, service *v1.Service) error {
+	if err := p.reserved(ip); err != nil {
+		return err
+	}
 	if err := p.available(ip, service); err != nil {
 		return err
 	}
@@ -369,6 +391,56 @@ func (p LocalPool) Assign(ctx context.Context, ip net.IP, service *v1.Service) e
 
 	// Update our internal allocation data structures
 	return p.Notify(ctx, service)
+}
+
+// announcedPrefix is the prefix length an address from a pool with this
+// subnet is added to an interface with: the subnet's, except that a remote
+// pool's aggregation replaces it (local.addVirtualInt).
+func announcedPrefix(subnet *net.IPNet, poolType, aggregation string) (int, error) {
+	ones, _ := subnet.Mask.Size()
+	if poolType != purelbv2.PoolTypeRemote || aggregation == "" || aggregation == "default" {
+		return ones, nil
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(aggregation, "/"))
+	if err != nil {
+		return 0, fmt.Errorf("invalid aggregation %q: %w", aggregation, err)
+	}
+	return n, nil
+}
+
+// reserved refuses the one address in each announced prefix that the
+// kernel makes special when it adds an address with that prefix: the IPv4
+// broadcast (the last address, for prefixes up to /30) and the IPv6
+// subnet-router anycast (the first, for prefixes up to /126). As a VIP it
+// wouldn't work as a unicast address, and the address guard keeps its own
+// entry for it.
+func (p LocalPool) reserved(ip net.IP) error {
+	ranges, prefixes, bits, max := p.v6Ranges, p.v6Prefix, 128, 126
+	if ip4 := ip.To4(); ip4 != nil {
+		ip = ip4
+		ranges, prefixes, bits, max = p.v4Ranges, p.v4Prefix, 32, 30
+	}
+	for i, r := range ranges {
+		if i >= len(prefixes) || !r.Contains(ip) || prefixes[i] > max {
+			continue
+		}
+		mask := net.CIDRMask(prefixes[i], bits)
+		special := ip.Mask(mask) // IPv6: the prefix itself
+		if bits == 32 {
+			special = make(net.IP, 4)
+			for b := range special {
+				special[b] = ip[b] | ^mask[b] // IPv4: all host bits set
+			}
+		}
+		if ip.Equal(special) {
+			kind := "broadcast"
+			if bits == 128 {
+				kind = "subnet-router anycast"
+			}
+			return fmt.Errorf("%s is the %s address of %s/%d and can't be a LoadBalancer address", ip, kind, ip.Mask(mask), prefixes[i])
+		}
+	}
+	return nil
 }
 
 // Release releases an IP so it can be assigned again.
@@ -552,13 +624,51 @@ func (p LocalPool) next(ip net.IP) net.IP {
 // Size returns the total number of addresses in this pool if it's a
 // local pool, or 0 if it's a remote pool.
 func (p LocalPool) Size() (size uint64) {
-	for _, v6 := range p.v6Ranges {
-		size += v6.Size()
+	for i, v6 := range p.v6Ranges {
+		size += usable(v6, p.v6Prefix, i)
 	}
-	for _, v4 := range p.v4Ranges {
-		size += v4.Size()
+	for i, v4 := range p.v4Ranges {
+		size += usable(v4, p.v4Prefix, i)
 	}
 	return
+}
+
+// usable is how many of r's addresses can be handed out: its size less the
+// reserved addresses in it (see reserved). prefixes[i] is r's announced
+// prefix. A range too big to count (IPRange.Size returns MaxUint64) stays
+// that.
+func usable(r *purelbv2.IPRange, prefixes []int, i int) uint64 {
+	size := r.Size()
+	if size == math.MaxUint64 || i >= len(prefixes) {
+		return size
+	}
+	from := r.First()
+	bits, max := 128, 126
+	if f4 := from.To4(); f4 != nil {
+		from, bits, max = f4, 32, 30
+	}
+	if prefixes[i] > max {
+		return size
+	}
+	lo := new(big.Int).SetBytes(from)
+	hi := new(big.Int).Add(lo, new(big.Int).SetUint64(size-1))
+	block := new(big.Int).Lsh(big.NewInt(1), uint(bits-prefixes[i]))
+	// Euclidean division floors for a positive divisor, which is what
+	// counting multiples needs at both ends.
+	var n *big.Int
+	if bits == 32 {
+		// The broadcast is the block's last address: x+1 is a multiple of
+		// block, for x in [lo, hi].
+		n = new(big.Int).Sub(
+			new(big.Int).Div(new(big.Int).Add(hi, big.NewInt(1)), block),
+			new(big.Int).Div(lo, block))
+	} else {
+		// The anycast is the block's first address: x is a multiple of block.
+		n = new(big.Int).Sub(
+			new(big.Int).Div(hi, block),
+			new(big.Int).Div(new(big.Int).Sub(lo, big.NewInt(1)), block))
+	}
+	return size - n.Uint64()
 }
 
 // Overlaps indicates whether the other Pool overlaps with this one
@@ -696,16 +806,16 @@ func (p LocalPool) InUseV6() int {
 
 // SizeV4 returns the total IPv4 capacity of this pool.
 func (p LocalPool) SizeV4() (size uint64) {
-	for _, v4 := range p.v4Ranges {
-		size += v4.Size()
+	for i, v4 := range p.v4Ranges {
+		size += usable(v4, p.v4Prefix, i)
 	}
 	return
 }
 
 // SizeV6 returns the total IPv6 capacity of this pool.
 func (p LocalPool) SizeV6() (size uint64) {
-	for _, v6 := range p.v6Ranges {
-		size += v6.Size()
+	for i, v6 := range p.v6Ranges {
+		size += usable(v6, p.v6Prefix, i)
 	}
 	return
 }
