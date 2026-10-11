@@ -72,6 +72,19 @@ type Client struct {
 	// API calls should use shorter timeouts to allow graceful shutdown.
 	shuttingDown atomic.Bool
 
+	// syncStartedAt is the Unix-nano time at which the service-sync
+	// goroutine entered sync(), or 0 when no item is in flight. The
+	// liveness endpoint reads it to tell "waiting for work" (live
+	// indefinitely) from "stuck in one item" (live for at most
+	// livenessStuckAfter). Written only by Run's loop, read by the
+	// health handler, so an atomic rather than a lock.
+	syncStartedAt atomic.Int64
+
+	// cachesSynced is set once WaitForCacheSync returns. Readiness is
+	// false until then: with cold caches this process cannot act on any
+	// Service.
+	cachesSynced atomic.Bool
+
 	svcIndexer      cache.Indexer
 	svcInformer     cache.Controller
 	epSliceIndexer  cache.Indexer
@@ -570,6 +583,7 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 	if !cache.WaitForCacheSync(stopCh, c.syncFuncs...) {
 		return errors.New("timed out waiting for cache sync")
 	}
+	c.cachesSynced.Store(true)
 
 	c.queue.Add(synced(""))
 
@@ -590,7 +604,7 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 			return nil
 		}
 		updates.WithLabelValues(queueItemKind(key)).Inc()
-		st := c.sync(key)
+		st := c.syncTracked(key)
 		// c.logger.Log("sync", key, "result", st)
 		switch st {
 		case SyncStateSuccess:
@@ -787,6 +801,16 @@ func annotationsEqualIgnoringAnnouncing(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// syncTracked runs sync bracketed by the liveness stamp, so /healthz can
+// tell an idle queue from one work item that never returns. The stamp is
+// cleared with defer: an early return must not leave the process looking
+// permanently wedged. See Client.Live.
+func (c *Client) syncTracked(key queueItem) SyncState {
+	c.syncStartedAt.Store(time.Now().UnixNano())
+	defer c.syncStartedAt.Store(0)
+	return c.sync(key)
 }
 
 func (c *Client) sync(key queueItem) SyncState {

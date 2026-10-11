@@ -78,7 +78,7 @@ func main() {
 
 	c.SetClient(client)
 
-	go k8s.RunMetrics(logger, "", *port)
+	go k8s.RunMetrics(logger, "", *port, client)
 
 	// the k8s client doesn't return until it's time to shut down
 	if err := client.Run(stopCh); err != nil {

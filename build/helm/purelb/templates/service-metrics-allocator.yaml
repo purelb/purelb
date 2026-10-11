@@ -29,6 +29,12 @@ metadata:
   namespace: {{ .Release.Namespace }}
 
 spec:
+  # The pods now carry a readinessProbe, and pod readiness is pod-wide:
+  # without this, a node whose lease went unhealthy or whose address
+  # guard stood it down would also drop out of this Service -- losing
+  # the very metrics that say why, exactly when they are needed.
+  # Scrape targets are not traffic; they should not be de-scheduled.
+  publishNotReadyAddresses: true
   ports:
   - name: metrics
     port: 7472

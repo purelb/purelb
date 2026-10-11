@@ -83,4 +83,40 @@ out=$(render prometheusrules-lbnodeagent.yaml "${rules[@]}" --set Prometheus.lbn
 expect "PrometheusRule: user rules kept alongside" "alert: UserRule" "$out"
 expect "PrometheusRule: guard group alongside user rules" "name: purelb-address-guard" "$out"
 
+# Health probes. The startupProbe must point at /healthz, never /readyz:
+# kubelet RESTARTS the container when a startup probe fails, so a /readyz
+# startup probe restarts on readiness conditions too -- which turned a
+# legitimate address-guard stand-down into a crash loop on every agent.
+# Parsed rather than grepped, so the comments in the templates (which
+# mention both paths) cannot satisfy or break these checks.
+probe_paths() { # stdin: rendered YAML -> "<container> <probe> <path> <port>" lines
+	python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if not d or d.get("kind") not in ("DaemonSet", "Deployment"):
+        continue
+    for ct in d["spec"]["template"]["spec"]["containers"]:
+        for k in ("startupProbe", "livenessProbe", "readinessProbe"):
+            pr = ct.get(k)
+            if pr:
+                print(ct["name"], k, pr["httpGet"]["path"], pr["httpGet"]["port"])
+'
+}
+
+# no-BGP install: PureLB's own probes are the only health signal there.
+out=$(render daemonset.yaml --set gobgp.enabled=false | probe_paths)
+expect "DaemonSet: lbnodeagent startupProbe is /healthz (a /readyz one crash-loops a stood-down guard)" "^lbnodeagent startupProbe /healthz 7472$" "$out"
+expect "DaemonSet: lbnodeagent livenessProbe is /healthz" "^lbnodeagent livenessProbe /healthz 7472$" "$out"
+expect "DaemonSet: lbnodeagent readinessProbe is /readyz" "^lbnodeagent readinessProbe /readyz 7472$" "$out"
+refuse "DaemonSet: lbnodeagent startupProbe never /readyz" "^lbnodeagent startupProbe /readyz" "$out"
+
+out=$(render daemonset.yaml | probe_paths)
+expect "DaemonSet: k8gobgp keeps its own /readyz startup probe on 7474" "^k8gobgp startupProbe /readyz 7474$" "$out"
+expect "DaemonSet: lbnodeagent probes survive alongside the sidecar" "^lbnodeagent startupProbe /healthz 7472$" "$out"
+
+out=$(render deployment.yaml | probe_paths)
+expect "Deployment: allocator startupProbe is /healthz" "^allocator startupProbe /healthz 7472$" "$out"
+expect "Deployment: allocator readinessProbe is /readyz" "^allocator readinessProbe /readyz 7472$" "$out"
+refuse "Deployment: allocator startupProbe never /readyz" "^allocator startupProbe /readyz" "$out"
+
 exit $fail
