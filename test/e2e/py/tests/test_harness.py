@@ -280,7 +280,7 @@ def test_pod_resolution_is_exact(cluster):
         assert pod.spec.node_name == node
 
 
-def test_allocator_metrics_scrape(allocator_metrics):
+def test_allocator_metrics_scrape(cluster, allocator_metrics):
     snap = allocator_metrics()
     assert snap.get("purelb_k8s_client_config_loaded_bool") is not None, (
         "allocator exports no config_loaded metric; is this really PureLB?"
@@ -289,6 +289,25 @@ def test_allocator_metrics_scrape(allocator_metrics):
     assert snap.counter("purelb_k8s_client_updates_total") > 0, (
         "k8s_client_updates_total should track API updates"
     )
+
+    # The probes share this listener. Readiness is cache sync only --
+    # deliberately not config-loaded, or a cluster with no ServiceGroups
+    # would be NotReady forever -- so a running allocator answers both.
+    pods = cluster.pods(cluster.purelb_namespace, "component=allocator")
+    assert pods, "no allocator pod found"
+    name = pods[0].metadata.name
+    for path in ("/healthz", "/readyz"):
+        assert metrics.check_health_via_apiserver(
+            cluster.core, cluster.purelb_namespace, name, 7472, path
+        ), f"allocator {path} did not answer 2xx"
+
+    # A liveness failure logs at Info before the restart lands, so its
+    # absence is the steady-state assertion. "action=listen" is only
+    # logged when ListenAndServe RETURNS, so its absence means the
+    # listener the probes depend on is still up.
+    log = cluster.pod_log_text(cluster.purelb_namespace, name)
+    assert '"op":"healthz"' not in log, f"allocator logged a liveness failure:\n{log[-2000:]}"
+    assert '"action":"listen"' not in log, "the allocator's metrics/health listener exited"
 
 
 def test_agent_metrics_scrape(cluster, agent_metrics):
@@ -301,6 +320,30 @@ def test_agent_metrics_scrape(cluster, agent_metrics):
     assert snap.value("purelb_election_member_count") > 0
     assert snap.value("purelb_election_subnet_count") > 0
     assert snap.value("purelb_election_local_subnet_count") > 0
+
+    # PureLB's own probes, on every node rather than one: a wedge or a
+    # failed listener is per-node, and in a no-BGP install this 7472 pair
+    # is the ONLY health signal the pod has -- k8gobgp's 7474 is absent.
+    # hostNetwork, so the node IP is what kubelet probes too.
+    for name in cluster.node_names():
+        node_ip = cluster.node_ip(name)
+        assert metrics.check_health(node_ip, 7472, "/healthz"), f"{name} lbnodeagent /healthz"
+        # Readiness is cache sync only. It deliberately does NOT cover the
+        # election lease or the address guard: readiness gates rollouts,
+        # and gating it on a guard that cannot load -- its designed
+        # fail-closed state -- wedged every rollout. Those live in alerts.
+        assert metrics.check_health(node_ip, 7472, "/readyz"), f"{name} lbnodeagent /readyz"
+
+    # Steady state logs no liveness failure, and the listener has not
+    # exited. Whole log, not a window: both are startup-or-never.
+    for name in cluster.node_names():
+        pod = cluster.pod_on_node(cluster.purelb_namespace, "component=lbnodeagent", name)
+        assert pod is not None, f"no lbnodeagent pod on {name}"
+        log = cluster.pod_log_text(
+            cluster.purelb_namespace, pod.metadata.name, container="lbnodeagent"
+        )
+        assert '"op":"healthz"' not in log, f"{name} logged a liveness failure:\n{log[-2000:]}"
+        assert '"action":"listen"' not in log, f"{name} metrics/health listener exited"
 
 
 @pytest.mark.requires("bgp")

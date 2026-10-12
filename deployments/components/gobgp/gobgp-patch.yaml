@@ -65,21 +65,28 @@ spec:
             port: 7474
           initialDelaySeconds: 5
           periodSeconds: 5
-          failureThreshold: 12
-          # /readyz now asks gobgpd (GetBgp, up to 3s); kubelet's 1s default
+          # 5 + 30x5 = 155s to answer GetBgp. Past the threshold kubelet
+          # restarts the container, which does not make gobgpd start any
+          # faster -- it resets the clock and earns CrashLoopBackOff, so
+          # a tight value turns a slow start into an outage. The probe
+          # stops the instant it passes, so the margin is free.
+          failureThreshold: 30
+          # /readyz asks gobgpd (GetBgp, up to 3s); kubelet's 1s default
           # would fail it whenever gobgpd is briefly busy.
           timeoutSeconds: 5
         livenessProbe:
           httpGet:
             path: /healthz
             port: 7474
-          initialDelaySeconds: 15
+          # No initialDelaySeconds: kubelet runs neither liveness nor
+          # readiness until the startup probe passes, which cannot happen
+          # before t=5s. The 15s here only pushed the first liveness
+          # probe later for no gain.
           periodSeconds: 20
         readinessProbe:
           httpGet:
             path: /readyz
             port: 7474
-          initialDelaySeconds: 5
           periodSeconds: 10
           timeoutSeconds: 5
         securityContext:

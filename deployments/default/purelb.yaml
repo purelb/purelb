@@ -278,6 +278,38 @@ spec:
         ports:
         - containerPort: 7472
           name: monitoring
+        # Health shares the metrics port. 7472 exists in every install
+        # variant, so one probe spec covers BGP and no-BGP alike; the
+        # k8gobgp sidecar's 7474 is absent from a no-BGP install. No
+        # "host" field, so kubelet probes the pod IP -- which under
+        # hostNetwork is the node address the metrics listener binds.
+        #
+        # /healthz fails only when the service-sync goroutine is stuck
+        # inside a single work item. /readyz reports convergence.
+        startupProbe:
+          # /healthz, NOT /readyz. kubelet RESTARTS the container when a
+          # startup probe fails, so this must answer only "has the
+          # process come up". Pointed at /readyz it restarts on any
+          # readiness condition too: a node whose address guard
+          # legitimately stood down never passed startup and crash-looped
+          # instead of just going NotReady.
+          httpGet:
+            path: /healthz
+            port: 7472
+          periodSeconds: 10
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 7472
+          periodSeconds: 20
+          timeoutSeconds: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 7472
+          periodSeconds: 10
+          timeoutSeconds: 3
         resources:
           limits:
             memory: 100Mi
@@ -354,6 +386,38 @@ spec:
         ports:
         - containerPort: 7472
           name: monitoring
+        # Health shares the metrics port. 7472 exists in every install
+        # variant, so one probe spec covers BGP and no-BGP alike; the
+        # k8gobgp sidecar's 7474 is absent from a no-BGP install. No
+        # "host" field, so kubelet probes the pod IP -- which under
+        # hostNetwork is the node address the metrics listener binds.
+        #
+        # /healthz fails only when the service-sync goroutine is stuck
+        # inside a single work item. /readyz reports convergence.
+        startupProbe:
+          # /healthz, NOT /readyz. kubelet RESTARTS the container when a
+          # startup probe fails, so this must answer only "has the
+          # process come up". Pointed at /readyz it restarts on any
+          # readiness condition too: a node whose address guard
+          # legitimately stood down never passed startup and crash-looped
+          # instead of just going NotReady.
+          httpGet:
+            path: /healthz
+            port: 7472
+          periodSeconds: 10
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 7472
+          periodSeconds: 20
+          timeoutSeconds: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 7472
+          periodSeconds: 10
+          timeoutSeconds: 3
         resources:
           limits:
             memory: 100Mi
@@ -373,4 +437,18 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       serviceAccountName: allocator
-      terminationGracePeriodSeconds: 0
+      # Enough for the work queue to finish the item in flight and close
+      # its sidecar-IPAM connections.
+      #
+      # 0 does not mean "no SIGTERM", as the API reference's wording
+      # suggests: measured against a live kubelet, the signal is delivered
+      # and a 1s shutdown handler completed, while 3s and 8s ones were
+      # killed -- a window of roughly 2s. The allocator's own path is fast
+      # enough for that. What is not is the work queue sitting in a
+      # sidecar-IPAM Allocate, bounded at 10s: killed between that RPC and
+      # the Service status write, the address leaks in the external IPAM.
+      # With strategy: Recreate this path runs on every upgrade.
+      #
+      # A grace period is a ceiling, not a sleep: the pod goes as soon as
+      # the process exits, so this costs nothing in the normal case.
+      terminationGracePeriodSeconds: 10

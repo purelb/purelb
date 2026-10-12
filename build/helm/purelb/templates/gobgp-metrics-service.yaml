@@ -13,6 +13,12 @@ metadata:
     {{- include "purelb.labels" . | nindent 4 }}
     app.kubernetes.io/component: k8gobgp
 spec:
+  # The pods now carry a readinessProbe, and pod readiness is pod-wide:
+  # without this, a node whose lease went unhealthy or whose address
+  # guard stood it down would also drop out of this Service -- losing
+  # the very metrics that say why, exactly when they are needed.
+  # Scrape targets are not traffic; they should not be de-scheduled.
+  publishNotReadyAddresses: true
   selector:
     {{- include "purelb.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: lbnodeagent

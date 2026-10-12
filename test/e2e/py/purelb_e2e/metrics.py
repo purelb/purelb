@@ -175,6 +175,27 @@ def check_health(node_ip: str, port: int, path: str = "/healthz", timeout: float
         return False
 
 
+def check_health_via_apiserver(core, namespace: str, pod: str, port: int, path: str) -> bool:
+    """Check a health endpoint on a pod only reachable on the cluster network.
+
+    The allocator runs in the pod network, so its probes cannot be driven
+    from a workstation the way lbnodeagent's hostNetwork ones can. Same
+    apiserver pod proxy as scrape_pod_via_apiserver, and the same
+    bool-not-raise contract as check_health: a non-2xx is the answer, not
+    an error.
+    """
+    try:
+        core.connect_get_namespaced_pod_proxy_with_path(
+            name=f"{pod}:{port}",
+            namespace=namespace,
+            path=path.lstrip("/"),
+            _preload_content=False,
+        )
+        return True
+    except Exception:  # noqa: BLE001 - the proxy raises on any non-2xx
+        return False
+
+
 def scrape_node(node_ip: str, port: int = METRICS_PORT) -> Snapshot:
     """Scrape an lbnodeagent, which serves on a hostPort."""
     return scrape_url(f"http://{_hostport(node_ip, port)}/metrics")
