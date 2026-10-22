@@ -33,7 +33,7 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 HERE=hack/bpf-vm
-KERNELS=${BPF_VM_KERNELS:-debian-6.12.111 debian-6.18.12-bpo ubuntu-6.8.0-146-generic ubuntu-6.17.0-1022-azure}
+KERNELS=${BPF_VM_KERNELS:-debian-6.6.15 debian-6.12.111 debian-6.18.12-bpo ubuntu-6.8.0-146-generic ubuntu-6.17.0-1022-azure}
 
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
