@@ -1,0 +1,4 @@
+.bin/
+.work/
+loadgen
+results/*.log

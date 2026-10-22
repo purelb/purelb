@@ -1,0 +1,1290 @@
+{"time":"2026-10-18T22:13:54.762543431-04:00","level":"INFO","source":{"function":"sigs.k8s.io/kwok/pkg/kwokctl/cmd/create/cluster.runE","file":"/home/adamd/go/pkg/mod/sigs.k8s.io/kwok@v0.8.0/pkg/kwokctl/cmd/create/cluster/cluster.go","line":385},"msg":"Cluster is creating","cluster":"spike"}
+{"time":"2026-10-18T22:13:55.761232646-04:00","level":"INFO","source":{"function":"sigs.k8s.io/kwok/pkg/kwokctl/cmd/create/cluster.runE","file":"/home/adamd/go/pkg/mod/sigs.k8s.io/kwok@v0.8.0/pkg/kwokctl/cmd/create/cluster/cluster.go","line":394},"msg":"Cluster is created","cluster":"spike","elapsed":{"nanosecond":998693904,"human":"998.693904ms"}}
+{"time":"2026-10-18T22:13:55.763819017-04:00","level":"INFO","source":{"function":"sigs.k8s.io/kwok/pkg/kwokctl/cmd/create/cluster.runE","file":"/home/adamd/go/pkg/mod/sigs.k8s.io/kwok@v0.8.0/pkg/kwokctl/cmd/create/cluster/cluster.go","line":428},"msg":"Cluster is starting","cluster":"spike"}
+{"time":"2026-10-18T22:13:56.797079998-04:00","level":"INFO","source":{"function":"sigs.k8s.io/kwok/pkg/kwokctl/cmd/create/cluster.runE","file":"/home/adamd/go/pkg/mod/sigs.k8s.io/kwok@v0.8.0/pkg/kwokctl/cmd/create/cluster/cluster.go","line":433},"msg":"Cluster is started","cluster":"spike","elapsed":{"nanosecond":1033262493,"human":"1.033262493s"}}
+{"time":"2026-10-18T22:13:56.797132203-04:00","level":"INFO","source":{"function":"sigs.k8s.io/kwok/pkg/kwokctl/cmd/create/cluster.runE","file":"/home/adamd/go/pkg/mod/sigs.k8s.io/kwok@v0.8.0/pkg/kwokctl/cmd/create/cluster/cluster.go","line":449},"msg":"Waiting for cluster to be ready","cluster":"spike"}
+{"time":"2026-10-18T22:13:58.988309673-04:00","level":"INFO","source":{"function":"sigs.k8s.io/kwok/pkg/kwokctl/cmd/create/cluster.runE","file":"/home/adamd/go/pkg/mod/sigs.k8s.io/kwok@v0.8.0/pkg/kwokctl/cmd/create/cluster/cluster.go","line":457},"msg":"Cluster is ready","cluster":"spike","elapsed":{"nanosecond":2191170516,"human":"2.191170516s"}}
+customresourcedefinition.apiextensions.k8s.io/egresses.spike.egress.purelb.io created
+customresourcedefinition.apiextensions.k8s.io/origegressendpoints.spike.egress.purelb.io created
+customresourcedefinition.apiextensions.k8s.io/origegressnodestates.spike.egress.purelb.io created
+customresourcedefinition.apiextensions.k8s.io/egressendpoints.spike.egress.purelb.io created
+customresourcedefinition.apiextensions.k8s.io/egressmembers.spike.egress.purelb.io created
+customresourcedefinition.apiextensions.k8s.io/egressnodestates.spike.egress.purelb.io created
+customresourcedefinition.apiextensions.k8s.io/egressendpoints.spike.egress.purelb.io condition met
+customresourcedefinition.apiextensions.k8s.io/egresses.spike.egress.purelb.io condition met
+customresourcedefinition.apiextensions.k8s.io/egressmembers.spike.egress.purelb.io condition met
+customresourcedefinition.apiextensions.k8s.io/egressnodestates.spike.egress.purelb.io condition met
+customresourcedefinition.apiextensions.k8s.io/origegressendpoints.spike.egress.purelb.io condition met
+customresourcedefinition.apiextensions.k8s.io/origegressnodestates.spike.egress.purelb.io condition met
+[    0.1s] nodes ready 2/100
+[    2.1s] nodes ready 100/100
+=== decided-n100-a100-q5 exists, skipping ===
+=== orig-n100-a100-q5 exists, skipping ===
+=== decided-n100-a100-q50 exists, skipping ===
+=== orig-n100-a100-q50 exists, skipping ===
+=== decided-n100-a500-q5 ===
+{"level":"warn","ts":"2026-10-19T02:14:02.171352Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:14:02.325468Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:14:02.445985Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:14:02.622984Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+[    0.0s] cleanup
+[    0.1s] pods: deleting 0, creating 5000
+[    1.3s] pods running 314/5000 (total objects 5000)
+[    3.6s] pods running 1170/5000 (total objects 5000)
+[    5.9s] pods running 2011/5000 (total objects 5000)
+[    8.2s] pods running 2920/5000 (total objects 5000)
+[   10.6s] pods running 3810/5000 (total objects 5000)
+[   13.0s] pods running 4712/5000 (total objects 5000)
+[   15.3s] pods running 5000/5000 (total objects 5000)
+[   17.8s] bootstrap: creating egress objects
+[   23.6s] starting 100 agents (qps 5 burst 10)
+[   23.6s] bootstrap: agents ready 0/100, pending 223
+[   35.9s] phase steady: start
+[   98.2s] phase steady: done in 62.0s quiesced=true allocWrites=0 memberWrites=0 ackWrites=0 claimWrites=0 ack p50/p99 0.00/0.00s claim p50/p99 0.00/0.00s (n=0)
+[   98.2s] phase rollout: start
+[  198.4s] rollout: replaced 5000 pods (0 errors)
+[  447.7s] phase rollout: done in 349.2s quiesced=true allocWrites=1323 memberWrites=415 ackWrites=32591 claimWrites=3782 ack p50/p99 0.88/1.04s claim p50/p99 205.05/268.90s (n=7564)
+[  447.7s] phase claim-burst: start
+[  447.9s] claim-burst: 200 claims issued (2 addresses each)
+[  586.1s] phase claim-burst: done in 138.2s quiesced=true allocWrites=545 memberWrites=140 ackWrites=13528 claimWrites=187 ack p50/p99 0.49/1.04s claim p50/p99 58.41/126.46s (n=400)
+
+== decided N=100 P=250 A=2 E=5000 qps=5/10 ackInterval=1s ==
+-- steady 62.0s quiesced=true
+   write leases PATCH                                      2500     40.32/s
+   write leases PUT                                         176      2.84/s
+   watch apiservices                                          0 ev/s          2 B/s
+   watch clusterrolebindings                                  0 ev/s          3 B/s
+   watch clusterroles                                         0 ev/s          3 B/s
+   watch configmaps                                           0 ev/s          3 B/s
+   watch controllerrevisions                                  0 ev/s          1 B/s
+   watch csidrivers                                           0 ev/s          1 B/s
+   watch csinodes                                             0 ev/s          1 B/s
+   watch csistoragecapacities                                 0 ev/s          3 B/s
+   watch customresourcedefinitions                            0 ev/s          3 B/s
+   watch deviceclasses                                        0 ev/s          1 B/s
+   watch egressendpoints                                      2 ev/s        221 B/s
+   watch egresses                                             0 ev/s          1 B/s
+   watch egressmembers                                        0 ev/s          1 B/s
+   watch egressnodestates                                     0 ev/s          4 B/s
+   watch endpointslices                                       0 ev/s          3 B/s
+   watch flowschemas                                          0 ev/s          2 B/s
+   watch ingressclasses                                       0 ev/s          1 B/s
+   watch ingresses                                            0 ev/s          1 B/s
+   watch ipaddresses                                          0 ev/s          1 B/s
+   watch leases                                              85 ev/s      50117 B/s
+   watch limitranges                                          0 ev/s          2 B/s
+   watch mutatingwebhookconfigurations                        0 ev/s          2 B/s
+   watch namespaces                                           0 ev/s          3 B/s
+   watch nodes                                                0 ev/s          7 B/s
+   watch origegressendpoints                                  0 ev/s          1 B/s
+   watch origegressnodestates                                 0 ev/s          1 B/s
+   watch persistentvolumeclaims                               0 ev/s          1 B/s
+   watch persistentvolumes                                    0 ev/s          3 B/s
+   watch poddisruptionbudgets                                 0 ev/s          1 B/s
+   watch pods                                                 0 ev/s          9 B/s
+   watch priorityclasses                                      0 ev/s          1 B/s
+   watch prioritylevelconfigurations                          0 ev/s          2 B/s
+   watch replicasets                                          0 ev/s          2 B/s
+   watch replicationcontrollers                               0 ev/s          1 B/s
+   watch resourceclaims                                       0 ev/s          1 B/s
+   watch resourcequotas                                       0 ev/s          2 B/s
+   watch resourceslices                                       0 ev/s          3 B/s
+   watch rolebindings                                         0 ev/s          2 B/s
+   watch roles                                                0 ev/s          1 B/s
+   watch runtimeclasses                                       0 ev/s          3 B/s
+   watch secrets                                              0 ev/s          1 B/s
+   watch serviceaccounts                                      0 ev/s          2 B/s
+   watch servicecidrs                                         0 ev/s          4 B/s
+   watch services                                             0 ev/s          4 B/s
+   watch statefulsets                                         0 ev/s          5 B/s
+   watch storageclasses                                       0 ev/s          3 B/s
+   watch validatingadmissionpolicies                          0 ev/s          2 B/s
+   watch validatingadmissionpolicybindings                    0 ev/s          4 B/s
+   watch validatingwebhookconfigurations                      0 ev/s          2 B/s
+   watch volumeattachments                                    0 ev/s          3 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:1.298469e+06 etcd_disk_backend_commit_duration_seconds_count:118 etcd_disk_backend_commit_duration_seconds_sum:0.5129131850000008 etcd_mvcc_delete_total:0 etcd_mvcc_put_total:2684 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:1.66395e+06 etcd_network_client_grpc_sent_bytes_total:2.883351e+06 etcd_server_proposals_committed_total:2697]
+   429s map[] apf map[]
+   cpu cores map[etcd:0.031153430677472504 kube-apiserver:0.13434269120174544 kube-controller-manager:0.013748773802712503 kwok-controller:0.002116052017896402 loadgen:0.01536244087925635]
+   ack n=0 p50=0.000 p99=0.000 max=0.000 | claim n=0 p50=0.000 p99=0.000 max=0.000 | lease late=0 maxGap=2.5s
+-- rollout 349.2s quiesced=true
+   write egressendpoints PATCH                             1323      3.79/s
+   write egressmembers PATCH                                415      1.19/s
+   write egressnodestates/status PATCH                    36373    104.17/s
+   write leases PATCH                                     14000     40.10/s
+   write leases PUT                                        1073      3.07/s
+   write pods DELETE                                      15000     42.96/s
+   write pods POST                                         5000     14.32/s
+   write pods/status PATCH                                 5000     14.32/s
+   watch apiservices                                          0 ev/s          4 B/s
+   watch certificatesigningrequests                           0 ev/s          3 B/s
+   watch clusterrolebindings                                  0 ev/s          4 B/s
+   watch clusterroles                                         0 ev/s          3 B/s
+   watch configmaps                                           0 ev/s          4 B/s
+   watch controllerrevisions                                  0 ev/s          1 B/s
+   watch cronjobs                                             0 ev/s          3 B/s
+   watch csidrivers                                           0 ev/s          3 B/s
+   watch csinodes                                             0 ev/s          3 B/s
+   watch csistoragecapacities                                 0 ev/s          3 B/s
+   watch customresourcedefinitions                            0 ev/s          4 B/s
+   watch daemonsets                                           0 ev/s          3 B/s
+   watch deployments                                          0 ev/s          3 B/s
+   watch deviceclasses                                        0 ev/s          3 B/s
+   watch egressendpoints                                    384 ev/s    1494171 B/s
+   watch egresses                                             0 ev/s          2 B/s
+   watch egressmembers                                        1 ev/s        607 B/s
+   watch egressnodestates                                   208 ev/s     427110 B/s
+   watch endpoints                                            0 ev/s          1 B/s
+   watch endpointslices                                       0 ev/s          3 B/s
+   watch flowschemas                                          0 ev/s          4 B/s
+   watch horizontalpodautoscalers                             0 ev/s          2 B/s
+   watch ingressclasses                                       0 ev/s          3 B/s
+   watch ingresses                                            0 ev/s          1 B/s
+   watch ipaddresses                                          0 ev/s          3 B/s
+   watch jobs                                                 0 ev/s          3 B/s
+   watch leases                                              85 ev/s      50105 B/s
+   watch limitranges                                          0 ev/s          2 B/s
+   watch mutatingwebhookconfigurations                        0 ev/s          4 B/s
+   watch namespaces                                           0 ev/s          4 B/s
+   watch networkpolicies                                      0 ev/s          2 B/s
+   watch nodes                                                0 ev/s          7 B/s
+   watch origegressendpoints                                  0 ev/s          2 B/s
+   watch origegressnodestates                                 0 ev/s          2 B/s
+   watch persistentvolumeclaims                               0 ev/s          3 B/s
+   watch persistentvolumes                                    0 ev/s          5 B/s
+   watch poddisruptionbudgets                                 0 ev/s          4 B/s
+   watch pods                                               372 ev/s     913713 B/s
+   watch podtemplates                                         0 ev/s          3 B/s
+   watch priorityclasses                                      0 ev/s          3 B/s
+   watch prioritylevelconfigurations                          0 ev/s          4 B/s
+   watch replicasets                                          0 ev/s          6 B/s
+   watch replicationcontrollers                               0 ev/s          3 B/s
+   watch resourceclaims                                       0 ev/s          3 B/s
+   watch resourceclaimtemplates                               0 ev/s          2 B/s
+   watch resourcequotas                                       0 ev/s          3 B/s
+   watch resourceslices                                       0 ev/s          5 B/s
+   watch rolebindings                                         0 ev/s          4 B/s
+   watch roles                                                0 ev/s          3 B/s
+   watch runtimeclasses                                       0 ev/s          3 B/s
+   watch secrets                                              0 ev/s          2 B/s
+   watch serviceaccounts                                      0 ev/s          3 B/s
+   watch servicecidrs                                         0 ev/s          5 B/s
+   watch services                                             0 ev/s          5 B/s
+   watch statefulsets                                         0 ev/s          6 B/s
+   watch storageclasses                                       0 ev/s          5 B/s
+   watch validatingadmissionpolicies                          0 ev/s          4 B/s
+   watch validatingadmissionpolicybindings                    0 ev/s          5 B/s
+   watch validatingwebhookconfigurations                      0 ev/s          5 B/s
+   watch volumeattachments                                    0 ev/s          6 B/s
+   watch volumeattributesclasses                              0 ev/s          2 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:1.79866739e+08 etcd_disk_backend_commit_duration_seconds_count:2711 etcd_disk_backend_commit_duration_seconds_sum:19.814963018000004 etcd_mvcc_delete_total:5000 etcd_mvcc_put_total:73219 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:1.92253657e+08 etcd_network_client_grpc_sent_bytes_total:4.27898222e+08 etcd_server_proposals_committed_total:86658]
+   429s map[] apf map[]
+   cpu cores map[etcd:0.2475298521984411 kube-apiserver:1.4045436274982293 kube-controller-manager:0.08704599059508769 kwok-controller:0.10368656850181812 loadgen:0.3148326659164697]
+   ack n=1323 p50=0.880 p99=1.045 max=1.131 | claim n=7564 p50=205.054 p99=268.895 max=276.117 | lease late=0 maxGap=2.6s
+-- claim-burst 138.2s quiesced=true
+   write egressendpoints PATCH                              545      3.94/s
+   write egressmembers PATCH                                140      1.01/s
+   write egressnodestates/status PATCH                    13715     99.27/s
+   write leases PATCH                                      5500     39.81/s
+   write leases PUT                                         451      3.26/s
+   write pods POST                                          200      1.45/s
+   write pods/status PATCH                                  200      1.45/s
+   watch apiservices                                          0 ev/s          3 B/s
+   watch certificatesigningrequests                           0 ev/s          2 B/s
+   watch clusterrolebindings                                  0 ev/s          5 B/s
+   watch clusterroles                                         0 ev/s          5 B/s
+   watch configmaps                                           0 ev/s          3 B/s
+   watch controllerrevisions                                  0 ev/s          1 B/s
+   watch cronjobs                                             0 ev/s          3 B/s
+   watch csidrivers                                           0 ev/s          3 B/s
+   watch csinodes                                             0 ev/s          3 B/s
+   watch csistoragecapacities                                 0 ev/s          4 B/s
+   watch customresourcedefinitions                            0 ev/s          4 B/s
+   watch daemonsets                                           0 ev/s          4 B/s
+   watch deployments                                          0 ev/s          2 B/s
+   watch deviceclasses                                        0 ev/s          3 B/s
+   watch egressendpoints                                    400 ev/s    1706603 B/s
+   watch egresses                                             0 ev/s          2 B/s
+   watch egressmembers                                        1 ev/s        519 B/s
+   watch egressnodestates                                   199 ev/s     240274 B/s
+   watch endpoints                                            0 ev/s          1 B/s
+   watch endpointslices                                       0 ev/s          3 B/s
+   watch flowschemas                                          0 ev/s          4 B/s
+   watch horizontalpodautoscalers                             0 ev/s          1 B/s
+   watch ingressclasses                                       0 ev/s          5 B/s
+   watch ingresses                                            0 ev/s          2 B/s
+   watch ipaddresses                                          0 ev/s          4 B/s
+   watch jobs                                                 0 ev/s          1 B/s
+   watch leases                                              86 ev/s      50423 B/s
+   watch limitranges                                          0 ev/s          3 B/s
+   watch mutatingwebhookconfigurations                        0 ev/s          4 B/s
+   watch namespaces                                           0 ev/s          3 B/s
+   watch networkpolicies                                      0 ev/s          2 B/s
+   watch nodes                                                1 ev/s       2104 B/s
+   watch origegressendpoints                                  0 ev/s          2 B/s
+   watch origegressnodestates                                 0 ev/s          2 B/s
+   watch persistentvolumeclaims                               0 ev/s          2 B/s
+   watch persistentvolumes                                    0 ev/s          4 B/s
+   watch poddisruptionbudgets                                 0 ev/s          3 B/s
+   watch pods                                                15 ev/s      31574 B/s
+   watch podtemplates                                         0 ev/s          2 B/s
+   watch priorityclasses                                      0 ev/s          3 B/s
+   watch prioritylevelconfigurations                          0 ev/s          5 B/s
+   watch replicasets                                          0 ev/s          5 B/s
+   watch replicationcontrollers                               0 ev/s          4 B/s
+   watch resourceclaims                                       0 ev/s          3 B/s
+   watch resourceclaimtemplates                               0 ev/s          3 B/s
+   watch resourcequotas                                       0 ev/s          2 B/s
+   watch resourceslices                                       0 ev/s          6 B/s
+   watch rolebindings                                         0 ev/s          2 B/s
+   watch roles                                                0 ev/s          4 B/s
+   watch runtimeclasses                                       0 ev/s          3 B/s
+   watch secrets                                              0 ev/s          3 B/s
+   watch serviceaccounts                                      0 ev/s          3 B/s
+   watch servicecidrs                                         0 ev/s          6 B/s
+   watch services                                             0 ev/s          4 B/s
+   watch statefulsets                                         0 ev/s          5 B/s
+   watch storageclasses                                       0 ev/s          5 B/s
+   watch validatingadmissionpolicies                          0 ev/s          5 B/s
+   watch validatingadmissionpolicybindings                    0 ev/s          3 B/s
+   watch validatingwebhookconfigurations                      0 ev/s          2 B/s
+   watch volumeattachments                                    0 ev/s          6 B/s
+   watch volumeattributesclasses                              0 ev/s          1 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:2.9753314e+07 etcd_disk_backend_commit_duration_seconds_count:897 etcd_disk_backend_commit_duration_seconds_sum:5.121664614000046 etcd_mvcc_delete_total:0 etcd_mvcc_put_total:20764 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:3.2867981e+07 etcd_network_client_grpc_sent_bytes_total:6.1323918e+07 etcd_server_proposals_committed_total:20829]
+   429s map[] apf map[]
+   cpu cores map[etcd:0.10369151986282345 kube-apiserver:0.8669284325584429 kube-controller-manager:0.03737428392483098 kwok-controller:0.007167573818140226 loadgen:0.2568390015797201]
+   ack n=545 p50=0.493 p99=1.035 max=1.081 | claim n=400 p50=58.414 p99=126.460 max=129.449 | lease late=0 maxGap=2.5s
+size egressendpoints          n=500 avg=4241 max=4905
+size egressmembers            n=250 avg=3610 max=4153
+size egressnodestates         n=100 avg=1546 max=1546
+=== orig-n100-a500-q5 ===
+{"level":"warn","ts":"2026-10-19T02:23:48.956663Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:23:49.096815Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:23:49.224580Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:23:50.060642Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+[    0.0s] cleanup
+[    4.5s] pods: deleting 200, creating 0
+[    4.9s] pods running 5000/5000 (total objects 5000)
+[    7.4s] bootstrap: creating egress objects
+[    9.8s] starting 100 agents (qps 5 burst 10)
+[    9.8s] bootstrap: agents ready 0/100, pending 250
+[   22.2s] phase steady: start
+[   84.4s] phase steady: done in 62.0s quiesced=true allocWrites=0 memberWrites=0 ackWrites=0 claimWrites=0 ack p50/p99 0.00/0.00s claim p50/p99 0.00/0.00s (n=0)
+[   84.4s] phase rollout: start
+[  184.5s] rollout: replaced 5000 pods (0 errors)
+[  214.0s] lease kwok-node-91: Patch "https://127.0.0.1:32766/apis/coordination.k8s.io/v1/namespaces/purelb-system/leases/purelb-node-kwok-node-91": net/http: TLS handshake timeout
+[  214.0s] lease kwok-node-86: Patch "https://127.0.0.1:32766/apis/coordination.k8s.io/v1/namespaces/purelb-system/leases/purelb-node-kwok-node-86": net/http: TLS handshake timeout
+[  214.0s] lease kwok-node-45: Patch "https://127.0.0.1:32766/apis/coordination.k8s.io/v1/namespaces/purelb-system/leases/purelb-node-kwok-node-45": net/http: TLS handshake timeout
+[  214.0s] lease kwok-node-16: Patch "https://127.0.0.1:32766/apis/coordination.k8s.io/v1/namespaces/purelb-system/leases/purelb-node-kwok-node-16": net/http: TLS handshake timeout
+[  220.4s] agent kwok-node-43 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-45 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-97 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-51 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-60 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-75 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-65 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-53 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-15 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-84 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-64 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-81 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-36 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-9 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-19 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-92 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-8 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-50 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-35 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-99 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-10 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-95 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-39 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-7 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-91 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-29 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-62 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-54 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-20 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-71 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-69 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-13 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-86 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-77 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-31 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-52 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-76 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-16 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-11 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-68 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-18 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-78 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-79 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-57 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-26 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-42 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-59 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-30 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-49 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-72 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-24 write: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-37 write: an error on the server ("unknown") has prevented the request from succeeding
+[  308.4s] phase rollout: done in 223.6s quiesced=true allocWrites=994 memberWrites=0 ackWrites=88193 claimWrites=3607 ack p50/p99 0.33/0.68s claim p50/p99 78.43/118.14s (n=7440)
+[  308.4s] phase claim-burst: start
+[  308.7s] claim-burst: 200 claims issued (2 addresses each)
+[  361.9s] phase claim-burst: done in 53.1s quiesced=true allocWrites=257 memberWrites=0 ackWrites=23827 claimWrites=165 ack p50/p99 0.43/0.64s claim p50/p99 18.75/44.87s (n=400)
+
+== orig N=100 P=250 A=2 E=5000 qps=5/10 ackInterval=1s ==
+-- steady 62.0s quiesced=true
+   write leases PATCH                                      2500     40.32/s
+   write leases PUT                                         211      3.40/s
+   write nodes/status PATCH                                  59      0.95/s
+   watch apiservices                                          0 ev/s          5 B/s
+   watch certificatesigningrequests                           0 ev/s          2 B/s
+   watch clusterrolebindings                                  0 ev/s          3 B/s
+   watch clusterroles                                         0 ev/s          3 B/s
+   watch configmaps                                           0 ev/s          3 B/s
+   watch controllerrevisions                                  0 ev/s          1 B/s
+   watch cronjobs                                             0 ev/s          2 B/s
+   watch csidrivers                                           0 ev/s          3 B/s
+   watch csinodes                                             0 ev/s          3 B/s
+   watch csistoragecapacities                                 0 ev/s          3 B/s
+   watch customresourcedefinitions                            0 ev/s          4 B/s
+   watch daemonsets                                           0 ev/s          3 B/s
+   watch deployments                                          0 ev/s          2 B/s
+   watch deviceclasses                                        0 ev/s          3 B/s
+   watch egressendpoints                                      0 ev/s          1 B/s
+   watch egresses                                             0 ev/s          1 B/s
+   watch egressmembers                                        0 ev/s          1 B/s
+   watch egressnodestates                                     0 ev/s          1 B/s
+   watch endpoints                                            0 ev/s          1 B/s
+   watch endpointslices                                       0 ev/s          3 B/s
+   watch flowschemas                                          0 ev/s          3 B/s
+   watch horizontalpodautoscalers                             0 ev/s          2 B/s
+   watch ingressclasses                                       0 ev/s          3 B/s
+   watch ingresses                                            0 ev/s          1 B/s
+   watch ipaddresses                                          0 ev/s          3 B/s
+   watch jobs                                                 0 ev/s          2 B/s
+   watch leases                                              87 ev/s      50852 B/s
+   watch limitranges                                          0 ev/s          2 B/s
+   watch mutatingwebhookconfigurations                        0 ev/s          4 B/s
+   watch namespaces                                           0 ev/s          2 B/s
+   watch networkpolicies                                      0 ev/s          1 B/s
+   watch nodes                                                4 ev/s      11037 B/s
+   watch origegressendpoints                                  0 ev/s          1 B/s
+   watch origegressnodestates                                 0 ev/s          4 B/s
+   watch persistentvolumeclaims                               0 ev/s          3 B/s
+   watch persistentvolumes                                    0 ev/s          4 B/s
+   watch poddisruptionbudgets                                 0 ev/s          5 B/s
+   watch pods                                                81 ev/s     187653 B/s
+   watch podtemplates                                         0 ev/s          6 B/s
+   watch priorityclasses                                      0 ev/s          3 B/s
+   watch prioritylevelconfigurations                          0 ev/s          8 B/s
+   watch replicasets                                          0 ev/s          4 B/s
+   watch replicationcontrollers                               0 ev/s          3 B/s
+   watch resourceclaims                                       0 ev/s          4 B/s
+   watch resourceclaimtemplates                               0 ev/s          4 B/s
+   watch resourcequotas                                       0 ev/s          2 B/s
+   watch resourceslices                                       0 ev/s          5 B/s
+   watch rolebindings                                         0 ev/s          5 B/s
+   watch roles                                                0 ev/s          3 B/s
+   watch runtimeclasses                                       0 ev/s          3 B/s
+   watch secrets                                              0 ev/s          2 B/s
+   watch serviceaccounts                                      0 ev/s          2 B/s
+   watch servicecidrs                                         0 ev/s          4 B/s
+   watch services                                             0 ev/s          4 B/s
+   watch statefulsets                                         0 ev/s          5 B/s
+   watch storageclasses                                       0 ev/s          5 B/s
+   watch validatingadmissionpolicies                          0 ev/s          6 B/s
+   watch validatingadmissionpolicybindings                    0 ev/s          4 B/s
+   watch validatingwebhookconfigurations                      0 ev/s          6 B/s
+   watch volumeattachments                                    0 ev/s          5 B/s
+   watch volumeattributesclasses                              0 ev/s          2 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:1.491268e+06 etcd_disk_backend_commit_duration_seconds_count:185 etcd_disk_backend_commit_duration_seconds_sum:0.5899633440000045 etcd_mvcc_delete_total:0 etcd_mvcc_put_total:2778 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:1.868008e+06 etcd_network_client_grpc_sent_bytes_total:5.205636e+06 etcd_server_proposals_committed_total:2791]
+   429s map[] apf map[]
+   cpu cores map[etcd:0.03820106196478161 kube-apiserver:0.1745838310708927 kube-controller-manager:0.01685483468835223 kwok-controller:0.029475396901812036 loadgen:0.014255699041640268]
+   ack n=0 p50=0.000 p99=0.000 max=0.000 | claim n=0 p50=0.000 p99=0.000 max=0.000 | lease late=0 maxGap=2.5s
+-- rollout 223.6s quiesced=true
+   write events POST                                        102      0.46/s
+   write leases PATCH                                      8400     37.56/s
+   write leases PUT                                         611      2.73/s
+   write origegressendpoints PATCH                          994      4.44/s
+   write origegressnodestates/status PATCH                91800    410.50/s
+   write pods DELETE                                      15000     67.07/s
+   write pods POST                                         5000     22.36/s
+   write pods/status PATCH                                 5000     22.36/s
+   watch apiservices                                          0 ev/s         49 B/s
+   watch certificatesigningrequests                           0 ev/s          2 B/s
+   watch clusterrolebindings                                  0 ev/s        157 B/s
+   watch clusterroles                                         0 ev/s        271 B/s
+   watch configmaps                                           0 ev/s         55 B/s
+   watch controllerrevisions                                  0 ev/s          2 B/s
+   watch cronjobs                                             0 ev/s          3 B/s
+   watch csidrivers                                           0 ev/s          3 B/s
+   watch csinodes                                             0 ev/s          4 B/s
+   watch csistoragecapacities                                 0 ev/s          4 B/s
+   watch customresourcedefinitions                            0 ev/s         48 B/s
+   watch daemonsets                                           0 ev/s          3 B/s
+   watch deployments                                          0 ev/s          4 B/s
+   watch deviceclasses                                        0 ev/s          3 B/s
+   watch egressendpoints                                      0 ev/s          2 B/s
+   watch egresses                                             1 ev/s        422 B/s
+   watch egressmembers                                        0 ev/s          2 B/s
+   watch egressnodestates                                     0 ev/s          2 B/s
+   watch endpoints                                            0 ev/s          3 B/s
+   watch endpointslices                                       0 ev/s          5 B/s
+   watch flowschemas                                          0 ev/s         56 B/s
+   watch horizontalpodautoscalers                             0 ev/s          2 B/s
+   watch ingressclasses                                       0 ev/s          3 B/s
+   watch ingresses                                            0 ev/s          2 B/s
+   watch ipaddresses                                          0 ev/s          6 B/s
+   watch jobs                                                 0 ev/s          2 B/s
+   watch leases                                              75 ev/s      44690 B/s
+   watch limitranges                                          0 ev/s          3 B/s
+   watch mutatingwebhookconfigurations                        0 ev/s          4 B/s
+   watch namespaces                                           0 ev/s         22 B/s
+   watch networkpolicies                                      0 ev/s          2 B/s
+   watch nodes                                                1 ev/s       3892 B/s
+   watch origegressendpoints                                451 ev/s    4120475 B/s
+   watch origegressnodestates                               775 ev/s    7781139 B/s
+   watch persistentvolumeclaims                               0 ev/s          4 B/s
+   watch persistentvolumes                                    0 ev/s          6 B/s
+   watch poddisruptionbudgets                                 0 ev/s          4 B/s
+   watch pods                                               604 ev/s    1479279 B/s
+   watch podtemplates                                         0 ev/s          2 B/s
+   watch priorityclasses                                      0 ev/s          7 B/s
+   watch prioritylevelconfigurations                          0 ev/s         26 B/s
+   watch replicasets                                          0 ev/s          6 B/s
+   watch replicationcontrollers                               0 ev/s          4 B/s
+   watch resourceclaims                                       0 ev/s          3 B/s
+   watch resourceclaimtemplates                               0 ev/s          2 B/s
+   watch resourcequotas                                       0 ev/s          2 B/s
+   watch resourceslices                                       0 ev/s          6 B/s
+   watch rolebindings                                         0 ev/s         26 B/s
+   watch roles                                                0 ev/s         22 B/s
+   watch runtimeclasses                                       0 ev/s          3 B/s
+   watch secrets                                              0 ev/s          3 B/s
+   watch serviceaccounts                                      0 ev/s          7 B/s
+   watch servicecidrs                                         0 ev/s         10 B/s
+   watch services                                             0 ev/s         11 B/s
+   watch statefulsets                                         0 ev/s          8 B/s
+   watch storageclasses                                       0 ev/s          4 B/s
+   watch validatingadmissionpolicies                          0 ev/s          3 B/s
+   watch validatingadmissionpolicybindings                    0 ev/s          4 B/s
+   watch validatingwebhookconfigurations                      0 ev/s          4 B/s
+   watch volumeattachments                                    0 ev/s          6 B/s
+   watch volumeattributesclasses                              0 ev/s          3 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:1.785886143e+09 etcd_disk_backend_commit_duration_seconds_count:1799 etcd_disk_backend_commit_duration_seconds_sum:24.806352235999995 etcd_mvcc_delete_total:5001 etcd_mvcc_put_total:121928 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:1.848995892e+09 etcd_network_client_grpc_sent_bytes_total:3.685836012e+09 etcd_server_proposals_committed_total:137182]
+   429s map[] apf map[]
+   cpu cores map[etcd:0.4358008303318382 kube-apiserver:7.033505411683336 kube-controller-manager:-0.16516231748984536 kwok-controller:0.11937328169742151 loadgen:0.8832389914248143]
+   ack n=994 p50=0.334 p99=0.679 max=21.677 | claim n=7440 p50=78.429 p99=118.140 max=119.601 | lease late=200 maxGap=22.2s
+-- claim-burst 53.1s quiesced=true
+   write leases PATCH                                      2100     39.52/s
+   write leases PUT                                         157      2.95/s
+   write origegressendpoints PATCH                          257      4.84/s
+   write origegressnodestates/status PATCH                23992    451.54/s
+   write pods POST                                          200      3.76/s
+   write pods/status PATCH                                  200      3.76/s
+   watch apiservices                                          0 ev/s          2 B/s
+   watch clusterrolebindings                                  0 ev/s          2 B/s
+   watch clusterroles                                         0 ev/s          2 B/s
+   watch configmaps                                           0 ev/s          1 B/s
+   watch csidrivers                                           0 ev/s          2 B/s
+   watch csinodes                                             0 ev/s          2 B/s
+   watch csistoragecapacities                                 0 ev/s          2 B/s
+   watch customresourcedefinitions                            0 ev/s          3 B/s
+   watch deviceclasses                                        0 ev/s          2 B/s
+   watch endpointslices                                       0 ev/s          2 B/s
+   watch flowschemas                                          0 ev/s          2 B/s
+   watch ingressclasses                                       0 ev/s          3 B/s
+   watch ipaddresses                                          0 ev/s          2 B/s
+   watch leases                                              84 ev/s      49413 B/s
+   watch limitranges                                          0 ev/s          1 B/s
+   watch mutatingwebhookconfigurations                        0 ev/s          2 B/s
+   watch namespaces                                           0 ev/s          3 B/s
+   watch nodes                                                0 ev/s          4 B/s
+   watch origegressendpoints                                490 ev/s    5044576 B/s
+   watch origegressnodestates                               903 ev/s    8164626 B/s
+   watch persistentvolumeclaims                               0 ev/s          2 B/s
+   watch persistentvolumes                                    0 ev/s          2 B/s
+   watch poddisruptionbudgets                                 0 ev/s          2 B/s
+   watch pods                                                38 ev/s      82108 B/s
+   watch priorityclasses                                      0 ev/s          2 B/s
+   watch prioritylevelconfigurations                          0 ev/s          2 B/s
+   watch replicasets                                          0 ev/s          3 B/s
+   watch replicationcontrollers                               0 ev/s          2 B/s
+   watch resourceclaims                                       0 ev/s          2 B/s
+   watch resourcequotas                                       0 ev/s          1 B/s
+   watch resourceslices                                       0 ev/s          2 B/s
+   watch rolebindings                                         0 ev/s          4 B/s
+   watch roles                                                0 ev/s          2 B/s
+   watch runtimeclasses                                       0 ev/s          2 B/s
+   watch secrets                                              0 ev/s          1 B/s
+   watch serviceaccounts                                      0 ev/s          1 B/s
+   watch servicecidrs                                         0 ev/s          2 B/s
+   watch services                                             0 ev/s          3 B/s
+   watch statefulsets                                         0 ev/s          3 B/s
+   watch storageclasses                                       0 ev/s          5 B/s
+   watch validatingadmissionpolicies                          0 ev/s          2 B/s
+   watch validatingadmissionpolicybindings                    0 ev/s          2 B/s
+   watch volumeattachments                                    0 ev/s          4 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:4.3509206e+08 etcd_disk_backend_commit_duration_seconds_count:412 etcd_disk_backend_commit_duration_seconds_sum:3.6072326090000075 etcd_mvcc_delete_total:0 etcd_mvcc_put_total:26912 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:4.53919357e+08 etcd_network_client_grpc_sent_bytes_total:8.87246507e+08 etcd_server_proposals_committed_total:27714]
+   429s map[] apf map[]
+   cpu cores map[etcd:0.2408235466805625 kube-apiserver:5.45669621205361 kube-controller-manager:0.06006757048621989 kwok-controller:0.00883093102280118 loadgen:0.7516636970129439]
+   ack n=257 p50=0.429 p99=0.641 max=0.741 | claim n=400 p50=18.745 p99=44.867 max=48.465 | lease late=0 maxGap=2.8s
+size origegressendpoints      n=250 avg=10195 max=11638
+size origegressnodestates     n=100 avg=17806 max=17806
+=== decided-n100-a500-q50 ===
+{"level":"warn","ts":"2026-10-19T02:29:52.261266Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:29:52.418183Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:29:52.580629Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:30:39.851573Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+[    0.1s] cleanup
+[   38.1s] pods: deleting 200, creating 0
+[   38.6s] pods running 5000/5000 (total objects 5000)
+[   41.0s] bootstrap: creating egress objects
+[   46.6s] starting 100 agents (qps 50 burst 100)
+[   46.6s] bootstrap: agents ready 0/100, pending 246
+[   59.0s] phase steady: start
+[  121.4s] phase steady: done in 62.0s quiesced=true allocWrites=0 memberWrites=0 ackWrites=0 claimWrites=0 ack p50/p99 0.00/0.00s claim p50/p99 0.00/0.00s (n=0)
+[  121.4s] phase rollout: start
+[  221.5s] rollout: replaced 5000 pods (0 errors)
+[  238.7s] phase rollout: done in 117.0s quiesced=true allocWrites=3763 memberWrites=2001 ackWrites=11402 claimWrites=149 ack p50/p99 1.00/1.03s claim p50/p99 9.35/19.14s (n=298)
+[  238.7s] phase claim-burst: start
+[  238.8s] claim-burst: 200 claims issued (2 addresses each)
+[  255.0s] phase claim-burst: done in 16.1s quiesced=true allocWrites=569 memberWrites=146 ackWrites=1306 claimWrites=163 ack p50/p99 0.58/1.02s claim p50/p99 5.03/12.07s (n=400)
+
+== decided N=100 P=250 A=2 E=5000 qps=50/100 ackInterval=1s ==
+-- steady 62.0s quiesced=true
+   write leases PATCH                                      2500     40.32/s
+   write leases PUT                                         168      2.71/s
+   watch apiservices                                          0 ev/s          3 B/s
+   watch certificatesigningrequests                           0 ev/s          2 B/s
+   watch clusterrolebindings                                  0 ev/s          2 B/s
+   watch clusterroles                                         0 ev/s          3 B/s
+   watch configmaps                                           0 ev/s          3 B/s
+   watch controllerrevisions                                  0 ev/s          1 B/s
+   watch cronjobs                                             0 ev/s          2 B/s
+   watch csidrivers                                           0 ev/s          4 B/s
+   watch csinodes                                             0 ev/s          3 B/s
+   watch csistoragecapacities                                 0 ev/s          4 B/s
+   watch customresourcedefinitions                            0 ev/s          4 B/s
+   watch daemonsets                                           0 ev/s          3 B/s
+   watch deployments                                          0 ev/s          2 B/s
+   watch deviceclasses                                        0 ev/s          4 B/s
+   watch egressendpoints                                      2 ev/s        222 B/s
+   watch egresses                                             0 ev/s          1 B/s
+   watch egressmembers                                        0 ev/s          1 B/s
+   watch egressnodestates                                     0 ev/s          4 B/s
+   watch endpoints                                            0 ev/s          1 B/s
+   watch endpointslices                                       0 ev/s          3 B/s
+   watch flowschemas                                          0 ev/s          3 B/s
+   watch horizontalpodautoscalers                             0 ev/s          2 B/s
+   watch ingressclasses                                       0 ev/s          1 B/s
+   watch ingresses                                            0 ev/s          1 B/s
+   watch ipaddresses                                          0 ev/s          1 B/s
+   watch leases                                              87 ev/s      50934 B/s
+   watch limitranges                                          0 ev/s          1 B/s
+   watch mutatingwebhookconfigurations                        0 ev/s          4 B/s
+   watch namespaces                                           0 ev/s          3 B/s
+   watch nodes                                                0 ev/s          8 B/s
+   watch origegressendpoints                                  0 ev/s          1 B/s
+   watch origegressnodestates                                 0 ev/s          1 B/s
+   watch persistentvolumeclaims                               0 ev/s          3 B/s
+   watch persistentvolumes                                    0 ev/s          6 B/s
+   watch poddisruptionbudgets                                 0 ev/s          3 B/s
+   watch pods                                                 0 ev/s         11 B/s
+   watch podtemplates                                         0 ev/s          2 B/s
+   watch priorityclasses                                      0 ev/s          3 B/s
+   watch prioritylevelconfigurations                          0 ev/s          4 B/s
+   watch replicasets                                          0 ev/s          4 B/s
+   watch replicationcontrollers                               0 ev/s          3 B/s
+   watch resourceclaims                                       0 ev/s          4 B/s
+   watch resourcequotas                                       0 ev/s          4 B/s
+   watch resourceslices                                       0 ev/s          6 B/s
+   watch rolebindings                                         0 ev/s          5 B/s
+   watch roles                                                0 ev/s          1 B/s
+   watch runtimeclasses                                       0 ev/s          1 B/s
+   watch secrets                                              0 ev/s          2 B/s
+   watch serviceaccounts                                      0 ev/s          1 B/s
+   watch servicecidrs                                         0 ev/s          3 B/s
+   watch services                                             0 ev/s          5 B/s
+   watch statefulsets                                         0 ev/s          5 B/s
+   watch storageclasses                                       0 ev/s          5 B/s
+   watch validatingadmissionpolicies                          0 ev/s          2 B/s
+   watch validatingadmissionpolicybindings                    0 ev/s          2 B/s
+   watch validatingwebhookconfigurations                      0 ev/s          4 B/s
+   watch volumeattachments                                    0 ev/s          5 B/s
+   watch volumeattributesclasses                              0 ev/s          2 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:1.29279e+06 etcd_disk_backend_commit_duration_seconds_count:144 etcd_disk_backend_commit_duration_seconds_sum:0.5406470789999958 etcd_mvcc_delete_total:0 etcd_mvcc_put_total:2674 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:1.660779e+06 etcd_network_client_grpc_sent_bytes_total:1.7304588e+07 etcd_server_proposals_committed_total:2687]
+   429s map[] apf map[]
+   cpu cores map[etcd:0.03774696582913238 kube-apiserver:0.18617602582453777 kube-controller-manager:0.017026899124959593 kwok-controller:0.0024267737212747592 loadgen:0.01669098653320622]
+   ack n=0 p50=0.000 p99=0.000 max=0.000 | claim n=0 p50=0.000 p99=0.000 max=0.000 | lease late=0 maxGap=2.5s
+-- rollout 117.0s quiesced=true
+   write egressendpoints PATCH                             3763     32.16/s
+   write egressmembers PATCH                               2001     17.10/s
+   write egressnodestates/status PATCH                    11551     98.71/s
+   write leases PATCH                                      4700     40.16/s
+   write leases PUT                                         336      2.87/s
+   write nodes/status PATCH                                 108      0.92/s
+   write pods DELETE                                      15001    128.19/s
+   write pods POST                                         5000     42.73/s
+   write pods/status PATCH                                 5001     42.74/s
+   watch apiservices                                          0 ev/s          3 B/s
+   watch certificatesigningrequests                           0 ev/s          2 B/s
+   watch clusterrolebindings                                  0 ev/s          5 B/s
+   watch clusterroles                                         0 ev/s          2 B/s
+   watch configmaps                                           0 ev/s          4 B/s
+   watch controllerrevisions                                  0 ev/s          1 B/s
+   watch cronjobs                                             0 ev/s          3 B/s
+   watch csidrivers                                           0 ev/s          2 B/s
+   watch csinodes                                             0 ev/s          2 B/s
+   watch csistoragecapacities                                 0 ev/s          2 B/s
+   watch customresourcedefinitions                            0 ev/s          4 B/s
+   watch daemonsets                                           0 ev/s          3 B/s
+   watch deployments                                          0 ev/s          3 B/s
+   watch deviceclasses                                        0 ev/s          2 B/s
+   watch egressendpoints                                   3250 ev/s    9547780 B/s
+   watch egresses                                             0 ev/s          2 B/s
+   watch egressmembers                                       17 ev/s       8734 B/s
+   watch egressnodestates                                   197 ev/s     230249 B/s
+   watch endpoints                                            0 ev/s          1 B/s
+   watch endpointslices                                       0 ev/s          3 B/s
+   watch flowschemas                                          0 ev/s          4 B/s
+   watch horizontalpodautoscalers                             0 ev/s          2 B/s
+   watch ingressclasses                                       0 ev/s          3 B/s
+   watch ingresses                                            0 ev/s          1 B/s
+   watch ipaddresses                                          0 ev/s          3 B/s
+   watch jobs                                                 0 ev/s          2 B/s
+   watch leases                                              85 ev/s      50059 B/s
+   watch limitranges                                          0 ev/s          2 B/s
+   watch mutatingwebhookconfigurations                        0 ev/s          4 B/s
+   watch namespaces                                           0 ev/s          3 B/s
+   watch networkpolicies                                      0 ev/s          2 B/s
+   watch nodes                                                5 ev/s      13178 B/s
+   watch origegressendpoints                                  0 ev/s          2 B/s
+   watch origegressnodestates                                 0 ev/s          2 B/s
+   watch persistentvolumeclaims                               0 ev/s          2 B/s
+   watch persistentvolumes                                    0 ev/s          4 B/s
+   watch poddisruptionbudgets                                 0 ev/s          2 B/s
+   watch pods                                              1111 ev/s    2727590 B/s
+   watch podtemplates                                         0 ev/s          2 B/s
+   watch priorityclasses                                      0 ev/s          3 B/s
+   watch prioritylevelconfigurations                          0 ev/s          4 B/s
+   watch replicasets                                          0 ev/s          4 B/s
+   watch replicationcontrollers                               0 ev/s          2 B/s
+   watch resourceclaims                                       0 ev/s          2 B/s
+   watch resourceclaimtemplates                               0 ev/s          2 B/s
+   watch resourcequotas                                       0 ev/s          2 B/s
+   watch resourceslices                                       0 ev/s          4 B/s
+   watch rolebindings                                         0 ev/s          3 B/s
+   watch roles                                                0 ev/s          3 B/s
+   watch runtimeclasses                                       0 ev/s          3 B/s
+   watch secrets                                              0 ev/s          2 B/s
+   watch serviceaccounts                                      0 ev/s          3 B/s
+   watch servicecidrs                                         0 ev/s          5 B/s
+   watch services                                             0 ev/s          4 B/s
+   watch statefulsets                                         0 ev/s          4 B/s
+   watch storageclasses                                       0 ev/s          4 B/s
+   watch validatingadmissionpolicies                          0 ev/s          4 B/s
+   watch validatingadmissionpolicybindings                    0 ev/s          4 B/s
+   watch validatingwebhookconfigurations                      0 ev/s          4 B/s
+   watch volumeattachments                                    0 ev/s          4 B/s
+   watch volumeattributesclasses                              0 ev/s          2 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:8.2765747e+07 etcd_disk_backend_commit_duration_seconds_count:1119 etcd_disk_backend_commit_duration_seconds_sum:4.2193273009999075 etcd_mvcc_delete_total:5000 etcd_mvcc_put_total:42472 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:9.0737442e+07 etcd_network_client_grpc_sent_bytes_total:2.16459127e+08 etcd_server_proposals_committed_total:56173]
+   429s map[] apf map[]
+   cpu cores map[etcd:0.4999323640788735 kube-apiserver:2.6772497167889524 kube-controller-manager:0.20958041867278682 kwok-controller:0.32383603542313244 loadgen:1.2789207026356249]
+   ack n=3763 p50=0.999 p99=1.028 max=1.078 | claim n=298 p50=9.350 p99=19.136 max=19.807 | lease late=0 maxGap=2.5s
+-- claim-burst 16.1s quiesced=true
+   write egressendpoints PATCH                              569     35.44/s
+   write egressmembers PATCH                                146      9.09/s
+   write egressnodestates/status PATCH                     1469     91.49/s
+   write leases PATCH                                       700     43.59/s
+   write leases PUT                                          64      3.99/s
+   write pods POST                                          200     12.46/s
+   write pods/status PATCH                                  200     12.46/s
+   watch clusterroles                                         0 ev/s          6 B/s
+   watch csidrivers                                           0 ev/s          5 B/s
+   watch csinodes                                             0 ev/s          5 B/s
+   watch csistoragecapacities                                 0 ev/s          6 B/s
+   watch deviceclasses                                        0 ev/s          5 B/s
+   watch egressendpoints                                   3579 ev/s   10872198 B/s
+   watch egressmembers                                        9 ev/s       4642 B/s
+   watch egressnodestates                                   183 ev/s     220197 B/s
+   watch flowschemas                                          0 ev/s          7 B/s
+   watch ingressclasses                                       0 ev/s          6 B/s
+   watch ipaddresses                                          0 ev/s          5 B/s
+   watch leases                                              94 ev/s      55306 B/s
+   watch namespaces                                           0 ev/s          4 B/s
+   watch nodes                                                0 ev/s          6 B/s
+   watch persistentvolumeclaims                               0 ev/s          5 B/s
+   watch persistentvolumes                                    0 ev/s          5 B/s
+   watch poddisruptionbudgets                                 0 ev/s          6 B/s
+   watch pods                                               125 ev/s     271672 B/s
+   watch replicasets                                          0 ev/s          9 B/s
+   watch replicationcontrollers                               0 ev/s          6 B/s
+   watch resourceclaims                                       0 ev/s          6 B/s
+   watch resourcequotas                                       0 ev/s          5 B/s
+   watch resourceslices                                       0 ev/s          6 B/s
+   watch rolebindings                                         0 ev/s          6 B/s
+   watch secrets                                              0 ev/s          4 B/s
+   watch services                                             0 ev/s          5 B/s
+   watch statefulsets                                         0 ev/s         10 B/s
+   watch storageclasses                                       0 ev/s          5 B/s
+   watch volumeattachments                                    0 ev/s          6 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:5.915401e+06 etcd_disk_backend_commit_duration_seconds_count:146 etcd_disk_backend_commit_duration_seconds_sum:0.438312077000063 etcd_mvcc_delete_total:0 etcd_mvcc_put_total:3351 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:6.496851e+06 etcd_network_client_grpc_sent_bytes_total:1.1747928e+07 etcd_server_proposals_committed_total:3399]
+   429s map[] apf map[]
+   cpu cores map[etcd:0.17163988869658323 kube-apiserver:1.6190019705999579 kube-controller-manager:0.06247655080011315 kwok-controller:0.037161686579779925 loadgen:1.2266131676620349]
+   ack n=569 p50=0.584 p99=1.024 max=1.045 | claim n=400 p50=5.030 p99=12.074 max=12.075 | lease late=0 maxGap=2.5s
+size egressendpoints          n=500 avg=3012 max=3548
+size egressmembers            n=250 avg=3612 max=4172
+size egressnodestates         n=100 avg=1546 max=1546
+=== orig-n100-a500-q50 ===
+{"level":"warn","ts":"2026-10-19T02:34:55.190257Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:34:55.334500Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:34:55.477180Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+{"level":"warn","ts":"2026-10-19T02:34:56.021215Z","caller":"flags/flag.go:94","msg":"unrecognized environment variable","environment-variable":"ETCDCTL_API=3"}
+[    0.0s] cleanup
+[    4.5s] pods: deleting 200, creating 0
+[    5.0s] pods running 5000/5000 (total objects 5000)
+[    7.5s] bootstrap: creating egress objects
+[   10.0s] starting 100 agents (qps 50 burst 100)
+[   10.0s] bootstrap: agents ready 0/100, pending 250
+[   22.5s] phase steady: start
+[   84.8s] phase steady: done in 62.0s quiesced=true allocWrites=0 memberWrites=0 ackWrites=0 claimWrites=0 ack p50/p99 0.00/0.00s claim p50/p99 0.00/0.00s (n=0)
+[   84.8s] phase rollout: start
+I1018 22:37:16.151207  953776 request.go:752] "Waited before sending request" delay="1.054963663s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://127.0.0.1:32766/api/v1/namespaces/egress-load/pods"
+I1018 22:37:27.123820  953776 request.go:752] "Waited before sending request" delay="1.099677296s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://127.0.0.1:32766/api/v1/namespaces/egress-load/pods"
+[  155.7s] agent kwok-node-49 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-4 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-85: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-45 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-56 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-9 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-40: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-3: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-7: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-28: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-74 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-90: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-96: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-66 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-42 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-42: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-62: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-91: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-39: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-21: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-33: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-2: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-12: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-37: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-5: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-18: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-11 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-6 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-83 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-65 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-55 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-50 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-52 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-26 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-7 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-70 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-38 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-48 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-92: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-94: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-44 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-61 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-69 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-32 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-5 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-99 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-40 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-88 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-3 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-12 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-79 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-2 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-20 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-22 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-98 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-96 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-31 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-64 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-30 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-82 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-29 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-67 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-77 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-28 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-27 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-8 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-34 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-18 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-75 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-29: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-76 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-21 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-25 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-59 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-92 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-93 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-87 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-86 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-60 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-71 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-68 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-90 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] agent kwok-node-54 write: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-17: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-20: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-6: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-24: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-15: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-0: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-4: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-44: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-82: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-34: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-80: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-76: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-25: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-86: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-38: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-31: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-1: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-23: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-35: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-97: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-59: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-72: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-11: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-83: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-41: an error on the server ("unknown") has prevented the request from succeeding
+[  155.7s] lease kwok-node-36: an error on the server ("unknown") has prevented the request from succeeding
+[  159.0s] allocator write p/54: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-1 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-43 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-0 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-37 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-17 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-41 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-80 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-53 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-10 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-46 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-62 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-57 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-97 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-72 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-13 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-95 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-94 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-47 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-14 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-23 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-89 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-91 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-16 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.0s] agent kwok-node-51 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-71: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-75: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-55: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-22: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-30: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-53: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-48: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-78: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-98: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-14: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-95: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-45: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-93: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-89: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-49: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-61: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-84: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-19: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-16: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-77: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-47: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-74: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-63: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-64: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-46: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-73: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-67: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-65: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-50: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-68: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-27: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-70: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-99: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-56: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-10: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-58: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-81: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-66: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-79: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-88: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-8: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-57: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-32: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-69: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-26: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-43: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-60: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-54: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-9: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-87: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-52: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-13: the server was unable to return a response in the time allotted, but may still be processing the request
+[  159.2s] lease kwok-node-51: the server was unable to return a response in the time allotted, but may still be processing the request
+[  163.3s] agent kwok-node-24 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-91: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-18: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-2: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-20: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-86: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-23: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-1: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-21: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-44: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-0: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-25: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-4: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-29: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-3: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-39: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-34: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-5: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-80: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-82: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-38: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-24: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-17: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-96: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-76: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-90: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-37: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-12: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-33: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-15: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-42: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-83: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-40: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-28: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-62: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-85: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-30 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-90 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-59 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-92 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-50 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-86 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-75 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-25 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-83 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-31 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-11 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-48 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-12 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-64 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-3 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-31: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-93 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-98 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-7 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-49 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-36 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-11: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-35: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-68 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-66 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-61 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-67 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-79 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-40 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-69 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-59: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-26 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-22 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-77 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-94: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-92: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-56 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-32 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-78 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-21 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-63 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-6: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-4 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-76 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-2 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-60 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-35 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-6 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-96 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-42 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-85 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-54 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-72: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-38 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-41: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-97: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-81 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-7: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] lease kwok-node-36: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-52 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-55 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-70 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-88 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-82 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-28 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-99 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-71 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-39 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-65 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-87 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-44 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-45 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-74 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-15 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-8 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-20 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-29 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-34 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-27 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-9 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-18 write: an error on the server ("unknown") has prevented the request from succeeding
+[  163.3s] agent kwok-node-5 write: an error on the server ("unknown") has prevented the request from succeeding
+I1018 22:38:00.110170  953776 request.go:752] "Waited before sending request" delay="1.162009491s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://127.0.0.1:32766/api/v1/namespaces/egress-load/pods"
+[  210.5s] agent kwok-node-32 write: an error on the server ("unknown") has prevented the request from succeeding
+[  216.1s] agent kwok-node-1 write: an error on the server ("unknown") has prevented the request from succeeding
+[  216.1s] agent kwok-node-20 write: an error on the server ("unknown") has prevented the request from succeeding
+[  217.1s] agent kwok-node-44 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.6s] agent kwok-node-90 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] agent kwok-node-64 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] agent kwok-node-98 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] agent kwok-node-99 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] allocator write p/201: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] lease kwok-node-63: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] lease kwok-node-69: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] agent kwok-node-37 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] lease kwok-node-53: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] lease kwok-node-5: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] agent kwok-node-68 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] agent kwok-node-30 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] lease kwok-node-83: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] agent kwok-node-57 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] agent kwok-node-69 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] lease kwok-node-92: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] lease kwok-node-71: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] lease kwok-node-55: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] agent kwok-node-19 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] lease kwok-node-25: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] lease kwok-node-40: an error on the server ("unknown") has prevented the request from succeeding
+[  218.7s] agent kwok-node-6 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.8s] agent kwok-node-74 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.8s] agent kwok-node-33 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.8s] lease kwok-node-6: an error on the server ("unknown") has prevented the request from succeeding
+[  218.8s] agent kwok-node-3 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.8s] agent kwok-node-54 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.8s] agent kwok-node-18 write: an error on the server ("unknown") has prevented the request from succeeding
+[  218.8s] agent kwok-node-28 write: an error on the server ("unknown") has prevented the request from succeeding
+[  219.0s] lease kwok-node-61: an error on the server ("unknown") has prevented the request from succeeding
+[  220.4s] agent kwok-node-67 write: an error on the server ("unknown") has prevented the request from succeeding
+[  221.6s] agent kwok-node-48 write: an error on the server ("unknown") has prevented the request from succeeding
+[  221.6s] agent kwok-node-77 write: an error on the server ("unknown") has prevented the request from succeeding
+[  221.6s] lease kwok-node-12: an error on the server ("unknown") has prevented the request from succeeding
+[  221.9s] agent kwok-node-29 write: an error on the server ("unknown") has prevented the request from succeeding
+[  221.9s] agent kwok-node-83 write: an error on the server ("unknown") has prevented the request from succeeding
+[  222.2s] agent kwok-node-34 write: an error on the server ("unknown") has prevented the request from succeeding
+[  225.7s] lease kwok-node-29: an error on the server ("unknown") has prevented the request from succeeding
+[  225.7s] agent kwok-node-38 write: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-19: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-0: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-64: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-68: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-94: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-58: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-38: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-14: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-13: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-67: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-18: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-76: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-17: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-1: an error on the server ("unknown") has prevented the request from succeeding
+[  226.0s] lease kwok-node-31: an error on the server ("unknown") has prevented the request from succeeding
+[  226.5s] agent kwok-node-55 write: an error on the server ("unknown") has prevented the request from succeeding
+[  226.5s] agent kwok-node-26 write: an error on the server ("unknown") has prevented the request from succeeding
+[  226.5s] agent kwok-node-13 write: an error on the server ("unknown") has prevented the request from succeeding
+[  226.4s] agent kwok-node-31 write: an error on the server ("unknown") has prevented the request from succeeding
+[  226.8s] agent kwok-node-51 write: an error on the server ("unknown") has prevented the request from succeeding
+[  227.9s] agent kwok-node-71 write: an error on the server ("unknown") has prevented the request from succeeding
+[  228.7s] lease kwok-node-36: an error on the server ("unknown") has prevented the request from succeeding
+[  228.7s] lease kwok-node-10: an error on the server ("unknown") has prevented the request from succeeding
+[  228.7s] lease kwok-node-90: an error on the server ("unknown") has prevented the request from succeeding
+[  228.7s] lease kwok-node-22: an error on the server ("unknown") has prevented the request from succeeding
+[  229.0s] agent kwok-node-42 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.6s] agent kwok-node-27 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.6s] agent kwok-node-59 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.6s] lease kwok-node-91: an error on the server ("unknown") has prevented the request from succeeding
+[  229.6s] lease kwok-node-57: an error on the server ("unknown") has prevented the request from succeeding
+[  229.6s] lease kwok-node-32: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] agent kwok-node-65 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] agent kwok-node-89 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] agent kwok-node-16 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] agent kwok-node-58 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] agent kwok-node-86 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] agent kwok-node-53 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] agent kwok-node-11 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] lease kwok-node-85: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] agent kwok-node-50 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] agent kwok-node-4 write: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] lease kwok-node-51: an error on the server ("unknown") has prevented the request from succeeding
+[  229.9s] agent kwok-node-81 write: an error on the server ("unknown") has prevented the request from succeeding
+[  230.1s] lease kwok-node-42: an error on the server ("unknown") has prevented the request from succeeding
+[  230.1s] agent kwok-node-24 write: an error on the server ("unknown") has prevented the request from succeeding
+[  230.1s] agent kwok-node-63 write: an error on the server ("unknown") has prevented the request from succeeding
+[  230.1s] lease kwok-node-37: an error on the server ("unknown") has prevented the request from succeeding
+[  230.1s] lease kwok-node-84: an error on the server ("unknown") has prevented the request from succeeding
+[  230.2s] agent kwok-node-22 write: an error on the server ("unknown") has prevented the request from succeeding
+[  230.2s] lease kwok-node-46: an error on the server ("unknown") has prevented the request from succeeding
+[  230.4s] lease kwok-node-41: an error on the server ("unknown") has prevented the request from succeeding
+[  230.9s] lease kwok-node-33: an error on the server ("unknown") has prevented the request from succeeding
+[  230.9s] lease kwok-node-60: an error on the server ("unknown") has prevented the request from succeeding
+[  231.6s] agent kwok-node-5 write: an error on the server ("unknown") has prevented the request from succeeding
+[  232.0s] agent kwok-node-82 write: an error on the server ("unknown") has prevented the request from succeeding
+[  233.7s] agent kwok-node-92 write: an error on the server ("unknown") has prevented the request from succeeding
+[  235.1s] lease kwok-node-54: an error on the server ("unknown") has prevented the request from succeeding
+[  236.1s] agent kwok-node-85 write: an error on the server ("unknown") has prevented the request from succeeding
+[  236.5s] lease kwok-node-98: an error on the server ("unknown") has prevented the request from succeeding
+[  236.8s] agent kwok-node-84 write: an error on the server ("unknown") has prevented the request from succeeding
+[  236.8s] agent kwok-node-70 write: an error on the server ("unknown") has prevented the request from succeeding
+[  236.8s] lease kwok-node-44: an error on the server ("unknown") has prevented the request from succeeding
+[  236.8s] agent kwok-node-93 write: an error on the server ("unknown") has prevented the request from succeeding
+[  236.8s] agent kwok-node-49 write: an error on the server ("unknown") has prevented the request from succeeding
+[  236.8s] agent kwok-node-76 write: an error on the server ("unknown") has prevented the request from succeeding
+[  236.8s] lease kwok-node-59: an error on the server ("unknown") has prevented the request from succeeding
+[  236.8s] agent kwok-node-73 write: an error on the server ("unknown") has prevented the request from succeeding
+[  236.8s] lease kwok-node-15: an error on the server ("unknown") has prevented the request from succeeding
+[  236.8s] lease kwok-node-99: an error on the server ("unknown") has prevented the request from succeeding
+[  237.4s] agent kwok-node-47 write: an error on the server ("unknown") has prevented the request from succeeding
+[  237.5s] lease kwok-node-4: an error on the server ("unknown") has prevented the request from succeeding
+[  237.5s] lease kwok-node-66: an error on the server ("unknown") has prevented the request from succeeding
+[  237.5s] agent kwok-node-97 write: an error on the server ("unknown") has prevented the request from succeeding
+[  237.5s] agent kwok-node-10 write: an error on the server ("unknown") has prevented the request from succeeding
+[  237.8s] agent kwok-node-12 write: an error on the server ("unknown") has prevented the request from succeeding
+[  237.8s] agent kwok-node-41 write: an error on the server ("unknown") has prevented the request from succeeding
+[  237.9s] lease kwok-node-16: an error on the server ("unknown") has prevented the request from succeeding
+[  237.9s] agent kwok-node-94 write: an error on the server ("unknown") has prevented the request from succeeding
+[  237.9s] lease kwok-node-72: an error on the server ("unknown") has prevented the request from succeeding
+[  237.9s] lease kwok-node-28: an error on the server ("unknown") has prevented the request from succeeding
+[  237.9s] agent kwok-node-43 write: an error on the server ("unknown") has prevented the request from succeeding
+[  237.9s] lease kwok-node-27: an error on the server ("unknown") has prevented the request from succeeding
+[  237.9s] lease kwok-node-20: an error on the server ("unknown") has prevented the request from succeeding
+[  238.1s] lease kwok-node-45: an error on the server ("unknown") has prevented the request from succeeding
+[  238.1s] lease kwok-node-24: an error on the server ("unknown") has prevented the request from succeeding
+[  238.1s] lease kwok-node-49: an error on the server ("unknown") has prevented the request from succeeding
+[  245.7s] agent kwok-node-35 write: an error on the server ("unknown") has prevented the request from succeeding
+[  245.7s] lease kwok-node-31: an error on the server ("unknown") has prevented the request from succeeding
+[  245.7s] agent kwok-node-34 write: an error on the server ("unknown") has prevented the request from succeeding
+[  245.7s] lease kwok-node-7: an error on the server ("unknown") has prevented the request from succeeding
+[  245.7s] allocator write p/202: an error on the server ("unknown") has prevented the request from succeeding
+[  245.7s] agent kwok-node-40 write: an error on the server ("unknown") has prevented the request from succeeding
+[  245.7s] agent kwok-node-33 write: an error on the server ("unknown") has prevented the request from succeeding
+[  245.7s] agent kwok-node-77 write: an error on the server ("unknown") has prevented the request from succeeding
+[  245.7s] agent kwok-node-67 write: an error on the server ("unknown") has prevented the request from succeeding
+[  245.7s] lease kwok-node-11: an error on the server ("unknown") has prevented the request from succeeding
+[  246.5s] lease kwok-node-78: an error on the server ("unknown") has prevented the request from succeeding
+[  246.8s] lease kwok-node-22: an error on the server ("unknown") has prevented the request from succeeding
+[  254.7s] lease kwok-node-45: an error on the server ("unknown") has prevented the request from succeeding
+[  254.7s] lease kwok-node-93: an error on the server ("unknown") has prevented the request from succeeding
+[  254.7s] lease kwok-node-4: an error on the server ("unknown") has prevented the request from succeeding
+[  254.7s] lease kwok-node-87: an error on the server ("unknown") has prevented the request from succeeding
+[  254.7s] lease kwok-node-65: an error on the server ("unknown") has prevented the request from succeeding
+[  254.7s] lease kwok-node-47: an error on the server ("unknown") has prevented the request from succeeding
+[  254.7s] lease kwok-node-30: an error on the server ("unknown") has prevented the request from succeeding
+[  254.7s] lease kwok-node-62: an error on the server ("unknown") has prevented the request from succeeding
+[  254.7s] lease kwok-node-72: an error on the server ("unknown") has prevented the request from succeeding
+[  254.7s] lease kwok-node-82: an error on the server ("unknown") has prevented the request from succeeding
+[  255.1s] agent kwok-node-82 write: an error on the server ("unknown") has prevented the request from succeeding
+[  255.1s] agent kwok-node-36 write: an error on the server ("unknown") has prevented the request from succeeding
+[  255.1s] agent kwok-node-32 write: an error on the server ("unknown") has prevented the request from succeeding
+[  255.1s] agent kwok-node-85 write: an error on the server ("unknown") has prevented the request from succeeding
+[  255.1s] agent kwok-node-94 write: an error on the server ("unknown") has prevented the request from succeeding
+[  255.3s] agent kwok-node-93 write: an error on the server ("unknown") has prevented the request from succeeding
+[  255.3s] agent kwok-node-10 write: an error on the server ("unknown") has prevented the request from succeeding
+[  255.3s] agent kwok-node-17 write: an error on the server ("unknown") has prevented the request from succeeding
+[  257.4s] lease kwok-node-99: an error on the server ("unknown") has prevented the request from succeeding
+[  258.0s] lease kwok-node-80: an error on the server ("unknown") has prevented the request from succeeding
+[  258.0s] lease kwok-node-92: an error on the server ("unknown") has prevented the request from succeeding
+[  265.7s] agent kwok-node-57 write: an error on the server ("unknown") has prevented the request from succeeding
+[  265.7s] lease kwok-node-78: an error on the server ("unknown") has prevented the request from succeeding
+[  266.2s] lease kwok-node-88: an error on the server ("unknown") has prevented the request from succeeding
+[  266.2s] lease kwok-node-70: an error on the server ("unknown") has prevented the request from succeeding
+[  266.4s] agent kwok-node-80 write: an error on the server ("unknown") has prevented the request from succeeding
+[  267.6s] allocator write p/203: an error on the server ("unknown") has prevented the request from succeeding
+[  267.7s] agent kwok-node-3 write: an error on the server ("unknown") has prevented the request from succeeding
+[  269.1s] lease kwok-node-13: an error on the server ("unknown") has prevented the request from succeeding
+[  272.4s] agent kwok-node-6 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  272.4s] agent kwok-node-29 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  273.7s] lease kwok-node-45: an error on the server ("unknown") has prevented the request from succeeding
+[  273.7s] lease kwok-node-2: an error on the server ("unknown") has prevented the request from succeeding
+[  274.6s] lease kwok-node-30: an error on the server ("unknown") has prevented the request from succeeding
+[  274.6s] lease kwok-node-89: an error on the server ("unknown") has prevented the request from succeeding
+[  275.8s] agent kwok-node-58 write: an error on the server ("unknown") has prevented the request from succeeding
+[  275.8s] agent kwok-node-74 write: an error on the server ("unknown") has prevented the request from succeeding
+[  276.6s] agent kwok-node-36 write: an error on the server ("unknown") has prevented the request from succeeding
+[  276.6s] agent kwok-node-85 write: an error on the server ("unknown") has prevented the request from succeeding
+[  276.6s] lease kwok-node-80: an error on the server ("unknown") has prevented the request from succeeding
+[  276.6s] lease kwok-node-76: an error on the server ("unknown") has prevented the request from succeeding
+[  276.6s] lease kwok-node-18: an error on the server ("unknown") has prevented the request from succeeding
+[  276.6s] lease kwok-node-10: an error on the server ("unknown") has prevented the request from succeeding
+[  276.6s] lease kwok-node-99: an error on the server ("unknown") has prevented the request from succeeding
+[  276.6s] lease kwok-node-72: an error on the server ("unknown") has prevented the request from succeeding
+[  277.5s] lease kwok-node-37: an error on the server ("unknown") has prevented the request from succeeding
+[  286.2s] agent kwok-node-24 write: an error on the server ("unknown") has prevented the request from succeeding
+[  286.2s] agent kwok-node-96 write: an error on the server ("unknown") has prevented the request from succeeding
+[  286.2s] agent kwok-node-4 write: an error on the server ("unknown") has prevented the request from succeeding
+[  287.3s] lease kwok-node-50: an error on the server ("unknown") has prevented the request from succeeding
+[  287.3s] lease kwok-node-81: an error on the server ("unknown") has prevented the request from succeeding
+[  287.3s] lease kwok-node-84: an error on the server ("unknown") has prevented the request from succeeding
+[  287.3s] allocator write p/204: an error on the server ("unknown") has prevented the request from succeeding
+[  288.5s] lease kwok-node-44: an error on the server ("unknown") has prevented the request from succeeding
+[  290.1s] agent kwok-node-98 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  290.1s] agent kwok-node-99 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  290.4s] agent kwok-node-19 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  293.3s] agent kwok-node-90 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  297.2s] lease kwok-node-40: an error on the server ("unknown") has prevented the request from succeeding
+[  297.2s] agent kwok-node-58 write: an error on the server ("unknown") has prevented the request from succeeding
+[  297.2s] agent kwok-node-36 write: an error on the server ("unknown") has prevented the request from succeeding
+[  297.2s] lease kwok-node-37: an error on the server ("unknown") has prevented the request from succeeding
+[  297.2s] agent kwok-node-74 write: an error on the server ("unknown") has prevented the request from succeeding
+[  297.2s] lease kwok-node-45: an error on the server ("unknown") has prevented the request from succeeding
+[  297.2s] agent kwok-node-85 write: an error on the server ("unknown") has prevented the request from succeeding
+[  297.2s] agent kwok-node-6 write: an error on the server ("unknown") has prevented the request from succeeding
+[  297.7s] lease kwok-node-99: an error on the server ("unknown") has prevented the request from succeeding
+[  297.7s] lease kwok-node-80: an error on the server ("unknown") has prevented the request from succeeding
+[  297.7s] lease kwok-node-76: an error on the server ("unknown") has prevented the request from succeeding
+[  297.7s] lease kwok-node-10: an error on the server ("unknown") has prevented the request from succeeding
+[  297.7s] lease kwok-node-2: an error on the server ("unknown") has prevented the request from succeeding
+[  298.3s] lease kwok-node-89: an error on the server ("unknown") has prevented the request from succeeding
+[  298.3s] lease kwok-node-53: an error on the server ("unknown") has prevented the request from succeeding
+[  298.5s] lease kwok-node-18: an error on the server ("unknown") has prevented the request from succeeding
+[  301.6s] agent kwok-node-54 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  303.5s] agent kwok-node-24 write: an error on the server ("unknown") has prevented the request from succeeding
+[  311.9s] agent kwok-node-59 write: the server was unable to return a response in the time allotted, but may still be processing the request
+[  315.1s] agent kwok-node-4 write: an error on the server ("unknown") has prevented the request from succeeding
+[  315.3s] agent kwok-node-90 write: an error on the server ("unknown") has prevented the request from succeeding
+[  315.6s] agent kwok-node-33 write: an error on the server ("unknown") has prevented the request from succeeding
+[  315.6s] agent kwok-node-64 write: an error on the server ("unknown") has prevented the request from succeeding
+[  315.6s] agent kwok-node-98 write: an error on the server ("unknown") has prevented the request from succeeding
+[  315.6s] agent kwok-node-19 write: an error on the server ("unknown") has prevented the request from succeeding
+[  316.3s] rollout: replaced 5000 pods (1505 errors)
+{"time":"2026-10-18T22:40:14.928491091-04:00","level":"INFO","source":{"function":"sigs.k8s.io/kwok/pkg/kwokctl/cmd/delete/cluster.deleteCluster","file":"/home/adamd/go/pkg/mod/sigs.k8s.io/kwok@v0.8.0/pkg/kwokctl/cmd/delete/cluster/cluster.go","line":133},"msg":"Cluster is stopping","cluster":"spike"}
+{"time":"2026-10-18T22:40:16.304625231-04:00","level":"INFO","source":{"function":"sigs.k8s.io/kwok/pkg/kwokctl/cmd/delete/cluster.deleteCluster","file":"/home/adamd/go/pkg/mod/sigs.k8s.io/kwok@v0.8.0/pkg/kwokctl/cmd/delete/cluster/cluster.go","line":138},"msg":"Cluster is stopped","cluster":"spike","elapsed":{"nanosecond":1378872383,"human":"1.378872383s"}}
+{"time":"2026-10-18T22:40:16.304728405-04:00","level":"INFO","source":{"function":"sigs.k8s.io/kwok/pkg/kwokctl/cmd/delete/cluster.deleteCluster","file":"/home/adamd/go/pkg/mod/sigs.k8s.io/kwok@v0.8.0/pkg/kwokctl/cmd/delete/cluster/cluster.go","line":144},"msg":"Cluster is deleting","cluster":"spike"}
+{"time":"2026-10-18T22:40:16.914755326-04:00","level":"INFO","source":{"function":"sigs.k8s.io/kwok/pkg/kwokctl/cmd/delete/cluster.deleteCluster","file":"/home/adamd/go/pkg/mod/sigs.k8s.io/kwok@v0.8.0/pkg/kwokctl/cmd/delete/cluster/cluster.go","line":161},"msg":"Cluster is deleted","cluster":"spike","elapsed":{"nanosecond":610022415,"human":"610.022415ms"}}

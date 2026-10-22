@@ -1,0 +1,45 @@
+# Spike 5 prototype of the token-less purelb-cni DaemonSet (D34). NOT
+# production. The image is imported into each node's containerd by
+# hack/egress-spikes/cluster/spike5.sh, hence imagePullPolicy: Never.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: purelb-spike
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: purelb-cni-spike
+  namespace: purelb-spike
+spec:
+  selector:
+    matchLabels: {app: purelb-cni-spike}
+  template:
+    metadata:
+      labels: {app: purelb-cni-spike}
+    spec:
+      automountServiceAccountToken: false
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      tolerations:
+      - operator: Exists
+      terminationGracePeriodSeconds: 5
+      containers:
+      - name: install
+        image: purelb-cni-spike:dev
+        imagePullPolicy: Never
+        args: [install]
+        env:
+        - {name: HOST_ROOT, value: /host}
+        securityContext:
+          runAsUser: 0
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL], add: [DAC_OVERRIDE, CHOWN, FOWNER]}
+        volumeMounts:
+        - {name: cni-bin, mountPath: /host/opt/cni/bin}
+        - {name: cni-conf, mountPath: /host/etc/cni/net.d}
+        - {name: state, mountPath: /host/var/lib/purelb}
+      volumes:
+      - {name: cni-bin, hostPath: {path: /opt/cni/bin, type: Directory}}
+      - {name: cni-conf, hostPath: {path: /etc/cni/net.d, type: Directory}}
+      - {name: state, hostPath: {path: /var/lib/purelb, type: DirectoryOrCreate}}

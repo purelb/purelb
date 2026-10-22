@@ -1,0 +1,201 @@
+[    0.1s] cleanup
+[    0.3s] pods: deleting 0, creating 5000
+[    4.5s] pods running 505/5000 (total objects 5000)
+[    8.4s] pods running 1306/5000 (total objects 5000)
+[   12.4s] pods running 2148/5000 (total objects 5000)
+[   16.4s] pods running 3023/5000 (total objects 5000)
+[   20.6s] pods running 3966/5000 (total objects 5000)
+[   25.1s] pods running 4900/5000 (total objects 5000)
+[   29.5s] pods running 5000/5000 (total objects 5000)
+[   34.8s] bootstrap: creating egress objects
+[   51.1s] starting 500 agents (qps 50 burst 100)
+[   51.7s] bootstrap: agents ready 22/500, pending 276
+[   53.7s] bootstrap: agents ready 412/500, pending 80
+[   68.0s] phase steady: start
+[  130.8s] phase steady: done in 62.0s quiesced=true allocWrites=0 memberWrites=0 nodeSpecWrites=0 ackWrites=0 claimWrites=0 ack p50/p99 0.00/0.00s claim p50/p99 0.00/0.00s (n=0) memPeakMiB=map[etcd:177.95703125 kube-apiserver:745.99609375 kube-controller-manager:149.99609375 kwok-controller:72.77734375 loadgen:610.0078125] allocQueue max=0 mean=0.0 takeover p50/p99 0.006/0.014s (n=250) advChanges=0 advOnlyWrites=0 advPiggyback=0 advHolders max/mean 0/0.0 advSpecBytes=0
+[  130.8s] phase rollout: start
+[  231.3s] rollout: replaced 5000 pods (0 errors)
+[  241.8s] phase rollout: done in 110.1s quiesced=true allocWrites=15425 memberWrites=251 nodeSpecWrites=4253 ackWrites=32775 claimWrites=4722 ack p50/p99 0.32/1.03s claim p50/p99 4.47/7.70s (n=9444) memPeakMiB=map[etcd:866.34765625 kube-apiserver:4514.76171875 kube-controller-manager:151.703125 kwok-controller:72.84375 loadgen:834.4140625] allocQueue max=1069 mean=859.2 takeover p50/p99 0.010/0.119s (n=445) advChanges=0 advOnlyWrites=0 advPiggyback=0 advHolders max/mean 0/0.0 advSpecBytes=0
+[  241.8s] phase claim-burst: start
+[  242.7s] claim-burst: 200 claims issued (2 addresses each)
+[  251.1s] phase claim-burst: done in 8.5s quiesced=true allocWrites=559 memberWrites=135 nodeSpecWrites=200 ackWrites=1236 claimWrites=200 ack p50/p99 0.35/1.02s claim p50/p99 3.11/4.49s (n=400) memPeakMiB=map[etcd:889.59765625 kube-apiserver:4509.12890625 kube-controller-manager:151.70703125 kwok-controller:71.51171875 loadgen:844.50390625] allocQueue max=548 mean=195.4 takeover p50/p99 0.007/0.071s (n=37) advChanges=0 advOnlyWrites=0 advPiggyback=0 advHolders max/mean 0/0.0 advSpecBytes=0
+
+== scoped N=500 P=250 A=2 E=5000 qps=50/100 ackInterval=1s ==
+-- steady 62.0s quiesced=true
+   write events POST                                        397      6.40/s
+   write leases PATCH                                      6000     96.77/s
+   write leases PUT                                         568      9.16/s
+   write nodes PATCH                                        335      5.40/s
+   watch apiservices                                          0 ev/s          3 B/s
+   watch certificatesigningrequests                           0 ev/s          2 B/s
+   watch clusterrolebindings                                  0 ev/s          3 B/s
+   watch clusterroles                                         0 ev/s          3 B/s
+   watch configmaps                                           0 ev/s          3 B/s
+   watch controllerrevisions                                  0 ev/s          1 B/s
+   watch cronjobs                                             0 ev/s          2 B/s
+   watch csidrivers                                           0 ev/s          3 B/s
+   watch csinodes                                             0 ev/s          3 B/s
+   watch csistoragecapacities                                 0 ev/s          3 B/s
+   watch customresourcedefinitions                            0 ev/s          4 B/s
+   watch daemonsets                                           0 ev/s          3 B/s
+   watch deployments                                          0 ev/s          2 B/s
+   watch deviceclasses                                        0 ev/s          3 B/s
+   watch egressendpoints                                      8 ev/s       1098 B/s
+   watch egresses                                             0 ev/s          1 B/s
+   watch egressmembers                                        0 ev/s          1 B/s
+   watch egressnodestates                                     8 ev/s       1100 B/s
+   watch endpoints                                            0 ev/s          1 B/s
+   watch endpointslices                                       0 ev/s          3 B/s
+   watch flowschemas                                          0 ev/s          3 B/s
+   watch horizontalpodautoscalers                             0 ev/s          2 B/s
+   watch ingressclasses                                       0 ev/s          3 B/s
+   watch ingresses                                            0 ev/s          1 B/s
+   watch ipaddresses                                          0 ev/s          3 B/s
+   watch jobs                                                 0 ev/s          2 B/s
+   watch leases                                             211 ev/s     124158 B/s
+   watch limitranges                                          0 ev/s          2 B/s
+   watch mutatingwebhookconfigurations                        0 ev/s          4 B/s
+   watch namespaces                                           0 ev/s          3 B/s
+   watch networkpolicies                                      0 ev/s          1 B/s
+   watch nodes                                               21 ev/s      60924 B/s
+   watch origegressendpoints                                  0 ev/s          1 B/s
+   watch origegressnodestates                                 0 ev/s          1 B/s
+   watch persistentvolumeclaims                               0 ev/s          3 B/s
+   watch persistentvolumes                                    0 ev/s          4 B/s
+   watch poddisruptionbudgets                                 0 ev/s          3 B/s
+   watch pods                                                 0 ev/s          9 B/s
+   watch podtemplates                                         0 ev/s          2 B/s
+   watch priorityclasses                                      0 ev/s          3 B/s
+   watch prioritylevelconfigurations                          0 ev/s          4 B/s
+   watch replicasets                                          0 ev/s          4 B/s
+   watch replicationcontrollers                               0 ev/s          3 B/s
+   watch resourceclaims                                       0 ev/s          3 B/s
+   watch resourceclaimtemplates                               0 ev/s          2 B/s
+   watch resourcequotas                                       0 ev/s          2 B/s
+   watch resourceslices                                       0 ev/s          5 B/s
+   watch rolebindings                                         0 ev/s          3 B/s
+   watch roles                                                0 ev/s          3 B/s
+   watch runtimeclasses                                       0 ev/s          3 B/s
+   watch secrets                                              0 ev/s          2 B/s
+   watch serviceaccounts                                      0 ev/s          2 B/s
+   watch servicecidrs                                         0 ev/s          4 B/s
+   watch services                                             0 ev/s          4 B/s
+   watch statefulsets                                         0 ev/s          5 B/s
+   watch storageclasses                                       0 ev/s          4 B/s
+   watch validatingadmissionpolicies                          0 ev/s          4 B/s
+   watch validatingadmissionpolicybindings                    0 ev/s          4 B/s
+   watch validatingwebhookconfigurations                      0 ev/s          4 B/s
+   watch volumeattachments                                    0 ev/s          5 B/s
+   watch volumeattributesclasses                              0 ev/s          1 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:4.429172e+06 etcd_disk_backend_commit_duration_seconds_count:512 etcd_disk_backend_commit_duration_seconds_sum:3.04837105599999 etcd_mvcc_delete_total:0 etcd_mvcc_put_total:7302 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:5.413602e+06 etcd_network_client_grpc_sent_bytes_total:9.851141e+06 etcd_server_proposals_committed_total:7315]
+   429s map[] apf map[]
+   cpu cores map[etcd:0.24770971585676732 kube-apiserver:0.9256320188104997 kube-controller-manager:0.13316449724871338 kwok-controller:0.03416474621029797 loadgen:0.13889292668020797]
+   mem peak MiB map[etcd:177.95703125 kube-apiserver:745.99609375 kube-controller-manager:149.99609375 kwok-controller:72.77734375 loadgen:610.0078125]
+   ack n=0 p50=0.000 p99=0.000 max=0.000 | claim n=0 p50=0.000 p99=0.000 max=0.000 | lease late=0 maxGap=5.0s
+   allocator writes: endpoints=0 members=0 nodeSpec=0 errors=0 | agent ack=0 claim=0 errors=0
+   lanes: slice-table writes priority=0 ordinary=0 | node-spec writes priority=0 ordinary=0 | slice-table versions/address=0.00
+   merge: epMerge=1s specMerge=0s deferrals=0 slice-table versions/address=0.00
+-- rollout 110.1s quiesced=true
+   write egressendpoints PATCH                            15425    140.15/s
+   write egressmembers PATCH                                251      2.28/s
+   write egressnodestates PATCH                            4253     38.64/s
+   write egressnodestates/status PATCH                    37497    340.70/s
+   write leases PATCH                                     11231    102.05/s
+   write leases PUT                                        1120     10.18/s
+   write pods DELETE                                      15000    136.29/s
+   write pods POST                                         5000     45.43/s
+   write pods/status PATCH                                 5000     45.43/s
+   watch apiservices                                          0 ev/s          3 B/s
+   watch certificatesigningrequests                           0 ev/s          2 B/s
+   watch clusterrolebindings                                  0 ev/s          4 B/s
+   watch clusterroles                                         0 ev/s          3 B/s
+   watch configmaps                                           0 ev/s          3 B/s
+   watch controllerrevisions                                  0 ev/s          1 B/s
+   watch cronjobs                                             0 ev/s          3 B/s
+   watch csidrivers                                           0 ev/s          3 B/s
+   watch csinodes                                             0 ev/s          3 B/s
+   watch csistoragecapacities                                 0 ev/s          3 B/s
+   watch customresourcedefinitions                            0 ev/s          4 B/s
+   watch daemonsets                                           0 ev/s          4 B/s
+   watch deployments                                          0 ev/s          3 B/s
+   watch deviceclasses                                        0 ev/s          3 B/s
+   watch egressendpoints                                    430 ev/s    1132150 B/s
+   watch egresses                                             0 ev/s          2 B/s
+   watch egressmembers                                        2 ev/s       1166 B/s
+   watch egressnodestates                                  1147 ev/s    3747948 B/s
+   watch endpoints                                            0 ev/s          1 B/s
+   watch endpointslices                                       0 ev/s          3 B/s
+   watch flowschemas                                          0 ev/s          4 B/s
+   watch horizontalpodautoscalers                             0 ev/s          2 B/s
+   watch ingressclasses                                       0 ev/s          3 B/s
+   watch ingresses                                            0 ev/s          2 B/s
+   watch ipaddresses                                          0 ev/s          3 B/s
+   watch jobs                                                 0 ev/s          2 B/s
+   watch leases                                             224 ev/s     131574 B/s
+   watch limitranges                                          0 ev/s          2 B/s
+   watch mutatingwebhookconfigurations                        0 ev/s          4 B/s
+   watch namespaces                                           0 ev/s          4 B/s
+   watch networkpolicies                                      0 ev/s          2 B/s
+   watch nodes                                                0 ev/s          7 B/s
+   watch origegressendpoints                                  0 ev/s          2 B/s
+   watch origegressnodestates                                 0 ev/s          2 B/s
+   watch persistentvolumeclaims                               0 ev/s          3 B/s
+   watch persistentvolumes                                    0 ev/s          5 B/s
+   watch poddisruptionbudgets                                 0 ev/s          3 B/s
+   watch pods                                              1136 ev/s    2799078 B/s
+   watch podtemplates                                         0 ev/s          2 B/s
+   watch priorityclasses                                      0 ev/s          3 B/s
+   watch prioritylevelconfigurations                          0 ev/s          4 B/s
+   watch replicasets                                          0 ev/s          5 B/s
+   watch replicationcontrollers                               0 ev/s          3 B/s
+   watch resourceclaims                                       0 ev/s          3 B/s
+   watch resourceclaimtemplates                               0 ev/s          2 B/s
+   watch resourcequotas                                       0 ev/s          3 B/s
+   watch resourceslices                                       0 ev/s          5 B/s
+   watch rolebindings                                         0 ev/s          4 B/s
+   watch roles                                                0 ev/s          3 B/s
+   watch runtimeclasses                                       0 ev/s          3 B/s
+   watch secrets                                              0 ev/s          2 B/s
+   watch serviceaccounts                                      0 ev/s          3 B/s
+   watch servicecidrs                                         0 ev/s          5 B/s
+   watch services                                             0 ev/s          5 B/s
+   watch statefulsets                                         0 ev/s          6 B/s
+   watch storageclasses                                       0 ev/s          5 B/s
+   watch validatingadmissionpolicies                          0 ev/s          4 B/s
+   watch validatingadmissionpolicybindings                    0 ev/s          4 B/s
+   watch validatingwebhookconfigurations                      0 ev/s          4 B/s
+   watch volumeattachments                                    0 ev/s          5 B/s
+   watch volumeattributesclasses                              0 ev/s          2 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:2.96199429e+08 etcd_disk_backend_commit_duration_seconds_count:1023 etcd_disk_backend_commit_duration_seconds_sum:7.9524267089999805 etcd_mvcc_delete_total:5000 etcd_mvcc_put_total:89923 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:3.11946787e+08 etcd_network_client_grpc_sent_bytes_total:6.40412167e+08 etcd_server_proposals_committed_total:100211]
+   429s map[] apf map[]
+   cpu cores map[etcd:1.0048773336949341 kube-apiserver:8.64442041395197 kube-controller-manager:0.38840160654755257 kwok-controller:0.4627082070111209 loadgen:1.4246167801686274]
+   mem peak MiB map[etcd:866.34765625 kube-apiserver:4514.76171875 kube-controller-manager:151.703125 kwok-controller:72.84375 loadgen:834.4140625]
+   ack n=19935 p50=0.321 p99=1.032 max=1.555 | claim n=9444 p50=4.466 p99=7.699 max=8.749 | lease late=0 maxGap=5.7s
+   allocator writes: endpoints=15425 members=251 nodeSpec=4253 errors=0 | agent ack=32775 claim=4722 errors=0
+   lanes: slice-table writes priority=15413 ordinary=12 | node-spec writes priority=4041 ordinary=212 | slice-table versions/address=30.85
+   merge: epMerge=1s specMerge=0s deferrals=0 slice-table versions/address=30.85
+-- claim-burst 8.5s quiesced=true
+   write egressendpoints PATCH                              559     66.09/s
+   write egressmembers PATCH                                135     15.96/s
+   write egressnodestates PATCH                             200     23.64/s
+   write egressnodestates/status PATCH                     1436    169.76/s
+   write leases PATCH                                       501     59.23/s
+   write leases PUT                                          31      3.66/s
+   write pods POST                                          200     23.64/s
+   write pods/status PATCH                                  200     23.64/s
+   watch egressendpoints                                    198 ev/s     633209 B/s
+   watch egressmembers                                       16 ev/s       8151 B/s
+   watch egressnodestates                                   580 ev/s    2274342 B/s
+   watch leases                                             125 ev/s      74367 B/s
+   watch pods                                               237 ev/s     516987 B/s
+   etcd map[etcd_debugging_mvcc_total_put_size_in_bytes:1.2995276e+07 etcd_disk_backend_commit_duration_seconds_count:67 etcd_disk_backend_commit_duration_seconds_sum:0.48382516199999515 etcd_mvcc_delete_total:0 etcd_mvcc_put_total:3266 etcd_mvcc_txn_total:0 etcd_network_client_grpc_received_bytes_total:1.3522565e+07 etcd_network_client_grpc_sent_bytes_total:2.5975693e+07 etcd_server_proposals_committed_total:3276]
+   429s map[] apf map[]
+   cpu cores map[etcd:0.5783973119023379 kube-apiserver:5.306108052856999 kube-controller-manager:0.21362376640458458 kwok-controller:0.17156882693361503 loadgen:1.0591185857796326]
+   mem peak MiB map[etcd:889.59765625 kube-apiserver:4509.12890625 kube-controller-manager:151.70703125 kwok-controller:71.51171875 loadgen:844.50390625]
+   ack n=761 p50=0.349 p99=1.018 max=1.057 | claim n=400 p50=3.113 p99=4.493 max=5.196 | lease late=0 maxGap=5.1s
+   allocator writes: endpoints=559 members=135 nodeSpec=200 errors=0 | agent ack=1236 claim=200 errors=0
+   lanes: slice-table writes priority=559 ordinary=0 | node-spec writes priority=199 ordinary=1 | slice-table versions/address=1.12
+   merge: epMerge=1s specMerge=0s deferrals=0 slice-table versions/address=1.12
+size egressnodestates         n=500 avg=5383 max=7846
+size egressendpoints          n=500 avg=4291 max=4554
+size egressmembers            n=250 avg=3721 max=4197
