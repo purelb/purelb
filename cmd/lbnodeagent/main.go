@@ -453,6 +453,10 @@ func main() {
 		Kubeconfig:         *kubeconfig,
 		Namespace:          *namespace,
 		ReadEndpointSlices: true,
+		// Measured to keep up with 500 addresses on 500 nodes, where
+		// client-go's 5/10 fell behind. The election has its own limiter.
+		QPS:   50,
+		Burst: 100,
 
 		ServiceChanged: ctrl.ServiceChanged,
 		ServiceDeleted: ctrl.DeleteBalancer,
@@ -467,12 +471,20 @@ func main() {
 
 	ctrl.SetClient(client)
 
+	// The election gets its own clientset and rate limiter, so Lease
+	// renewals never wait behind the agent's other API calls.
+	electionClient, err := client.ElectionClientset()
+	if err != nil {
+		logging.Info(logger, "op", "startup", "error", err, "msg", "failed to create election client")
+		os.Exit(1)
+	}
+
 	// Create the lease-based election
 	elect, err := election.New(election.Config{
 		Namespace:      *namespace,
 		NodeName:       *myNode,
 		InstanceID:     *podUID,
-		Client:         client.Clientset(),
+		Client:         electionClient,
 		LeaseDuration:  *leaseDuration,
 		RenewDeadline:  *renewDeadline,
 		RetryPeriod:    *retryPeriod,

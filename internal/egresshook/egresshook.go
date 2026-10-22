@@ -23,7 +23,11 @@
 // implementation must return quickly and never block.
 package egresshook
 
-import "net"
+import (
+	"net"
+
+	"k8s.io/client-go/rest"
+)
 
 // Allocator is what the allocator asks egress.
 type Allocator interface {
@@ -63,12 +67,29 @@ type Agent interface {
 	PrepareShutdown()
 }
 
+// Controller is how internal/k8s runs egress's own objects in either
+// process, on the same work queue as Services.
+type Controller interface {
+	// Start runs once, after the core caches have synced. It discovers
+	// whether the egress CRDs exist and, if they do, starts egress's
+	// informers, which add egress keys to the work queue with enqueue.
+	Start(stop <-chan struct{}, cfg *rest.Config, enqueue func(key string)) error
+
+	// Sync processes one egress key on the work-queue goroutine. An
+	// error requeues the key with backoff.
+	Sync(key string) error
+
+	// Keys returns every egress key, so ForceSync can reprocess them.
+	Keys() []string
+}
+
 // Noop is the default hook: no egress.
 type Noop struct{}
 
 var (
-	_ Allocator = Noop{}
-	_ Agent     = Noop{}
+	_ Allocator  = Noop{}
+	_ Agent      = Noop{}
+	_ Controller = Noop{}
 )
 
 func (Noop) Synced() bool                                                { return true }
@@ -77,3 +98,6 @@ func (Noop) ReleaseService(string, string, net.IP) bool                  { retur
 func (Noop) Referenced(net.IP) bool                                      { return false }
 func (Noop) ServiceAddress(string, net.IP, bool)                         {}
 func (Noop) PrepareShutdown()                                            {}
+func (Noop) Start(<-chan struct{}, *rest.Config, func(string)) error     { return nil }
+func (Noop) Sync(string) error                                           { return nil }
+func (Noop) Keys() []string                                              { return nil }

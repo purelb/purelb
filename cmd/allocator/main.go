@@ -64,6 +64,10 @@ func main() {
 		Logger:      logger,
 		Kubeconfig:  *kubeconfig,
 		Namespace:   installNamespace,
+		// One allocator writes for the whole cluster; client-go's 5/10
+		// queues its writes behind each other at scale.
+		QPS:   200,
+		Burst: 400,
 
 		ServiceChanged: c.SetBalancer,
 		ServiceDeleted: c.DeleteBalancer,
