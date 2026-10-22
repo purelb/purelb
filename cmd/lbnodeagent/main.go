@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"purelb.io/internal/addrguard"
+	"purelb.io/internal/egresshook"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
@@ -409,11 +410,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// egress is the node's egress hook; egresshook.Noop until egress is
+	// built into the agent.
+	var egress egresshook.Agent = egresshook.Noop{}
+
 	// Set up controller
 	ctrl, err := NewController(
 		logger,
 		*myNode,
 		guardEnabled,
+		egress,
 	)
 	if err != nil {
 		logging.Info(logger, "op", "startup", "error", err, "msg", "failed to create controller")
@@ -525,6 +531,7 @@ func main() {
 	}
 
 	// Graceful shutdown sequence:
+	// 0. Let egress repoint its traffic before any address goes
 	// 1. Mark election unhealthy - Winner() returns "" for all queries
 	// 2. Force sync to trigger address withdrawal on all services
 	// 3. Wait for traffic to drain and GARP to propagate
@@ -532,6 +539,9 @@ func main() {
 	// 5. Delete our lease so other nodes see us gone
 	// 6. Clean up local networking (dummy interface)
 	logging.Info(logger, "op", "shutdown", "msg", "starting graceful shutdown sequence")
+
+	// Step 0: egress repoints its traffic while the addresses are still up
+	egress.PrepareShutdown()
 
 	// Step 1: Mark unhealthy - this causes Winner() to return ""
 	elect.MarkUnhealthy()

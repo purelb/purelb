@@ -34,6 +34,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	ipamv1 "purelb.io/api/ipam/v1"
+	"purelb.io/internal/egresshook"
+	"purelb.io/internal/k8s"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -2354,4 +2356,87 @@ func TestMultipoolMetrics(t *testing.T) {
 	multipoolPartial.WithLabelValues("test-pool").Inc()
 	assert.Greater(t, ptu.ToFloat64(multipoolPartial.WithLabelValues("test-pool")), before,
 		"multipool_partial_total should increment")
+}
+
+// fakeEgressHook is an egresshook.Allocator whose answers tests set.
+type fakeEgressHook struct {
+	egresshook.Noop
+	notSynced bool
+	replay    func(record func(pool, key string, ips []net.IP, reference bool) error)
+	holds     map[string]bool // Service keys whose addresses egress releases
+	asked     []string        // "pool key" per ReleaseService call
+}
+
+func (f *fakeEgressHook) Synced() bool { return !f.notSynced }
+func (f *fakeEgressHook) Replay(record func(pool, key string, ips []net.IP, reference bool) error) {
+	if f.replay != nil {
+		f.replay(record)
+	}
+}
+func (f *fakeEgressHook) ReleaseService(pool, key string, _ net.IP) bool {
+	f.asked = append(f.asked, pool+" "+key)
+	return !f.holds[key]
+}
+
+// After the Services, egress replays its allocations and holds into the
+// pools; a held address survives its Service's release.
+func TestEgressHookReplay(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	pool := mustLocalPool(t, "default", "192.168.1.0/29")
+	pools := map[string]Pool{"default": pool}
+	alloc.SetListServices(func() []v1.Service {
+		return []v1.Service{existingSvc("ns1", "svc1", "192.168.1.1")}
+	})
+	alloc.egress = &fakeEgressHook{replay: func(record func(string, string, []net.IP, bool) error) {
+		assert.NoError(t, record("default", "egress:Egress:ns1:e1", []net.IP{net.ParseIP("192.168.1.1")}, true))
+		assert.NoError(t, record("default", "egress:Egress:ns1:e2", []net.IP{net.ParseIP("192.168.1.2")}, false))
+		assert.Error(t, record("missing", "egress:Egress:ns1:e3", []net.IP{net.ParseIP("192.168.1.3")}, false))
+	}}
+
+	alloc.populateFromExisting(pools)
+	assert.True(t, alloc.populated.Load())
+	assert.Equal(t, 2, pool.InUse())
+
+	require.NoError(t, alloc.Unassign(pools, "ns1/svc1", ""))
+	assert.Equal(t, 2, pool.InUse(), "egress still holds the Service's address")
+}
+
+// Until egress has synced the allocator neither populates its pools nor
+// allocates.
+func TestEgressHookNotSynced(t *testing.T) {
+	alloc := New(allocatorTestLogger)
+	alloc.SetListServices(func() []v1.Service { return nil })
+	hook := &fakeEgressHook{notSynced: true}
+	alloc.egress = hook
+
+	alloc.populateFromExisting(map[string]Pool{})
+	assert.False(t, alloc.populated.Load())
+	c := &controller{logger: allocatorTestLogger, ips: alloc, client: &testK8S{t: t}, synced: true}
+	svc := service("svc", ports("tcp/80"), "")
+	assert.Equal(t, k8s.SyncStateError, c.SetBalancer(&svc, nil))
+
+	hook.notSynced = false
+	alloc.populateFromExisting(map[string]Pool{})
+	assert.True(t, alloc.populated.Load())
+}
+
+// The allocator skips releasing an address that egress says it holds.
+func TestEgressHookReleaseService(t *testing.T) {
+	ctx := context.Background()
+	alloc := New(allocatorTestLogger)
+	pool := mustLocalPool(t, "default", "192.168.1.0/29")
+	pools := map[string]Pool{"default": pool}
+	svc := service("svc", ports("tcp/80"), "")
+	require.NoError(t, pool.AssignNext(ctx, &svc))
+	hook := &fakeEgressHook{holds: map[string]bool{"unit/svc": true}}
+	alloc.egress = hook
+
+	require.NoError(t, alloc.Unassign(pools, "unit/svc", ""))
+	require.NoError(t, alloc.ReleaseIPs(pools, "unit/svc", []string{svc.Status.LoadBalancer.Ingress[0].IP}, ""))
+	assert.Equal(t, 1, pool.InUse())
+	assert.Equal(t, []string{"default unit/svc", "default unit/svc"}, hook.asked)
+
+	hook.holds = nil
+	require.NoError(t, alloc.Unassign(pools, "unit/svc", ""))
+	assert.Equal(t, 0, pool.InUse())
 }

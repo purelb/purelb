@@ -36,6 +36,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"purelb.io/internal/egresshook"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -1713,4 +1714,37 @@ func TestSetBalancerWithdrawsWhileGuardStandsDown(t *testing.T) {
 				"withheld again after the normal path: withdrawn again, not skipped as already done")
 		})
 	}
+}
+
+// fakeEgress records what the announcer tells egress and answers
+// Referenced from a set of addresses.
+type fakeEgress struct {
+	egresshook.Noop
+	referenced map[string]bool
+	reports    []string
+}
+
+func (f *fakeEgress) Referenced(ip net.IP) bool { return f.referenced[ip.String()] }
+func (f *fakeEgress) ServiceAddress(key string, ip net.IP, announced bool) {
+	f.reports = append(f.reports, fmt.Sprintf("%s %s %v", key, ip, announced))
+}
+
+// A Service's withdrawal leaves an address egress still uses, and tells
+// egress the Service no longer announces it.
+func TestWithdrawalKeepsEgressReferencedAddress(t *testing.T) {
+	a := withdrawalTestAnnouncer(nil)
+	eg := &fakeEgress{referenced: map[string]bool{"192.0.2.1": true}}
+	a.egress = eg
+	ip := net.ParseIP("192.0.2.1")
+
+	announceForTest(a, "default/svc-a", "192.0.2.1")
+	before := ptu.ToFloat64(addressWithdrawals)
+	assert.NoError(t, a.deleteAddress("default/svc-a", "test", ip))
+	assert.Equal(t, before, ptu.ToFloat64(addressWithdrawals), "an address egress uses isn't withdrawn")
+	assert.Equal(t, []string{"default/svc-a 192.0.2.1 false"}, eg.reports)
+
+	eg.referenced = nil
+	announceForTest(a, "default/svc-a", "192.0.2.1")
+	assert.NoError(t, a.deleteAddress("default/svc-a", "test", ip))
+	assert.Equal(t, before+1, ptu.ToFloat64(addressWithdrawals))
 }

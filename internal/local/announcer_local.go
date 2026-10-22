@@ -30,6 +30,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 
+	"purelb.io/internal/egresshook"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
@@ -112,6 +113,9 @@ type announcer struct {
 	// not announce it: the fail-closed address guard couldn't write the
 	// address's rules. nil means never.
 	withheld func(net.IP) bool
+	// egress is how the announcer reaches egress. nil means
+	// egresshook.Noop; read it through egressHook.
+	egress egresshook.Agent
 
 	// quietWithdrawn records, per renewalKey, the reason an address was
 	// last withdrawn for while the node announces nothing (or withholds
@@ -204,9 +208,17 @@ func init() {
 // because the address guard is fail-closed and not working. withheld (may
 // be nil) reports whether one address must not be announced because the
 // fail-closed guard couldn't write its rules.
-func NewAnnouncer(l log.Logger, node string, standingDown func() bool, withheld func(net.IP) bool) lbnodeagent.Announcer {
+func NewAnnouncer(l log.Logger, node string, standingDown func() bool, withheld func(net.IP) bool, egress egresshook.Agent) lbnodeagent.Announcer {
 	return &announcer{logger: l, myNode: node, svcIngresses: map[string][]v1.LoadBalancerIngress{},
-		standingDown: standingDown, withheld: withheld}
+		standingDown: standingDown, withheld: withheld, egress: egress}
+}
+
+// egressHook returns the egress hook, egresshook.Noop when none is set.
+func (a *announcer) egressHook() egresshook.Agent {
+	if a.egress == nil {
+		return egresshook.Noop{}
+	}
+	return a.egress
 }
 
 // withdrawQuietly withdraws lbIP for reason unless it already was, for the
@@ -647,6 +659,7 @@ func (a *announcer) announceLocal(cfg *announcerConfig, svc *v1.Service, preferr
 	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 	RecordAddressAddition()
 	a.announced.Store(renewalKey(nsName, lbIP.String()), struct{}{})
+	a.egressHook().ServiceAddress(nsName, lbIP, true)
 	a.scheduleRenewal(nsName, lbIPNet, announceInt, opts)
 
 	// Claim this IP's slot in the announcing-<family> annotation. The IP is
@@ -750,6 +763,7 @@ func (a *announcer) announceRemote(cfg *announcerConfig, svc *v1.Service, epSlic
 
 	RecordAddressAddition()
 	a.announced.Store(renewalKey(nsName, lbIP.String()), struct{}{})
+	a.egressHook().ServiceAddress(nsName, lbIP, true)
 	a.scheduleRenewal(nsName, lbIPNet, cfg.dummyInt, opts)
 
 	// The announcing annotation for remote pools is derived by consumers
@@ -857,6 +871,7 @@ func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 
 	// This service is no longer announcing the address on this node.
 	a.announced.Delete(renewalKey(nsName, svcAddr.String()))
+	a.egressHook().ServiceAddress(nsName, svcAddr, false)
 
 	// If some *other* service is still announcing that address from this
 	// node (a shared IP) then the address has to stay. Only entries in
@@ -864,6 +879,11 @@ func (a *announcer) deleteAddress(nsName, reason string, svcAddr net.IP) error {
 	// reference, so it cannot block the withdrawal.
 	if other, inUse := a.otherAnnouncerOf(svcAddr); inUse {
 		logging.Debug(a.logger, "event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by other service", "other", other)
+		return nil
+	}
+	// Egress may use the address too (a shared egress address).
+	if a.egressHook().Referenced(svcAddr) {
+		logging.Debug(a.logger, "event", "withdrawAnnouncement", "service", nsName, "reason", reason, "msg", "ip in use by egress")
 		return nil
 	}
 
@@ -1085,6 +1105,8 @@ func (a *announcer) isRemotePool(cfg *announcerConfig, lbIP net.IP) bool {
 
 // renewalKey generates the map key for a service's address renewal.
 // Format: "namespace/servicename:ip" to support shared IPs across services.
+// Egress-only addresses use "egress/<uid>:ip", a namespace no Service
+// name can take.
 func renewalKey(svcName, ip string) string {
 	return svcName + ":" + ip
 }

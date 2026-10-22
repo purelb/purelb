@@ -116,6 +116,10 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 		logging.Info(l, "op", "allocateIP", "error", "controller not synced")
 		return k8s.SyncStateError
 	}
+	if !c.ips.egress.Synced() {
+		logging.Info(l, "op", "allocateIP", "error", "egress not synced")
+		return k8s.SyncStateError
+	}
 
 	// If the user has specified an LB class and it's not ours then we
 	// ignore the LB.
