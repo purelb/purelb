@@ -66,9 +66,13 @@ const InstanceAnnotation = "purelb.io/instance"
 // For IPv6 addresses, addresses with bad flags (DADFAILED, DEPRECATED,
 // TENTATIVE) are filtered out.
 //
+// A link that damper (may be nil) counts as down contributes no subnets.
+//
 // If logger is non-nil, detailed logging is provided at info and debug levels.
-func GetLocalSubnets(interfaces []string, includeDefault bool, logger log.Logger) ([]string, error) {
+func GetLocalSubnets(interfaces []string, includeDefault bool, damper *LinkDamper, logger log.Logger) ([]string, error) {
 	subnets := make(map[string]struct{})
+	var scanned []string
+	defer func() { damper.setScanned(scanned) }()
 
 	// Collect subnets from explicitly listed interfaces
 	for _, ifName := range interfaces {
@@ -80,6 +84,13 @@ func GetLocalSubnets(interfaces []string, includeDefault bool, logger log.Logger
 				logging.Debug(logger, "op", "getLocalSubnets", "interface", ifName,
 					"msg", "interface not found, skipping")
 			}
+			continue
+		}
+
+		scanned = append(scanned, ifName)
+		if !damper.Up(link) {
+			logging.Debug(logger, "op", "getLocalSubnets", "interface", ifName,
+				"msg", "link is down, skipping")
 			continue
 		}
 
@@ -102,7 +113,11 @@ func GetLocalSubnets(interfaces []string, includeDefault bool, logger log.Logger
 				logging.Debug(logger, "op", "getLocalSubnets", "interface", ifName,
 					"family", "IPv4", "msg", "found default interface")
 			}
-			if err := collectSubnetsFromLink(link, subnets, logger); err != nil {
+			scanned = append(scanned, ifName)
+			if !damper.Up(link) {
+				logging.Debug(logger, "op", "getLocalSubnets", "interface", ifName,
+					"family", "IPv4", "msg", "default link is down, skipping")
+			} else if err := collectSubnetsFromLink(link, subnets, logger); err != nil {
 				return nil, fmt.Errorf("failed to get subnets from default IPv4 interface: %w", err)
 			}
 		} else if logger != nil {
@@ -117,7 +132,11 @@ func GetLocalSubnets(interfaces []string, includeDefault bool, logger log.Logger
 				logging.Debug(logger, "op", "getLocalSubnets", "interface", ifName,
 					"family", "IPv6", "msg", "found default interface")
 			}
-			if err := collectSubnetsFromLink(link, subnets, logger); err != nil {
+			scanned = append(scanned, ifName)
+			if !damper.Up(link) {
+				logging.Debug(logger, "op", "getLocalSubnets", "interface", ifName,
+					"family", "IPv6", "msg", "default link is down, skipping")
+			} else if err := collectSubnetsFromLink(link, subnets, logger); err != nil {
 				return nil, fmt.Errorf("failed to get subnets from default IPv6 interface: %w", err)
 			}
 		} else if logger != nil {

@@ -380,6 +380,11 @@ func main() {
 		leaseDuration = flag.Duration("lease-duration", parseDurationEnv("PURELB_LEASE_DURATION", election.DefaultLeaseDuration), "lease duration for leader election")
 		renewDeadline = flag.Duration("renew-deadline", parseDurationEnv("PURELB_RENEW_DEADLINE", election.DefaultRenewDeadline), "renew deadline for lease renewal")
 		retryPeriod   = flag.Duration("retry-period", parseDurationEnv("PURELB_RETRY_PERIOD", election.DefaultRetryPeriod), "retry period between renewal attempts")
+
+		// How long a link must stay down, or up again, before its subnets
+		// leave or rejoin this node's lease
+		linkDownHoldDown = flag.Duration("link-down-holddown", parseDurationEnv("PURELB_LINK_DOWN_HOLDDOWN", election.DefaultLinkDownHoldDown), "how long a link must stay down before its subnets leave the lease")
+		linkUpHoldDown   = flag.Duration("link-up-holddown", parseDurationEnv("PURELB_LINK_UP_HOLDDOWN", election.DefaultLinkUpHoldDown), "how long a link must stay up before its subnets rejoin the lease")
 	)
 	flag.Parse()
 
@@ -479,6 +484,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A down link's subnets leave the lease, damped by the hold-downs.
+	damper := election.NewLinkDamper(*linkDownHoldDown, *linkUpHoldDown, logger)
+
 	// Create the lease-based election
 	elect, err := election.New(election.Config{
 		Namespace:      *namespace,
@@ -501,7 +509,7 @@ func main() {
 			if ctrl.guard.StandingDown() {
 				return []string{}, nil
 			}
-			return election.GetSelectedSubnets(selector.Load(), logger)
+			return election.GetSelectedSubnets(selector.Load(), damper, logger)
 		},
 	})
 	if err != nil {
@@ -510,6 +518,11 @@ func main() {
 	}
 
 	ctrl.SetElection(elect)
+
+	// A scanned link's change renews the lease at once, and so does the
+	// end of its hold-down.
+	damper.SetRenew(elect.RenewNow)
+	go damper.Watch(stopCh)
 
 	// The guard calls this from its attacher goroutine whenever standing
 	// down changes. Re-sync every Service, so the announcer withdraws or

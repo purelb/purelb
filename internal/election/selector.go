@@ -95,14 +95,15 @@ func SelectorFromConfig(cfg *purelbv2.Config) (*InterfaceSelector, error) {
 }
 
 // GetSelectedSubnets returns the subnets the election should advertise
-// for sel. nil sel falls back to default-interface detection
+// for sel, leaving out links damper counts as down. nil sel falls back
+// to default-interface detection
 // (byte-identical to the pre-config behavior); an empty sel selects
 // nothing. Everything funnels through GetLocalSubnets so
 // deduplication, sorting, IPv6 bad-flag filtering, missing-interface
 // tolerance and log throttling are shared with the historical path.
-func GetSelectedSubnets(sel *InterfaceSelector, logger log.Logger) ([]string, error) {
+func GetSelectedSubnets(sel *InterfaceSelector, damper *LinkDamper, logger log.Logger) ([]string, error) {
 	if sel == nil {
-		return GetLocalSubnets(nil, true, logger)
+		return GetLocalSubnets(nil, true, damper, logger)
 	}
 	if !sel.UseDefault && sel.Regex == nil && len(sel.Interfaces) == 0 {
 		return []string{}, nil
@@ -124,7 +125,7 @@ func GetSelectedSubnets(sel *InterfaceSelector, logger log.Logger) ([]string, er
 		}
 	}
 
-	return GetLocalSubnets(names, sel.UseDefault, logger)
+	return GetLocalSubnets(names, sel.UseDefault, damper, logger)
 }
 
 // selectedInterfaceNames computes the explicit interface-name set for

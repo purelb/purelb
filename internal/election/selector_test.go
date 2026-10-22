@@ -136,20 +136,20 @@ func TestSelectorFromConfig(t *testing.T) {
 
 func TestGetSelectedSubnets(t *testing.T) {
 	t.Run("nil selector identical to default detection", func(t *testing.T) {
-		fromDefault, errDefault := GetLocalSubnets([]string{}, true, nil)
-		fromNil, errNil := GetSelectedSubnets(nil, nil)
+		fromDefault, errDefault := GetLocalSubnets([]string{}, true, nil, nil)
+		fromNil, errNil := GetSelectedSubnets(nil, nil, nil)
 		assert.Equal(t, errDefault == nil, errNil == nil)
 		assert.Equal(t, fromDefault, fromNil)
 	})
 
 	t.Run("empty selector selects nothing", func(t *testing.T) {
-		subnets, err := GetSelectedSubnets(&InterfaceSelector{}, nil)
+		subnets, err := GetSelectedSubnets(&InterfaceSelector{}, nil, nil)
 		assert.NoError(t, err)
 		assert.Empty(t, subnets)
 	})
 
 	t.Run("explicit lo", func(t *testing.T) {
-		subnets, err := GetSelectedSubnets(&InterfaceSelector{Interfaces: []string{"lo"}}, nil)
+		subnets, err := GetSelectedSubnets(&InterfaceSelector{Interfaces: []string{"lo"}}, nil, nil)
 		require.NoError(t, err)
 		assert.Contains(t, subnets, "127.0.0.0/8")
 		if loHasIPv6(t) {
@@ -158,7 +158,7 @@ func TestGetSelectedSubnets(t *testing.T) {
 	})
 
 	t.Run("regex enumeration excludes loopback", func(t *testing.T) {
-		subnets, err := GetSelectedSubnets(&InterfaceSelector{Regex: regexp.MustCompile("^lo$")}, nil)
+		subnets, err := GetSelectedSubnets(&InterfaceSelector{Regex: regexp.MustCompile("^lo$")}, nil, nil)
 		require.NoError(t, err)
 		assert.NotContains(t, subnets, "127.0.0.0/8")
 	})
@@ -167,7 +167,7 @@ func TestGetSelectedSubnets(t *testing.T) {
 		// lo listed explicitly but also excluded: contributes nothing.
 		subnets, err := GetSelectedSubnets(&InterfaceSelector{
 			Interfaces: []string{"lo"}, ExcludeName: "lo",
-		}, nil)
+		}, nil, nil)
 		require.NoError(t, err)
 		assert.NotContains(t, subnets, "127.0.0.0/8")
 	})
@@ -175,15 +175,15 @@ func TestGetSelectedSubnets(t *testing.T) {
 	t.Run("missing interface skipped", func(t *testing.T) {
 		subnets, err := GetSelectedSubnets(&InterfaceSelector{
 			Interfaces: []string{"purelb-does-not-exist0"},
-		}, nil)
+		}, nil, nil)
 		assert.NoError(t, err)
 		assert.Empty(t, subnets)
 	})
 
 	t.Run("union and dedup", func(t *testing.T) {
-		fromSingle, err := GetSelectedSubnets(&InterfaceSelector{Interfaces: []string{"lo"}}, nil)
+		fromSingle, err := GetSelectedSubnets(&InterfaceSelector{Interfaces: []string{"lo"}}, nil, nil)
 		require.NoError(t, err)
-		fromDuplicated, err := GetSelectedSubnets(&InterfaceSelector{Interfaces: []string{"lo", "lo"}}, nil)
+		fromDuplicated, err := GetSelectedSubnets(&InterfaceSelector{Interfaces: []string{"lo", "lo"}}, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, fromSingle, fromDuplicated)
 	})

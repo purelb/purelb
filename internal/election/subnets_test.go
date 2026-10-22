@@ -227,7 +227,7 @@ func TestSubnetContainsIP(t *testing.T) {
 // This is an integration test that requires actual netlink access.
 func TestGetLocalSubnets_LoopbackOnly(t *testing.T) {
 	// The loopback interface should always exist and have 127.0.0.0/8
-	subnets, err := GetLocalSubnets([]string{"lo"}, false, nil)
+	subnets, err := GetLocalSubnets([]string{"lo"}, false, nil, nil)
 	assert.NoError(t, err)
 
 	// Should contain the loopback subnet
@@ -239,7 +239,7 @@ func TestGetLocalSubnets_LoopbackOnly(t *testing.T) {
 // interface is gracefully skipped (not an error).
 func TestGetLocalSubnets_NonexistentInterface(t *testing.T) {
 	// A non-existent interface should be skipped, not cause an error
-	subnets, err := GetLocalSubnets([]string{"nonexistent-interface-xyz"}, false, nil)
+	subnets, err := GetLocalSubnets([]string{"nonexistent-interface-xyz"}, false, nil, nil)
 	assert.NoError(t, err)
 	assert.Empty(t, subnets)
 }
@@ -248,7 +248,7 @@ func TestGetLocalSubnets_NonexistentInterface(t *testing.T) {
 // adds subnets from the default interface. This test may be skipped
 // if there's no default route (e.g., in a container without network).
 func TestGetLocalSubnets_IncludeDefault(t *testing.T) {
-	subnets, err := GetLocalSubnets([]string{}, true, nil)
+	subnets, err := GetLocalSubnets([]string{}, true, nil, nil)
 	if err != nil {
 		// May fail in environments without a default route
 		t.Skipf("Skipping: no default route available: %v", err)
@@ -266,7 +266,7 @@ func TestGetLocalSubnets_IncludeDefault(t *testing.T) {
 // interface multiple times doesn't result in duplicate subnets.
 func TestGetLocalSubnets_Deduplication(t *testing.T) {
 	// List loopback twice - should still only get unique subnets
-	subnets, err := GetLocalSubnets([]string{"lo", "lo"}, false, nil)
+	subnets, err := GetLocalSubnets([]string{"lo", "lo"}, false, nil, nil)
 	assert.NoError(t, err)
 
 	// Check for duplicates
@@ -280,7 +280,7 @@ func TestGetLocalSubnets_Deduplication(t *testing.T) {
 // TestGetLocalSubnets_Sorted verifies that results are sorted
 // for deterministic output.
 func TestGetLocalSubnets_Sorted(t *testing.T) {
-	subnets, err := GetLocalSubnets([]string{"lo"}, true, nil)
+	subnets, err := GetLocalSubnets([]string{"lo"}, true, nil, nil)
 	if err != nil {
 		t.Skipf("Skipping: %v", err)
 	}
