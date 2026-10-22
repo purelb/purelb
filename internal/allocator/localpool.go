@@ -181,51 +181,69 @@ func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6P
 }
 
 func (p LocalPool) Notify(_ context.Context, service *v1.Service) error {
-	nsName := namespacedName(service)
-	sharingKey := &Key{Sharing: SharingKey(service)}
-	ports := Ports(service)
+	req := serviceRequest(service, nil)
 
 	for _, ingress := range service.Status.LoadBalancer.Ingress {
 		ipstr := ingress.IP
 		ip := net.ParseIP(ipstr)
 		if ip == nil {
-			p.logger.Log("localpool", "notify-failure", "svc-name", nsName, "ip", ipstr)
+			p.logger.Log("localpool", "notify-failure", "svc-name", req.Key, "ip", ipstr)
 			continue
 		}
 
-		logging.Debug(p.logger, "localpool", "notify-existing", "svc-name", nsName, "ip", ipstr)
-
-		p.sharingKeys[ipstr] = sharingKey
-		if p.addressesInUse[ipstr] == nil {
-			p.addressesInUse[ipstr] = map[string]bool{}
-		}
-		p.addressesInUse[ipstr][nsName] = true
-		if p.portsInUse[ipstr] == nil {
-			p.portsInUse[ipstr] = map[Port]string{}
-		}
-		for _, port := range ports {
-			p.portsInUse[ipstr][port] = nsName
-		}
-
-		// Update reverse index: sharing key -> IP (per address family)
-		if sharingKey.Sharing != "" {
-			family := purelbv2.AddrFamily(ip)
-			indexKey := fmt.Sprintf("%s:%d", sharingKey.Sharing, family)
-			p.sharingKeyToIP[indexKey] = ipstr
-		}
+		logging.Debug(p.logger, "localpool", "notify-existing", "svc-name", req.Key, "ip", ipstr)
+		p.record(req, ipstr, ip)
 	}
 
 	return nil
 }
 
+// record records ip, whose map key is ipstr, as allocated to req.Key
+// with req's sharing key and ports.
+func (p LocalPool) record(req AllocRequest, ipstr string, ip net.IP) {
+	p.sharingKeys[ipstr] = &Key{Sharing: req.SharingKey}
+	if p.addressesInUse[ipstr] == nil {
+		p.addressesInUse[ipstr] = map[string]bool{}
+	}
+	p.addressesInUse[ipstr][req.Key] = true
+	if p.portsInUse[ipstr] == nil {
+		p.portsInUse[ipstr] = map[Port]string{}
+	}
+	for _, port := range req.Ports {
+		p.portsInUse[ipstr][port] = req.Key
+	}
+
+	// Update reverse index: sharing key -> IP (per address family)
+	if req.SharingKey != "" {
+		family := purelbv2.AddrFamily(ip)
+		indexKey := fmt.Sprintf("%s:%d", req.SharingKey, family)
+		p.sharingKeyToIP[indexKey] = ipstr
+	}
+}
+
+// hold records ip as held by key without ports or a sharing key (see
+// AllocRequest.Reference). An address nobody else has recorded is marked
+// unshareable, so no other owner can take it.
+func (p LocalPool) hold(key string, ip net.IP) {
+	ipstr := ip.String()
+	if p.sharingKeys[ipstr] == nil {
+		p.sharingKeys[ipstr] = &Key{}
+	}
+	if p.addressesInUse[ipstr] == nil {
+		p.addressesInUse[ipstr] = map[string]bool{}
+	}
+	p.addressesInUse[ipstr][key] = true
+	logging.Debug(p.logger, "localpool", "hold", "key", key, "ip", ipstr)
+}
+
 // available determines whether an address is available. The decision
-// depends on whether another service is using the address, and if so,
-// whether this service can share the address with it. error will be
-// nil if the ip is available, and will contain an explanation if not.
-func (p LocalPool) available(ip net.IP, service *v1.Service) error {
-	nsName := namespacedName(service)
-	key := &Key{Sharing: SharingKey(service)}
-	ports := Ports(service)
+// depends on whether another owner is using the address, and if so,
+// whether req can share the address with it. error will be nil if the
+// ip is available, and will contain an explanation if not.
+func (p LocalPool) available(ip net.IP, req AllocRequest) error {
+	nsName := req.Key
+	key := &Key{Sharing: req.SharingKey}
+	ports := req.Ports
 
 	// If this service has a sharing key, check if that key is already
 	// bound to a different IP in this address family. If so, this service
@@ -275,63 +293,131 @@ func (p LocalPool) AssignNext(ctx context.Context, service *v1.Service) error {
 	if err != nil {
 		return err
 	}
+	ips, err := p.Allocate(ctx, serviceRequest(service, families))
+	for _, ip := range ips {
+		p.addService(ctx, service, ip)
+	}
+	return err
+}
 
-	if len(families) == 0 {
+// addService adds ip to service's ingress and records the service's
+// addresses.
+func (p LocalPool) addService(ctx context.Context, service *v1.Service, ip net.IP) {
+	addIngress(p.logger, service, ip)
+	p.Notify(ctx, service)
+}
+
+// Allocate allocates addresses for req: a reference hold on req.Explicit,
+// req.Explicit itself, or the next free address in each requested family.
+func (p LocalPool) Allocate(ctx context.Context, req AllocRequest) ([]net.IP, error) {
+	if req.Reference {
+		for _, ip := range req.Explicit {
+			if !p.Contains(ip) {
+				return nil, fmt.Errorf("%s is not in pool %q", ip, p.name)
+			}
+		}
+		for _, ip := range req.Explicit {
+			p.hold(req.Key, ip)
+		}
+		return req.Explicit, nil
+	}
+
+	if len(req.Explicit) > 0 {
+		var ips []net.IP
+		for _, ip := range req.Explicit {
+			if err := p.take(ip, req); err != nil {
+				return ips, err
+			}
+			ips = append(ips, ip)
+		}
+		return ips, nil
+	}
+
+	if len(req.Families) == 0 {
 		// Any address is OK so try V6 first then V4 and assign the first
 		// one that succeeds
-		if err = p.assignFamily(ctx, nl.FAMILY_V6, service); err == nil {
-			return err
+		if ip, err := p.assignFamily(ctx, nl.FAMILY_V6, req); err == nil {
+			return ipList(ip), nil
 		}
-		return p.assignFamily(ctx, nl.FAMILY_V4, service)
+		ip, err := p.assignFamily(ctx, nl.FAMILY_V4, req)
+		return ipList(ip), err
 	}
 
 	// We have a specific set of families to assign
-	for _, family := range families {
-		if err := p.assignFamily(ctx, family, service); err != nil {
-			return err
+	var ips []net.IP
+	var lastErr error
+	satisfied := 0
+	for _, family := range req.Families {
+		ip, err := p.assignFamily(ctx, family, req)
+		if err != nil {
+			if req.Policy == AllFamilies {
+				return ips, err
+			}
+			lastErr = err
+			continue
 		}
+		satisfied++
+		ips = append(ips, ipList(ip)...)
 	}
+	if satisfied == 0 {
+		return ips, lastErr
+	}
+	return ips, nil
+}
+
+// ipList returns ip as a one-element list, or an empty list if it's nil.
+func ipList(ip net.IP) []net.IP {
+	if ip == nil {
+		return nil
+	}
+	return []net.IP{ip}
+}
+
+// take allocates ip to req if it's free for req.
+func (p LocalPool) take(ip net.IP, req AllocRequest) error {
+	if err := p.reserved(ip); err != nil {
+		return err
+	}
+	if err := p.available(ip, req); err != nil {
+		return err
+	}
+	p.record(req, ip.String(), ip)
 	return nil
 }
 
-func (p LocalPool) assignFamily(ctx context.Context, family int, service *v1.Service) error {
-	// Check if the service already has an address for this family
+// assignFamily allocates the next free address in family to req and
+// returns it. It returns a nil address and no error when req already
+// holds an address in family.
+func (p LocalPool) assignFamily(ctx context.Context, family int, req AllocRequest) (net.IP, error) {
+	// Check if the owner already has an address for this family
 	// This supports IP family transitions (e.g., SingleStack → DualStack)
 	// where we want to keep existing addresses and only allocate missing ones
-	for _, ingress := range service.Status.LoadBalancer.Ingress {
-		ip := net.ParseIP(ingress.IP)
-		if ip == nil {
-			continue
-		}
-		ingressFamily := nl.FAMILY_V4
-		if ip.To4() == nil {
-			ingressFamily = nl.FAMILY_V6
-		}
-		if ingressFamily == family {
+	for _, ip := range req.Existing {
+		if purelbv2.AddrFamily(ip) == family {
 			// Already have an address for this family, skip allocation
-			p.logger.Log("localpool", "skip-assign", "service", namespacedName(service),
-				"family", family, "existing-ip", ingress.IP)
-			return nil
+			p.logger.Log("localpool", "skip-assign", "service", req.Key,
+				"family", family, "existing-ip", ip.String())
+			return nil, nil
 		}
 	}
 
 	// Balanced allocation: pick least-used range.
-	// Skip for services with sharing keys — they must use the bound IP.
-	if p.balancePools && SharingKey(service) == "" {
-		return p.assignFamilyBalancePools(ctx, family, service)
+	// Skip for owners with sharing keys — they must use the bound IP.
+	if p.balancePools && req.SharingKey == "" {
+		return p.assignFamilyBalancePools(ctx, family, req)
 	}
 
 	var lastErr error
 	var boundIPErr error
 
-	// Pre-compute the bound IP for this service's sharing key (if any)
-	sharingKey := SharingKey(service)
+	// Pre-compute the bound IP for this owner's sharing key (if any)
+	sharingKey := req.SharingKey
 	boundIP := p.ipForSharingKey(sharingKey, family)
 
 	for pos := p.first(family); pos != nil; pos = p.next(pos) {
-		if err := p.Assign(ctx, pos, service); err == nil {
+		if err := p.take(pos, req); err == nil {
 			// we found an available address
-			return nil
+			return pos, nil
 		} else {
 			lastErr = err
 			// Capture the error from the bound IP specifically -
@@ -352,7 +438,7 @@ func (p LocalPool) assignFamily(ctx context.Context, family int, service *v1.Ser
 		finalErr = lastErr
 	} else {
 		finalErr = fmt.Errorf("pool %q exhausted: no available addresses for %s",
-			p.name, namespacedName(service))
+			p.name, req.Key)
 	}
 
 	// Categorize the error for metrics
@@ -367,30 +453,25 @@ func (p LocalPool) assignFamily(ctx context.Context, family int, service *v1.Ser
 	// Log and record metric once per failed allocation
 	if p.logger != nil {
 		p.logger.Log("op", "assignFamily", "result", "failed",
-			"service", namespacedName(service),
+			"service", req.Key,
 			"family", family,
 			"reason", reason,
 			"error", finalErr.Error())
 	}
 	allocationRejected.WithLabelValues(p.name, reason).Inc()
 
-	return finalErr
+	return nil, finalErr
 }
 
 // Assign assigns a service to an IP.
 func (p LocalPool) Assign(ctx context.Context, ip net.IP, service *v1.Service) error {
-	if err := p.reserved(ip); err != nil {
-		return err
+	req := serviceRequest(service, nil)
+	req.Explicit = []net.IP{ip}
+	ips, err := p.Allocate(ctx, req)
+	for _, ip := range ips {
+		p.addService(ctx, service, ip)
 	}
-	if err := p.available(ip, service); err != nil {
-		return err
-	}
-
-	// we have an IP selected somehow, so program the data plane
-	addIngress(p.logger, service, ip)
-
-	// Update our internal allocation data structures
-	return p.Notify(ctx, service)
+	return err
 }
 
 // announcedPrefix is the prefix length an address from a pool with this
@@ -443,24 +524,25 @@ func (p LocalPool) reserved(ip net.IP) error {
 	return nil
 }
 
-// Release releases an IP so it can be assigned again.
-func (p LocalPool) Release(_ context.Context, service string) error {
+// Release releases every address held by key so it can be assigned
+// again.
+func (p LocalPool) Release(_ context.Context, key string) error {
 	for ipstr, allocs := range p.addressesInUse {
-		delete(allocs, service)
+		delete(allocs, key)
 		if len(allocs) == 0 {
 			delete(p.addressesInUse, ipstr)
 
 			// Clean up sharing key reverse index before deleting the forward mapping
-			if key := p.sharingKeys[ipstr]; key != nil && key.Sharing != "" {
+			if sk := p.sharingKeys[ipstr]; sk != nil && sk.Sharing != "" {
 				ip := net.ParseIP(ipstr)
 				family := purelbv2.AddrFamily(ip)
-				indexKey := fmt.Sprintf("%s:%d", key.Sharing, family)
+				indexKey := fmt.Sprintf("%s:%d", sk.Sharing, family)
 				delete(p.sharingKeyToIP, indexKey)
 			}
 			delete(p.sharingKeys, ipstr)
 		}
 		for port, svc := range p.portsInUse[ipstr] {
-			if svc == service {
+			if svc == key {
 				delete(p.portsInUse[ipstr], port)
 			}
 		}
@@ -471,9 +553,9 @@ func (p LocalPool) Release(_ context.Context, service string) error {
 	return nil
 }
 
-// ReleaseIP releases a specific IP address for a service. Used during
-// IP family transitions (e.g., DualStack → SingleStack).
-func (p LocalPool) ReleaseIP(_ context.Context, service string, ip net.IP) error {
+// ReleaseIP releases one address held by key. Used during IP family
+// transitions (e.g., DualStack → SingleStack).
+func (p LocalPool) ReleaseIP(_ context.Context, key string, ip net.IP) error {
 	ipstr := ip.String()
 
 	// Check if this IP is in our pool
@@ -482,25 +564,25 @@ func (p LocalPool) ReleaseIP(_ context.Context, service string, ip net.IP) error
 		return nil // IP not in this pool, nothing to do
 	}
 
-	// Remove service from this IP's allocations
-	delete(allocs, service)
+	// Remove key from this IP's allocations
+	delete(allocs, key)
 
 	// If no services are using this IP, clean up completely
 	if len(allocs) == 0 {
 		delete(p.addressesInUse, ipstr)
 
 		// Clean up sharing key reverse index before deleting the forward mapping
-		if key := p.sharingKeys[ipstr]; key != nil && key.Sharing != "" {
+		if sk := p.sharingKeys[ipstr]; sk != nil && sk.Sharing != "" {
 			family := purelbv2.AddrFamily(ip)
-			indexKey := fmt.Sprintf("%s:%d", key.Sharing, family)
+			indexKey := fmt.Sprintf("%s:%d", sk.Sharing, family)
 			delete(p.sharingKeyToIP, indexKey)
 		}
 		delete(p.sharingKeys, ipstr)
 	}
 
-	// Clean up ports for this service on this IP
+	// Clean up ports for this key on this IP
 	for port, svc := range p.portsInUse[ipstr] {
-		if svc == service {
+		if svc == key {
 			delete(p.portsInUse[ipstr], port)
 		}
 	}
@@ -508,7 +590,7 @@ func (p LocalPool) ReleaseIP(_ context.Context, service string, ip net.IP) error
 		delete(p.portsInUse, ipstr)
 	}
 
-	p.logger.Log("localpool", "release-ip", "service", service, "ip", ipstr)
+	p.logger.Log("localpool", "release-ip", "service", key, "ip", ipstr)
 	return nil
 }
 
@@ -863,7 +945,7 @@ func (p LocalPool) countAllocationsPerRange(ranges []*purelbv2.IPRange) []int {
 // assignFamilyBalancePools allocates an IP from the range with the fewest
 // current allocations, distributing services evenly across subnets.
 // Falls through to subsequent ranges if the preferred range is exhausted.
-func (p LocalPool) assignFamilyBalancePools(ctx context.Context, family int, service *v1.Service) error {
+func (p LocalPool) assignFamilyBalancePools(ctx context.Context, family int, req AllocRequest) (net.IP, error) {
 	var ranges []*purelbv2.IPRange
 	if family == nl.FAMILY_V6 {
 		ranges = p.v6Ranges
@@ -871,7 +953,7 @@ func (p LocalPool) assignFamilyBalancePools(ctx context.Context, family int, ser
 		ranges = p.v4Ranges
 	}
 	if len(ranges) == 0 {
-		return fmt.Errorf("no ranges for family %d", family)
+		return nil, fmt.Errorf("no ranges for family %d", family)
 	}
 
 	// Count current allocations per range and sort by least-used.
@@ -885,32 +967,32 @@ func (p LocalPool) assignFamilyBalancePools(ctx context.Context, family int, ser
 		return counts[indices[a]] < counts[indices[b]]
 	})
 
-	logging.Debug(p.logger, "op", "assignFamilyBalancePools", "service", namespacedName(service),
+	logging.Debug(p.logger, "op", "assignFamilyBalancePools", "service", req.Key,
 		"family", family, "rangeCounts", fmt.Sprintf("%v", counts), "order", fmt.Sprintf("%v", indices))
 
 	// Try ranges in least-allocated order
 	for _, idx := range indices {
-		if err := p.assignFromRange(ctx, ranges[idx], service); err == nil {
-			logging.Info(p.logger, "op", "assignFamilyBalancePools", "service", namespacedName(service),
+		if ip, err := p.assignFromRange(ctx, ranges[idx], req); err == nil {
+			logging.Info(p.logger, "op", "assignFamilyBalancePools", "service", req.Key,
 				"range", ranges[idx], "msg", "balancePools allocation selected range")
 			balancePoolsAllocations.WithLabelValues(p.name).Inc()
-			return nil
+			return ip, nil
 		}
 	}
 
 	allocationRejected.WithLabelValues(p.name, "exhausted").Inc()
-	return fmt.Errorf("no available addresses for service %s in family %d (balancePools, all ranges exhausted)",
-		namespacedName(service), family)
+	return nil, fmt.Errorf("no available addresses for service %s in family %d (balancePools, all ranges exhausted)",
+		req.Key, family)
 }
 
-// assignFromRange tries to assign the next available IP from a single range
-// to the service. Returns nil on success, error if the range is exhausted
-// or all IPs have conflicts.
-func (p LocalPool) assignFromRange(ctx context.Context, ipRange *purelbv2.IPRange, service *v1.Service) error {
+// assignFromRange allocates the next available IP from a single range
+// to req and returns it. Returns an error if the range is exhausted or
+// all IPs have conflicts.
+func (p LocalPool) assignFromRange(_ context.Context, ipRange *purelbv2.IPRange, req AllocRequest) (net.IP, error) {
 	var lastErr error
 	for ip := ipRange.First(); ip != nil; ip = ipRange.Next(ip) {
-		if err := p.Assign(ctx, ip, service); err == nil {
-			return nil
+		if err := p.take(ip, req); err == nil {
+			return ip, nil
 		} else {
 			lastErr = err
 		}
@@ -918,7 +1000,7 @@ func (p LocalPool) assignFromRange(ctx context.Context, ipRange *purelbv2.IPRang
 	if lastErr == nil {
 		lastErr = fmt.Errorf("range %s is empty", ipRange)
 	}
-	return lastErr
+	return nil, lastErr
 }
 
 // AssignNextPerRange allocates one IP per address range (per family) that
@@ -942,6 +1024,7 @@ func (p LocalPool) AssignNextPerRange(ctx context.Context, svc *v1.Service, acti
 	allocated := 0
 	activeRanges := 0
 	skippedNoActive := 0
+	req := serviceRequest(svc, families)
 
 	for _, family := range families {
 		var ranges []*purelbv2.IPRange
@@ -973,12 +1056,14 @@ func (p LocalPool) AssignNextPerRange(ctx context.Context, svc *v1.Service, acti
 				continue
 			}
 
-			if err := p.assignFromRange(ctx, ipRange, svc); err != nil {
+			ip, err := p.assignFromRange(ctx, ipRange, req)
+			if err != nil {
 				p.logger.Log("op", "assignNextPerRange", "range", ipRange,
 					"subnet", subnets[i], "error", err, "msg", "range exhausted, continuing")
 				allocationRejected.WithLabelValues(p.name, "exhausted").Inc()
 				continue
 			}
+			p.addService(ctx, svc, ip)
 			allocated++
 		}
 	}

@@ -158,6 +158,8 @@ type ServiceGroupSpec struct {
 
 // ServiceGroupLocalSpec configures a local IP address pool.
 // Addresses from this pool are announced on the node's local interface.
+// +kubebuilder:validation:XValidation:rule="!has(self.v4pool) || !has(self.v4pool.name) || !has(self.v4pools) || !self.v4pools.exists(q, has(q.name) && q.name == self.v4pool.name)",message="v4pool name must differ from the v4pools names"
+// +kubebuilder:validation:XValidation:rule="!has(self.v6pool) || !has(self.v6pool.name) || !has(self.v6pools) || !self.v6pools.exists(q, has(q.name) && q.name == self.v6pool.name)",message="v6pool name must differ from the v6pools names"
 type ServiceGroupLocalSpec struct {
 	// V4Pool specifies a single pool of IPv4 addresses.
 	// Use V4Pools for multiple pools.
@@ -170,10 +172,14 @@ type ServiceGroupLocalSpec struct {
 	V6Pool *AddressPool `json:"v6pool,omitempty"`
 
 	// V4Pools specifies multiple pools of IPv4 addresses.
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.name) || self.exists_one(q, has(q.name) && q.name == p.name))",message="v4pools names must be unique"
 	// +optional
 	V4Pools []AddressPool `json:"v4pools,omitempty"`
 
 	// V6Pools specifies multiple pools of IPv6 addresses.
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.name) || self.exists_one(q, has(q.name) && q.name == p.name))",message="v6pools names must be unique"
 	// +optional
 	V6Pools []AddressPool `json:"v6pools,omitempty"`
 
@@ -238,6 +244,8 @@ func (s *ServiceGroupLocalSpec) PoolForAddress(address net.IP) (*AddressPool, er
 // ServiceGroupRemoteSpec configures a remote IP address pool.
 // Addresses from this pool are announced on the dummy interface for
 // routing protocols (e.g., BGP via BIRD).
+// +kubebuilder:validation:XValidation:rule="!has(self.v4pool) || !has(self.v4pool.name) || !has(self.v4pools) || !self.v4pools.exists(q, has(q.name) && q.name == self.v4pool.name)",message="v4pool name must differ from the v4pools names"
+// +kubebuilder:validation:XValidation:rule="!has(self.v6pool) || !has(self.v6pool.name) || !has(self.v6pools) || !self.v6pools.exists(q, has(q.name) && q.name == self.v6pool.name)",message="v6pool name must differ from the v6pools names"
 type ServiceGroupRemoteSpec struct {
 	// V4Pool specifies a single pool of IPv4 addresses.
 	// Use V4Pools for multiple pools.
@@ -250,10 +258,14 @@ type ServiceGroupRemoteSpec struct {
 	V6Pool *AddressPool `json:"v6pool,omitempty"`
 
 	// V4Pools specifies multiple pools of IPv4 addresses.
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.name) || self.exists_one(q, has(q.name) && q.name == p.name))",message="v4pools names must be unique"
 	// +optional
 	V4Pools []AddressPool `json:"v4pools,omitempty"`
 
 	// V6Pools specifies multiple pools of IPv6 addresses.
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:XValidation:rule="self.all(p, !has(p.name) || self.exists_one(q, has(q.name) && q.name == p.name))",message="v6pools names must be unique"
 	// +optional
 	V6Pools []AddressPool `json:"v6pools,omitempty"`
 
@@ -334,6 +346,14 @@ type ServiceGroupExternalSpec struct {
 
 // AddressPool specifies a pool of IP addresses with routing configuration.
 type AddressPool struct {
+	// Name identifies this pool entry, so that an Egress can select it.
+	// Names are unique per address family within a ServiceGroup. When
+	// empty, the entry is referred to by its Subnet.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	Name string `json:"name,omitempty"`
+
 	// Pool specifies a pool of addresses that PureLB manages. It can be
 	// a CIDR or a from-to range of addresses, e.g.,
 	// "192.168.1.240/29" or "192.168.1.240-192.168.1.250".

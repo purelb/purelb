@@ -15,6 +15,8 @@
 package allocator
 
 import (
+	"net"
+
 	v1 "k8s.io/api/core/v1"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -39,4 +41,22 @@ func SharingKey(svc *v1.Service) string {
 
 func namespacedName(svc *v1.Service) string {
 	return svc.Namespace + "/" + svc.Name
+}
+
+// serviceRequest describes svc's allocation as an AllocRequest: keyed by
+// namespace/name, with its sharing key, ports and existing addresses.
+// families is the order to allocate in (see LocalPool.whichFamilies).
+func serviceRequest(svc *v1.Service, families []int) AllocRequest {
+	req := AllocRequest{
+		Key:        namespacedName(svc),
+		SharingKey: SharingKey(svc),
+		Families:   families,
+		Ports:      Ports(svc),
+	}
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		if ip := net.ParseIP(ingress.IP); ip != nil {
+			req.Existing = append(req.Existing, ip)
+		}
+	}
+	return req
 }

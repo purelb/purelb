@@ -1387,6 +1387,9 @@ func (f *fakeStatusPool) ReleaseIP(context.Context, string, net.IP) error   { re
 func (f *fakeStatusPool) AssignNextPerRange(context.Context, *v1.Service, []string) error {
 	return nil
 }
+func (f *fakeStatusPool) Allocate(context.Context, AllocRequest) ([]net.IP, error) {
+	return nil, nil
+}
 func (f *fakeStatusPool) Overlaps(Pool) bool   { return false }
 func (f *fakeStatusPool) Contains(net.IP) bool { return false }
 func (f *fakeStatusPool) SkipIPv6DAD() bool    { return false }
