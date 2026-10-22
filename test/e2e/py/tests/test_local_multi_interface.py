@@ -41,13 +41,14 @@ elections it cannot serve: a blackhole.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Dict, Iterator, List
 
 import pytest
 
 from purelb_e2e import TEST_NAMESPACE, guard, metrics, nodes, topology
-from purelb_e2e.cluster import Cluster
+from purelb_e2e.cluster import Cluster, utcnow
 from purelb_e2e.wait import wait_until, wait_while
 
 NAMESPACE = TEST_NAMESPACE
@@ -972,3 +973,135 @@ def test_affinity_falls_back_and_counts_it_when_no_preferred_node_can_announce(
         f"degraded state, so counting it turns every Service with no "
         f"backends into a permanent affinity alert."
     )
+
+
+# ------------------------------------------------------------- down links
+
+# A test-only dummy interface stands in for a pool NIC. Flapping a real
+# NIC would cut the node off or drop its IPv6 addresses and routes; a
+# dummy carries only this test's subnet. keep_addr_on_down stops the
+# kernel deleting its IPv6 address while it is down.
+FLAP_IFACE = "purelb-flap0"
+FLAP_V4, FLAP_ADDR_V4, FLAP_POOL_V4 = "10.199.250.0/24", "10.199.250.1/24", "10.199.250.10-10.199.250.20"
+FLAP_V6, FLAP_ADDR_V6, FLAP_POOL_V6 = "fd99:250::/64", "fd99:250::1/64", "fd99:250::10-fd99:250::20"
+FLAP_GROUP = "link-flap-pool"
+# The agent's defaults (PURELB_LINK_DOWN_HOLDDOWN, PURELB_LINK_UP_HOLDDOWN).
+DOWN_HOLD, UP_HOLD = 2.0, 10.0
+LINK_CHANGES = "purelb_election_link_changes_total"
+
+
+def link_state_logged(cluster: Cluster, since, state: str) -> bool:
+    """Whether an agent logged, at info, FLAP_IFACE's change to state."""
+    for text in cluster.component_logs("lbnodeagent", since).values():
+        for line in text.splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if (rec.get("op"), rec.get("interface"), rec.get("state"), rec.get("level")) == (
+                    "linkState", FLAP_IFACE, state, "info"):
+                return True
+    return False
+
+
+def test_a_down_link_leaves_the_lease_after_its_hold_down(
+    cluster: Cluster, topo: topology.Topology, default_servicegroup: str,
+    scoped_agent, lb_service, agent_metrics,
+):
+    """A down link's subnets leave the lease, damped both ways.
+
+    A blip shorter than the down hold-down changes nothing. A link that
+    stays down leaves the lease only after the hold-down, which withdraws
+    the address announced on it (no other node is on this subnet). Back
+    up, it returns only after the longer up hold-down, and the address is
+    announced again. Each change is counted and logged. A dummy reports
+    UNKNOWN when up, so this also shows UNKNOWN counts as up.
+    """
+    node = sorted(topo.node_ips)[0]
+    host = topo.node_ips[node]
+    nodes.ssh(host, (
+        f"sudo ip link add {FLAP_IFACE} type dummy && "
+        f"sudo sysctl -qw net.ipv6.conf.{FLAP_IFACE}.keep_addr_on_down=1 && "
+        f"sudo ip addr add {FLAP_ADDR_V4} dev {FLAP_IFACE} && "
+        f"sudo ip -6 addr add {FLAP_ADDR_V6} dev {FLAP_IFACE} nodad && "
+        f"sudo ip link set {FLAP_IFACE} up"
+    ))
+    try:
+        scoped_agent(SCOPED_AGENT, node, [topo.node_iface[node], FLAP_IFACE])
+        wait_until(
+            lambda: (lease_has(cluster, node, FLAP_V4) and lease_has(cluster, node, FLAP_V6)) or None,
+            timeout=60, interval=2.0, description=f"{node}'s lease to gain {FLAP_V4} and {FLAP_V6}",
+        )
+        cluster.apply_cr({
+            "apiVersion": "purelb.io/v2",
+            "kind": "ServiceGroup",
+            "metadata": {"name": FLAP_GROUP, "namespace": cluster.purelb_namespace},
+            "spec": {"local": {
+                "v4pools": [{"aggregation": "default", "pool": FLAP_POOL_V4, "subnet": FLAP_V4}],
+                "v6pools": [{"aggregation": "default", "pool": FLAP_POOL_V6, "subnet": FLAP_V6}],
+            }},
+        })
+        ips = lb_service("link-flap-lb", ["IPv4", "IPv6"],
+                         annotations={SERVICE_GROUP: FLAP_GROUP}, timeout=90)
+        assert len(ips) == 2, f"expected a dual-stack address, got {ips}"
+
+        def announced_here(address: str):
+            return nodes.announcing_node(topo.node_ips, address) == (node, FLAP_IFACE) or None
+
+        for address in ips:
+            wait_until(lambda a=address: announced_here(a), timeout=60, interval=2.0,
+                       description=f"{address} announced on {node} {FLAP_IFACE}")
+
+        # 1. A blip shorter than the down hold-down changes nothing.
+        before = agent_metrics(node)
+        nodes.ssh(host, f"sudo ip link set {FLAP_IFACE} down && sleep 0.5 && sudo ip link set {FLAP_IFACE} up")
+        time.sleep(DOWN_HOLD + 3)
+        assert lease_has(cluster, node, FLAP_V4), "a blip took the subnet out of the lease"
+        # The election didn't move the addresses. The kernel itself drops
+        # IPv6 addresses that have a lifetime when a link goes
+        # administratively down (keep_addr_on_down keeps only permanent
+        # ones), so the IPv6 VIP comes back with the announcer's renewal,
+        # at most half its valid lifetime later.
+        for address in ips:
+            if ":" not in address:
+                assert announced_here(address), f"a blip withdrew {address}"
+            else:
+                wait_until(lambda a=address: announced_here(a),
+                           timeout=SHORT_LIFETIME, interval=2.0,
+                           description=f"{address} restored by its renewal after the blip")
+        mid = agent_metrics(node)
+        metrics.assert_not_increased(before, mid, LINK_CHANGES, interface=FLAP_IFACE, state="down")
+
+        # 2. Down for longer: out of the lease after the hold-down, and the
+        # address goes with it.
+        since = utcnow()
+        start = time.monotonic()
+        nodes.ssh(host, f"sudo ip link set {FLAP_IFACE} down")
+        wait_while(lambda: lease_has(cluster, node, FLAP_V4) or lease_has(cluster, node, FLAP_V6),
+                   timeout=30, interval=0.5, description=f"{FLAP_V4} and {FLAP_V6} to leave {node}'s lease")
+        left = time.monotonic() - start
+        assert left >= DOWN_HOLD, f"the subnet left the lease after {left:.1f}s, inside the {DOWN_HOLD}s hold-down"
+        for address in ips:
+            wait_while(lambda a=address: nodes.has_address(host, a), timeout=30, interval=1.0,
+                       description=f"{address} to be withdrawn from {node}")
+        down = agent_metrics(node)
+        metrics.assert_increased(mid, down, LINK_CHANGES, interface=FLAP_IFACE, state="down")
+        assert link_state_logged(cluster, since, "down"), "no info log for the down link"
+
+        # 3. Back up: in the lease again only after the up hold-down, and
+        # the address is announced again.
+        start = time.monotonic()
+        nodes.ssh(host, f"sudo ip link set {FLAP_IFACE} up")
+        wait_until(lambda: (lease_has(cluster, node, FLAP_V4) and lease_has(cluster, node, FLAP_V6)) or None,
+                   timeout=60, interval=0.5, description=f"{FLAP_V4} and {FLAP_V6} back in {node}'s lease")
+        back = time.monotonic() - start
+        assert back >= UP_HOLD, f"the subnet returned after {back:.1f}s, inside the {UP_HOLD}s hold-down"
+        for address in ips:
+            wait_until(lambda a=address: announced_here(a), timeout=60, interval=2.0,
+                       description=f"{address} announced on {node} again")
+        metrics.assert_increased(down, agent_metrics(node), LINK_CHANGES, interface=FLAP_IFACE, state="up")
+        assert link_state_logged(cluster, since, "up"), "no info log for the link coming back"
+    finally:
+        cluster.delete_service(NAMESPACE, "link-flap-lb")
+        cluster.delete_cr("servicegroup", FLAP_GROUP)
+        nodes.ssh(host, f"sudo ip link del {FLAP_IFACE}", check=False)
