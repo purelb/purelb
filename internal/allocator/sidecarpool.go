@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/vishvananda/netlink/nl"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 	v1 "k8s.io/api/core/v1"
@@ -71,68 +72,106 @@ func NewSidecarPool(name string, log log.Logger, spec purelbv2.ServiceGroupExter
 // --- Pool interface: mutating methods proxy to gRPC. ---
 
 func (p *SidecarPool) AssignNext(ctx context.Context, svc *v1.Service) error {
-	resp, err := p.client.Allocate(ctx, &ipamv1.AllocateRequest{
-		Pool:       p.name,
-		Service:    namespacedName(svc),
-		SharingKey: svc.Annotations[purelbv2.SharingAnnotation],
-		Selector: &ipamv1.AllocateRequest_Families{Families: &ipamv1.FamilyRequest{
-			WantIpv4: wantsFamily(svc, v1.IPv4Protocol),
-			WantIpv6: wantsFamily(svc, v1.IPv6Protocol),
-		}},
-	})
-	if err != nil {
-		return err
+	var families []int
+	if wantsFamily(svc, v1.IPv4Protocol) {
+		families = append(families, nl.FAMILY_V4)
 	}
-	return p.applyAllocateResponse(svc, resp)
+	if wantsFamily(svc, v1.IPv6Protocol) {
+		families = append(families, nl.FAMILY_V6)
+	}
+	return p.assign(ctx, svc, serviceRequest(svc, families))
 }
 
 func (p *SidecarPool) Assign(ctx context.Context, ip net.IP, svc *v1.Service) error {
-	resp, err := p.client.Allocate(ctx, &ipamv1.AllocateRequest{
-		Pool:       p.name,
-		Service:    namespacedName(svc),
-		SharingKey: svc.Annotations[purelbv2.SharingAnnotation],
-		Selector:   &ipamv1.AllocateRequest_Explicit{Explicit: &ipamv1.ExplicitIPs{Ips: []string{ip.String()}}},
-	})
+	req := serviceRequest(svc, nil)
+	req.Explicit = []net.IP{ip}
+	return p.assign(ctx, svc, req)
+}
+
+// assign allocates req and programs the addresses onto svc's ingress
+// status.
+func (p *SidecarPool) assign(ctx context.Context, svc *v1.Service, req AllocRequest) error {
+	ips, err := p.Allocate(ctx, req)
 	if err != nil {
 		return err
 	}
-	return p.applyAllocateResponse(svc, resp)
-}
-
-// applyAllocateResponse validates a sidecar Allocate response and
-// programs the returned IPs onto the service's ingress status. Defends
-// against a buggy sidecar returning no IPs (with no error) or an
-// implausible flood of them.
-func (p *SidecarPool) applyAllocateResponse(svc *v1.Service, resp *ipamv1.AllocateResponse) error {
-	if len(resp.Ips) == 0 {
-		return fmt.Errorf("sidecar %s returned no IPs and no error", p.provider)
-	}
-	if len(resp.Ips) > maxAllocateResponseIPs {
-		return fmt.Errorf("sidecar %s returned %d IPs (max %d)", p.provider, len(resp.Ips), maxAllocateResponseIPs)
-	}
-	for _, a := range resp.Ips {
-		ip := net.ParseIP(a.Ip)
-		if ip == nil {
-			return fmt.Errorf("sidecar %s returned unparseable IP %q", p.provider, a.Ip)
-		}
+	for _, ip := range ips {
 		addIngress(p.logger, svc, ip)
 	}
 	return nil
 }
 
-func (p *SidecarPool) Release(ctx context.Context, service string) error {
+// Allocate asks the sidecar for req's addresses: req.Explicit, or one
+// per requested family. A reference hold isn't sent to the sidecar; the
+// allocator holds the owner's Release instead.
+func (p *SidecarPool) Allocate(ctx context.Context, req AllocRequest) ([]net.IP, error) {
+	if req.Reference {
+		return req.Explicit, nil
+	}
+	areq := &ipamv1.AllocateRequest{
+		Pool:       p.name,
+		Service:    req.Key,
+		SharingKey: req.SharingKey,
+	}
+	if len(req.Explicit) > 0 {
+		ips := make([]string, len(req.Explicit))
+		for i, ip := range req.Explicit {
+			ips[i] = ip.String()
+		}
+		areq.Selector = &ipamv1.AllocateRequest_Explicit{Explicit: &ipamv1.ExplicitIPs{Ips: ips}}
+	} else {
+		fr := &ipamv1.FamilyRequest{}
+		for _, f := range req.Families {
+			switch f {
+			case nl.FAMILY_V4:
+				fr.WantIpv4 = true
+			case nl.FAMILY_V6:
+				fr.WantIpv6 = true
+			}
+		}
+		areq.Selector = &ipamv1.AllocateRequest_Families{Families: fr}
+	}
+	resp, err := p.client.Allocate(ctx, areq)
+	if err != nil {
+		return nil, err
+	}
+	return p.allocateResponseIPs(resp)
+}
+
+// allocateResponseIPs validates a sidecar Allocate response and returns
+// its addresses. Defends against a buggy sidecar returning no IPs (with
+// no error) or an implausible flood of them.
+func (p *SidecarPool) allocateResponseIPs(resp *ipamv1.AllocateResponse) ([]net.IP, error) {
+	if len(resp.Ips) == 0 {
+		return nil, fmt.Errorf("sidecar %s returned no IPs and no error", p.provider)
+	}
+	if len(resp.Ips) > maxAllocateResponseIPs {
+		return nil, fmt.Errorf("sidecar %s returned %d IPs (max %d)", p.provider, len(resp.Ips), maxAllocateResponseIPs)
+	}
+	ips := make([]net.IP, 0, len(resp.Ips))
+	for _, a := range resp.Ips {
+		ip := net.ParseIP(a.Ip)
+		if ip == nil {
+			return nil, fmt.Errorf("sidecar %s returned unparseable IP %q", p.provider, a.Ip)
+		}
+		ips = append(ips, ip)
+	}
+	return ips, nil
+}
+
+func (p *SidecarPool) Release(ctx context.Context, key string) error {
 	_, err := p.client.Release(ctx, &ipamv1.ReleaseRequest{
 		Pool:    p.name,
-		Service: service,
+		Service: key,
 		Target:  &ipamv1.ReleaseRequest_All{All: true},
 	})
 	return err
 }
 
-func (p *SidecarPool) ReleaseIP(ctx context.Context, service string, ip net.IP) error {
+func (p *SidecarPool) ReleaseIP(ctx context.Context, key string, ip net.IP) error {
 	_, err := p.client.Release(ctx, &ipamv1.ReleaseRequest{
 		Pool:    p.name,
-		Service: service,
+		Service: key,
 		Target:  &ipamv1.ReleaseRequest_Ip{Ip: ip.String()},
 	})
 	return err

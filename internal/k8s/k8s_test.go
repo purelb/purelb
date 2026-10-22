@@ -17,6 +17,8 @@ package k8s
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -28,6 +30,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+
+	"purelb.io/internal/egresshook"
 )
 
 func TestAnnouncingOnlyUpdate(t *testing.T) {
@@ -402,4 +406,67 @@ func TestSyncSynced_PublishesPoolStatus(t *testing.T) {
 	item, _ := queue.Get()
 	assert.Equal(t, poolStatus{}, item)
 	queue.Done(item)
+}
+
+// fakeEgressController records the egress keys it syncs and fails the
+// ones listed in fail.
+type fakeEgressController struct {
+	egresshook.Noop
+	keys   []string
+	fail   map[string]bool
+	synced []string
+}
+
+func (f *fakeEgressController) Keys() []string { return f.keys }
+func (f *fakeEgressController) Sync(key string) error {
+	f.synced = append(f.synced, key)
+	if f.fail[key] {
+		return errors.New("sync failed")
+	}
+	return nil
+}
+
+// ForceSync reprocesses egress's keys along with the Services, and an
+// egress key is synced by the hook, a failure requeuing it.
+func TestEgressKeys(t *testing.T) {
+	queue := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[queueItem](),
+	)
+	defer queue.ShutDown()
+	eg := &fakeEgressController{keys: []string{"e1", "e2"}, fail: map[string]bool{"e2": true}}
+	c := &Client{queue: queue, logger: log.NewNopLogger(), egress: eg}
+
+	c.ForceSync()
+	assert.Equal(t, 2, queue.Len())
+	assert.Equal(t, "egress", queueItemKind(egressKey("e1")))
+
+	assert.Equal(t, SyncStateSuccess, c.sync(egressKey("e1")))
+	assert.Equal(t, SyncStateError, c.sync(egressKey("e2")))
+	assert.Equal(t, []string{"e1", "e2"}, eg.synced)
+}
+
+// The configured QPS and Burst reach the client, and the election's
+// clientset has its own limiter at its own rate.
+func TestClientRateLimits(t *testing.T) {
+	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
+	require.NoError(t, os.WriteFile(kubeconfig, []byte(`apiVersion: v1
+kind: Config
+clusters: [{name: c, cluster: {server: "http://127.0.0.1:1"}}]
+users: [{name: u, user: {}}]
+contexts: [{name: x, context: {cluster: c, user: u}}]
+current-context: x
+`), 0o600))
+
+	c, err := New(&Config{Logger: log.NewNopLogger(), Kubeconfig: kubeconfig, ProcessName: "test", QPS: 50, Burst: 100})
+	require.NoError(t, err)
+	main := c.client.CoreV1().RESTClient().GetRateLimiter()
+	assert.Equal(t, float32(50), main.QPS())
+
+	ec, err := c.ElectionClientset()
+	require.NoError(t, err)
+	el := ec.CoordinationV1().RESTClient().GetRateLimiter()
+	assert.Equal(t, float32(electionQPS), el.QPS())
+	assert.NotSame(t, main, el, "the election must not share the agent's limiter")
+	assert.Same(t, main, c.client.CoordinationV1().RESTClient().GetRateLimiter(),
+		"without its own clientset the election would share the agent's limiter")
 }

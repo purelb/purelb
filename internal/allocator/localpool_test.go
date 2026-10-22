@@ -42,8 +42,10 @@ func TestEmptyPool(t *testing.T) {
 	var svc v1.Service
 	p := LocalPool{}
 	assert.Equal(t, uint64(0), p.Size(), "incorrect pool size")
-	assert.Error(t, p.assignFamily(context.Background(), nl.FAMILY_V6, &svc))
-	assert.Error(t, p.assignFamily(context.Background(), nl.FAMILY_V4, &svc))
+	_, err := p.assignFamily(context.Background(), nl.FAMILY_V6, serviceRequest(&svc, nil))
+	assert.Error(t, err)
+	_, err = p.assignFamily(context.Background(), nl.FAMILY_V4, serviceRequest(&svc, nil))
+	assert.Error(t, err)
 	assert.Error(t, p.AssignNext(context.Background(), &svc))
 }
 
@@ -286,24 +288,24 @@ func TestAvailable(t *testing.T) {
 	svc1 := service("svc1", ports("tcp/80"), "sharing1")
 
 	// no assignment, should be available
-	assert.NoError(t, p.available(ip, &svc1))
+	assert.NoError(t, p.available(ip, serviceRequest(&svc1, nil)))
 
 	p.Assign(context.Background(), ip, &svc1)
 
 	// same service can "share" with or without the key
-	assert.NoError(t, p.available(ip, &svc1))
+	assert.NoError(t, p.available(ip, serviceRequest(&svc1, nil)))
 	svc1X := service("svc1", ports("tcp/80"), "XshareX")
-	assert.NoError(t, p.available(ip, &svc1X))
+	assert.NoError(t, p.available(ip, serviceRequest(&svc1X, nil)))
 
 	svc2 := service("svc2", ports("tcp/80"), "")
 	// other service, no key: no share
-	assert.Error(t, p.available(ip, &svc2))
+	assert.Error(t, p.available(ip, serviceRequest(&svc2, nil)))
 	// other service, has key, same port: no share
 	svc2 = service("svc2", ports("tcp/80"), "sharing1")
-	assert.Error(t, p.available(ip, &svc2))
+	assert.Error(t, p.available(ip, serviceRequest(&svc2, nil)))
 	// other service, has key, different port: share
 	svc2 = service("svc2", ports("tcp/25"), "sharing1")
-	assert.NoError(t, p.available(ip, &svc2))
+	assert.NoError(t, p.available(ip, serviceRequest(&svc2, nil)))
 }
 
 func TestAssignNext(t *testing.T) {
@@ -1023,4 +1025,107 @@ func TestReservedAddressesInSize(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An owner that isn't a Service allocates by its key, with no ports, and
+// releases by key.
+func TestLocalPoolAllocateRequest(t *testing.T) {
+	ctx := context.Background()
+	p := mustDualStackPool(t, []string{"192.168.1.0/30"}, []string{"fd00::/126"})
+	req := AllocRequest{Key: "egress:Egress:unit:e1", Families: []int{nl.FAMILY_V4, nl.FAMILY_V6}}
+
+	ips, err := p.Allocate(ctx, req)
+	assert.NoError(t, err)
+	if assert.Len(t, ips, 2) {
+		assert.Equal(t, nl.FAMILY_V4, purelbv2.AddrFamily(ips[0]))
+		assert.Equal(t, nl.FAMILY_V6, purelbv2.AddrFamily(ips[1]))
+		assert.Equal(t, []string{req.Key}, p.servicesOnIP(ips[0]))
+		assert.Empty(t, p.portsInUse[ips[0].String()])
+	}
+
+	// A family the owner already holds isn't allocated again.
+	req.Existing = ips
+	again, err := p.Allocate(ctx, req)
+	assert.NoError(t, err)
+	assert.Empty(t, again)
+	assert.Equal(t, 2, p.InUse())
+
+	assert.NoError(t, p.Release(ctx, req.Key))
+	assert.Equal(t, 0, p.InUse())
+}
+
+// AllFamilies fails when one family can't be allocated, returning what it
+// did allocate; AnyFamily succeeds with the families it got.
+func TestLocalPoolAllocateFamilyPolicy(t *testing.T) {
+	ctx := context.Background()
+	both := []int{nl.FAMILY_V4, nl.FAMILY_V6}
+
+	p := mustLocalPool(t, "v4only", "192.168.1.0/29")
+	ips, err := p.Allocate(ctx, AllocRequest{Key: "egress:a", Families: both, Policy: AllFamilies})
+	assert.Error(t, err)
+	assert.Len(t, ips, 1, "the IPv4 address allocated before the failure is returned")
+
+	p = mustLocalPool(t, "v4only", "192.168.1.0/29")
+	ips, err = p.Allocate(ctx, AllocRequest{Key: "egress:b", Families: both, Policy: AnyFamily})
+	assert.NoError(t, err)
+	if assert.Len(t, ips, 1) {
+		assert.Equal(t, nl.FAMILY_V4, purelbv2.AddrFamily(ips[0]))
+	}
+
+	_, err = p.Allocate(ctx, AllocRequest{Key: "egress:c", Families: []int{nl.FAMILY_V6}, Policy: AnyFamily})
+	assert.Error(t, err, "no requested family can be allocated")
+}
+
+// An explicit address is allocated to its owner and refused to another
+// owner that can't share it.
+func TestLocalPoolAllocateExplicit(t *testing.T) {
+	ctx := context.Background()
+	p := mustLocalPool(t, "unittest", "192.168.1.0/29")
+	ip := net.ParseIP("192.168.1.2")
+
+	ips, err := p.Allocate(ctx, AllocRequest{Key: "egress:a", Explicit: []net.IP{ip}})
+	assert.NoError(t, err)
+	assert.Equal(t, []net.IP{ip}, ips)
+
+	_, err = p.Allocate(ctx, AllocRequest{Key: "egress:b", Explicit: []net.IP{ip}})
+	assert.Error(t, err)
+}
+
+// A reference hold keeps a Service's address allocated after the Service
+// releases it, until the holder releases it too.
+func TestLocalPoolReferenceHold(t *testing.T) {
+	ctx := context.Background()
+	p := mustLocalPool(t, "unittest", "192.168.1.0/29")
+	svc := service("svc", ports("tcp/80"), "")
+	assert.NoError(t, p.AssignNext(ctx, &svc))
+	ip := net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
+
+	held, err := p.Allocate(ctx, AllocRequest{Key: "egress:Egress:unit:e1", Explicit: []net.IP{ip}, Reference: true})
+	assert.NoError(t, err)
+	assert.Equal(t, []net.IP{ip}, held)
+
+	assert.NoError(t, p.Release(ctx, namespacedName(&svc)))
+	assert.Equal(t, 1, p.InUse(), "the held address stays in use")
+	other := service("other", ports("tcp/80"), "")
+	assert.Error(t, p.Assign(ctx, ip, &other), "another owner can't take a held address")
+
+	assert.NoError(t, p.Release(ctx, "egress:Egress:unit:e1"))
+	assert.Equal(t, 0, p.InUse())
+	assert.NoError(t, p.Assign(ctx, ip, &other))
+}
+
+// A hold on an address nobody has recorded still keeps other owners off
+// it, and a hold outside the pool is refused.
+func TestLocalPoolReferenceHoldUnrecorded(t *testing.T) {
+	ctx := context.Background()
+	p := mustLocalPool(t, "unittest", "192.168.1.0/29")
+	ip := net.ParseIP("192.168.1.3")
+
+	_, err := p.Allocate(ctx, AllocRequest{Key: "egress:a", Explicit: []net.IP{ip}, Reference: true})
+	assert.NoError(t, err)
+	other := service("other", nil, "")
+	assert.Error(t, p.Assign(ctx, ip, &other))
+
+	_, err = p.Allocate(ctx, AllocRequest{Key: "egress:a", Explicit: []net.IP{net.ParseIP("10.0.0.1")}, Reference: true})
+	assert.Error(t, err)
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vishvananda/netlink/nl"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -348,4 +349,38 @@ func TestParsePoolValidatesExternalAnnounce(t *testing.T) {
 				"pool-type annotation is written from PoolType(); it must match announce")
 		})
 	}
+}
+
+// Allocate sends the request's key as the sidecar's service, and its
+// families.
+func TestSidecarPool_AllocateRequest(t *testing.T) {
+	var got *ipamv1.AllocateRequest
+	p := newSidecarPoolForTest(t, &fakeIPAM{
+		allocateFunc: func(req *ipamv1.AllocateRequest) (*ipamv1.AllocateResponse, error) {
+			got = req
+			return &ipamv1.AllocateResponse{Ips: []*ipamv1.AllocatedIP{{Ip: "10.20.30.7"}, {Ip: "fd00::7"}}}, nil
+		},
+	})
+	ips, err := p.Allocate(context.Background(), AllocRequest{
+		Key:      "egress:Egress:default:e1",
+		Families: []int{nl.FAMILY_V4, nl.FAMILY_V6},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []net.IP{net.ParseIP("10.20.30.7"), net.ParseIP("fd00::7")}, ips)
+	require.NotNil(t, got)
+	assert.Equal(t, "egress:Egress:default:e1", got.Service)
+	assert.Empty(t, got.SharingKey)
+	assert.True(t, got.GetFamilies().GetWantIpv4())
+	assert.True(t, got.GetFamilies().GetWantIpv6())
+}
+
+// A reference hold is never sent to the sidecar.
+func TestSidecarPool_ReferenceNotSent(t *testing.T) {
+	fake := &fakeIPAM{}
+	p := newSidecarPoolForTest(t, fake)
+	ip := net.ParseIP("10.20.30.7")
+	ips, err := p.Allocate(context.Background(), AllocRequest{Key: "egress:a", Explicit: []net.IP{ip}, Reference: true})
+	require.NoError(t, err)
+	assert.Equal(t, []net.IP{ip}, ips)
+	assert.Equal(t, 0, fake.allocateCalls)
 }

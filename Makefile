@@ -40,7 +40,7 @@ help: ## Display help message
 all: check crd image ## Build it all!
 
 .PHONY: check
-check: generate check-deps check-helm-rbac-source check-helm-render check-gofmt ## Run "short" tests + bundled-dep consistency check
+check: generate check-deps check-helm-rbac-source check-helm-render check-gofmt check-egress-imports ## Run "short" tests + bundled-dep consistency check
 	go vet ./...
 	go test -race -short ./...
 
@@ -57,6 +57,10 @@ check-gofmt: ## Fail if any tracked Go source is not gofmt-clean
 		echo "$$unformatted"; \
 		exit 1; \
 	fi
+
+.PHONY: check-egress-imports
+check-egress-imports: ## Fail if a core package depends on egress (use internal/egresshook)
+	hack/check-egress-imports.sh
 
 .PHONY: image
 image: generate ## Build executables and containers

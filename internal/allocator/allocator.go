@@ -32,6 +32,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
+	"purelb.io/internal/egresshook"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -118,12 +119,17 @@ type Allocator struct {
 	// share a connection. Connections live until allocator shutdown
 	// (closeAllSidecarConns); gRPC handles reconnection transparently.
 	sidecarConns sync.Map // map[socket string]*grpc.ClientConn
+
+	// egress is how the allocator reaches egress (egresshook.Noop when
+	// there is none). Called only from the queue worker (G1).
+	egress egresshook.Allocator
 }
 
 // New returns an Allocator managing no pools.
 func New(log log.Logger) *Allocator {
 	a := &Allocator{
 		logger: log,
+		egress: egresshook.Noop{},
 	}
 	a.state.Store(&allocatorState{
 		pools:    map[string]Pool{},
@@ -312,7 +318,7 @@ func (a *Allocator) buildNSIndex(groups []*purelbv2.ServiceGroup, pools map[stri
 // after the informer cache is warm, then skips subsequent calls since
 // individual services are notified via SetBalancer → NotifyExisting.
 func (a *Allocator) populateFromExisting(pools map[string]Pool) {
-	if a.populated.Load() || a.listServices == nil {
+	if a.populated.Load() || a.listServices == nil || !a.egress.Synced() {
 		return
 	}
 	count := 0
@@ -330,8 +336,32 @@ func (a *Allocator) populateFromExisting(pools map[string]Pool) {
 		}
 		count++
 	}
+	a.egress.Replay(func(pool, key string, ips []net.IP, reference bool) error {
+		return a.replayEgress(pools, pool, key, ips, reference)
+	})
 	a.populated.Store(true)
 	logging.Info(a.logger, "op", "populateFromExisting", "count", count)
+}
+
+// replayEgress records one egress allocation or reference hold into its
+// pool. Like Notify for Services, it records nothing in an external pool:
+// the sidecar keeps its own state.
+func (a *Allocator) replayEgress(pools map[string]Pool, pool, key string, ips []net.IP, reference bool) error {
+	p, ok := pools[pool]
+	if !ok {
+		return fmt.Errorf("egress replay: pool %q not found", pool)
+	}
+	if _, external := p.(*SidecarPool); external {
+		return nil
+	}
+	ctx, cancel := a.poolContext()
+	defer cancel()
+	if _, err := p.Allocate(ctx, AllocRequest{Key: key, Explicit: ips, Reference: reference}); err != nil {
+		logging.Info(a.logger, "op", "populateFromExisting", "error", err, "pool", pool, "key", key)
+		return err
+	}
+	a.updateStats(p)
+	return nil
 }
 
 // updateStats unconditionally updates internal state to reflect svc's
@@ -1078,6 +1108,11 @@ func (a *Allocator) Unassign(pools map[string]Pool, svc string, namedPool string
 		if _, external := p.(*SidecarPool); external && namedPool != "" && name != namedPool {
 			continue
 		}
+		if !a.egress.ReleaseService(name, svc, nil) {
+			logging.Debug(a.logger, "op", "unassign", "pool", name, "svc", svc,
+				"msg", "egress holds the address and releases it later")
+			continue
+		}
 		ctx, cancel := a.poolContext()
 		err := p.Release(ctx, svc)
 		cancel()
@@ -1124,6 +1159,11 @@ func (a *Allocator) ReleaseIPs(pools map[string]Pool, svc string, ips []string, 
 		}
 		if pool == nil {
 			logging.Info(a.logger, "op", "releaseIPs", "warning", "no pool found for IP", "ip", ipStr)
+			continue
+		}
+		if !a.egress.ReleaseService(pool.String(), svc, ip) {
+			logging.Debug(a.logger, "op", "releaseIPs", "ip", ipStr, "svc", svc,
+				"msg", "egress holds the address and releases it later")
 			continue
 		}
 

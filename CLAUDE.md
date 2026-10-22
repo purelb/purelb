@@ -91,6 +91,8 @@ The election system (`internal/election/`) determines which node announces each 
 - `PURELB_LEASE_DURATION` - How long a lease is valid (default: 10s)
 - `PURELB_RENEW_DEADLINE` - How long to retry renewals (default: 7s)
 - `PURELB_RETRY_PERIOD` - Interval between renewal attempts (default: 2s)
+- `PURELB_LINK_DOWN_HOLDDOWN` - How long a link stays down before its subnets leave the lease (default: 2s)
+- `PURELB_LINK_UP_HOLDDOWN` - How long a link stays up before its subnets rejoin the lease (default: 10s)
 
 ### Monitoring
 
@@ -98,6 +100,7 @@ Election metrics available at `/metrics`:
 - `purelb_election_lease_healthy` - Whether this node's lease is valid
 - `purelb_election_member_count` - Number of healthy nodes in election
 - `purelb_election_lease_renewals_total` - Successful lease renewals
+- `purelb_election_link_changes_total` - Link changes that reached the lease after their hold-down
 
 ## Logging
 Logging must be implemented, two level info and debug.  Info for normal operation, debug for codelevel troubleshooting.

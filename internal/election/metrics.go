@@ -96,6 +96,16 @@ var (
 		Name:      "affinity_fallback_total",
 		Help:      "Times an opted-in service had no preferred candidate eligible and fell back to standard hash election, recorded on the fallback's winner.",
 	}, []string{"key"})
+	// linkChanges counts link state changes that reached this node's
+	// Lease after their hold-down: a down link's subnets leaving it, or
+	// an up link's coming back.
+	// Labels: interface, state ("up" or "down")
+	linkChanges = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "link_changes_total",
+		Help:      "Link state changes that reached this node's lease after their hold-down",
+	}, []string{"interface", "state"})
 )
 
 func init() {
@@ -107,6 +117,7 @@ func init() {
 	prometheus.MustRegister(subnetCount)
 	prometheus.MustRegister(localSubnetCount)
 	prometheus.MustRegister(affinityFallbacks)
+	prometheus.MustRegister(linkChanges)
 }
 
 // RecordLeaseHealthy sets the lease health metric.

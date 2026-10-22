@@ -70,6 +70,8 @@ Variable | Default | Description
 `PURELB_LEASE_DURATION` | `10s` | How long a Lease is valid without renewal
 `PURELB_RENEW_DEADLINE` | `7s` | How long to retry renewals before giving up
 `PURELB_RETRY_PERIOD` | `2s` | Interval between renewal attempts
+`PURELB_LINK_DOWN_HOLDDOWN` | `2s` | How long a link must stay down before its subnets leave the Lease
+`PURELB_LINK_UP_HOLDDOWN` | `10s` | How long a link must stay up again before its subnets rejoin the Lease
 
 > [!NOTE]
 > The code default for `PURELB_LEASE_DURATION` is `5s`, but the Helm chart overrides it to `10s`. If installing via manifest, the deployed value is `10s`.
@@ -81,6 +83,17 @@ The election is subnet-aware: only nodes that have the address's subnet in their
 - On a multi-subnet cluster, an address from subnet A will only be announced by a node on subnet A.
 - The subnets a node advertises come from its [LBNodeAgent configuration]({{< relref "/docs/configuration/lbnodeagent" >}}): the interfaces selected by `localInterface` (default route or regex) plus any listed in `interfaces`. The Lease advertises exactly the subnets the announcer can announce on — the two sides always agree.
 - A dual-homed node (NICs on two subnets) is a candidate for addresses on both, once its configuration selects both NICs.
+
+### Down Links
+
+When a link that the Lease's subnets come from goes down, its subnets leave this node's Lease, so the addresses it announced on that subnet move to another node on the subnet, as they would if the node had failed. When the link comes back, its subnets rejoin the Lease and the node is a candidate again.
+
+A link counts as down when its operational state is anything but `UP` or `UNKNOWN` (many virtual interfaces never report a carrier, so `UNKNOWN` counts as up). Changes are damped:
+
+- A link must stay down for `PURELB_LINK_DOWN_HOLDDOWN` (2s) before its subnets leave, so a brief carrier blip moves nothing.
+- It must stay up for `PURELB_LINK_UP_HOLDDOWN` (10s) before they come back, so a flapping link settles before addresses move back to it.
+
+A link event renews the Lease at once, and so does the end of a hold-down, so a change reaches the other nodes without waiting for the next periodic renewal. Each change that reaches the Lease is logged at info level (`op=linkState`) and counted in `purelb_election_link_changes_total`.
 
 ### Convergence After Configuration Changes
 

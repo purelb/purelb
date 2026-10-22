@@ -51,6 +51,7 @@ Metric | Type | Labels | Description
 `purelb_election_member_count` | Gauge | | Current number of healthy nodes in the election
 `purelb_election_subnet_count` | Gauge | | Number of unique subnets tracked across all members
 `purelb_election_local_subnet_count` | Gauge | | Number of subnets on this node
+`purelb_election_link_changes_total` | Counter | `interface`, `state` | Link state changes that reached this node's Lease after their hold-down: `down` when a down link's subnets left the Lease, `up` when they came back. A steadily rising count means a flapping link
 `purelb_election_affinity_fallback_total` | Counter | `key` | **Breaking change (v0.17.0):** label renamed from `service` to `key`. Times a node-affinity-opted-in service had no preferred candidate eligible and fell back to standard hash election, recorded on the node that won the fallback. A key's series is removed when the address is released
 
 ## LBNodeAgent Local Pool Metrics

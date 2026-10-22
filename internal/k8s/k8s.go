@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"purelb.io/internal/egresshook"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	"purelb.io/pkg/generated/clientset/versioned"
 	"purelb.io/pkg/generated/informers/externalversions"
@@ -65,8 +66,11 @@ type Client struct {
 
 	client   *kubernetes.Clientset
 	crClient versioned.Interface
-	events   record.EventRecorder
-	queue    workqueue.TypedRateLimitingInterface[queueItem]
+	// restConfig is the configuration client and crClient were built
+	// from, kept to build the election's own clientset and for egress.
+	restConfig *rest.Config
+	events     record.EventRecorder
+	queue      workqueue.TypedRateLimitingInterface[queueItem]
 
 	// shuttingDown is set to true when stopCh closes, signaling that
 	// API calls should use shorter timeouts to allow graceful shutdown.
@@ -105,6 +109,10 @@ type Client struct {
 	// .status. Set by SetPoolStatusPublisher; nil in consumers that own
 	// no pools (lbnodeagent), which makes EnqueuePoolStatus a no-op.
 	publishPoolStatus func(context.Context) error
+
+	// egress runs egress's objects on this client's work queue.
+	// egresshook.Noop when there is no egress; read it through egressHook.
+	egress egresshook.Controller
 }
 
 // SetPoolStatusPublisher wires the callback invoked when a poolStatus
@@ -268,6 +276,15 @@ type Config struct {
 	Logger             log.Logger
 	Kubeconfig         string
 
+	// QPS and Burst set the client's rate limit, shared by every API
+	// group once set. Zero leaves client-go's defaults (5 and 10).
+	QPS   float32
+	Burst int
+
+	// Egress runs egress's objects on the work queue. nil means
+	// egresshook.Noop.
+	Egress egresshook.Controller
+
 	ServiceChanged func(*corev1.Service, []*discoveryv1.EndpointSlice) SyncState
 	ServiceDeleted func(name, pool string) SyncState
 	ConfigChanged  func(*purelbv2.Config) SyncState
@@ -317,6 +334,12 @@ type poolStatus struct{}
 
 func (poolStatus) isQueueItem() {}
 
+// egressKey is a key of one of egress's own objects, processed by the
+// egress hook.
+type egressKey string
+
+func (egressKey) isQueueItem() {}
+
 // queueItemKind returns the category of work-queue item for metrics labeling.
 func queueItemKind(item queueItem) string {
 	switch item.(type) {
@@ -326,6 +349,8 @@ func queueItemKind(item queueItem) string {
 		return "cache_sync"
 	case poolStatus:
 		return "pool_status"
+	case egressKey:
+		return "egress"
 	default:
 		return "unknown"
 	}
@@ -345,6 +370,12 @@ func New(cfg *Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building client config: %s", err)
 	}
+	if cfg.QPS != 0 {
+		k8sConfig.QPS = cfg.QPS
+	}
+	if cfg.Burst != 0 {
+		k8sConfig.Burst = cfg.Burst
+	}
 	clientset, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {
 		return nil, fmt.Errorf("creating Kubernetes client: %s", err)
@@ -361,11 +392,13 @@ func New(cfg *Config) (*Client, error) {
 	queue := workqueue.NewTypedRateLimitingQueue[queueItem](workqueue.DefaultTypedControllerRateLimiter[queueItem]())
 
 	c := &Client{
-		logger:   cfg.Logger,
-		client:   clientset,
-		crClient: crClient,
-		events:   recorder,
-		queue:    queue,
+		logger:     cfg.Logger,
+		client:     clientset,
+		crClient:   crClient,
+		restConfig: k8sConfig,
+		events:     recorder,
+		queue:      queue,
+		egress:     cfg.Egress,
 	}
 
 	// Custom Resource Watcher
@@ -587,6 +620,12 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 
 	c.queue.Add(synced(""))
 
+	// Egress starts after the core caches, so its first keys find them
+	// warm. A failure leaves load balancing running.
+	if err := c.egressHook().Start(stopCh, c.restConfig, func(key string) { c.queue.Add(egressKey(key)) }); err != nil {
+		c.logger.Log("op", "startEgress", "error", err)
+	}
+
 	if stopCh != nil {
 		go func() {
 			<-stopCh
@@ -630,6 +669,35 @@ func (c *Client) ForceSync() {
 			c.queue.Add(svcKey(k))
 		}
 	}
+	for _, k := range c.egressHook().Keys() {
+		c.queue.Add(egressKey(k))
+	}
+}
+
+// egressHook returns the egress hook, egresshook.Noop when none is set.
+func (c *Client) egressHook() egresshook.Controller {
+	if c.egress == nil {
+		return egresshook.Noop{}
+	}
+	return c.egress
+}
+
+// Election client limits. The election makes about one Lease Get and
+// one Update per renew period (half the lease duration) plus its Lease
+// informer's list and watch; client-go's defaults leave ample room.
+const (
+	electionQPS   = 5
+	electionBurst = 10
+)
+
+// ElectionClientset returns a clientset for the election with its own
+// rate limiter, so Lease renewals never queue behind this process's
+// other API calls: once QPS is set, every API group of a clientset
+// shares one limiter.
+func (c *Client) ElectionClientset() (kubernetes.Interface, error) {
+	ec := rest.CopyConfig(c.restConfig)
+	ec.QPS, ec.Burst, ec.RateLimiter = electionQPS, electionBurst, nil
+	return kubernetes.NewForConfig(ec)
 }
 
 // Clientset returns the underlying Kubernetes clientset.
@@ -902,6 +970,13 @@ func (c *Client) sync(key queueItem) SyncState {
 
 	case svcDeleted:
 		return c.serviceDeleted(k.name, k.pool)
+
+	case egressKey:
+		if err := c.egressHook().Sync(string(k)); err != nil {
+			c.logger.Log("op", "syncEgress", "key", string(k), "error", err)
+			return SyncStateError
+		}
+		return SyncStateSuccess
 
 	case poolStatus:
 		if c.publishPoolStatus == nil {

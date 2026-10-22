@@ -41,6 +41,58 @@ type Key struct {
 	Sharing string
 }
 
+// FamilyPolicy says what an allocation does when it can't get an address
+// in every requested family.
+type FamilyPolicy int
+
+const (
+	// AllFamilies fails the request unless every requested family gets an
+	// address. Services use it.
+	AllFamilies FamilyPolicy = iota
+
+	// AnyFamily succeeds when at least one requested family gets an
+	// address, or the owner already holds one.
+	AnyFamily
+)
+
+// AllocRequest describes one allocation independently of the object that
+// asks for it, so Services and other owners share one pool core.
+type AllocRequest struct {
+	// Key identifies the owner. Pools record allocations under it, and a
+	// sidecar receives it as AllocateRequest.service. A Service's key is
+	// "namespace/name"; other owners use a prefixed form such as
+	// "egress:...", which can't collide because Kubernetes names never
+	// contain a colon.
+	Key string
+
+	// SharingKey is the owner's address-sharing key, or empty.
+	SharingKey string
+
+	// Families lists nl.FAMILY_V4/V6 in assignment order. Empty means any
+	// one family, IPv6 first.
+	Families []int
+
+	// Policy applies when Families lists more than one family.
+	Policy FamilyPolicy
+
+	// Explicit pins the addresses to allocate instead of picking them.
+	Explicit []net.IP
+
+	// Existing lists addresses the owner already holds. A family with an
+	// existing address isn't allocated again.
+	Existing []net.IP
+
+	// Ports are the owner's Service ports, checked against other owners
+	// sharing an address. Port-range slices are never recorded here.
+	Ports []Port
+
+	// Reference records Explicit as held by Key without allocating them:
+	// no sharing or port checks, and nothing is sent to an external IPAM.
+	// A held address stays in use until Key releases it, so its owner's
+	// release can't free it while a reference remains.
+	Reference bool
+}
+
 // Pool describes the interface to code that manages pools of
 // addresses. Mutating methods take a context so that pool
 // implementations backed by network I/O (e.g. external IPAM sidecars)
@@ -52,10 +104,17 @@ type Pool interface {
 	Notify(ctx context.Context, svc *v1.Service) error
 	AssignNext(ctx context.Context, svc *v1.Service) error
 	Assign(ctx context.Context, ip net.IP, svc *v1.Service) error
-	Release(ctx context.Context, service string) error
-	// ReleaseIP releases a specific IP address for a service. Used during
-	// IP family transitions (e.g., DualStack → SingleStack).
-	ReleaseIP(ctx context.Context, service string, ip net.IP) error
+
+	// Allocate allocates addresses for req and returns them. On error it
+	// may also return the addresses it allocated before the failure,
+	// which remain allocated to req.Key.
+	Allocate(ctx context.Context, req AllocRequest) ([]net.IP, error)
+
+	// Release releases every address held by key.
+	Release(ctx context.Context, key string) error
+	// ReleaseIP releases one address held by key. Used during IP family
+	// transitions (e.g., DualStack → SingleStack).
+	ReleaseIP(ctx context.Context, key string, ip net.IP) error
 	InUse() int
 	Overlaps(Pool) bool
 	Contains(net.IP) bool // FIXME: I'm not sure that we need this. It might be the case that we can always rely on the service's pool annotation to find to which pool an address belongs

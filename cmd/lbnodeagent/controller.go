@@ -19,6 +19,7 @@ import (
 	"slices"
 
 	"purelb.io/internal/addrguard"
+	"purelb.io/internal/egresshook"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/lbnodeagent"
@@ -45,7 +46,7 @@ type controller struct {
 // the controller object shouldn't be used. guardEnabled is whether the
 // address guard is configured for this node at startup: its program is
 // loaded only then.
-func NewController(l log.Logger, myNode string, guardEnabled bool) (*controller, error) {
+func NewController(l log.Logger, myNode string, guardEnabled bool, egress egresshook.Agent) (*controller, error) {
 	guard := addrguard.NewAnnouncer(l, myNode, guardEnabled)
 	con := &controller{
 		logger: l,
@@ -57,7 +58,7 @@ func NewController(l log.Logger, myNode string, guardEnabled bool) (*controller,
 		// asks the guard whether this node must stand down (fail-closed).
 		announcers: []lbnodeagent.Announcer{
 			guard,
-			local.NewAnnouncer(l, myNode, guard.StandingDown, guard.Withheld),
+			local.NewAnnouncer(l, myNode, guard.StandingDown, guard.Withheld, egress),
 		},
 		guard: guard,
 	}

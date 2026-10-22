@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"purelb.io/internal/addrguard"
+	"purelb.io/internal/egresshook"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
@@ -379,6 +380,11 @@ func main() {
 		leaseDuration = flag.Duration("lease-duration", parseDurationEnv("PURELB_LEASE_DURATION", election.DefaultLeaseDuration), "lease duration for leader election")
 		renewDeadline = flag.Duration("renew-deadline", parseDurationEnv("PURELB_RENEW_DEADLINE", election.DefaultRenewDeadline), "renew deadline for lease renewal")
 		retryPeriod   = flag.Duration("retry-period", parseDurationEnv("PURELB_RETRY_PERIOD", election.DefaultRetryPeriod), "retry period between renewal attempts")
+
+		// How long a link must stay down, or up again, before its subnets
+		// leave or rejoin this node's lease
+		linkDownHoldDown = flag.Duration("link-down-holddown", parseDurationEnv("PURELB_LINK_DOWN_HOLDDOWN", election.DefaultLinkDownHoldDown), "how long a link must stay down before its subnets leave the lease")
+		linkUpHoldDown   = flag.Duration("link-up-holddown", parseDurationEnv("PURELB_LINK_UP_HOLDDOWN", election.DefaultLinkUpHoldDown), "how long a link must stay up before its subnets rejoin the lease")
 	)
 	flag.Parse()
 
@@ -409,11 +415,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// egress is the node's egress hook; egresshook.Noop until egress is
+	// built into the agent.
+	var egress egresshook.Agent = egresshook.Noop{}
+
 	// Set up controller
 	ctrl, err := NewController(
 		logger,
 		*myNode,
 		guardEnabled,
+		egress,
 	)
 	if err != nil {
 		logging.Info(logger, "op", "startup", "error", err, "msg", "failed to create controller")
@@ -447,6 +458,10 @@ func main() {
 		Kubeconfig:         *kubeconfig,
 		Namespace:          *namespace,
 		ReadEndpointSlices: true,
+		// Measured to keep up with 500 addresses on 500 nodes, where
+		// client-go's 5/10 fell behind. The election has its own limiter.
+		QPS:   50,
+		Burst: 100,
 
 		ServiceChanged: ctrl.ServiceChanged,
 		ServiceDeleted: ctrl.DeleteBalancer,
@@ -461,12 +476,23 @@ func main() {
 
 	ctrl.SetClient(client)
 
+	// The election gets its own clientset and rate limiter, so Lease
+	// renewals never wait behind the agent's other API calls.
+	electionClient, err := client.ElectionClientset()
+	if err != nil {
+		logging.Info(logger, "op", "startup", "error", err, "msg", "failed to create election client")
+		os.Exit(1)
+	}
+
+	// A down link's subnets leave the lease, damped by the hold-downs.
+	damper := election.NewLinkDamper(*linkDownHoldDown, *linkUpHoldDown, logger)
+
 	// Create the lease-based election
 	elect, err := election.New(election.Config{
 		Namespace:      *namespace,
 		NodeName:       *myNode,
 		InstanceID:     *podUID,
-		Client:         client.Clientset(),
+		Client:         electionClient,
 		LeaseDuration:  *leaseDuration,
 		RenewDeadline:  *renewDeadline,
 		RetryPeriod:    *retryPeriod,
@@ -483,7 +509,7 @@ func main() {
 			if ctrl.guard.StandingDown() {
 				return []string{}, nil
 			}
-			return election.GetSelectedSubnets(selector.Load(), logger)
+			return election.GetSelectedSubnets(selector.Load(), damper, logger)
 		},
 	})
 	if err != nil {
@@ -492,6 +518,11 @@ func main() {
 	}
 
 	ctrl.SetElection(elect)
+
+	// A scanned link's change renews the lease at once, and so does the
+	// end of its hold-down.
+	damper.SetRenew(elect.RenewNow)
+	go damper.Watch(stopCh)
 
 	// The guard calls this from its attacher goroutine whenever standing
 	// down changes. Re-sync every Service, so the announcer withdraws or
@@ -525,6 +556,7 @@ func main() {
 	}
 
 	// Graceful shutdown sequence:
+	// 0. Let egress repoint its traffic before any address goes
 	// 1. Mark election unhealthy - Winner() returns "" for all queries
 	// 2. Force sync to trigger address withdrawal on all services
 	// 3. Wait for traffic to drain and GARP to propagate
@@ -532,6 +564,9 @@ func main() {
 	// 5. Delete our lease so other nodes see us gone
 	// 6. Clean up local networking (dummy interface)
 	logging.Info(logger, "op", "shutdown", "msg", "starting graceful shutdown sequence")
+
+	// Step 0: egress repoints its traffic while the addresses are still up
+	egress.PrepareShutdown()
 
 	// Step 1: Mark unhealthy - this causes Winner() to return ""
 	elect.MarkUnhealthy()
