@@ -1,0 +1,35 @@
+# Cilium, legacy-host-routing profile (pod traffic traverses host netfilter;
+# kube-proxy in iptables mode). Geneve on 6081 coexists with PureLB's 6082.
+# -e cilium_routing=native -e cilium_ipam=cluster-pool builds native routing
+# (autoDirectNodeRoutes) with Cilium's own pod pools, outside Node podCIDRs.
+ipam:
+  mode: {{ cilium_ipam | default('kubernetes') }}
+{% if cilium_ipam | default('kubernetes') == 'cluster-pool' %}
+  operator:
+    clusterPoolIPv4PodCIDRList: ["{{ cilium_cluster_pool[0] }}"]
+    clusterPoolIPv4MaskSize: 24
+    clusterPoolIPv6PodCIDRList: ["{{ cilium_cluster_pool[1] }}"]
+    clusterPoolIPv6MaskSize: 64
+{% endif %}
+ipv4:
+  enabled: true
+ipv6:
+  enabled: true
+{% if cilium_routing | default('tunnel') == 'native' %}
+routingMode: native
+autoDirectNodeRoutes: true
+ipv4NativeRoutingCIDR: {{ pod_cidrs[0] }}
+ipv6NativeRoutingCIDR: {{ pod_cidrs[1] }}
+{% else %}
+routingMode: tunnel
+tunnelProtocol: geneve
+{% endif %}
+kubeProxyReplacement: false
+bpf:
+  hostLegacyRouting: true
+bgpControlPlane:
+  enabled: false
+operator:
+  replicas: 1
+k8sServiceHost: "{{ node_ipv4 }}"
+k8sServicePort: 6443

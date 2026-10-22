@@ -1,0 +1,10 @@
+# Required for Calico eBPF: there is no kube-proxy, so Calico must reach the
+# API server directly rather than through the kubernetes Service.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-services-endpoint
+  namespace: tigera-operator
+data:
+  KUBERNETES_SERVICE_HOST: "{{ node_ipv4 }}"
+  KUBERNETES_SERVICE_PORT: "6443"

@@ -1,0 +1,21 @@
+---
+# Versions (user decision 2026-10-18): Kubernetes 1.35.9 on every t2
+# cluster; CNIs current releases inside their tested ranges.
+k8s_minor: "v1.35"
+k8s_pkg_version: "1.35.9-1.1"
+k8s_version: "v1.35.9"
+calico_version: "v3.33.0"
+cilium_version: "1.20.3"
+antrea_version: "v2.7.0"
+kube_router_version: "v2.11.1"
+
+# FRR (unchanged by these playbooks): AS 64514. t2 nodes peer through the
+# existing prox-purelb2 peer group as AS 64515. The BGP password is never
+# stored in the repo; k8gobgp reads it from a Secret created out of band.
+frr_v4: "172.30.250.1"
+frr_v6: "2001:470:b8f3:250::1"
+frr_asn: 64514
+node_asn: 64515
+
+# Where fetched kubeconfigs go on the controller (this workstation).
+kubeconfig_dir: "{{ lookup('env', 'HOME') }}/.kube/tier2"

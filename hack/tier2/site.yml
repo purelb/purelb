@@ -1,0 +1,450 @@
+# Copyright 2026 Acnodal Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Bootstrap the Tier 2 egress test clusters on user-created Proxmox VMs.
+# See README.md. Every step is idempotent; re-running converges.
+---
+- name: Prepare nodes
+  hosts: tier2
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Require dual-stack node addresses from the guest agent
+      ansible.builtin.assert:
+        that: [node_ipv4 is truthy, node_ipv6 is truthy]
+        fail_msg: "{{ inventory_hostname }} has no global IPv6 address; dual-stack is required"
+
+    - name: Set the hostname from the inventory (pool + rank), not the VM name
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Map the hostname locally
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s'
+        line: "127.0.1.1 {{ inventory_hostname }}"
+
+    - name: Disable swap now
+      ansible.builtin.command: swapoff -a
+      changed_when: false
+
+    - name: Disable swap at boot
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#].*\sswap\s.*)$'
+        replace: '# \1'
+
+    - name: Load kernel modules at boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/kubernetes.conf
+        content: |
+          overlay
+          br_netfilter
+        mode: "0644"
+
+    - name: Load kernel modules now
+      community.general.modprobe:
+        name: "{{ item }}"
+      loop: [overlay, br_netfilter]
+
+    - name: Kubernetes sysctls (mirrors prox-purelb2)
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes.conf
+        content: |
+          net.ipv4.ip_forward=1
+          net.ipv6.conf.all.forwarding=1
+          net.bridge.bridge-nf-call-iptables=1
+          net.bridge.bridge-nf-call-ip6tables=1
+        mode: "0644"
+      notify: Apply sysctls
+
+    - name: Base packages (containerd from Debian, same as prox-purelb2)
+      ansible.builtin.apt:
+        name: [containerd, gpg, curl, ca-certificates, conntrack, socat, ethtool, nftables]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Kubernetes apt keyring
+      ansible.builtin.shell: |
+        set -o pipefail
+        install -d -m 0755 /etc/apt/keyrings
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/{{ k8s_minor }}/deb/Release.key \
+          | gpg --dearmor --yes -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        executable: /bin/bash
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Kubernetes apt repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/kubernetes.list
+        content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ k8s_minor }}/deb/ /\n"
+        mode: "0644"
+      register: k8s_repo
+
+    - name: Install kubelet, kubeadm and kubectl
+      ansible.builtin.apt:
+        name:
+          - "kubelet={{ k8s_pkg_version }}"
+          - "kubeadm={{ k8s_pkg_version }}"
+          - "kubectl={{ k8s_pkg_version }}"
+        state: present
+        update_cache: "{{ k8s_repo is changed }}"
+        allow_change_held_packages: true
+
+    - name: Hold Kubernetes packages
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop: [kubelet, kubeadm, kubectl]
+
+    - name: Find the pause image kubeadm expects
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubeadm config images list --kubernetes-version {{ k8s_version }} | grep /pause:
+      args:
+        executable: /bin/bash
+      register: pause_image
+      changed_when: false
+
+    - name: Generate the default containerd config once
+      ansible.builtin.shell: |
+        install -d /etc/containerd
+        containerd config default > /etc/containerd/config.toml
+        touch /etc/containerd/config.toml.purelb-tier2
+      args:
+        creates: /etc/containerd/config.toml.purelb-tier2
+      notify: Restart containerd
+
+    - name: Configure containerd to use the systemd cgroup driver
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+      notify: Restart containerd
+
+    # Debian's containerd defaults bin_dir to /usr/lib/cni, but every CNI
+    # here installs its plugin into /opt/cni/bin (prox-purelb2 uses that too).
+    - name: Point containerd at the standard CNI plugin directory
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: '^(\s*)bin_dir = ".*"$'
+        replace: '\1bin_dir = "/opt/cni/bin"'
+      notify: Restart containerd
+
+    - name: Set the containerd sandbox image to match kubeadm
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'sandbox_image = ".*"'
+        replace: 'sandbox_image = "{{ pause_image.stdout | trim }}"'
+      notify: Restart containerd
+
+    - name: Enable containerd
+      ansible.builtin.systemd:
+        name: containerd
+        enabled: true
+
+    - name: Enable kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: true
+
+    - name: IPv6 default route survives forwarding=1 (networkd handles RAs in userspace)
+      ansible.builtin.command: ip -6 route show default
+      register: v6_default
+      changed_when: false
+      failed_when: v6_default.stdout | length == 0
+
+  handlers:
+    - name: Apply sysctls
+      ansible.builtin.command: sysctl --system
+      changed_when: true
+
+    - name: Restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+
+- name: Initialise control planes
+  hosts: tier2
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Render kubeadm init config
+      ansible.builtin.template:
+        src: templates/kubeadm-init.yaml.j2
+        dest: /etc/kubernetes-kubeadm-init.yaml
+        mode: "0600"
+      when: control_plane | bool
+
+    - name: Run kubeadm init
+      ansible.builtin.command: kubeadm init --config /etc/kubernetes-kubeadm-init.yaml --upload-certs
+      args:
+        creates: /etc/kubernetes/admin.conf
+      when: control_plane | bool
+
+    - name: Create a join token
+      ansible.builtin.command: kubeadm token create --ttl 30m --print-join-command
+      register: join_cmd
+      changed_when: false
+      when: control_plane | bool
+
+    - name: Record join parameters on the control plane host
+      ansible.builtin.set_fact:
+        join_token: "{{ join_cmd.stdout | regex_search('--token (\\S+)', '\\1') | first }}"
+        join_ca_hash: "{{ join_cmd.stdout | regex_search('--discovery-token-ca-cert-hash (\\S+)', '\\1') | first }}"
+      when: control_plane | bool
+
+- name: Join workers
+  hosts: tier2
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Find this cluster's control plane
+      ansible.builtin.set_fact:
+        cp_host: >-
+          {{ groups[cluster_name | replace('-', '_')]
+             | map('extract', hostvars) | selectattr('control_plane')
+             | map(attribute='inventory_hostname') | first }}
+      when: not (control_plane | bool)
+
+    - name: Render kubeadm join config
+      ansible.builtin.template:
+        src: templates/kubeadm-join.yaml.j2
+        dest: /etc/kubernetes-kubeadm-join.yaml
+        mode: "0600"
+      vars:
+        cp_ipv4: "{{ hostvars[cp_host].node_ipv4 }}"
+        join_token: "{{ hostvars[cp_host].join_token }}"
+        join_ca_hash: "{{ hostvars[cp_host].join_ca_hash }}"
+      when: not (control_plane | bool)
+
+    - name: Run kubeadm join
+      ansible.builtin.command: kubeadm join --config /etc/kubernetes-kubeadm-join.yaml
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+      when: not (control_plane | bool)
+
+- name: Install the CNI and fetch kubeconfigs
+  hosts: tier2
+  become: true
+  gather_facts: false
+  vars:
+    kc: /etc/kubernetes/admin.conf
+    work: /root/purelb-tier2
+  tasks:
+    - name: Work directory
+      ansible.builtin.file:
+        path: "{{ work }}"
+        state: directory
+        mode: "0700"
+      when: control_plane | bool
+
+    # ---- Calico (iptables / nftables / eBPF) via the Tigera operator ----
+    # Since Calico 3.30 the operator CRDs ship separately from the operator.
+    - name: Tigera operator CRDs
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kc }} apply --server-side --force-conflicts
+        -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/operator-crds.yaml
+      changed_when: false
+      when: control_plane | bool and cni == 'calico'
+
+    - name: Tigera operator
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kc }} apply --server-side --force-conflicts
+        -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml
+      changed_when: false
+      when: control_plane | bool and cni == 'calico'
+
+    - name: API server endpoint for Calico eBPF (no kube-proxy)
+      ansible.builtin.template:
+        src: templates/calico-services-endpoint.yaml.j2
+        dest: "{{ work }}/calico-services-endpoint.yaml"
+        mode: "0600"
+      when: control_plane | bool and cni == 'calico' and calico_dataplane == 'BPF'
+
+    - name: Apply the API server endpoint ConfigMap
+      ansible.builtin.command: kubectl --kubeconfig {{ kc }} apply -f {{ work }}/calico-services-endpoint.yaml
+      changed_when: false
+      when: control_plane | bool and cni == 'calico' and calico_dataplane == 'BPF'
+
+    - name: Wait for the operator CRDs
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kc }} wait --for=condition=Established --timeout=120s
+        crd/installations.operator.tigera.io crd/apiservers.operator.tigera.io
+      changed_when: false
+      when: control_plane | bool and cni == 'calico'
+
+    - name: Render the Calico Installation
+      ansible.builtin.template:
+        src: templates/calico-installation.yaml.j2
+        dest: "{{ work }}/calico-installation.yaml"
+        mode: "0600"
+      when: control_plane | bool and cni == 'calico'
+
+    - name: Apply the Calico Installation
+      ansible.builtin.command: kubectl --kubeconfig {{ kc }} apply -f {{ work }}/calico-installation.yaml
+      changed_when: false
+      when: control_plane | bool and cni == 'calico'
+
+    # ---- Canal (flannel VXLAN + Calico policy), dual-stack ----
+    - name: Download the Canal manifest
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/canal.yaml"
+        dest: "{{ work }}/canal.yaml"
+        mode: "0600"
+      when: control_plane | bool and cni == 'canal'
+
+    - name: Canal flannel network (dual-stack pod CIDRs)
+      ansible.builtin.replace:
+        path: "{{ work }}/canal.yaml"
+        regexp: '"Network": "10\.244\.0\.0/16",'
+        replace: '"Network": "{{ pod_cidrs[0] }}", "EnableIPv6": true, "IPv6Network": "{{ pod_cidrs[1] }}",'
+      when: control_plane | bool and cni == 'canal'
+
+    - name: Canal host-local IPAM in both families
+      ansible.builtin.replace:
+        path: "{{ work }}/canal.yaml"
+        regexp: '"subnet": "usePodCidr"'
+        replace: '"ranges": [[{"subnet": "usePodCidr"}], [{"subnet": "usePodCidrIPv6"}]]'
+      when: control_plane | bool and cni == 'canal'
+
+    - name: Apply Canal
+      ansible.builtin.command: kubectl --kubeconfig {{ kc }} apply --server-side --force-conflicts -f {{ work }}/canal.yaml
+      changed_when: false
+      when: control_plane | bool and cni == 'canal'
+
+    # ---- Antrea (OVS, Geneve), dual-stack ----
+    - name: Download the Antrea manifest
+      ansible.builtin.get_url:
+        url: "https://github.com/antrea-io/antrea/releases/download/{{ antrea_version }}/antrea.yml"
+        dest: "{{ work }}/antrea.yml"
+        mode: "0600"
+      when: control_plane | bool and cni == 'antrea'
+
+    - name: Antrea service CIDRs (needed with kube-proxy in dual-stack)
+      ansible.builtin.replace:
+        path: "{{ work }}/antrea.yml"
+        regexp: '^(\s*){{ item.key }}: ""$'
+        replace: '\1{{ item.key }}: "{{ item.value }}"'
+      loop:
+        - {key: serviceCIDR, value: "{{ svc_cidrs[0] }}"}
+        - {key: serviceCIDRv6, value: "{{ svc_cidrs[1] }}"}
+      when: control_plane | bool and cni == 'antrea'
+
+    - name: Apply Antrea
+      ansible.builtin.command: kubectl --kubeconfig {{ kc }} apply -f {{ work }}/antrea.yml
+      changed_when: false
+      when: control_plane | bool and cni == 'antrea'
+
+    # ---- kube-router (routing + firewall; kube-proxy keeps services) ----
+    - name: Download the kube-router manifest
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/cloudnativelabs/kube-router/{{ kube_router_version }}/daemonset/kubeadm-kuberouter.yaml"
+        dest: "{{ work }}/kube-router.yaml"
+        mode: "0600"
+      when: control_plane | bool and cni == 'kube-router'
+
+    - name: Enable kube-router dual-stack and move its BGP to port 1790 (k8gobgp keeps 179)
+      ansible.builtin.replace:
+        path: "{{ work }}/kube-router.yaml"
+        regexp: '^(\s*)- --run-router=true$'
+        replace: '\1- --run-router=true\n\1- --enable-ipv6=true\n\1- --bgp-port=1790'
+      when: control_plane | bool and cni == 'kube-router'
+
+    - name: Pin the kube-router image (the upstream manifest uses an untagged image, i.e. latest)
+      ansible.builtin.replace:
+        path: "{{ work }}/kube-router.yaml"
+        regexp: '^(\s*image: docker\.io/cloudnativelabs/kube-router)$'
+        replace: '\1:{{ kube_router_version }}'
+      when: control_plane | bool and cni == 'kube-router'
+
+    - name: Apply kube-router
+      ansible.builtin.command: kubectl --kubeconfig {{ kc }} apply -f {{ work }}/kube-router.yaml
+      changed_when: false
+      when: control_plane | bool and cni == 'kube-router'
+
+    # ---- Fetch the kubeconfig (all CNIs) ----
+    - name: Fetch admin kubeconfig
+      ansible.builtin.fetch:
+        src: "{{ kc }}"
+        dest: "{{ kubeconfig_dir }}/{{ cluster_name }}.yaml"
+        flat: true
+      when: control_plane | bool
+
+- name: Cilium (installed from the workstation with Helm)
+  hosts: tier2
+  gather_facts: false
+  tasks:
+    - name: Render Cilium values
+      ansible.builtin.template:
+        src: templates/cilium-values.yaml.j2
+        dest: "{{ kubeconfig_dir }}/{{ cluster_name }}-cilium-values.yaml"
+        mode: "0600"
+      delegate_to: localhost
+      when: control_plane | bool and cni == 'cilium'
+
+    - name: Install Cilium
+      ansible.builtin.command: >
+        helm upgrade --install cilium cilium --repo https://helm.cilium.io
+        --version {{ cilium_version }} --namespace kube-system
+        --kubeconfig {{ kubeconfig_dir }}/{{ cluster_name }}.yaml
+        -f {{ kubeconfig_dir }}/{{ cluster_name }}-cilium-values.yaml --wait --timeout 10m
+      delegate_to: localhost
+      changed_when: true
+      when: control_plane | bool and cni == 'cilium'
+
+- name: Name contexts and verify
+  hosts: tier2
+  gather_facts: false
+  tasks:
+    - name: Rename the kubeconfig context to the cluster name
+      ansible.builtin.shell: |
+        set -o pipefail
+        f={{ kubeconfig_dir }}/{{ cluster_name }}.yaml
+        chmod 600 "$f"
+        if kubectl --kubeconfig "$f" config get-contexts -o name | grep -qx 'kubernetes-admin@{{ cluster_name }}'; then
+          kubectl --kubeconfig "$f" config rename-context 'kubernetes-admin@{{ cluster_name }}' '{{ cluster_name }}'
+        fi
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      changed_when: false
+      when: control_plane | bool
+
+    - name: Wait for every node to be Ready
+      ansible.builtin.command: >
+        kubectl --kubeconfig /etc/kubernetes/admin.conf wait --for=condition=Ready nodes --all --timeout=600s
+      become: true
+      changed_when: false
+      when: control_plane | bool
+
+    - name: Report nodes (addresses must be dual-stack, podCIDRs in both families)
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig=/etc/kubernetes/admin.conf
+          - get
+          - nodes
+          - -o
+          - custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,VERSION:.status.nodeInfo.kubeletVersion,ADDRESSES:.status.addresses[*].address,PODCIDRS:.spec.podCIDRs
+      become: true
+      register: nodes
+      changed_when: false
+      when: control_plane | bool
+
+    - name: Show nodes
+      ansible.builtin.debug:
+        var: nodes.stdout_lines
+      when: control_plane | bool

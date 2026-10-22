@@ -1,0 +1,10 @@
+---
+cni: calico
+calico_dataplane: Iptables      # switchable to Nftables for the second profile
+kube_proxy_mode: nftables       # the Tier 2 nftables kube-proxy case
+pod_cidrs: ["10.61.0.0/16", "fd61::/56"]
+svc_cidrs: ["10.71.0.0/16", "fd71::/112"]
+local_pool_v4: "172.30.250.10-172.30.250.19"
+local_pool_v6: "2001:470:b8f3:250:10::1-2001:470:b8f3:250:10::20"
+routed_pool_v4: "10.241.1.0/24"
+routed_pool_v6: "fd10:241:1::/64"

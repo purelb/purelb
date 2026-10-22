@@ -1,0 +1,11 @@
+---
+# Rebuilt per CNI: kube-router, antrea or canal (kubeadm reset + re-run with
+# -e misc_cni=<name>).
+cni: "{{ misc_cni | default('canal') }}"
+kube_proxy_mode: iptables
+pod_cidrs: ["10.64.0.0/16", "fd64::/56"]
+svc_cidrs: ["10.74.0.0/16", "fd74::/112"]
+local_pool_v4: "172.30.250.40-172.30.250.49"
+local_pool_v6: "2001:470:b8f3:250:13::1-2001:470:b8f3:250:13::20"
+routed_pool_v4: "10.241.4.0/24"
+routed_pool_v6: "fd10:241:4::/64"

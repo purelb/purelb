@@ -1,0 +1,35 @@
+# Calico via the Tigera operator. BGP is disabled so port 179 stays free
+# for k8gobgp; pods use VXLAN in both families. -e calico_bgp=Enabled
+# -e calico_encap=None builds Calico's own BGP mesh with no encapsulation
+# (no k8gobgp on that cluster).
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  calicoNetwork:
+    bgp: {{ calico_bgp | default('Disabled') }}
+    linuxDataplane: {{ calico_dataplane }}
+    nodeAddressAutodetectionV4:
+      interface: "{{ node_iface }}"
+    nodeAddressAutodetectionV6:
+      interface: "{{ node_iface }}"
+    ipPools:
+    - name: default-ipv4-ippool
+      cidr: {{ pod_cidrs[0] }}
+      blockSize: 26
+      encapsulation: {{ calico_encap | default('VXLAN') }}
+      natOutgoing: Enabled
+      nodeSelector: all()
+    - name: default-ipv6-ippool
+      cidr: {{ pod_cidrs[1] }}
+      blockSize: 122
+      encapsulation: {{ calico_encap | default('VXLAN') }}
+      natOutgoing: Enabled
+      nodeSelector: all()
+---
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+spec: {}

@@ -1,0 +1,16 @@
+---
+cni: cilium
+# Bootstrapped in the legacy-host-routing profile with kube-proxy (iptables).
+# The eBPF-host-routing and netkit profiles are switched to during the
+# Phase 0c spikes (kube-proxy replacement, kube-proxy removed).
+cilium_profile: legacy
+kube_proxy_mode: iptables
+pod_cidrs: ["10.63.0.0/16", "fd63::/56"]
+svc_cidrs: ["10.73.0.0/16", "fd73::/112"]
+# Used only with -e cilium_ipam=cluster-pool; inside pod_cidrs, disjoint
+# from the Node podCIDRs kube-controller-manager assigns (10.63.0-2.0/24).
+cilium_cluster_pool: ["10.63.128.0/17", "fd63:0:0:80::/57"]
+local_pool_v4: "172.30.250.30-172.30.250.39"
+local_pool_v6: "2001:470:b8f3:250:12::1-2001:470:b8f3:250:12::20"
+routed_pool_v4: "10.241.3.0/24"
+routed_pool_v6: "fd10:241:3::/64"

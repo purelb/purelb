@@ -1,0 +1,10 @@
+---
+cni: calico
+calico_dataplane: BPF
+kube_proxy_mode: none           # Calico eBPF replaces kube-proxy
+pod_cidrs: ["10.62.0.0/16", "fd62::/56"]
+svc_cidrs: ["10.72.0.0/16", "fd72::/112"]
+local_pool_v4: "172.30.250.20-172.30.250.29"
+local_pool_v6: "2001:470:b8f3:250:11::1-2001:470:b8f3:250:11::20"
+routed_pool_v4: "10.241.2.0/24"
+routed_pool_v6: "fd10:241:2::/64"
