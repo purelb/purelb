@@ -15,6 +15,7 @@
 package allocator
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,8 @@ import (
 	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8stesting "k8s.io/client-go/testing"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
@@ -182,4 +185,31 @@ func TestDestinationsCover(t *testing.T) {
 
 	assert.True(t, destinationsOverlap(d("10.0.0.0/8"), d("10.1.0.0/16")))
 	assert.False(t, destinationsOverlap(d("10.0.0.0/8"), d("192.0.2.0/24")))
+}
+
+// A status already submitted isn't written again while the informer
+// catches up; a failed write is retried.
+func TestStatusWrittenOnce(t *testing.T) {
+	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil), egressObj("voice", "sip", nil))
+	fail := true
+	patches := 0
+	g.purelb.PrependReactor("patch", "egresses", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if a.GetSubresource() != "status" {
+			return false, nil, nil
+		}
+		patches++
+		if fail {
+			fail = false
+			return true, nil, errors.New("injected")
+		}
+		return false, nil, nil
+	})
+	require.NoError(t, g.r.Sync("egress/voice/sip"))
+	g.settle(t)
+	require.Equal(t, 1, patches, "the first write fails")
+	require.NoError(t, g.r.Sync("egress/voice/sip"))
+	require.NoError(t, g.r.Sync("egress/voice/sip")) // before the informer sees it
+	g.settle(t)
+	assert.Equal(t, 2, patches, "retried once, not rewritten")
+	assert.NotEmpty(t, g.egress(t, "voice", "sip").Status.Conditions)
 }

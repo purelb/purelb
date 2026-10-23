@@ -20,7 +20,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/tools/cache"
 
 	"purelb.io/internal/egress"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -91,7 +90,7 @@ func (r *Reconciler) selectPods(run *run) {
 
 	perPod := p.affinity() == "PerPod"
 	for _, ns := range namespaces {
-		objs, _ := r.pods.ByIndex(cache.NamespaceIndex, ns)
+		objs := r.candidatePods(ns, podSel)
 		for _, o := range objs {
 			pod := o.(*corev1.Pod)
 			if !podSel.Matches(labels.Set(pod.Labels)) || !live(pod) {

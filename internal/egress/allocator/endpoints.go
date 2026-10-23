@@ -145,8 +145,12 @@ func (r *Reconciler) syncEndpoints(run *run, addrs []address) map[string]*purelb
 		name := egress.EndpointsName(run.p.ref, a.ip)
 		spec := r.endpointsSpec(run, a)
 		spec.Reserved = r.reservedPorts(run, a, spec.ServicePorts)
-		cur, err := r.endpoints.EgressEndpointses(r.namespace).Get(name)
-		if err != nil {
+		cur, exists := r.latestEndpoints(name)
+		if exists && r.busy(name, owner, false) {
+			out[name] = cur
+			continue
+		}
+		if !exists {
 			spec.Slices = r.planAddress(run, a, name, spec.SliceSize, nil, nil, added)
 			want := &purelbv2.EgressEndpoints{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.namespace, Labels: endpointsLabels(run, spec)},
@@ -154,7 +158,8 @@ func (r *Reconciler) syncEndpoints(run *run, addrs []address) map[string]*purelb
 			}
 			out[name] = want
 			r.write(owner, "EgressEndpoints/"+name, len(spec.Slices) > 0, func(ctx context.Context) error {
-				_, err := client.Create(ctx, want, metav1.CreateOptions{})
+				out, err := client.Create(ctx, want, metav1.CreateOptions{})
+				r.wrote(want.Name, out, err)
 				return err
 			})
 			r.event(run.p.ref, nil, run.group, false, false, "AddressAllocated", "%s allocated from ServiceGroup %s", a.ip, run.group.Name)
@@ -185,7 +190,8 @@ func (r *Reconciler) syncEndpoints(run *run, addrs []address) map[string]*purelb
 		out[name] = upd
 		r.write(owner, "EgressEndpoints/"+name, !apiequality.Semantic.DeepEqual(cur.Spec.Slices, spec.Slices),
 			func(ctx context.Context) error {
-				_, err := client.Update(ctx, upd, metav1.UpdateOptions{})
+				out, err := client.Update(ctx, upd, metav1.UpdateOptions{})
+				r.wrote(upd.Name, out, err)
 				return err
 			})
 	}

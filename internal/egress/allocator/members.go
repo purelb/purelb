@@ -21,7 +21,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 
 	"purelb.io/internal/egress"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -40,16 +39,6 @@ func ownerLabels(p *policy) map[string]string {
 		egress.LabelName:      p.ref.Name,
 		egress.LabelUID:       string(p.meta.UID),
 	}
-}
-
-// ownedSelector selects the objects a policy owns, whatever their UID
-// label: a policy recreated under the same name takes them over.
-func ownedSelector(ref egress.PolicyRef) labels.Selector {
-	return labels.SelectorFromSet(labels.Set{
-		egress.LabelKind:      ref.Kind,
-		egress.LabelNamespace: ref.Namespace,
-		egress.LabelName:      ref.Name,
-	})
 }
 
 // desiredMembers lays the selection out in EgressMembers objects of at
@@ -98,7 +87,7 @@ func (r *Reconciler) syncMembers(run *run) {
 	if run.retained {
 		return
 	}
-	existing, _ := r.members.EgressMemberses(r.namespace).List(ownedSelector(run.p.ref))
+	existing := r.ownedMembers(run.p.ref)
 	have := map[string]*purelbv2.EgressMembers{}
 	for _, m := range existing {
 		have[m.Name] = m

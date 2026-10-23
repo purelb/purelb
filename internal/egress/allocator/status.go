@@ -159,11 +159,11 @@ func (r *Reconciler) syncStatus(run *run, addrs []address, eps map[string]*purel
 	}
 	apimeta.SetStatusCondition(&st.Conditions, rc)
 
-	if apiequality.Semantic.DeepEqual(p.status, st) {
+	key := p.ref.Kind + "/" + p.ref.Namespace + "/" + p.ref.Name + "/status"
+	if apiequality.Semantic.DeepEqual(p.status, st) || r.statusWritten(key, st) {
 		return
 	}
 	patch := statusPatch(st)
-	key := p.ref.Kind + "/" + p.ref.Namespace + "/" + p.ref.Name + "/status"
 	r.write(p.ref.String(), key, false, func(ctx context.Context) error {
 		var err error
 		if p.cluster() {
@@ -175,10 +175,29 @@ func (r *Reconciler) syncStatus(run *run, addrs []address, eps map[string]*purel
 	})
 }
 
+// statusWritten reports whether status (or a spec or label the allocator
+// alone writes) is what was last submitted for key, and records it
+// otherwise: the informer copy lags the allocator's own writes, so
+// comparing with it alone rewrites the same value until it catches up. A
+// failed write forgets key (writeDone), so it is retried.
+func (r *Reconciler) statusWritten(key string, status interface{}) bool {
+	if last, ok := r.lastStatus[key]; ok && apiequality.Semantic.DeepEqual(last, status) {
+		return true
+	}
+	r.lastStatus[key] = status
+	return false
+}
+
 // statusPatch is a JSON patch replacing an object's whole status, and
 // nothing else: a status write never carries a stale copy of the rest.
 func statusPatch(status interface{}) []byte {
 	b, _ := json.Marshal([]map[string]interface{}{{"op": "add", "path": "/status", "value": status}})
+	return b
+}
+
+// specPatch is a JSON patch replacing an object's whole spec.
+func specPatch(spec interface{}) []byte {
+	b, _ := json.Marshal([]map[string]interface{}{{"op": "add", "path": "/spec", "value": spec}})
 	return b
 }
 
@@ -265,7 +284,8 @@ func (r *Reconciler) observeAnnouncers(run *run, ep *purelbv2.EgressEndpoints) {
 	}
 
 	old := ep.Status.ObservedAnnouncers
-	if slices.Equal(old, obs) {
+	key := "EgressEndpoints/" + ep.Name + "/status"
+	if slices.Equal(old, obs) || r.statusWritten(key, obs) {
 		return
 	}
 	for _, n := range obs {
@@ -281,7 +301,7 @@ func (r *Reconciler) observeAnnouncers(run *run, ep *purelbv2.EgressEndpoints) {
 	patch := statusPatch(purelbv2.EgressEndpointsStatus{ObservedAnnouncers: obs})
 	client := r.purelb.PurelbV2().EgressEndpointses(r.namespace)
 	name := ep.Name
-	r.write(ref.String(), "EgressEndpoints/"+name+"/status", false, func(ctx context.Context) error {
+	r.write(ref.String(), key, false, func(ctx context.Context) error {
 		_, err := client.Patch(ctx, name, types.JSONPatchType, patch, metav1.PatchOptions{}, "status")
 		return err
 	})
@@ -329,7 +349,7 @@ func (r *Reconciler) syncNodeLabel(node string) {
 		capable = ns.Status.Capability.EgressCapable
 	}
 	labelled := n.Labels[purelbv2.EgressCapableLabel] == "true"
-	if capable == labelled {
+	if capable == labelled || r.statusWritten("Node/"+node, capable) {
 		return
 	}
 	var value interface{} // null removes the label

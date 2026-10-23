@@ -22,6 +22,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -77,13 +78,15 @@ func (r *Reconciler) syncNodeState(node string) error {
 		})
 		return nil
 	}
-	if apiequality.Semantic.DeepEqual(cur.Spec, spec) {
+	if apiequality.Semantic.DeepEqual(cur.Spec, spec) || r.statusWritten("EgressNodeState/"+node, spec) {
 		return nil
 	}
-	upd := cur.DeepCopy()
-	upd.Spec = spec
+	// A patch of /spec alone: the allocator is the spec's only writer and
+	// builds it from the EgressEndpoints, so a resourceVersion check would
+	// only collide with the agent's own status writes.
+	patch := specPatch(spec)
 	r.write(key, "EgressNodeState/"+node, len(cur.Status.Claims) > 0, func(ctx context.Context) error {
-		_, err := client.Update(ctx, upd, metav1.UpdateOptions{})
+		_, err := client.Patch(ctx, node, types.JSONPatchType, patch, metav1.PatchOptions{})
 		return err
 	})
 	return nil

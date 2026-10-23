@@ -56,7 +56,7 @@ func (r *Reconciler) retire(run *run, keep []address) int {
 		kept[egress.EndpointsName(ref, a.ip)] = true
 	}
 	active := len(kept)
-	eps, _ := r.endpoints.EgressEndpointses(r.namespace).List(ownedSelector(ref))
+	eps := r.ownedEndpoints(ref)
 	for _, ep := range eps {
 		if ep.Spec.State != stateActive || kept[ep.Name] {
 			continue
@@ -74,13 +74,13 @@ func (r *Reconciler) retire(run *run, keep []address) int {
 // its finalizer (deleted before its first allocation's finalizer landed),
 // and deletes its EgressMembers.
 func (r *Reconciler) retireOrphans(ref egress.PolicyRef) {
-	eps, _ := r.endpoints.EgressEndpointses(r.namespace).List(ownedSelector(ref))
+	eps := r.ownedEndpoints(ref)
 	for _, ep := range eps {
 		if ep.Spec.State == stateActive {
 			r.retireEndpoints(ref.String(), conditions{}, ep)
 		}
 	}
-	ms, _ := r.members.EgressMemberses(r.namespace).List(ownedSelector(ref))
+	ms := r.ownedMembers(ref)
 	client := r.purelb.PurelbV2().EgressMemberses(r.namespace)
 	for _, m := range ms {
 		name := m.Name
@@ -95,6 +95,12 @@ func (r *Reconciler) retireOrphans(ref egress.PolicyRef) {
 // have acked a generation with no slices, the address becomes a
 // tombstone held for the group's releaseQuarantine (D16).
 func (r *Reconciler) retireEndpoints(owner string, conds conditions, ep *purelbv2.EgressEndpoints) {
+	if latest, ok := r.latestEndpoints(ep.Name); ok {
+		ep = latest
+	}
+	if r.busy(ep.Name, owner, false) {
+		return
+	}
 	spec := *ep.Spec.DeepCopy()
 	acked, excluded := r.gate(conds, ep, owner)
 	spec.ExcludedNodes = excluded
@@ -127,7 +133,8 @@ func (r *Reconciler) retireEndpoints(owner string, conds conditions, ep *purelbv
 	client := r.purelb.PurelbV2().EgressEndpointses(r.namespace)
 	r.write(owner, "EgressEndpoints/"+ep.Name, !apiequality.Semantic.DeepEqual(ep.Spec.Slices, spec.Slices),
 		func(ctx context.Context) error {
-			_, err := client.Update(ctx, upd, metav1.UpdateOptions{})
+			out, err := client.Update(ctx, upd, metav1.UpdateOptions{})
+			r.wrote(upd.Name, out, err)
 			return err
 		})
 }
@@ -179,7 +186,7 @@ func (r *Reconciler) syncFinalizer(run *run, active int, clear bool) {
 	has := slices.Contains(p.meta.Finalizers, egress.Finalizer)
 	want := has || active > 0
 	if clear {
-		ms, _ := r.members.EgressMemberses(r.namespace).List(ownedSelector(p.ref))
+		ms := r.ownedMembers(p.ref)
 		want = has && (active > 0 || len(ms) > 0)
 	}
 	if want == has {
@@ -250,7 +257,9 @@ func (r *Reconciler) expireTombstone(name string) error {
 	forgetAddress(ep.Spec.Address)
 	client := r.purelb.PurelbV2().EgressEndpointses(r.namespace)
 	r.write(key, "EgressEndpoints/"+name, false, func(ctx context.Context) error {
-		return client.Delete(ctx, name, metav1.DeleteOptions{})
+		err := client.Delete(ctx, name, metav1.DeleteOptions{})
+		r.wrote(name, nil, err)
+		return err
 	})
 	return nil
 }

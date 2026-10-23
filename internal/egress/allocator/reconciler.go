@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -83,9 +84,9 @@ type Reconciler struct {
 	enqueue func(key string, priority bool)
 	writer  *writer
 	// writeOwner maps an object key with a write in progress to the
-	// queue key that owns it, which a failed write requeues. Queue
-	// goroutine only.
-	writeOwner map[string]string
+	// queue key that owns it, which a failed write requeues on the write's
+	// lane. Queue goroutine only.
+	writeOwner map[string]writeOwner
 
 	// Queue goroutine only: when each lagging gating node fell behind,
 	// per EgressEndpoints; when each Draining slice was first seen, per
@@ -98,6 +99,17 @@ type Reconciler struct {
 	// two announcers, and whether its SplitBrain event was recorded.
 	split         map[string]time.Time
 	splitReported map[string]bool
+	// lastStatus is the status last submitted per write key (queue
+	// goroutine only).
+	lastStatus map[string]interface{}
+	// deferred are EgressEndpoints write keys a reconcile left alone
+	// because a write to them was in flight, with the queue key to rerun
+	// when it finishes. Queue goroutine only.
+	deferred map[string]writeOwner
+	// written holds each EgressEndpoints the allocator's own last write
+	// returned, until the informer has it (latestEndpoints). Writer
+	// workers store, the queue goroutine loads and deletes.
+	written sync.Map
 
 	recorder record.EventRecorder
 
@@ -125,9 +137,10 @@ var (
 
 // New returns a Reconciler for alloc; Start brings it up.
 func New(logger log.Logger, alloc *coreallocator.Allocator, namespace string) *Reconciler {
-	return &Reconciler{logger: logger, alloc: alloc, namespace: namespace, writeOwner: map[string]string{},
+	return &Reconciler{logger: logger, alloc: alloc, namespace: namespace, writeOwner: map[string]writeOwner{},
 		behind: map[string]map[string]time.Time{}, drainSince: map[string]map[int32]time.Time{},
-		timers: map[string]time.Time{}, now: time.Now, split: map[string]time.Time{}, splitReported: map[string]bool{}}
+		timers: map[string]time.Time{}, now: time.Now, split: map[string]time.Time{}, splitReported: map[string]bool{},
+		lastStatus: map[string]interface{}{}, deferred: map[string]writeOwner{}}
 }
 
 // Start discovers the egress CRDs and, when they exist, starts the
@@ -195,15 +208,18 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	if err := ens.Informer().AddIndexers(cache.Indexers{idxAnnouncing: announcingIndex, idxClaims: claimsIndex}); err != nil {
 		return err
 	}
-	if err := ee.Informer().AddIndexers(cache.Indexers{idxSliceNode: sliceNodeIndex}); err != nil {
+	if err := ee.Informer().AddIndexers(cache.Indexers{idxSliceNode: sliceNodeIndex, idxOwner: ownerIndex}); err != nil {
 		return err
 	}
 	em := pns.Purelb().V2().EgressMemberses()
-	if err := em.Informer().AddIndexers(cache.Indexers{idxMemberPod: memberPodIndex}); err != nil {
+	if err := em.Informer().AddIndexers(cache.Indexers{idxMemberPod: memberPodIndex, idxOwner: ownerIndex}); err != nil {
 		return err
 	}
 	pods := kf.Core().V1().Pods().Informer()
 	if err := pods.SetTransform(k8s.SlimPod(purelbv2.EgressOptOutAnnotation)); err != nil {
+		return err
+	}
+	if err := pods.AddIndexers(cache.Indexers{idxPodLabel: podLabelIndex}); err != nil {
 		return err
 	}
 	nss := kf.Core().V1().Namespaces().Informer()
@@ -479,9 +495,15 @@ func parsePolicyKey(key string) (egress.PolicyRef, error) {
 	return egress.PolicyRef{}, fmt.Errorf("not an egress policy key")
 }
 
+// writeOwner is the queue key a write belongs to, and its lane.
+type writeOwner struct {
+	key      string
+	priority bool
+}
+
 // write submits a write of the object key, owned by the queue key owner.
 func (r *Reconciler) write(owner, key string, priority bool, w func(context.Context) error) {
-	r.writeOwner[key] = owner
+	r.writeOwner[key] = writeOwner{key: owner, priority: priority}
 	r.writer.submit(key, priority, w)
 }
 
@@ -496,10 +518,15 @@ func (r *Reconciler) writeDone(obj string) error {
 	if !r.writer.inProgress(obj) {
 		delete(r.writeOwner, obj)
 	}
+	if d, ok := r.deferred[obj]; ok && !r.writer.inProgress(obj) {
+		delete(r.deferred, obj)
+		r.enqueue(d.key, d.priority || owner.priority)
+	}
 	if err != nil {
+		delete(r.lastStatus, obj)
 		logging.Info(r.logger, "op", "egressWrite", "object", obj, "error", err)
-		if owner != "" {
-			r.enqueue(owner, false)
+		if owner.key != "" {
+			r.enqueue(owner.key, owner.priority)
 		}
 	}
 	return nil

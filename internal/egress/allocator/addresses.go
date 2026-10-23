@@ -113,6 +113,8 @@ func (r *Reconciler) allocateOwner(run *run, key, identity, entry string, famili
 			return mine
 		}
 		req = coreallocator.AllocRequest{Key: key, Explicit: pins}
+	} else if holdsFamilies(mine, families) {
+		return mine // nothing to allocate
 	}
 	ips, err := r.alloc.AllocateEgress(run.group.Name, req)
 	if err != nil {
@@ -125,6 +127,16 @@ func (r *Reconciler) allocateOwner(run *run, key, identity, entry string, famili
 		}
 	}
 	return mine
+}
+
+// holdsFamilies reports whether mine has an address in every family.
+func holdsFamilies(mine []address, families []int) bool {
+	for _, f := range families {
+		if !slices.ContainsFunc(mine, func(a address) bool { return a.ip.Is6() == (f == nl.FAMILY_V6) }) {
+			return false
+		}
+	}
+	return true
 }
 
 // fits reports whether a held address still fits the policy: a family it
@@ -285,7 +297,7 @@ func allocationReason(err error, pinned bool) string {
 // heldAddresses are the addresses the policy's EgressEndpoints record as
 // Active.
 func (r *Reconciler) heldAddresses(p *policy) []address {
-	eps, _ := r.endpoints.EgressEndpointses(r.namespace).List(ownedSelector(p.ref))
+	eps := r.ownedEndpoints(p.ref)
 	var out []address
 	for _, ep := range eps {
 		if ep.Spec.State != stateActive {
