@@ -1,0 +1,36 @@
+# The node agents' Lease requests run at the leader-election priority
+# level, as the kube-system controllers' do, instead of falling through to
+# the service-accounts schema with every other workload. Lease renewals
+# then never wait behind other API traffic when the API server is busy.
+# It matches only the lbnodeagent service account's Lease writes, so any
+# precedence ahead of service-accounts (9000) works.
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata:
+  name: purelb-lbnodeagent-leases
+  labels:
+    app: purelb
+spec:
+  priorityLevelConfiguration:
+    name: leader-election
+  matchingPrecedence: 1000
+  distinguisherMethod:
+    type: ByUser
+  rules:
+  - subjects:
+    - kind: ServiceAccount
+      serviceAccount:
+        name: lbnodeagent
+        namespace: purelb-system
+    resourceRules:
+    - apiGroups:
+      - coordination.k8s.io
+      resources:
+      - leases
+      verbs:
+      - get
+      - create
+      - update
+      - delete
+      namespaces:
+      - purelb-system

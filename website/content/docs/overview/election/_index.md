@@ -84,6 +84,10 @@ The election is subnet-aware: only nodes that have the address's subnet in their
 - The subnets a node advertises come from its [LBNodeAgent configuration]({{< relref "/docs/configuration/lbnodeagent" >}}): the interfaces selected by `localInterface` (default route or regex) plus any listed in `interfaces`. The Lease advertises exactly the subnets the announcer can announce on — the two sides always agree.
 - A dual-homed node (NICs on two subnets) is a candidate for addresses on both, once its configuration selects both NICs.
 
+### Lease Traffic Priority
+
+Every install method ships a FlowSchema, `purelb-lbnodeagent-leases`, that puts the node agents' Lease requests (`get`, `create`, `update` and `delete` on Leases in the PureLB namespace) in the API server's built-in `leader-election` priority level, as the Kubernetes controllers' own leader elections are. Without it they share the `workload-low` level with every other service account, so a busy API server could delay renewals until Leases expire and addresses move. The agents also make their Lease requests through a client with its own rate limit, so renewals never wait behind the agent's other API calls.
+
 ### Down Links
 
 When a link that the Lease's subnets come from goes down, its subnets leave this node's Lease, so the addresses it announced on that subnet move to another node on the subnet, as they would if the node had failed. When the link comes back, its subnets rejoin the Lease and the node is a candidate again.

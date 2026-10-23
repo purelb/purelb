@@ -1,0 +1,35 @@
+# The node agents' Lease requests run at the leader-election priority
+# level, as the kube-system controllers' do, instead of falling through to
+# the service-accounts schema with every other workload. Lease renewals
+# then never wait behind other API traffic when the API server is busy.
+# Source of truth for the rules: deployments/default/flowschema.yaml.
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata:
+  name: {{ include "purelb.fullname" . }}-lbnodeagent-leases
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+spec:
+  priorityLevelConfiguration:
+    name: leader-election
+  matchingPrecedence: 1000
+  distinguisherMethod:
+    type: ByUser
+  rules:
+  - subjects:
+    - kind: ServiceAccount
+      serviceAccount:
+        name: lbnodeagent
+        namespace: {{ .Release.Namespace }}
+    resourceRules:
+    - apiGroups:
+      - coordination.k8s.io
+      resources:
+      - leases
+      verbs:
+      - get
+      - create
+      - update
+      - delete
+      namespaces:
+      - {{ .Release.Namespace }}

@@ -136,4 +136,10 @@ expect "egress: allocator binding by default" "^ClusterRoleBinding/.*:egress:all
 out=$($HELM template t "$CHART" --kube-version 1.31.0 --set egress.enabled=false | kinds)
 refuse "egress: nothing egress with egress.enabled=false" "egress" "$out"
 
+# The Lease FlowSchema is core: it renders whatever egress and gobgp say,
+# and names the release namespace's lbnodeagent.
+out=$(render flowschema-lbnodeagent-leases.yaml --namespace purelb-test --set egress.enabled=false --set gobgp.enabled=false)
+expect "FlowSchema: Lease requests at leader-election" "name: leader-election" "$out"
+expect "FlowSchema: matches the release's lbnodeagent" "namespace: purelb-test" "$out"
+
 exit $fail

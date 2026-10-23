@@ -13,6 +13,17 @@ notes and docs of the release that ships it. Not user-facing prose.
   applies to load-balancer-only installs too. Stated in the prerequisites page
   and the chart's `kubeVersion`.
 
+## Load-balancer-visible changes
+
+- **A FlowSchema in every install method.** `purelb-lbnodeagent-leases` puts the
+  node agents' Lease `get`/`create`/`update`/`delete` in the built-in
+  `leader-election` priority level (before: `workload-low` via the
+  `service-accounts` schema), so a busy API server can't delay renewals behind
+  other workloads. Verified against a real API server: the agent service
+  account's Lease requests dispatch under this schema at `leader-election`.
+  Uses `flowcontrol.apiserver.k8s.io/v1` (Kubernetes 1.29+; the 1.31 minimum
+  covers it).
+
 ## New API
 
 - Kinds: `Egress`, `ClusterEgress` (cluster-scoped), `EgressEndpoints`,
