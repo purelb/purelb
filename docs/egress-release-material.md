@@ -45,6 +45,16 @@ notes and docs of the release that ships it. Not user-facing prose.
     this release reports them stale until its CRDs are applied, which the
     upgrade procedure already requires.
 
+- **Release images are signed and carry build provenance.** The release job
+  signs the allocator and lbnodeagent images keyless with cosign (GitHub OIDC,
+  recorded in Rekor) and pushes GitHub build-provenance attestations. Verify:
+  `cosign verify --certificate-identity-regexp 'https://github.com/purelb/purelb/'
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com <image>`
+  or `gh attestation verify oci://<image> -R purelb/purelb`. **First run is the
+  first release tag after this merges** (the job runs only on tags).
+- **Base images pinned by digest** (`.ko.yaml`): distroless static `nonroot`
+  and `latest` multi-arch indexes; the comment there gives the refresh command.
+
 ## New API
 
 - Kinds: `Egress`, `ClusterEgress` (cluster-scoped), `EgressEndpoints`,

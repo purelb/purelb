@@ -199,6 +199,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless cosign signing and build-provenance attestations use the
+      # job's OIDC token.
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -231,15 +235,50 @@ jobs:
       - name: Generate Kubernetes client code
         run: make generate
 
+      - name: Setup cosign
+        uses: sigstore/cosign-installer@v3
+
       - name: Build and push allocator
+        id: allocator
         env:
           TAG: ${{ github.ref_name }}
-        run: ko build --base-import-paths --tags=$TAG ./cmd/allocator
+        # ko prints the pushed image as repo:tag@<multi-arch index digest>.
+        run: |
+          ref=$(ko build --base-import-paths --tags="$TAG" ./cmd/allocator)
+          echo "digest=${ref#*@}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push lbnodeagent
+        id: lbnodeagent
         env:
           TAG: ${{ github.ref_name }}
-        run: ko build --base-import-paths --tags=$TAG ./cmd/lbnodeagent
+        # ko prints the pushed image as repo:tag@<multi-arch index digest>.
+        run: |
+          ref=$(ko build --base-import-paths --tags="$TAG" ./cmd/lbnodeagent)
+          echo "digest=${ref#*@}" >> "$GITHUB_OUTPUT"
+
+      # Keyless: the signature binds the image digest to this workflow run's
+      # identity, recorded in the public Rekor log. Verify with
+      #   cosign verify --certificate-identity-regexp 'https://github.com/purelb/purelb/' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com <image>
+      - name: Sign images
+        env:
+          ALLOCATOR: ${{ env.KO_DOCKER_REPO }}/allocator@${{ steps.allocator.outputs.digest }}
+          LBNODEAGENT: ${{ env.KO_DOCKER_REPO }}/lbnodeagent@${{ steps.lbnodeagent.outputs.digest }}
+        run: cosign sign --yes "$ALLOCATOR" "$LBNODEAGENT"
+
+      - name: Attest allocator provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.KO_DOCKER_REPO }}/allocator
+          subject-digest: ${{ steps.allocator.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest lbnodeagent provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.KO_DOCKER_REPO }}/lbnodeagent
+          subject-digest: ${{ steps.lbnodeagent.outputs.digest }}
+          push-to-registry: true
 
   build-plugin:
     runs-on: ubuntu-latest
