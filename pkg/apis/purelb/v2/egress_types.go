@@ -414,6 +414,7 @@ type ClusterEgressList struct {
 // announcing the address read it.
 //
 // +genclient
+// +resourceName=egressendpoints
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:resource:shortName=egep
 // +kubebuilder:subresource:status
@@ -569,6 +570,7 @@ type EgressEndpointsList struct {
 // pods per object. Only the allocator reads it.
 //
 // +genclient
+// +resourceName=egressmembers
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:resource:shortName=egm
 type EgressMembers struct {
