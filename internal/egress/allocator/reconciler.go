@@ -77,15 +77,26 @@ type Reconciler struct {
 	enqueue func(key string, priority bool)
 	writer  *writer
 	// writeOwner maps an object key with a write in progress to the
-	// policy that owns it, which a failed write requeues. Queue goroutine
-	// only.
+	// queue key that owns it, which a failed write requeues. Queue
+	// goroutine only.
 	writeOwner map[string]string
+
+	// Queue goroutine only: when each lagging gating node fell behind,
+	// per EgressEndpoints; when each Draining slice was first seen, per
+	// EgressEndpoints; each requeueAfter key's pending deadline.
+	behind     map[string]map[string]time.Time
+	drainSince map[string]map[int32]time.Time
+	timers     map[string]time.Time
+	now        func() time.Time
 
 	egresses        listers.EgressLister
 	clusterEgresses listers.ClusterEgressLister
 	endpoints       listers.EgressEndpointsLister
 	members         listers.EgressMembersLister
 	nodeStates      listers.EgressNodeStateLister
+	agents          listers.LBNodeAgentLister
+	nodeStateIdx    cache.Indexer
+	endpointsIdx    cache.Indexer
 	pods            cache.Indexer
 	namespaces      cache.Indexer
 	nodes           cache.Indexer
@@ -100,7 +111,9 @@ var (
 
 // New returns a Reconciler for alloc; Start brings it up.
 func New(logger log.Logger, alloc *coreallocator.Allocator, namespace string) *Reconciler {
-	return &Reconciler{logger: logger, alloc: alloc, namespace: namespace, writeOwner: map[string]string{}}
+	return &Reconciler{logger: logger, alloc: alloc, namespace: namespace, writeOwner: map[string]string{},
+		behind: map[string]map[string]time.Time{}, drainSince: map[string]map[int32]time.Time{},
+		timers: map[string]time.Time{}, now: time.Now}
 }
 
 // Start discovers the egress CRDs and, when they exist, starts the
@@ -150,7 +163,14 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	eg := pf.Purelb().V2().Egresses()
 	ceg := pf.Purelb().V2().ClusterEgresses()
 	ens := pf.Purelb().V2().EgressNodeStates()
+	lbna := pf.Purelb().V2().LBNodeAgents()
 	ee := pns.Purelb().V2().EgressEndpointses()
+	if err := ens.Informer().AddIndexers(cache.Indexers{idxAnnouncing: announcingIndex, idxClaims: claimsIndex}); err != nil {
+		return err
+	}
+	if err := ee.Informer().AddIndexers(cache.Indexers{idxSliceNode: sliceNodeIndex}); err != nil {
+		return err
+	}
 	em := pns.Purelb().V2().EgressMemberses()
 	pods := kf.Core().V1().Pods().Informer()
 	if err := pods.SetTransform(k8s.SlimPod(purelbv2.EgressOptOutAnnotation)); err != nil {
@@ -161,19 +181,27 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	svcs := kf.Core().V1().Services().Informer()
 	leases := kns.Coordination().V1().Leases().Informer()
 
-	r.egresses, r.clusterEgresses, r.nodeStates = eg.Lister(), ceg.Lister(), ens.Lister()
+	r.egresses, r.clusterEgresses, r.nodeStates, r.agents = eg.Lister(), ceg.Lister(), ens.Lister(), lbna.Lister()
 	r.endpoints, r.members = ee.Lister(), em.Lister()
+	r.nodeStateIdx, r.endpointsIdx = ens.Informer().GetIndexer(), ee.Informer().GetIndexer()
 	r.pods, r.namespaces, r.nodes = pods.GetIndexer(), nss.GetIndexer(), nodes.GetIndexer()
 	r.services, r.leases = svcs.GetIndexer(), leases.GetIndexer()
 
 	r.handle(eg.Informer(), r.policyOf)
 	r.handle(ceg.Informer(), r.policyOf)
-	r.handle(ee.Informer(), r.ownerOf)
+	r.handleEndpoints(ee.Informer())
 	r.handle(em.Informer(), r.ownerOf)
-	r.handle(ens.Informer(), func(interface{}) []string { return r.allPolicies() })
+	r.handleNodeStates(ens.Informer())
+	r.handle(lbna.Informer(), func(interface{}) []string { return r.allPolicies() })
 	r.handle(pods, r.podPolicies)
 	r.handle(nss, func(interface{}) []string { return r.clusterPolicies() })
-	r.handle(nodes, func(interface{}) []string { return r.allPolicies() })
+	r.handle(nodes, func(obj interface{}) []string {
+		keys := r.allPolicies()
+		if n, ok := obj.(*corev1.Node); ok {
+			keys = append(keys, nodePrefix+n.Name)
+		}
+		return keys
+	})
 	r.handle(svcs, r.servicePolicies)
 	r.handleLeases(leases)
 
@@ -182,7 +210,7 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	kf.Start(stop)
 	kns.Start(stop)
 	go func() {
-		if !cache.WaitForCacheSync(stop, eg.Informer().HasSynced, ceg.Informer().HasSynced, ens.Informer().HasSynced,
+		if !cache.WaitForCacheSync(stop, eg.Informer().HasSynced, ceg.Informer().HasSynced, ens.Informer().HasSynced, lbna.Informer().HasSynced,
 			ee.Informer().HasSynced, em.Informer().HasSynced, pods.HasSynced, nss.HasSynced, nodes.HasSynced,
 			svcs.HasSynced, leases.HasSynced) {
 			return
@@ -340,7 +368,7 @@ func (r *Reconciler) Keys() []string {
 	if !r.enabled || !r.synced.Load() {
 		return nil
 	}
-	return r.allPolicies()
+	return append(r.allPolicies(), r.nodeKeys()...)
 }
 
 // Synced reports whether egress has replayed its state, or has none.
@@ -355,6 +383,9 @@ func (r *Reconciler) Sync(key string) error {
 	}
 	if obj, ok := strings.CutPrefix(key, writePrefix); ok {
 		return r.writeDone(obj)
+	}
+	if node, ok := strings.CutPrefix(key, nodePrefix); ok {
+		return r.syncNodeState(node)
 	}
 	ref, err := parsePolicyKey(key)
 	if err != nil {
@@ -376,15 +407,14 @@ func parsePolicyKey(key string) (egress.PolicyRef, error) {
 	return egress.PolicyRef{}, fmt.Errorf("not an egress policy key")
 }
 
-// write submits a write of the object key, owned by policy p.
-func (r *Reconciler) write(p *policy, key string, priority bool, w func(context.Context) error) {
-	r.writeOwner[key] = p.ref.String()
+// write submits a write of the object key, owned by the queue key owner.
+func (r *Reconciler) write(owner, key string, priority bool, w func(context.Context) error) {
+	r.writeOwner[key] = owner
 	r.writer.submit(key, priority, w)
 }
 
 // writeDone collects a finished write's outcome. A failed write requeues
-// the policy that owns the object, which recomputes and rewrites it from
-// fresh informer state.
+// its owner, which recomputes and rewrites it from fresh informer state.
 func (r *Reconciler) writeDone(obj string) error {
 	err, ok := r.writer.done(obj)
 	if !ok {

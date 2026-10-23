@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
+	kubefake "k8s.io/client-go/kubernetes/fake"
 	"purelb.io/internal/egress"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	purelbfake "purelb.io/pkg/generated/clientset/versioned/fake"
@@ -98,13 +99,14 @@ func egressObj(ns, name string, mod func(*purelbv2.EgressSpec)) *purelbv2.Egress
 // fixture is a started Reconciler with groups loaded into its allocator.
 type fixture struct {
 	r      *Reconciler
+	kube   *kubefake.Clientset
 	purelb *purelbfake.Clientset
 	q      *queue
 }
 
 func newFixture(t *testing.T, groups []*purelbv2.ServiceGroup, objs ...runtime.Object) *fixture {
 	t.Helper()
-	r, _, purelb, q := started(t, true, objs...)
+	r, kube, purelb, q := started(t, true, objs...)
 	r.alloc.SetListServices(func() []corev1.Service {
 		var out []corev1.Service
 		for _, o := range r.services.List() {
@@ -113,7 +115,7 @@ func newFixture(t *testing.T, groups []*purelbv2.ServiceGroup, objs ...runtime.O
 		return out
 	})
 	require.NoError(t, r.alloc.SetPools(groups))
-	return &fixture{r: r, purelb: purelb, q: q}
+	return &fixture{r: r, kube: kube, purelb: purelb, q: q}
 }
 
 // reconcile runs one reconcile of key on the test goroutine, as the queue

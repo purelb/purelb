@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	"purelb.io/internal/egress"
+	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -128,38 +129,125 @@ func endpointsLabels(run *run, spec purelbv2.EgressEndpointsSpec) map[string]str
 }
 
 // syncEndpoints writes an EgressEndpoints for each of the policy's
-// addresses, keeping each one's slices, reserved ports and excluded
-// nodes. Releasing addresses the policy no longer holds is the teardown
-// stage's.
+// addresses with its slices (§5.6), keeping its reserved ports, which a
+// later stage owns. Slices change only once every gating node has acked
+// the current generation (§5.7), so one generation is in flight at a
+// time; a change of slices goes on the priority lane. Releasing addresses
+// the policy no longer holds is the teardown stage's.
 func (r *Reconciler) syncEndpoints(run *run, addrs []address) {
 	client := r.purelb.PurelbV2().EgressEndpointses(r.namespace)
+	owner := run.p.ref.String()
+	added := map[string]int{} // slots this reconcile takes per node
 	for _, a := range addrs {
 		name := egress.EndpointsName(run.p.ref, a.ip)
 		spec := r.endpointsSpec(run, a)
 		cur, err := r.endpoints.EgressEndpointses(r.namespace).Get(name)
 		if err != nil {
+			spec.Slices = r.planAddress(run, a, name, spec.SliceSize, nil, nil, added)
 			want := &purelbv2.EgressEndpoints{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.namespace, Labels: endpointsLabels(run, spec)},
 				Spec:       spec,
 			}
-			r.write(run.p, "EgressEndpoints/"+name, false, func(ctx context.Context) error {
+			r.write(owner, "EgressEndpoints/"+name, len(spec.Slices) > 0, func(ctx context.Context) error {
 				_, err := client.Create(ctx, want, metav1.CreateOptions{})
 				return err
 			})
 			continue
 		}
-		spec.Slices, spec.Reserved, spec.ExcludedNodes = cur.Spec.Slices, cur.Spec.Reserved, cur.Spec.ExcludedNodes
+		if len(cur.Spec.Slices) > 0 && cur.Spec.SliceSize != spec.SliceSize {
+			// In-use indices keep their meaning: a new size applies once
+			// the address has no slices.
+			logging.Debug(r.logger, "op", "egressEndpoints", "endpoints", name, "sliceSize", cur.Spec.SliceSize,
+				"wanted", spec.SliceSize, "msg", "keeping the slice size while slices exist")
+			spec.SliceSize = cur.Spec.SliceSize
+		}
+		spec.Reserved = cur.Spec.Reserved
+		acked, excluded := r.gate(run, cur, owner)
+		spec.ExcludedNodes = excluded
+		spec.Slices = cur.Spec.Slices
+		if acked {
+			spec.Slices = r.planAddress(run, a, name, spec.SliceSize, activate(cur.Spec.Slices), r.freedSlices(cur, owner), added)
+		}
 		lbls := endpointsLabels(run, spec)
 		if apiequality.Semantic.DeepEqual(cur.Spec, spec) && apiequality.Semantic.DeepEqual(cur.Labels, lbls) {
 			continue
 		}
 		upd := cur.DeepCopy()
 		upd.Spec, upd.Labels = spec, lbls
-		r.write(run.p, "EgressEndpoints/"+name, false, func(ctx context.Context) error {
-			_, err := client.Update(ctx, upd, metav1.UpdateOptions{})
-			return err
-		})
+		r.write(owner, "EgressEndpoints/"+name, !apiequality.Semantic.DeepEqual(cur.Spec.Slices, spec.Slices),
+			func(ctx context.Context) error {
+				_, err := client.Update(ctx, upd, metav1.UpdateOptions{})
+				return err
+			})
 	}
+}
+
+// planAddress plans one address's slices: one for each node with selected
+// pods and each node claiming one, within the node's slot budget. A PerPod
+// address has none: its node gets the whole address.
+func (r *Reconciler) planAddress(run *run, a address, ee string, size int32, cur []purelbv2.EgressSlice,
+	freed map[int32]bool, added map[string]int) []purelbv2.EgressSlice {
+	if a.identity != "" {
+		return nil
+	}
+	want := map[string]bool{}
+	for n := range run.sel.nodes {
+		want[n] = true
+	}
+	for _, n := range r.claimants(ee) {
+		want[n] = true
+	}
+	var ports []int32
+	for _, sp := range r.servicePorts(a.ip) {
+		ports = append(ports, sp.Port)
+	}
+	if run.p.spec.Ports != nil {
+		for _, rp := range run.p.spec.Ports.Reserved {
+			ports = append(ports, rp.Port)
+		}
+	}
+	before := map[int32]string{} // index -> node
+	for _, s := range cur {
+		before[s.Index] = s.Node
+	}
+	plan := planSlices(sliceInput{size: size, current: cur, want: want, ports: ports, reserve: reserveSlices(run),
+		freed: freed, slotOK: func(n string) bool {
+			return r.slotsUsed(n)+added[n] < r.slotLimit(n, run.p.ref.Kind)
+		}})
+	for _, s := range plan.slices {
+		if n, ok := before[s.Index]; s.Node != "" && (!ok || n != s.Node) {
+			added[s.Node]++
+		}
+	}
+	if len(plan.exhausted) > 0 {
+		run.conds.fail(condPortCapacity, reasonSliceExhausted,
+			"%s: no free slice for nodes %v; usable slices = floor((65536-1024)/%d) - blocks holding a Service or reserved port - draining = %d",
+			a.ip, plan.exhausted, size, sliceCapacity(size, ports, plan.slices))
+	}
+	if len(plan.overBudget) > 0 {
+		run.conds.fail(condDatapathReady, reasonSlotsExhausted, "%s: nodes %v have no slot left (%d per node)",
+			a.ip, plan.overBudget, slotBudget)
+	}
+	return plan.slices
+}
+
+// activate marks every Pending slice Active: the gating nodes have acked
+// the generation that published them.
+func activate(slices []purelbv2.EgressSlice) []purelbv2.EgressSlice {
+	out := append([]purelbv2.EgressSlice(nil), slices...)
+	for i := range out {
+		if out[i].State == slicePending {
+			out[i].State = sliceActive
+		}
+	}
+	return out
+}
+
+func reserveSlices(run *run) int {
+	if eg := run.group.Spec.Egress; eg != nil && eg.ReserveSlices != nil {
+		return int(*eg.ReserveSlices)
+	}
+	return defaultReserveSlices
 }
 
 // Replay records egress's addresses in the pools after a rebuild, after

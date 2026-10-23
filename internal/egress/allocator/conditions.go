@@ -30,6 +30,13 @@ const (
 	condReady           = "Ready"
 )
 
+// DatapathReady and PortCapacity reasons (§4.8).
+const (
+	reasonNodesLagging   = "NodesLagging"
+	reasonSlotsExhausted = "SlotsExhausted"
+	reasonSliceExhausted = "SliceExhausted"
+)
+
 // cond is one condition's outcome. A zero reason means True.
 type cond struct {
 	reason, message string

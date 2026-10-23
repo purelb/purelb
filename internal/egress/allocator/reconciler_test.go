@@ -80,7 +80,8 @@ func started(t *testing.T, crds bool, objs ...runtime.Object) (*Reconciler, *kub
 	var kubeObjs, purelbObjs []runtime.Object
 	for _, o := range objs {
 		switch o.(type) {
-		case *purelbv2.Egress, *purelbv2.ClusterEgress, *purelbv2.EgressEndpoints, *purelbv2.EgressMembers, *purelbv2.EgressNodeState:
+		case *purelbv2.Egress, *purelbv2.ClusterEgress, *purelbv2.EgressEndpoints, *purelbv2.EgressMembers, *purelbv2.EgressNodeState,
+			*purelbv2.LBNodeAgent:
 			purelbObjs = append(purelbObjs, o)
 		default:
 			kubeObjs = append(kubeObjs, o)

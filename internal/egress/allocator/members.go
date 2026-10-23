@@ -109,14 +109,14 @@ func (r *Reconciler) syncMembers(run *run) {
 		delete(have, want.Name)
 		switch {
 		case !ok:
-			r.write(run.p, "EgressMembers/"+want.Name, false, func(ctx context.Context) error {
+			r.write(run.p.ref.String(), "EgressMembers/"+want.Name, false, func(ctx context.Context) error {
 				_, err := client.Create(ctx, want, metav1.CreateOptions{})
 				return err
 			})
 		case !apiequality.Semantic.DeepEqual(cur.Spec, want.Spec) || !apiequality.Semantic.DeepEqual(cur.Labels, want.Labels):
 			upd := cur.DeepCopy()
 			upd.Spec, upd.Labels = want.Spec, want.Labels
-			r.write(run.p, "EgressMembers/"+want.Name, false, func(ctx context.Context) error {
+			r.write(run.p.ref.String(), "EgressMembers/"+want.Name, false, func(ctx context.Context) error {
 				_, err := client.Update(ctx, upd, metav1.UpdateOptions{})
 				return err
 			})
@@ -124,7 +124,7 @@ func (r *Reconciler) syncMembers(run *run) {
 	}
 	for name := range have {
 		name := name
-		r.write(run.p, "EgressMembers/"+name, false, func(ctx context.Context) error {
+		r.write(run.p.ref.String(), "EgressMembers/"+name, false, func(ctx context.Context) error {
 			return client.Delete(ctx, name, metav1.DeleteOptions{})
 		})
 	}
