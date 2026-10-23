@@ -117,6 +117,9 @@ func (r *Reconciler) handleEndpoints(inf cache.SharedIndexInformer) {
 		for _, k := range r.ownerOf(firstNonNil(n, o)) {
 			r.enqueue(k, false)
 		}
+		if n != nil && n.Spec.State == stateQuarantined {
+			r.enqueue(tombstonePrefix+n.Name, false)
+		}
 		for node := range slicesChanged(o, n) {
 			r.enqueue(nodePrefix+node, true)
 		}

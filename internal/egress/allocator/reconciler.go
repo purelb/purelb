@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -101,6 +102,7 @@ type Reconciler struct {
 	namespaces      cache.Indexer
 	nodes           cache.Indexer
 	services        cache.Indexer
+	statefulSets    cache.Indexer
 	leases          cache.Indexer
 }
 
@@ -179,13 +181,17 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	nss := kf.Core().V1().Namespaces().Informer()
 	nodes := kf.Core().V1().Nodes().Informer()
 	svcs := kf.Core().V1().Services().Informer()
+	stss := kf.Apps().V1().StatefulSets().Informer()
+	if err := stss.SetTransform(slimStatefulSet); err != nil {
+		return err
+	}
 	leases := kns.Coordination().V1().Leases().Informer()
 
 	r.egresses, r.clusterEgresses, r.nodeStates, r.agents = eg.Lister(), ceg.Lister(), ens.Lister(), lbna.Lister()
 	r.endpoints, r.members = ee.Lister(), em.Lister()
 	r.nodeStateIdx, r.endpointsIdx = ens.Informer().GetIndexer(), ee.Informer().GetIndexer()
 	r.pods, r.namespaces, r.nodes = pods.GetIndexer(), nss.GetIndexer(), nodes.GetIndexer()
-	r.services, r.leases = svcs.GetIndexer(), leases.GetIndexer()
+	r.services, r.leases, r.statefulSets = svcs.GetIndexer(), leases.GetIndexer(), stss.GetIndexer()
 
 	r.handle(eg.Informer(), r.policyOf)
 	r.handle(ceg.Informer(), r.policyOf)
@@ -203,6 +209,7 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 		return keys
 	})
 	r.handle(svcs, r.servicePolicies)
+	r.handle(stss, r.statefulSetPolicies)
 	r.handleLeases(leases)
 
 	pf.Start(stop)
@@ -212,7 +219,7 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	go func() {
 		if !cache.WaitForCacheSync(stop, eg.Informer().HasSynced, ceg.Informer().HasSynced, ens.Informer().HasSynced, lbna.Informer().HasSynced,
 			ee.Informer().HasSynced, em.Informer().HasSynced, pods.HasSynced, nss.HasSynced, nodes.HasSynced,
-			svcs.HasSynced, leases.HasSynced) {
+			svcs.HasSynced, leases.HasSynced, stss.HasSynced) {
 			return
 		}
 		r.synced.Store(true)
@@ -328,6 +335,21 @@ func (r *Reconciler) podPolicies(obj interface{}) []string {
 	return keys
 }
 
+// statefulSetPolicies are the policies a StatefulSet's scale can affect:
+// the Egresses in its namespace and every ClusterEgress.
+func (r *Reconciler) statefulSetPolicies(obj interface{}) []string {
+	sts, ok := obj.(*appsv1.StatefulSet)
+	if !ok {
+		return nil
+	}
+	keys := r.clusterPolicies()
+	egs, _ := r.egresses.Egresses(sts.Namespace).List(labels.Everything())
+	for _, e := range egs {
+		keys = append(keys, r.policyOf(e)...)
+	}
+	return keys
+}
+
 // servicePolicies are the Egresses in a Service's namespace that refer to
 // it.
 func (r *Reconciler) servicePolicies(obj interface{}) []string {
@@ -368,7 +390,7 @@ func (r *Reconciler) Keys() []string {
 	if !r.enabled || !r.synced.Load() {
 		return nil
 	}
-	return append(r.allPolicies(), r.nodeKeys()...)
+	return append(append(r.allPolicies(), r.nodeKeys()...), r.tombstoneKeys()...)
 }
 
 // Synced reports whether egress has replayed its state, or has none.
@@ -386,6 +408,9 @@ func (r *Reconciler) Sync(key string) error {
 	}
 	if node, ok := strings.CutPrefix(key, nodePrefix); ok {
 		return r.syncNodeState(node)
+	}
+	if name, ok := strings.CutPrefix(key, tombstonePrefix); ok {
+		return r.expireTombstone(name)
 	}
 	ref, err := parsePolicyKey(key)
 	if err != nil {
@@ -442,16 +467,26 @@ func (r *Reconciler) reconcile(ref egress.PolicyRef) error {
 		return err
 	}
 	if !found {
-		return nil // teardown of a deleted policy: see the finalizer stage
+		r.retireOrphans(ref)
+		return nil
 	}
 	run := &run{p: p, conds: conditions{}}
 	r.scope(run)
+	deleting := p.meta.DeletionTimestamp != nil
+	if deleting {
+		run.revoked, run.retained = true, false
+	}
 	if !run.revoked && !run.retained {
 		r.selectPods(run)
 	}
 	r.syncMembers(run)
+	var addrs []address
 	if !run.revoked && !run.retained {
-		r.syncEndpoints(run, r.allocate(run))
+		addrs = r.allocate(run)
+		r.syncEndpoints(run, addrs)
+	}
+	if !run.retained {
+		r.syncFinalizer(run, r.retire(run, addrs), deleting || run.disallowed)
 	}
 	logging.Debug(r.logger, "op", "egressReconcile", "policy", ref.String(),
 		"selected", run.sel.selected, "revoked", run.revoked, "retained", run.retained)

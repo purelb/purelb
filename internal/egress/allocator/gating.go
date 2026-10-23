@@ -153,7 +153,7 @@ func (r *Reconciler) claimants(ee string) []string {
 // less the excluded. One behind for lagLeases of its Lease duration is
 // evicted (NodesLagging); an excluded node rejoins once it has caught up
 // or stops reporting the address.
-func (r *Reconciler) gate(run *run, cur *purelbv2.EgressEndpoints, owner string) (bool, []string) {
+func (r *Reconciler) gate(conds conditions, cur *purelbv2.EgressEndpoints, owner string) (bool, []string) {
 	now := r.now()
 	ann := r.announcers(cur.Name)
 	prev := r.behind[cur.Name]
@@ -195,7 +195,7 @@ func (r *Reconciler) gate(run *run, cur *purelbv2.EgressEndpoints, owner string)
 	}
 	sort.Strings(out)
 	if len(out) > 0 {
-		run.conds.fail(condDatapathReady, reasonNodesLagging, "%s: nodes evicted from gating for ack lag: %v", cur.Spec.Address, out)
+		conds.fail(condDatapathReady, reasonNodesLagging, "%s: nodes evicted from gating for ack lag: %v", cur.Spec.Address, out)
 		return acked, out
 	}
 	return acked, nil

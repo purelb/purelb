@@ -41,7 +41,7 @@ const defaultSliceSize = 4096
 func (r *Reconciler) endpointsSpec(run *run, a address) purelbv2.EgressEndpointsSpec {
 	p := run.p
 	spec := purelbv2.EgressEndpointsSpec{
-		State:        "Active",
+		State:        stateActive,
 		Address:      a.ip.String(),
 		Family:       "IPv4",
 		ServiceGroup: run.group.Name,
@@ -163,7 +163,7 @@ func (r *Reconciler) syncEndpoints(run *run, addrs []address) {
 				"wanted", spec.SliceSize, "msg", "keeping the slice size while slices exist")
 			spec.SliceSize = cur.Spec.SliceSize
 		}
-		acked, excluded := r.gate(run, cur, owner)
+		acked, excluded := r.gate(run.conds, cur, owner)
 		spec.ExcludedNodes = excluded
 		spec.Slices = cur.Spec.Slices
 		if acked {
@@ -301,15 +301,15 @@ func reserveSlices(run *run) int {
 }
 
 // Replay records egress's addresses in the pools after a rebuild, after
-// the Services: each Active address under its owner key, a shared
-// address as a reference hold.
+// the Services: each Active address and tombstone under its owner key, a
+// shared address as a reference hold (D16).
 func (r *Reconciler) Replay(record func(pool, key string, ips []net.IP, reference bool) error) {
 	if !r.enabled {
 		return
 	}
 	eps, _ := r.endpoints.EgressEndpointses(r.namespace).List(labels.Everything())
 	for _, ep := range eps {
-		if ep.Spec.State != "Active" {
+		if ep.Spec.State != stateActive && ep.Spec.State != stateQuarantined {
 			continue
 		}
 		ref := egress.PolicyRef{Kind: ep.Labels[egress.LabelKind], Namespace: ep.Labels[egress.LabelNamespace], Name: ep.Labels[egress.LabelName]}

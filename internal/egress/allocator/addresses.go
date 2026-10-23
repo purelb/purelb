@@ -18,6 +18,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 
@@ -57,7 +58,7 @@ func (r *Reconciler) allocate(run *run) []address {
 	have := r.heldAddresses(p)
 
 	if run.svc != nil {
-		return r.referenceService(run)
+		return r.referenceService(run, have)
 	}
 
 	entry := p.spec.Pool
@@ -85,13 +86,15 @@ func (r *Reconciler) allocate(run *run) []address {
 }
 
 // allocateOwner makes sure one owner key holds an address per family,
-// allocating what it lacks: the pins, or the next free address.
+// allocating what it lacks: the pins, or the next free address. A held
+// address the policy no longer fits (another family, entry or pin) isn't
+// kept, so its replacement is allocated first and it is retired (§8.9).
 func (r *Reconciler) allocateOwner(run *run, key, identity, entry string, families []int, have []address) []address {
 	p := run.p
 	var mine []address
 	var existing []net.IP
 	for _, a := range have {
-		if a.key == key {
+		if a.key == key && r.fits(run, a, identity, entry, families) {
 			mine = append(mine, a)
 			existing = append(existing, net.IP(a.ip.AsSlice()))
 		}
@@ -124,6 +127,30 @@ func (r *Reconciler) allocateOwner(run *run, key, identity, entry string, famili
 	return mine
 }
 
+// fits reports whether a held address still fits the policy: a family it
+// wants, inside the group's pool and entry, and one of the pins if any.
+func (r *Reconciler) fits(run *run, a address, identity, entry string, families []int) bool {
+	fam := nl.FAMILY_V4
+	if a.ip.Is6() {
+		fam = nl.FAMILY_V6
+	}
+	if !slices.Contains(families, fam) {
+		return false
+	}
+	ip := net.IP(a.ip.AsSlice())
+	ent, in := r.alloc.PoolEntryOf(run.group.Name, ip)
+	if !in && !r.alloc.PoolIsExternal(run.group.Name) || in && entry != "" && ent != entry {
+		return false
+	}
+	if pins := run.p.spec.Addresses; len(pins) > 0 && identity == "" {
+		return slices.ContainsFunc(pins, func(s string) bool {
+			pin, err := netip.ParseAddr(s)
+			return err == nil && pin.Unmap() == a.ip
+		})
+	}
+	return true
+}
+
 // pins returns the pinned addresses not yet held, checking each lies in
 // the group's pool (and entry, when set).
 func (r *Reconciler) pins(run *run, entry string, mine []address) ([]net.IP, bool) {
@@ -152,8 +179,9 @@ func (r *Reconciler) pins(run *run, entry string, mine []address) ([]net.IP, boo
 }
 
 // referenceService holds the serviceRef Service's addresses in its pool,
-// so its release can't free them while the policy uses them (D31).
-func (r *Reconciler) referenceService(run *run) []address {
+// so its release can't free them while the policy uses them (D31). An
+// address already held stays held when renewing its hold fails.
+func (r *Reconciler) referenceService(run *run, have []address) []address {
 	key := egress.SidecarKey(run.p.ref, "")
 	var out []address
 	for _, ing := range run.svc.Status.LoadBalancer.Ingress {
@@ -165,6 +193,11 @@ func (r *Reconciler) referenceService(run *run) []address {
 		if _, err := r.alloc.AllocateEgress(run.group.Name, coreallocator.AllocRequest{
 			Key: key, Explicit: []net.IP{ip}, Reference: true}); err != nil {
 			run.conds.fail(condAllocated, reasonPinUnavailable, "can't hold Service %s address %s: %v", run.svc.Name, ing.IP, err)
+			for _, h := range have {
+				if h.shared && h.ip == a.Unmap() {
+					out = append(out, h)
+				}
+			}
 			continue
 		}
 		ent, _ := r.alloc.PoolEntryOf(run.group.Name, ip)
@@ -255,7 +288,7 @@ func (r *Reconciler) heldAddresses(p *policy) []address {
 	eps, _ := r.endpoints.EgressEndpointses(r.namespace).List(ownedSelector(p.ref))
 	var out []address
 	for _, ep := range eps {
-		if ep.Spec.State != "Active" {
+		if ep.Spec.State != stateActive {
 			continue
 		}
 		a, err := netip.ParseAddr(ep.Spec.Address)

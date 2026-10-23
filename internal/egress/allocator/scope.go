@@ -56,6 +56,9 @@ type run struct {
 	// revoked: the policy keeps nothing (withdraw everything it holds).
 	// retained: it keeps what it holds and changes nothing.
 	revoked, retained bool
+	// disallowed: the group no longer allows egress, which also clears
+	// the finalizer once withdrawn (§5.9).
+	disallowed bool
 
 	sel selection
 }
@@ -97,7 +100,7 @@ func (r *Reconciler) scope(run *run) {
 	eg := run.group.Spec.Egress
 	if eg == nil || !eg.Allowed {
 		run.conds.fail(condContained, reasonEgressNotAllowed, "ServiceGroup %s doesn't allow egress", run.group.Name)
-		run.revoked = true
+		run.revoked, run.disallowed = true, true
 		return
 	}
 	r.checkFeatures(run, eg)
