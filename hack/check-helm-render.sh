@@ -26,9 +26,11 @@ export KUBECONFIG=/dev/null  # helm template needs no cluster
 CHART=build/helm/purelb
 fail=0
 
+# Without a cluster, helm template assumes Kubernetes 1.20, which the
+# chart's kubeVersion (>= 1.31) refuses: render as the minimum.
 render() { # template, extra helm args...
 	local tpl=$1; shift
-	$HELM template t "$CHART" --api-versions monitoring.coreos.com/v1 -s "templates/$tpl" "$@"
+	$HELM template t "$CHART" --kube-version 1.31.0 --api-versions monitoring.coreos.com/v1 -s "templates/$tpl" "$@"
 }
 expect() { # description, pattern, rendered text
 	if grep -qE -- "$2" <<<"$3"; then echo "ok   $1"; else echo "FAIL $1: no match for /$2/" >&2; fail=1; fi
@@ -118,5 +120,39 @@ out=$(render deployment.yaml | probe_paths)
 expect "Deployment: allocator startupProbe is /healthz" "^allocator startupProbe /healthz 7472$" "$out"
 expect "Deployment: allocator readinessProbe is /readyz" "^allocator readinessProbe /readyz 7472$" "$out"
 refuse "Deployment: allocator startupProbe never /readyz" "^allocator startupProbe /readyz" "$out"
+
+# Egress: its RBAC renders by default (egress.enabled defaults to true)
+# and not at all when disabled. A whole-chart render, because
+# `helm template -s` errors on a template that renders nothing.
+kinds() { python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d:
+        print(d["kind"] + "/" + d["metadata"]["name"])'; }
+out=$($HELM template t "$CHART" --kube-version 1.31.0 | kinds)
+expect "egress: allocator ClusterRole by default" "^ClusterRole/.*:egress:allocator$" "$out"
+expect "egress: lbnodeagent ClusterRole by default" "^ClusterRole/.*:egress:lbnodeagent$" "$out"
+expect "egress: allocator binding by default" "^ClusterRoleBinding/.*:egress:allocator$" "$out"
+out=$($HELM template t "$CHART" --kube-version 1.31.0 --set egress.enabled=false | kinds)
+refuse "egress: nothing egress with egress.enabled=false" "egress" "$out"
+
+# Every container's root filesystem is read-only, as in the kustomize
+# manifests; the two drifted apart once (lbnodeagent was writable in Helm).
+out=$(render daemonset.yaml)$'\n'$(render deployment.yaml)
+rofs=$(python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d:
+        for c in d["spec"]["template"]["spec"]["containers"]:
+            print(c["name"], (c.get("securityContext") or {}).get("readOnlyRootFilesystem"))' <<<"$out")
+expect "lbnodeagent root filesystem read-only" "^lbnodeagent True$" "$rofs"
+expect "allocator root filesystem read-only" "^allocator True$" "$rofs"
+refuse "no container with a writable root filesystem" " (False|None)$" "$rofs"
+
+# The Lease FlowSchema is core: it renders whatever egress and gobgp say,
+# and names the release namespace's lbnodeagent.
+out=$(render flowschema-lbnodeagent-leases.yaml --namespace purelb-test --set egress.enabled=false --set gobgp.enabled=false)
+expect "FlowSchema: Lease requests at leader-election" "name: leader-election" "$out"
+expect "FlowSchema: matches the release's lbnodeagent" "namespace: purelb-test" "$out"
 
 exit $fail

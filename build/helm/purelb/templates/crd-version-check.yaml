@@ -1,0 +1,22 @@
+{{- /*
+Helm installs crds/ only when the chart is first installed and never
+upgrades them, so after `helm upgrade` the cluster can keep an older
+release's CRDs, which reject or drop the fields the new release writes.
+Every PureLB CRD carries the release it belongs to
+(purelb.io/crd-version). This fails the install or upgrade, before
+anything changes, when an installed PureLB CRD is from another release.
+lookup returns nothing without a cluster (helm template), so the check
+passes there.
+*/}}
+{{- if not .Values.skipCRDVersionCheck }}
+{{- range $crd := list "servicegroups.purelb.io" "lbnodeagents.purelb.io" "egresses.purelb.io" "clusteregresses.purelb.io" "egressendpoints.purelb.io" "egressmembers.purelb.io" "egressnodestates.purelb.io" }}
+{{- $obj := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" $crd }}
+{{- if $obj }}
+{{- $got := "" }}
+{{- with $obj.metadata.annotations }}{{ $got = index . "purelb.io/crd-version" | default "" }}{{ end }}
+{{- if ne $got $.Chart.AppVersion }}
+{{- fail (printf "CRD %s is from release %q but this chart is %q. Helm doesn't upgrade CRDs: apply this release's CRDs first (kubectl apply --server-side -f install-crds-%s.yaml), then run helm again. Set skipCRDVersionCheck=true to skip this check." $crd $got $.Chart.AppVersion $.Chart.AppVersion) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

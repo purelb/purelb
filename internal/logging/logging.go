@@ -35,6 +35,12 @@ var (
 	branch  string
 )
 
+// Release is the release this binary was built as (its image tag), or ""
+// for a build without one.
+func Release() string {
+	return release
+}
+
 // Level represents the logging level
 type Level int
 

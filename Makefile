@@ -13,7 +13,17 @@ GOBGP_TAG       ?= v0.2.8
 GOBGP_IMAGE_TAG ?= 0.2.8
 # Where fetch-gobgp-crd writes the CRDs; check-deps points it at a temp dir.
 GOBGP_CRD_DIR   ?= deployments/components/gobgp
-CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml
+CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml \
+	deployments/crds/purelb.io_egresses.yaml deployments/crds/purelb.io_clusteregresses.yaml \
+	deployments/crds/purelb.io_egressendpoints.yaml deployments/crds/purelb.io_egressmembers.yaml \
+	deployments/crds/purelb.io_egressnodestates.yaml
+
+# Helm RBAC templates whose rules `make helm` injects from a kustomize
+# source: <template>:<marker>:<source>.
+HELM_RBAC_SOURCES = \
+	gobgp-rbac.yaml:INJECT_RBAC_RULES:deployments/components/gobgp/gobgp-rbac.yaml \
+	egress-rbac.yaml:INJECT_EGRESS_ALLOCATOR_RULES:deployments/components/egress/egress-allocator-rbac.yaml \
+	egress-rbac.yaml:INJECT_EGRESS_LBNODEAGENT_RULES:deployments/components/egress/egress-lbnodeagent-rbac.yaml
 
 # Tools that we use.
 CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.18.0
@@ -40,7 +50,7 @@ help: ## Display help message
 all: check crd image ## Build it all!
 
 .PHONY: check
-check: generate check-deps check-helm-rbac-source check-helm-render check-gofmt check-egress-imports ## Run "short" tests + bundled-dep consistency check
+check: generate check-deps check-helm-rbac-source check-helm-render check-gofmt check-egress-imports check-manifest-variants ## Run "short" tests + bundled-dep consistency check
 	go vet ./...
 	go test -race -short ./...
 
@@ -57,6 +67,10 @@ check-gofmt: ## Fail if any tracked Go source is not gofmt-clean
 		echo "$$unformatted"; \
 		exit 1; \
 	fi
+
+.PHONY: check-manifest-variants
+check-manifest-variants: crd ## Build every kustomize install variant and check what it contains
+	KUSTOMIZE="$(KUSTOMIZE)" hack/check-manifest-variants.sh
 
 .PHONY: check-egress-imports
 check-egress-imports: ## Fail if a core package depends on egress (use internal/egresshook)
@@ -131,9 +145,17 @@ bpf:  ## Regenerate the address guard eBPF object (needs Docker)
 bpf-vm-test: generate ## Run the address guard BPF tests on a kernel matrix in VMs (needs qemu, KVM)
 	hack/bpf-vm/test.sh
 
-crd: $(CRDS) ## Generate CRDs from golang api structs
-$(CRDS) &: pkg/apis/purelb/v2/*.go
+# Always regenerated, because the stamp depends on SUFFIX as well as the
+# types. The stamp (purelb.io/crd-version) lets the binaries and the chart
+# tell that the cluster's CRDs belong to another release.
+.PHONY: crd
+crd: ## Generate CRDs from golang api structs, stamped with SUFFIX
 	$(CONTROLLER_GEN) crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
+	hack/stamp-crd-version.py "${SUFFIX}" $(CRDS)
+
+.PHONY: check-crd-compat
+check-crd-compat: ## Fail if the CRDs changed incompatibly since BASE (a git ref)
+	CONTROLLER_GEN="$(CONTROLLER_GEN)" hack/check-crd-compat.sh "$(BASE)"
 
 .ONESHELL:
 .PHONY: manifest
@@ -150,12 +172,25 @@ manifest:  ## Generate deployment manifest (with samples and k8gobgp)
 .ONESHELL:
 .PHONY: install-manifest
 install-manifest: CACHE != mktemp
-install-manifest: crd  ## Generate standalone install.yaml manifest (with k8gobgp)
+install-manifest: crd  ## Generate standalone install.yaml manifest (with k8gobgp and egress)
+	cd deployments/with-gobgp-egress
+# cache kustomization.yaml because "kustomize edit" modifies it
+	cp kustomization.yaml ${CACHE}
+	$(KUSTOMIZE) edit set image ghcr.io/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} ghcr.io/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX} ghcr.io/purelb/k8gobgp=${GOBGP_IMAGE}:${GOBGP_IMAGE_TAG}
+# the egress component reads its CRDs from ../../crds
+	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone . > ../install-${MANIFEST_SUFFIX}.yaml
+# restore kustomization.yaml
+	cp ${CACHE} kustomization.yaml
+
+.ONESHELL:
+.PHONY: install-manifest-noegress
+install-manifest-noegress: CACHE != mktemp
+install-manifest-noegress: crd  ## Generate standalone install.yaml manifest with k8gobgp, without egress
 	cd deployments/with-gobgp
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
 	$(KUSTOMIZE) edit set image ghcr.io/purelb/purelb/allocator=${REGISTRY_IMAGE}/allocator:${SUFFIX} ghcr.io/purelb/purelb/lbnodeagent=${REGISTRY_IMAGE}/lbnodeagent:${SUFFIX} ghcr.io/purelb/k8gobgp=${GOBGP_IMAGE}:${GOBGP_IMAGE_TAG}
-	$(KUSTOMIZE) build . > ../install-${MANIFEST_SUFFIX}.yaml
+	$(KUSTOMIZE) build . > ../install-noegress-${MANIFEST_SUFFIX}.yaml
 # restore kustomization.yaml
 	cp ${CACHE} kustomization.yaml
 
@@ -174,7 +209,7 @@ manifest-nobgp:  ## Generate deployment manifest without k8gobgp (with samples)
 .ONESHELL:
 .PHONY: install-manifest-nobgp
 install-manifest-nobgp: CACHE != mktemp
-install-manifest-nobgp: crd  ## Generate standalone install.yaml without k8gobgp
+install-manifest-nobgp: crd  ## Generate standalone install.yaml without k8gobgp or egress
 	cd deployments/default
 # cache kustomization.yaml because "kustomize edit" modifies it
 	cp kustomization.yaml ${CACHE}
@@ -184,11 +219,15 @@ install-manifest-nobgp: crd  ## Generate standalone install.yaml without k8gobgp
 	cp ${CACHE} kustomization.yaml
 
 .PHONY: install-crds
-install-crds: crd  ## Generate CRDs-only install manifest (with k8gobgp CRDs)
+install-crds: crd  ## Generate CRDs-only install manifest (with k8gobgp and egress CRDs)
 	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone deployments/crds-all > deployments/install-crds-${MANIFEST_SUFFIX}.yaml
 
+.PHONY: install-crds-noegress
+install-crds-noegress: crd  ## Generate CRDs-only install manifest (with k8gobgp CRDs, without egress)
+	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone deployments/crds-noegress > deployments/install-crds-noegress-${MANIFEST_SUFFIX}.yaml
+
 .PHONY: install-crds-nobgp
-install-crds-nobgp: crd  ## Generate CRDs-only install manifest (PureLB CRDs only)
+install-crds-nobgp: crd  ## Generate CRDs-only install manifest (PureLB CRDs only, without egress)
 	$(KUSTOMIZE) build deployments/crds > deployments/install-crds-nobgp-${MANIFEST_SUFFIX}.yaml
 
 .PHONY: fetch-gobgp-crd
@@ -221,23 +260,26 @@ check-helm-render:  ## Render the chart's address guard pieces and check them
 	HELM="$(HELM)" hack/check-helm-render.sh
 
 .PHONY: check-helm-rbac-source
-check-helm-rbac-source:  ## Verify Helm RBAC template injects rules from kustomize source
+check-helm-rbac-source:  ## Verify Helm RBAC templates inject rules from kustomize sources
 	@set -e
-	HELM_TPL=build/helm/purelb/templates/gobgp-rbac.yaml
-	if ! grep -q '@@INJECT_RBAC_RULES@@' $$HELM_TPL; then
-	  echo "ERROR: @@INJECT_RBAC_RULES@@ marker missing from $$HELM_TPL." >&2
-	  echo "       The marker is required so 'make helm' can inject rules from" >&2
-	  echo "       deployments/components/gobgp/gobgp-rbac.yaml (the single source of truth)." >&2
-	  exit 1
-	fi
-	INLINE=$$(awk '/^rules:$$/{f=1; next} /^---$$/{f=0} f' $$HELM_TPL | grep -c '^- apiGroups:' || true)
-	if [ "$$INLINE" != "0" ]; then
-	  echo "ERROR: $$INLINE inline rule(s) found in $$HELM_TPL." >&2
-	  echo "       Rules must live ONLY in deployments/components/gobgp/gobgp-rbac.yaml." >&2
-	  echo "       Edit there; 'make helm' will inject them at chart-package time." >&2
-	  exit 1
-	fi
-	echo "OK: Helm RBAC template uses kustomize source"
+	for t in ${HELM_RBAC_SOURCES}; do
+	  tpl=$${t%%:*}; rest=$${t#*:}; marker=$${rest%%:*}; src=$${rest#*:}
+	  HELM_TPL=build/helm/purelb/templates/$$tpl
+	  if ! grep -q "@@$${marker}@@" $$HELM_TPL; then
+	    echo "ERROR: @@$${marker}@@ marker missing from $$HELM_TPL." >&2
+	    echo "       The marker is required so 'make helm' can inject rules from" >&2
+	    echo "       $$src (the single source of truth)." >&2
+	    exit 1
+	  fi
+	  INLINE=$$(awk '/^rules:$$/{f=1; next} /^---$$/{f=0} f' $$HELM_TPL | grep -c '^- apiGroups:' || true)
+	  if [ "$$INLINE" != "0" ]; then
+	    echo "ERROR: $$INLINE inline rule(s) found in $$HELM_TPL." >&2
+	    echo "       Rules must live ONLY in $$src." >&2
+	    echo "       Edit there; 'make helm' will inject them at chart-package time." >&2
+	    exit 1
+	  fi
+	done
+	echo "OK: Helm RBAC templates use kustomize sources"
 
 .PHONY: check-deps
 check-deps:  ## Verify bundled k8gobgp CRDs and every version pin match GOBGP_TAG
@@ -277,16 +319,16 @@ helm:  ## Package PureLB using Helm
 	cp deployments/components/gobgp/gobgp-bgpnodestatus-crd.yaml build/build/purelb/crds/bgp.purelb.io_bgpnodestatuses.yaml
 	cp README.md build/build/purelb
 
-# Inject ClusterRole rules from the kustomize source into the Helm template.
-# Single source of truth: deployments/components/gobgp/gobgp-rbac.yaml.
-# awk extracts lines between "rules:" and the next "---" (exclusive on both).
-# sed replaces the @@INJECT_RBAC_RULES@@ marker line with those rules.
-	awk '/^rules:$$/{f=1; next} /^---$$/{f=0} f' \
-	  deployments/components/gobgp/gobgp-rbac.yaml > ${CACHE_RULES}
-	sed -i "/@@INJECT_RBAC_RULES@@/r ${CACHE_RULES}" \
-	  build/build/purelb/templates/gobgp-rbac.yaml
-	sed -i "/@@INJECT_RBAC_RULES@@/d" \
-	  build/build/purelb/templates/gobgp-rbac.yaml
+# Inject ClusterRole rules from the kustomize sources into the Helm
+# templates. Each source file is the single source of truth for one role
+# (HELM_RBAC_SOURCES). awk extracts lines between "rules:" and the next
+# "---" (exclusive on both); sed replaces the marker line with them.
+	for t in ${HELM_RBAC_SOURCES}; do
+	  tpl=$${t%%:*}; rest=$${t#*:}; marker=$${rest%%:*}; src=$${rest#*:}
+	  awk '/^rules:$$/{f=1; next} /^---$$/{f=0} f' $$src > ${CACHE_RULES}
+	  sed -i "/@@$${marker}@@/r ${CACHE_RULES}" build/build/purelb/templates/$$tpl
+	  sed -i "/@@$${marker}@@/d" build/build/purelb/templates/$$tpl
+	done
 
 	sed \
 	--expression="s~DEFAULT_REPO~${REGISTRY_IMAGE}~" \

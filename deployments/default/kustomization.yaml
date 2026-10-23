@@ -9,3 +9,4 @@ resources:
 - namespace.yaml
 - purelb.yaml
 - lbnodeagent.yaml
+- flowschema.yaml

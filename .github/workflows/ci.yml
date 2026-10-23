@@ -5,7 +5,9 @@ on:
     branches: ['**']
     tags: ['v*']
   pull_request:
-    branches: [main]
+    # feat/egress is the egress integration branch; its phase PRs need the
+    # same checks as PRs into main.
+    branches: [main, feat/egress]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -35,6 +37,41 @@ jobs:
 
       - name: Run tests
         run: make check
+
+  # Fail a PR whose CRDs changed incompatibly with its base: a field,
+  # version or CRD removed, a field newly required, an enum narrowed, a
+  # limit tightened (hack/crd-compat.py). Label the PR crd-breaking-ok for
+  # an intended break. On a release tag it compares with the previous
+  # release, for the release notes, and never fails.
+  crd-compat:
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check CRDs for breaking changes
+        continue-on-error: ${{ startsWith(github.ref, 'refs/tags/') || contains(github.event.pull_request.labels.*.name, 'crd-breaking-ok') }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            base=$(git merge-base HEAD "origin/${BASE_REF}")
+          else
+            base=$(git describe --tags --abbrev=0 --match 'v*' HEAD^)
+          fi
+          make check-crd-compat BASE="$base"
 
   # The address guard's eBPF object is generated and committed. Rebuild it
   # in the same pinned image (hack/bpf-builder) and fail on any byte
@@ -162,6 +199,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless cosign signing and build-provenance attestations use the
+      # job's OIDC token.
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -194,15 +235,50 @@ jobs:
       - name: Generate Kubernetes client code
         run: make generate
 
+      - name: Setup cosign
+        uses: sigstore/cosign-installer@v3
+
       - name: Build and push allocator
+        id: allocator
         env:
           TAG: ${{ github.ref_name }}
-        run: ko build --base-import-paths --tags=$TAG ./cmd/allocator
+        # ko prints the pushed image as repo:tag@<multi-arch index digest>.
+        run: |
+          ref=$(ko build --base-import-paths --tags="$TAG" ./cmd/allocator)
+          echo "digest=${ref#*@}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push lbnodeagent
+        id: lbnodeagent
         env:
           TAG: ${{ github.ref_name }}
-        run: ko build --base-import-paths --tags=$TAG ./cmd/lbnodeagent
+        # ko prints the pushed image as repo:tag@<multi-arch index digest>.
+        run: |
+          ref=$(ko build --base-import-paths --tags="$TAG" ./cmd/lbnodeagent)
+          echo "digest=${ref#*@}" >> "$GITHUB_OUTPUT"
+
+      # Keyless: the signature binds the image digest to this workflow run's
+      # identity, recorded in the public Rekor log. Verify with
+      #   cosign verify --certificate-identity-regexp 'https://github.com/purelb/purelb/' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com <image>
+      - name: Sign images
+        env:
+          ALLOCATOR: ${{ env.KO_DOCKER_REPO }}/allocator@${{ steps.allocator.outputs.digest }}
+          LBNODEAGENT: ${{ env.KO_DOCKER_REPO }}/lbnodeagent@${{ steps.lbnodeagent.outputs.digest }}
+        run: cosign sign --yes "$ALLOCATOR" "$LBNODEAGENT"
+
+      - name: Attest allocator provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.KO_DOCKER_REPO }}/allocator
+          subject-digest: ${{ steps.allocator.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest lbnodeagent provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.KO_DOCKER_REPO }}/lbnodeagent
+          subject-digest: ${{ steps.lbnodeagent.outputs.digest }}
+          push-to-registry: true
 
   build-plugin:
     runs-on: ubuntu-latest
@@ -288,6 +364,8 @@ jobs:
           cache: true
 
       - name: Generate CRDs
+        env:
+          SUFFIX: ${{ github.ref_name }}
         run: make crd
 
       - name: Generate manifests
@@ -301,6 +379,12 @@ jobs:
           SUFFIX: ${{ github.ref_name }}
           MANIFEST_SUFFIX: ${{ github.ref_name }}
         run: make install-manifest
+
+      - name: Generate install manifest (without egress)
+        env:
+          SUFFIX: ${{ github.ref_name }}
+          MANIFEST_SUFFIX: ${{ github.ref_name }}
+        run: make install-manifest-noegress
 
       - name: Generate manifests (without BGP)
         env:
@@ -319,6 +403,12 @@ jobs:
           SUFFIX: ${{ github.ref_name }}
           MANIFEST_SUFFIX: ${{ github.ref_name }}
         run: make install-crds
+
+      - name: Generate CRDs-only install manifest (without egress)
+        env:
+          SUFFIX: ${{ github.ref_name }}
+          MANIFEST_SUFFIX: ${{ github.ref_name }}
+        run: make install-crds-noegress
 
       - name: Generate CRDs-only install manifest (without BGP)
         env:
@@ -349,9 +439,11 @@ jobs:
           sha256sum purelb-${{ github.ref_name }}.tgz > SHA256SUMS
           sha256sum deployments/purelb-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/install-${{ github.ref_name }}.yaml >> SHA256SUMS
+          sha256sum deployments/install-noegress-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/purelb-nobgp-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/install-nobgp-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/install-crds-${{ github.ref_name }}.yaml >> SHA256SUMS
+          sha256sum deployments/install-crds-noegress-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/install-crds-nobgp-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum kubectl-purelb-* >> SHA256SUMS
 
@@ -373,9 +465,11 @@ jobs:
             purelb-${{ github.ref_name }}.tgz
             deployments/purelb-${{ github.ref_name }}.yaml
             deployments/install-${{ github.ref_name }}.yaml
+            deployments/install-noegress-${{ github.ref_name }}.yaml
             deployments/purelb-nobgp-${{ github.ref_name }}.yaml
             deployments/install-nobgp-${{ github.ref_name }}.yaml
             deployments/install-crds-${{ github.ref_name }}.yaml
+            deployments/install-crds-noegress-${{ github.ref_name }}.yaml
             deployments/install-crds-nobgp-${{ github.ref_name }}.yaml
             kubectl-purelb-linux-amd64
             kubectl-purelb-linux-arm64

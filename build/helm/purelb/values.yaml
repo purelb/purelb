@@ -258,7 +258,7 @@ lbnodeagent:
       - BPF
       drop:
       - ALL
-    readOnlyRootFilesystem: false
+    readOnlyRootFilesystem: true
     seccompProfile:
       type: RuntimeDefault
   # Tolerations: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
@@ -298,6 +298,18 @@ allocator:
     runAsUser: 65534
     seccompProfile:
       type: RuntimeDefault
+
+# Fail an install or upgrade when the cluster's PureLB CRDs are from
+# another release (Helm never upgrades crds/; apply install-crds-<ver>.yaml
+# first). Only for emergencies: older CRDs reject or drop new fields.
+skipCRDVersionCheck: false
+
+# Egress gives selected pods stable source addresses from PureLB pools.
+# Installed but idle: nothing happens on a node until an LBNodeAgent sets
+# spec.egress.enabled. Setting this false leaves the egress RBAC out; the
+# egress CRDs are always installed, because Helm can't template crds/.
+egress:
+  enabled: true
 
 # k8gobgp sidecar — per-node BGP route announcement for remote VIPs.
 # When enabled, k8gobgp runs as a sidecar in the lbnodeagent DaemonSet pod.

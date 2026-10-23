@@ -1,0 +1,41 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app: purelb
+  name: purelb:egress:lbnodeagent
+rules:
+- apiGroups:
+  - purelb.io
+  resources:
+  - clusteregresses
+  - egressendpoints
+  - egresses
+  - egressnodestates
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - purelb.io
+  resources:
+  - egressnodestates/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app: purelb
+  name: purelb:egress:lbnodeagent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: purelb:egress:lbnodeagent
+subjects:
+- kind: ServiceAccount
+  name: lbnodeagent
+  namespace: purelb-system

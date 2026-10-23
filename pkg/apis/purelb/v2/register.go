@@ -49,6 +49,16 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&LBNodeAgentList{},
 		&ServiceGroup{},
 		&ServiceGroupList{},
+		&Egress{},
+		&EgressList{},
+		&ClusterEgress{},
+		&ClusterEgressList{},
+		&EgressEndpoints{},
+		&EgressEndpointsList{},
+		&EgressMembers{},
+		&EgressMembersList{},
+		&EgressNodeState{},
+		&EgressNodeStateList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil
