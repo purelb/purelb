@@ -29,6 +29,22 @@ notes and docs of the release that ships it. Not user-facing prose.
   was `false` in the chart only). A values override that set it explicitly is
   unaffected.
 
+- **CRDs carry their release, and a stale CRD is reported.** Packaging stamps
+  every PureLB CRD with `purelb.io/crd-version: <release>`.
+  - The allocator and agents compare it with their own release at startup and
+    every 10 minutes: `purelb_crd_stale{crd}`, an info log and a Warning event
+    when a CRD turns stale. They keep running. New RBAC: `get` on
+    `customresourcedefinitions`, limited by `resourceNames` to PureLB's seven.
+  - Helm: `helm install`/`upgrade` fails before changing anything when an
+    installed PureLB CRD is from another release (Helm never upgrades
+    `crds/`). `skipCRDVersionCheck=true` skips it.
+  - Helm users always apply `install-crds-<ver>.yaml` (the chart installs every
+    CRD); the Helm docs no longer point `gobgp.enabled=false` users at the
+    nobgp CRDs, which would leave the egress CRDs stale.
+  - CRDs applied by an earlier release have no stamp, so the first upgrade to
+    this release reports them stale until its CRDs are applied, which the
+    upgrade procedure already requires.
+
 ## New API
 
 - Kinds: `Egress`, `ClusterEgress` (cluster-scoped), `EgressEndpoints`,

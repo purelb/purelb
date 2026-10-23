@@ -23,6 +23,7 @@ Metric | Type | Labels | Description
 -------|------|--------|------------
 `purelb_k8s_client_updates_total` | Counter | `kind` | Total K8s API updates processed. `kind` discriminates the trigger: Service/LBNodeAgent events (`service`), informer sync events (`cache_sync`), ServiceGroup status republishes (`pool_status`), or config delivery (`config`)
 `purelb_k8s_client_update_errors_total` | Counter | `kind` | Failed K8s API update attempts. Only `config` errors are retried with backoff; others are logged
+`purelb_crd_stale` | Gauge | `crd` | 1 if the installed CRD is from another release than this binary (its `purelb.io/crd-version` annotation), else 0. CRDs that aren't installed have no series. Apply the release's `install-crds-<ver>.yaml` to clear it
 `purelb_k8s_client_config_loaded_bool` | Gauge | | 1 if PureLB configuration was successfully loaded at least once, 0 otherwise (stale during config errors)
 
 ## Allocator Metrics

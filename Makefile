@@ -145,9 +145,17 @@ bpf:  ## Regenerate the address guard eBPF object (needs Docker)
 bpf-vm-test: generate ## Run the address guard BPF tests on a kernel matrix in VMs (needs qemu, KVM)
 	hack/bpf-vm/test.sh
 
-crd: $(CRDS) ## Generate CRDs from golang api structs
-$(CRDS) &: pkg/apis/purelb/v2/*.go
+# Always regenerated, because the stamp depends on SUFFIX as well as the
+# types. The stamp (purelb.io/crd-version) lets the binaries and the chart
+# tell that the cluster's CRDs belong to another release.
+.PHONY: crd
+crd: ## Generate CRDs from golang api structs, stamped with SUFFIX
 	$(CONTROLLER_GEN) crd paths="./pkg/apis/..." output:crd:artifacts:config=deployments/crds
+	hack/stamp-crd-version.py "${SUFFIX}" $(CRDS)
+
+.PHONY: check-crd-compat
+check-crd-compat: ## Fail if the CRDs changed incompatibly since BASE (a git ref)
+	CONTROLLER_GEN="$(CONTROLLER_GEN)" hack/check-crd-compat.sh "$(BASE)"
 
 .ONESHELL:
 .PHONY: manifest

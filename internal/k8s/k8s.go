@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"purelb.io/internal/egresshook"
+	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	"purelb.io/pkg/generated/clientset/versioned"
 	"purelb.io/pkg/generated/informers/externalversions"
@@ -619,6 +620,8 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 	c.cachesSynced.Store(true)
 
 	c.queue.Add(synced(""))
+
+	go c.watchCRDVersions(stopCh, logging.Release())
 
 	// Egress starts after the core caches, so its first keys find them
 	// warm. A failure leaves load balancing running.

@@ -299,6 +299,11 @@ allocator:
     seccompProfile:
       type: RuntimeDefault
 
+# Fail an install or upgrade when the cluster's PureLB CRDs are from
+# another release (Helm never upgrades crds/; apply install-crds-<ver>.yaml
+# first). Only for emergencies: older CRDs reject or drop new fields.
+skipCRDVersionCheck: false
+
 # Egress gives selected pods stable source addresses from PureLB pools.
 # Installed but idle: nothing happens on a node until an LBNodeAgent sets
 # spec.egress.enabled. Setting this false leaves the egress RBAC out; the

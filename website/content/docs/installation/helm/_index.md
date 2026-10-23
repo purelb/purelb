@@ -93,6 +93,8 @@ helm repo update
 helm upgrade --namespace=purelb-system purelb purelb/purelb --version ${VERSION}
 ```
 
-Use `install-crds-nobgp-${VERSION}.yaml` if you installed with `gobgp.enabled=false`.
+Apply `install-crds-${VERSION}.yaml` whatever the chart's values: the chart installs every PureLB CRD, including the k8gobgp and egress ones, so that is the file that updates them all.
+
+Each PureLB CRD carries the release it belongs to (the annotation `purelb.io/crd-version`). The chart checks it: if any installed PureLB CRD is from another release, `helm install` or `helm upgrade` stops before changing anything and tells you to apply the CRDs first. `skipCRDVersionCheck=true` skips the check, for emergencies only. The allocator and the node agents also compare the stamp with their own release, at startup and every 10 minutes, and report a mismatch in `purelb_crd_stale` and a Warning event.
 
 Existing services retain their allocated addresses during the upgrade.

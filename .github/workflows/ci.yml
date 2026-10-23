@@ -5,7 +5,9 @@ on:
     branches: ['**']
     tags: ['v*']
   pull_request:
-    branches: [main]
+    # feat/egress is the egress integration branch; its phase PRs need the
+    # same checks as PRs into main.
+    branches: [main, feat/egress]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -35,6 +37,41 @@ jobs:
 
       - name: Run tests
         run: make check
+
+  # Fail a PR whose CRDs changed incompatibly with its base: a field,
+  # version or CRD removed, a field newly required, an enum narrowed, a
+  # limit tightened (hack/crd-compat.py). Label the PR crd-breaking-ok for
+  # an intended break. On a release tag it compares with the previous
+  # release, for the release notes, and never fails.
+  crd-compat:
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check CRDs for breaking changes
+        continue-on-error: ${{ startsWith(github.ref, 'refs/tags/') || contains(github.event.pull_request.labels.*.name, 'crd-breaking-ok') }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            base=$(git merge-base HEAD "origin/${BASE_REF}")
+          else
+            base=$(git describe --tags --abbrev=0 --match 'v*' HEAD^)
+          fi
+          make check-crd-compat BASE="$base"
 
   # The address guard's eBPF object is generated and committed. Rebuild it
   # in the same pinned image (hack/bpf-builder) and fail on any byte
@@ -288,6 +325,8 @@ jobs:
           cache: true
 
       - name: Generate CRDs
+        env:
+          SUFFIX: ${{ github.ref_name }}
         run: make crd
 
       - name: Generate manifests

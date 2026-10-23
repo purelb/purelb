@@ -60,3 +60,19 @@ rules:
   - watch
   - update
   - delete
+# Read only PureLB's own CRDs, to compare their release stamp with this
+# binary's (purelb_crd_stale).
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  resourceNames:
+  - servicegroups.purelb.io
+  - lbnodeagents.purelb.io
+  - egresses.purelb.io
+  - clusteregresses.purelb.io
+  - egressendpoints.purelb.io
+  - egressmembers.purelb.io
+  - egressnodestates.purelb.io
+  verbs:
+  - get

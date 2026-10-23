@@ -51,6 +51,14 @@ var (
 		Help:      "Number of k8s object updates that failed for some reason.",
 	}, []string{"kind"})
 
+	// crdStale is 1 for an installed PureLB CRD whose release stamp
+	// differs from this binary's release (see watchCRDVersions).
+	crdStale = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Name:      "crd_stale",
+		Help:      "1 if the installed CRD is from another release than this binary, else 0.",
+	}, []string{"crd"})
+
 	configLoaded = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: purelbv2.MetricsNamespace,
 		Subsystem: subsystem,
@@ -63,6 +71,7 @@ func init() {
 	prometheus.MustRegister(updates)
 	prometheus.MustRegister(updateErrors)
 	prometheus.MustRegister(configLoaded)
+	prometheus.MustRegister(crdStale)
 }
 
 // metricsAddr joins host and port into a listen address. An IPv6 host
