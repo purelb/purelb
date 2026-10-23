@@ -21,6 +21,7 @@ import (
 	"syscall"
 
 	"purelb.io/internal/allocator"
+	egressallocator "purelb.io/internal/egress/allocator"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
 )
@@ -52,8 +53,12 @@ func main() {
 	}()
 	defer logger.Log("op", "shutdown", "msg", "done")
 
-	// Set up controller
-	c, err := allocator.NewController(logger, allocator.New(logger), installNamespace)
+	// Set up controller. Egress reconciles on the same work queue and
+	// reaches the allocator through its hooks.
+	alloc := allocator.New(logger)
+	eg := egressallocator.New(logger, alloc, installNamespace)
+	alloc.SetEgress(eg)
+	c, err := allocator.NewController(logger, alloc, installNamespace)
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to allocate controller")
 		os.Exit(1)
@@ -74,6 +79,7 @@ func main() {
 		ConfigChanged:  c.SetConfig,
 		Synced:         c.MarkSynced,
 		Shutdown:       c.Shutdown,
+		Egress:         eg,
 	})
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to create k8s client")
