@@ -133,6 +133,8 @@ out=$($HELM template t "$CHART" --kube-version 1.31.0 | kinds)
 expect "egress: allocator ClusterRole by default" "^ClusterRole/.*:egress:allocator$" "$out"
 expect "egress: lbnodeagent ClusterRole by default" "^ClusterRole/.*:egress:lbnodeagent$" "$out"
 expect "egress: allocator binding by default" "^ClusterRoleBinding/.*:egress:allocator$" "$out"
+expect "egress: node-label admission policy by default" "^ValidatingAdmissionPolicy/.*-egress-node-label$" "$out"
+expect "egress: node-label admission policy bound" "^ValidatingAdmissionPolicyBinding/.*-egress-node-label$" "$out"
 out=$($HELM template t "$CHART" --kube-version 1.31.0 --set egress.enabled=false | kinds)
 refuse "egress: nothing egress with egress.enabled=false" "egress" "$out"
 

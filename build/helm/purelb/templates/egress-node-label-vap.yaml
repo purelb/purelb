@@ -1,0 +1,58 @@
+{{- if .Values.egress.enabled }}
+# Source of truth: deployments/components/egress/egress-node-label-vap.yaml.
+# The allocator patches Nodes only to set purelb.io/egress-capable (D29).
+# RBAC can't limit a patch to one label, so this policy does: for the
+# allocator's service account, a Node update may change that label (to
+# "true", or remove it) and nothing else.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "purelb.fullname" . }}-egress-node-label
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - UPDATE
+      resources:
+      - nodes
+  matchConditions:
+  - name: allocator
+    expression: "request.userInfo.username == 'system:serviceaccount:{{ .Release.Namespace }}:allocator'"
+  variables:
+  - name: key
+    expression: "'purelb.io/egress-capable'"
+  - name: newLabels
+    expression: "object.metadata.?labels.orValue({})"
+  - name: oldLabels
+    expression: "oldObject.metadata.?labels.orValue({})"
+  validations:
+  - expression: >-
+      variables.newLabels.all(k, k == variables.key || (k in variables.oldLabels && variables.oldLabels[k] == variables.newLabels[k]))
+      && variables.oldLabels.all(k, k == variables.key || k in variables.newLabels)
+      && (!(variables.key in variables.newLabels) || variables.newLabels[variables.key] == 'true')
+    message: the PureLB allocator may only set purelb.io/egress-capable to "true" or remove it
+  - expression: >-
+      object.spec == oldObject.spec
+      && object.metadata.?annotations.orValue({}) == oldObject.metadata.?annotations.orValue({})
+      && object.metadata.?ownerReferences.orValue([]) == oldObject.metadata.?ownerReferences.orValue([])
+      && object.metadata.?finalizers.orValue([]) == oldObject.metadata.?finalizers.orValue([])
+    message: the PureLB allocator may change only the purelb.io/egress-capable label on a Node
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "purelb.fullname" . }}-egress-node-label
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "purelb.fullname" . }}-egress-node-label
+  validationActions:
+  - Deny
+{{- end }}

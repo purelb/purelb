@@ -73,6 +73,12 @@ type Client struct {
 	events     record.EventRecorder
 	queue      workqueue.TypedRateLimitingInterface[queueItem]
 
+	// priority is egress's priority lane: keys synced ahead of anything
+	// on queue (the claim path, D-conc). Adding one also adds priorityWake
+	// to queue, so an idle Run loop wakes to drain it.
+	priority        workqueue.TypedDelayingInterface[string]
+	priorityLimiter workqueue.TypedRateLimiter[string]
+
 	// shuttingDown is set to true when stopCh closes, signaling that
 	// API calls should use shorter timeouts to allow graceful shutdown.
 	shuttingDown atomic.Bool
@@ -341,6 +347,12 @@ type egressKey string
 
 func (egressKey) isQueueItem() {}
 
+// priorityWake asks Run to drain the priority lane. A singleton, so a
+// burst of priority keys queues one wake.
+type priorityWake struct{}
+
+func (priorityWake) isQueueItem() {}
+
 // queueItemKind returns the category of work-queue item for metrics labeling.
 func queueItemKind(item queueItem) string {
 	switch item.(type) {
@@ -350,7 +362,7 @@ func queueItemKind(item queueItem) string {
 		return "cache_sync"
 	case poolStatus:
 		return "pool_status"
-	case egressKey:
+	case egressKey, priorityWake:
 		return "egress"
 	default:
 		return "unknown"
@@ -393,13 +405,15 @@ func New(cfg *Config) (*Client, error) {
 	queue := workqueue.NewTypedRateLimitingQueue[queueItem](workqueue.DefaultTypedControllerRateLimiter[queueItem]())
 
 	c := &Client{
-		logger:     cfg.Logger,
-		client:     clientset,
-		crClient:   crClient,
-		restConfig: k8sConfig,
-		events:     recorder,
-		queue:      queue,
-		egress:     cfg.Egress,
+		priority:        workqueue.NewTypedDelayingQueue[string](),
+		priorityLimiter: workqueue.DefaultTypedControllerRateLimiter[string](),
+		logger:          cfg.Logger,
+		client:          clientset,
+		crClient:        crClient,
+		restConfig:      k8sConfig,
+		events:          recorder,
+		queue:           queue,
+		egress:          cfg.Egress,
 	}
 
 	// Custom Resource Watcher
@@ -625,7 +639,7 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 
 	// Egress starts after the core caches, so its first keys find them
 	// warm. A failure leaves load balancing running.
-	if err := c.egressHook().Start(stopCh, c.restConfig, func(key string) { c.queue.Add(egressKey(key)) }); err != nil {
+	if err := c.egressHook().Start(stopCh, c.restConfig, c.enqueueEgress); err != nil {
 		c.logger.Log("op", "startEgress", "error", err)
 	}
 
@@ -634,6 +648,7 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 			<-stopCh
 			c.shuttingDown.Store(true) // Signal API calls to use short timeouts
 			c.queue.ShutDown()
+			c.priority.ShutDown()
 		}()
 	}
 
@@ -645,6 +660,8 @@ func (c *Client) Run(stopCh <-chan struct{}) error {
 			}
 			return nil
 		}
+		// The priority lane goes first, ahead of this and every queued key.
+		c.drainPriority()
 		updates.WithLabelValues(queueItemKind(key)).Inc()
 		st := c.syncTracked(key)
 		// c.logger.Log("sync", key, "result", st)
@@ -674,6 +691,42 @@ func (c *Client) ForceSync() {
 	}
 	for _, k := range c.egressHook().Keys() {
 		c.queue.Add(egressKey(k))
+	}
+}
+
+// enqueueEgress adds an egress key to the work queue, or to the priority
+// lane, which Run drains ahead of everything queued.
+func (c *Client) enqueueEgress(key string, priority bool) {
+	if !priority {
+		c.queue.Add(egressKey(key))
+		return
+	}
+	c.priority.Add(key)
+	c.queue.Add(priorityWake{})
+}
+
+// drainPriority syncs every key on the priority lane. A key that fails is
+// retried after its backoff, with a wake queued for the same moment.
+func (c *Client) drainPriority() {
+	for c.priority.Len() > 0 {
+		key, quit := c.priority.Get()
+		if quit {
+			return
+		}
+		updates.WithLabelValues("egress").Inc()
+		c.syncStartedAt.Store(time.Now().UnixNano())
+		err := c.egressHook().Sync(key)
+		c.syncStartedAt.Store(0)
+		c.priority.Done(key)
+		if err == nil {
+			c.priorityLimiter.Forget(key)
+			continue
+		}
+		c.logger.Log("op", "syncEgress", "key", key, "priority", true, "error", err)
+		updateErrors.WithLabelValues("egress").Inc()
+		d := c.priorityLimiter.When(key)
+		c.priority.AddAfter(key, d)
+		c.queue.AddAfter(priorityWake{}, d)
 	}
 }
 
@@ -973,6 +1026,10 @@ func (c *Client) sync(key queueItem) SyncState {
 
 	case svcDeleted:
 		return c.serviceDeleted(k.name, k.pool)
+
+	case priorityWake:
+		// Run drained the priority lane before this.
+		return SyncStateSuccess
 
 	case egressKey:
 		if err := c.egressHook().Sync(string(k)); err != nil {

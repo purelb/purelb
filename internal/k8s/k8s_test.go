@@ -470,3 +470,52 @@ current-context: x
 	assert.Same(t, main, c.client.CoordinationV1().RESTClient().GetRateLimiter(),
 		"without its own clientset the election would share the agent's limiter")
 }
+
+// orderEgress records the order the egress hook syncs keys in, failing
+// each key in fail once.
+type orderEgress struct {
+	egresshook.Noop
+	order []string
+	fail  map[string]bool
+}
+
+func (o *orderEgress) Sync(key string) error {
+	o.order = append(o.order, key)
+	if o.fail[key] {
+		delete(o.fail, key)
+		return errors.New("transient")
+	}
+	return nil
+}
+
+// A priority key is synced ahead of keys already queued, and one that
+// fails comes back on the priority lane after its backoff, with a wake.
+func TestPriorityLane(t *testing.T) {
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[queueItem]())
+	defer queue.ShutDown()
+	eg := &orderEgress{fail: map[string]bool{"claim": true}}
+	c := &Client{
+		queue: queue, logger: log.NewNopLogger(), egress: eg,
+		priority:        workqueue.NewTypedDelayingQueue[string](),
+		priorityLimiter: workqueue.DefaultTypedControllerRateLimiter[string](),
+	}
+	defer c.priority.ShutDown()
+
+	c.enqueueEgress("ordinary", false)
+	c.enqueueEgress("claim", true)
+	assert.Equal(t, 2, queue.Len(), "the ordinary key and one wake")
+
+	// One turn of Run: take the next queued item, drain the lane first.
+	key, _ := queue.Get()
+	c.drainPriority()
+	c.sync(key)
+	assert.Equal(t, []string{"claim", "ordinary"}, eg.order, "the priority key ran first")
+
+	// The failed claim returns after its backoff, with a wake for it.
+	require.Eventually(t, func() bool { return c.priority.Len() == 1 && queue.Len() == 1 },
+		time.Second, 5*time.Millisecond)
+	key, _ = queue.Get()
+	c.drainPriority()
+	assert.Equal(t, SyncStateSuccess, c.sync(key))
+	assert.Equal(t, []string{"claim", "ordinary", "claim"}, eg.order)
+}

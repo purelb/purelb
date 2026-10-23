@@ -11,3 +11,4 @@ resources:
 - ../../crds/purelb.io_egressnodestates.yaml
 - egress-allocator-rbac.yaml
 - egress-lbnodeagent-rbac.yaml
+- egress-node-label-vap.yaml

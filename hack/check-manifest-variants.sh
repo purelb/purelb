@@ -59,7 +59,8 @@ crd() { for c in "$@"; do printf '+CustomResourceDefinition/%s ' "$c"; done; }
 everything=$(names with-gobgp-egress)
 check everything "$everything" $(crd $CORE_CRDS $BGP_CRDS $EGRESS_CRDS) \
 	+ClusterRole/purelb:egress:allocator +ClusterRole/purelb:egress:lbnodeagent +ClusterRole/purelb:k8gobgp \
-	+FlowSchema/purelb-lbnodeagent-leases
+	+FlowSchema/purelb-lbnodeagent-leases \
+	+ValidatingAdmissionPolicy/purelb-egress-node-label +ValidatingAdmissionPolicyBinding/purelb-egress-node-label
 
 noegress=$(names with-gobgp)
 check noegress "$noegress" $(crd $CORE_CRDS $BGP_CRDS) +ClusterRole/purelb:k8gobgp \
