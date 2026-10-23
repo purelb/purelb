@@ -258,7 +258,7 @@ lbnodeagent:
       - BPF
       drop:
       - ALL
-    readOnlyRootFilesystem: false
+    readOnlyRootFilesystem: true
     seccompProfile:
       type: RuntimeDefault
   # Tolerations: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/

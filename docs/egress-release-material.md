@@ -24,6 +24,11 @@ notes and docs of the release that ships it. Not user-facing prose.
   Uses `flowcontrol.apiserver.k8s.io/v1` (Kubernetes 1.29+; the 1.31 minimum
   covers it).
 
+- **Helm: the lbnodeagent container's root filesystem is read-only**, as it
+  has long been in the kustomize manifests (`lbnodeagent.containerSecurityContext.readOnlyRootFilesystem`
+  was `false` in the chart only). A values override that set it explicitly is
+  unaffected.
+
 ## New API
 
 - Kinds: `Egress`, `ClusterEgress` (cluster-scoped), `EgressEndpoints`,

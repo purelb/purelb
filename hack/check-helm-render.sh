@@ -136,6 +136,19 @@ expect "egress: allocator binding by default" "^ClusterRoleBinding/.*:egress:all
 out=$($HELM template t "$CHART" --kube-version 1.31.0 --set egress.enabled=false | kinds)
 refuse "egress: nothing egress with egress.enabled=false" "egress" "$out"
 
+# Every container's root filesystem is read-only, as in the kustomize
+# manifests; the two drifted apart once (lbnodeagent was writable in Helm).
+out=$(render daemonset.yaml)$'\n'$(render deployment.yaml)
+rofs=$(python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d:
+        for c in d["spec"]["template"]["spec"]["containers"]:
+            print(c["name"], (c.get("securityContext") or {}).get("readOnlyRootFilesystem"))' <<<"$out")
+expect "lbnodeagent root filesystem read-only" "^lbnodeagent True$" "$rofs"
+expect "allocator root filesystem read-only" "^allocator True$" "$rofs"
+refuse "no container with a writable root filesystem" " (False|None)$" "$rofs"
+
 # The Lease FlowSchema is core: it renders whatever egress and gobgp say,
 # and names the release namespace's lbnodeagent.
 out=$(render flowschema-lbnodeagent-leases.yaml --namespace purelb-test --set egress.enabled=false --set gobgp.enabled=false)
