@@ -19,6 +19,7 @@
 package allocator
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -76,6 +77,10 @@ type Reconciler struct {
 	purelb  versioned.Interface
 	enqueue func(key string, priority bool)
 	writer  *writer
+	// writeOwner maps an object key with a write in progress to the
+	// policy that owns it, which a failed write requeues. Queue goroutine
+	// only.
+	writeOwner map[string]string
 
 	egresses        listers.EgressLister
 	clusterEgresses listers.ClusterEgressLister
@@ -96,7 +101,7 @@ var (
 
 // New returns a Reconciler for alloc; Start brings it up.
 func New(logger log.Logger, alloc *coreallocator.Allocator, namespace string) *Reconciler {
-	return &Reconciler{logger: logger, alloc: alloc, namespace: namespace}
+	return &Reconciler{logger: logger, alloc: alloc, namespace: namespace, writeOwner: map[string]string{}}
 }
 
 // Start discovers the egress CRDs and, when they exist, starts the
@@ -372,21 +377,52 @@ func parsePolicyKey(key string) (egress.PolicyRef, error) {
 	return egress.PolicyRef{}, fmt.Errorf("not an egress policy key")
 }
 
+// write submits a write of the object key, owned by policy p.
+func (r *Reconciler) write(p *policy, key string, priority bool, w func(context.Context) error) {
+	r.writeOwner[key] = p.ref.String()
+	r.writer.submit(key, priority, w)
+}
+
 // writeDone collects a finished write's outcome. A failed write requeues
-// the policy that owns the object, which recomputes and rewrites it.
+// the policy that owns the object, which recomputes and rewrites it from
+// fresh informer state.
 func (r *Reconciler) writeDone(obj string) error {
 	err, ok := r.writer.done(obj)
-	if !ok || err == nil {
+	if !ok {
 		return nil
 	}
-	logging.Info(r.logger, "op", "egressWrite", "object", obj, "error", err)
+	owner := r.writeOwner[obj]
+	if !r.writer.inProgress(obj) {
+		delete(r.writeOwner, obj)
+	}
+	if err != nil {
+		logging.Info(r.logger, "op", "egressWrite", "object", obj, "error", err)
+		if owner != "" {
+			r.enqueue(owner, false)
+		}
+	}
 	return nil
 }
 
-// reconcile brings one policy's addresses, slices and status in line with
-// its spec and the cluster. Filled in by the reconcile stages.
+// reconcile brings one policy's selection, addresses, slices and status in
+// line with its spec and the cluster (§5.1). Each stage writes only what
+// changed.
 func (r *Reconciler) reconcile(ref egress.PolicyRef) error {
-	logging.Debug(r.logger, "op", "egressReconcile", "policy", ref.String())
+	p, found, err := r.load(ref)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil // teardown of a deleted policy: see the finalizer stage
+	}
+	run := &run{p: p, conds: conditions{}}
+	r.scope(run)
+	if !run.revoked && !run.retained {
+		r.selectPods(run)
+	}
+	r.syncMembers(run)
+	logging.Debug(r.logger, "op", "egressReconcile", "policy", ref.String(),
+		"selected", run.sel.selected, "revoked", run.revoked, "retained", run.retained)
 	return nil
 }
 

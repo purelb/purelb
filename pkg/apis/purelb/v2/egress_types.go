@@ -598,6 +598,10 @@ type EgressMemberNode struct {
 
 // EgressMemberPod is one selected pod.
 type EgressMemberPod struct {
+	// Namespace is set for a ClusterEgress's pods, which span namespaces.
+	// +kubebuilder:validation:MaxLength=63
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 	// +kubebuilder:validation:MaxLength=36

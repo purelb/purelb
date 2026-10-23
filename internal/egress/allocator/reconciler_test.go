@@ -37,6 +37,13 @@ import (
 
 const testNS = "purelb-system"
 
+// nopEvents is a k8s.ServiceEvent that records nothing.
+type nopEvents struct{}
+
+func (nopEvents) Infof(runtime.Object, string, string, ...interface{})  {}
+func (nopEvents) Errorf(runtime.Object, string, string, ...interface{}) {}
+func (nopEvents) ForceSync()                                            {}
+
 // queue records what the reconciler enqueues.
 type queue struct {
 	mu   sync.Mutex
@@ -88,7 +95,9 @@ func started(t *testing.T, crds bool, objs ...runtime.Object) (*Reconciler, *kub
 	}
 	purelb := purelbfake.NewSimpleClientset(purelbObjs...)
 	q := &queue{}
-	r := New(log.NewNopLogger(), coreallocator.New(log.NewNopLogger()), testNS)
+	alloc := coreallocator.New(log.NewNopLogger())
+	alloc.SetClient(nopEvents{})
+	r := New(log.NewNopLogger(), alloc, testNS)
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
 	require.NoError(t, r.start(stop, kube, purelb, q.add))
