@@ -98,6 +98,7 @@ func started(t *testing.T, crds bool, objs ...runtime.Object) (*Reconciler, *kub
 	alloc := coreallocator.New(log.NewNopLogger())
 	alloc.SetClient(nopEvents{})
 	r := New(log.NewNopLogger(), alloc, testNS)
+	alloc.SetEgress(r)
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
 	require.NoError(t, r.start(stop, kube, purelb, q.add))

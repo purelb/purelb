@@ -21,7 +21,6 @@ package allocator
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -421,15 +420,10 @@ func (r *Reconciler) reconcile(ref egress.PolicyRef) error {
 		r.selectPods(run)
 	}
 	r.syncMembers(run)
+	if !run.revoked && !run.retained {
+		r.syncEndpoints(run, r.allocate(run))
+	}
 	logging.Debug(r.logger, "op", "egressReconcile", "policy", ref.String(),
 		"selected", run.sel.selected, "revoked", run.revoked, "retained", run.retained)
 	return nil
 }
-
-// Replay records egress's allocations and holds in the pools after a
-// rebuild. Filled in with address allocation.
-func (r *Reconciler) Replay(func(pool, key string, ips []net.IP, reference bool) error) {}
-
-// ReleaseService lets the allocator release a Service's addresses. Filled
-// in with tombstones.
-func (r *Reconciler) ReleaseService(string, string, net.IP) bool { return true }

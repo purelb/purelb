@@ -17,6 +17,7 @@ package allocator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -73,6 +74,11 @@ type LocalPool struct {
 
 	// v6Subnets stores the subnet CIDR for each v6Range, in parallel.
 	v6Subnets []string
+
+	// v4Names and v6Names are, in parallel, each range's entry name: its
+	// AddressPool name, or its subnet when unnamed (AllocRequest.Range).
+	v4Names []string
+	v6Names []string
 
 	// v4Prefix and v6Prefix are, for each range in parallel, the prefix
 	// length the announcer adds an address from that range with: the
@@ -144,6 +150,7 @@ func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6P
 		}
 		pool.v6Ranges = append(pool.v6Ranges, &iprange)
 		pool.v6Subnets = append(pool.v6Subnets, v6pool.Subnet)
+		pool.v6Names = append(pool.v6Names, entryName(v6pool))
 		pool.v6Prefix = append(pool.v6Prefix, prefix)
 	}
 
@@ -169,6 +176,7 @@ func NewLocalPool(name string, log log.Logger, v4Pool *purelbv2.AddressPool, v6P
 		}
 		pool.v4Ranges = append(pool.v4Ranges, &iprange)
 		pool.v4Subnets = append(pool.v4Subnets, v4pool.Subnet)
+		pool.v4Names = append(pool.v4Names, entryName(v4pool))
 		pool.v4Prefix = append(pool.v4Prefix, prefix)
 	}
 
@@ -399,6 +407,11 @@ func (p LocalPool) assignFamily(ctx context.Context, family int, req AllocReques
 				"family", family, "existing-ip", ip.String())
 			return nil, nil
 		}
+	}
+
+	// A named entry: first fit within its ranges only.
+	if req.Range != "" {
+		return p.assignFamilyInEntry(ctx, family, req)
 	}
 
 	// Balanced allocation: pick least-used range.
@@ -1091,4 +1104,69 @@ func (p LocalPool) serviceHasIPInRange(svc *v1.Service, ipRange *purelbv2.IPRang
 		}
 	}
 	return false
+}
+
+// ErrPoolEntryNotFound is returned for an AllocRequest.Range that names
+// no entry of the pool.
+var ErrPoolEntryNotFound = errors.New("pool entry not found")
+
+// entryName is an AddressPool's entry name: its name, or its subnet.
+func entryName(ap purelbv2.AddressPool) string {
+	if ap.Name != "" {
+		return ap.Name
+	}
+	return ap.Subnet
+}
+
+// entryRanges returns family's ranges in the entry name.
+func (p LocalPool) entryRanges(family int, name string) []*purelbv2.IPRange {
+	ranges, names := p.v4Ranges, p.v4Names
+	if family == nl.FAMILY_V6 {
+		ranges, names = p.v6Ranges, p.v6Names
+	}
+	var out []*purelbv2.IPRange
+	for i, r := range ranges {
+		if i < len(names) && names[i] == name {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// HasEntry reports whether the pool has an entry name, in either family.
+func (p LocalPool) HasEntry(name string) bool {
+	return len(p.entryRanges(nl.FAMILY_V4, name)) > 0 || len(p.entryRanges(nl.FAMILY_V6, name)) > 0
+}
+
+// EntryOf returns the name of the entry whose range holds ip.
+func (p LocalPool) EntryOf(ip net.IP) (string, bool) {
+	ranges, names := p.v4Ranges, p.v4Names
+	if purelbv2.AddrFamily(ip) == nl.FAMILY_V6 {
+		ranges, names = p.v6Ranges, p.v6Names
+	}
+	for i, r := range ranges {
+		if i < len(names) && r.Contains(ip) {
+			return names[i], true
+		}
+	}
+	return "", false
+}
+
+// assignFamilyInEntry allocates the next free address in family from the
+// ranges of entry req.Range.
+func (p LocalPool) assignFamilyInEntry(ctx context.Context, family int, req AllocRequest) (net.IP, error) {
+	ranges := p.entryRanges(family, req.Range)
+	if len(ranges) == 0 {
+		return nil, fmt.Errorf("%w: %q has no family %d entry %q", ErrPoolEntryNotFound, p.name, family, req.Range)
+	}
+	var lastErr error
+	for _, r := range ranges {
+		ip, err := p.assignFromRange(ctx, r, req)
+		if err == nil {
+			return ip, nil
+		}
+		lastErr = err
+	}
+	allocationRejected.WithLabelValues(p.name, "exhausted").Inc()
+	return nil, fmt.Errorf("pool %q entry %q exhausted: %w", p.name, req.Range, lastErr)
 }

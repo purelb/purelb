@@ -105,6 +105,13 @@ type fixture struct {
 func newFixture(t *testing.T, groups []*purelbv2.ServiceGroup, objs ...runtime.Object) *fixture {
 	t.Helper()
 	r, _, purelb, q := started(t, true, objs...)
+	r.alloc.SetListServices(func() []corev1.Service {
+		var out []corev1.Service
+		for _, o := range r.services.List() {
+			out = append(out, *o.(*corev1.Service))
+		}
+		return out
+	})
 	require.NoError(t, r.alloc.SetPools(groups))
 	return &fixture{r: r, purelb: purelb, q: q}
 }
