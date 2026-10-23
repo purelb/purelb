@@ -13,7 +13,10 @@ GOBGP_TAG       ?= v0.2.8
 GOBGP_IMAGE_TAG ?= 0.2.8
 # Where fetch-gobgp-crd writes the CRDs; check-deps points it at a temp dir.
 GOBGP_CRD_DIR   ?= deployments/components/gobgp
-CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml
+CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml \
+	deployments/crds/purelb.io_egresses.yaml deployments/crds/purelb.io_clusteregresses.yaml \
+	deployments/crds/purelb.io_egressendpoints.yaml deployments/crds/purelb.io_egressmembers.yaml \
+	deployments/crds/purelb.io_egressnodestates.yaml
 
 # Tools that we use.
 CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.18.0

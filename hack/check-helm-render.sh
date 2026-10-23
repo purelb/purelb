@@ -26,9 +26,11 @@ export KUBECONFIG=/dev/null  # helm template needs no cluster
 CHART=build/helm/purelb
 fail=0
 
+# Without a cluster, helm template assumes Kubernetes 1.20, which the
+# chart's kubeVersion (>= 1.31) refuses: render as the minimum.
 render() { # template, extra helm args...
 	local tpl=$1; shift
-	$HELM template t "$CHART" --api-versions monitoring.coreos.com/v1 -s "templates/$tpl" "$@"
+	$HELM template t "$CHART" --kube-version 1.31.0 --api-versions monitoring.coreos.com/v1 -s "templates/$tpl" "$@"
 }
 expect() { # description, pattern, rendered text
 	if grep -qE -- "$2" <<<"$3"; then echo "ok   $1"; else echo "FAIL $1: no match for /$2/" >&2; fail=1; fi

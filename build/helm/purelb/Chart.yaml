@@ -8,6 +8,9 @@ description: PureLB is a Kubernetes load-balancer controller that uses standard 
 appVersion: 0.0.0
 version: 0.0.0
 
+# The CRDs validate with the CEL IP and CIDR functions (Kubernetes 1.31).
+kubeVersion: ">=1.31.0-0"
+
 sources:
   - https://github.com/purelb/purelb
 

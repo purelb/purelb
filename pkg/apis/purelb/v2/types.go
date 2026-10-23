@@ -154,6 +154,11 @@ type ServiceGroupSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	NamespaceDefault bool `json:"namespaceDefault,omitempty"`
+
+	// Egress lets this group's pools serve Egresses, and bounds what
+	// they may do. Absent, egress is refused.
+	// +optional
+	Egress *ServiceGroupEgressSpec `json:"egress,omitempty"`
 }
 
 // ServiceGroupLocalSpec configures a local IP address pool.
@@ -498,6 +503,11 @@ type LBNodeAgentSpec struct {
 	// the underlying operating system networking.
 	// +optional
 	Local *LBNodeAgentLocalSpec `json:"local,omitempty"`
+
+	// Egress enables egress on the selected nodes. Absent or disabled,
+	// the nodes are exactly as without egress.
+	// +optional
+	Egress *LBNodeAgentEgressSpec `json:"egress,omitempty"`
 }
 
 // LBNodeAgentLocalSpec configures the local announcer behavior.
