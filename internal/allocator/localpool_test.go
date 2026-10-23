@@ -1129,3 +1129,38 @@ func TestLocalPoolReferenceHoldUnrecorded(t *testing.T) {
 	_, err = p.Allocate(ctx, AllocRequest{Key: "egress:a", Explicit: []net.IP{net.ParseIP("10.0.0.1")}, Reference: true})
 	assert.Error(t, err)
 }
+
+// AllocRequest.Range allocates within one entry of the pool, named by its
+// name or, unnamed, its subnet.
+func TestLocalPoolAllocateInEntry(t *testing.T) {
+	ctx := context.Background()
+	p, err := NewLocalPool("g", localPoolTestLogger, nil, nil,
+		[]purelbv2.AddressPool{
+			{Name: "public", Pool: "10.0.1.10-10.0.1.11", Subnet: "10.0.1.0/24"},
+			{Pool: "10.0.2.10-10.0.2.11", Subnet: "10.0.2.0/24"},
+		}, nil, purelbv2.PoolTypeLocal, false, false, false)
+	assert.NoError(t, err)
+	v4 := []int{nl.FAMILY_V4}
+
+	ips, err := p.Allocate(ctx, AllocRequest{Key: "egress:a", Families: v4, Range: "10.0.2.0/24"})
+	assert.NoError(t, err)
+	assert.True(t, ips[0].Equal(net.ParseIP("10.0.2.10")))
+	ips, err = p.Allocate(ctx, AllocRequest{Key: "egress:b", Families: v4, Range: "public"})
+	assert.NoError(t, err)
+	assert.True(t, ips[0].Equal(net.ParseIP("10.0.1.10")))
+
+	_, err = p.Allocate(ctx, AllocRequest{Key: "egress:c", Families: v4, Range: "nope"})
+	assert.ErrorIs(t, err, ErrPoolEntryNotFound)
+	_, err = p.Allocate(ctx, AllocRequest{Key: "egress:d", Families: []int{nl.FAMILY_V6}, Range: "public"})
+	assert.ErrorIs(t, err, ErrPoolEntryNotFound, "the entry has no IPv6 range")
+
+	name, ok := p.EntryOf(net.ParseIP("10.0.1.11"))
+	assert.True(t, ok)
+	assert.Equal(t, "public", name)
+	name, _ = p.EntryOf(net.ParseIP("10.0.2.10"))
+	assert.Equal(t, "10.0.2.0/24", name)
+	_, ok = p.EntryOf(net.ParseIP("10.0.3.1"))
+	assert.False(t, ok)
+	assert.True(t, p.HasEntry("public"))
+	assert.False(t, p.HasEntry("nope"))
+}

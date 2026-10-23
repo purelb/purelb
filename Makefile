@@ -50,7 +50,7 @@ help: ## Display help message
 all: check crd image ## Build it all!
 
 .PHONY: check
-check: generate check-deps check-helm-rbac-source check-helm-render check-gofmt check-egress-imports check-manifest-variants ## Run "short" tests + bundled-dep consistency check
+check: generate check-deps check-helm-rbac-source check-helm-render check-gofmt check-egress-imports check-manifest-variants check-client-plurals ## Run "short" tests + bundled-dep consistency check
 	go vet ./...
 	go test -race -short ./...
 
@@ -67,6 +67,10 @@ check-gofmt: ## Fail if any tracked Go source is not gofmt-clean
 		echo "$$unformatted"; \
 		exit 1; \
 	fi
+
+.PHONY: check-client-plurals
+check-client-plurals: generate crd ## Fail if a generated client's resource name differs from its CRD's plural
+	hack/check-client-plurals.sh
 
 .PHONY: check-manifest-variants
 check-manifest-variants: crd ## Build every kustomize install variant and check what it contains

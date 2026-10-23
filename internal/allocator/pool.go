@@ -86,6 +86,11 @@ type AllocRequest struct {
 	// sharing an address. Port-range slices are never recorded here.
 	Ports []Port
 
+	// Range restricts allocation to one entry of the pool, named by its
+	// name or, when unnamed, its subnet. An external pool's sidecar
+	// receives it as AllocateRequest.pool. Empty means the whole pool.
+	Range string
+
 	// Reference records Explicit as held by Key without allocating them:
 	// no sharing or port checks, and nothing is sent to an external IPAM.
 	// A held address stays in use until Key releases it, so its owner's

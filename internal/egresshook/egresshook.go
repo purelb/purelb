@@ -73,7 +73,8 @@ type Controller interface {
 	// Start runs once, after the core caches have synced. It discovers
 	// whether the egress CRDs exist and, if they do, starts egress's
 	// informers, which add egress keys to the work queue with enqueue.
-	Start(stop <-chan struct{}, cfg *rest.Config, enqueue func(key string)) error
+	// A priority key is synced ahead of every queued key (the claim path).
+	Start(stop <-chan struct{}, cfg *rest.Config, enqueue func(key string, priority bool)) error
 
 	// Sync processes one egress key on the work-queue goroutine. An
 	// error requeues the key with backoff.
@@ -92,12 +93,12 @@ var (
 	_ Controller = Noop{}
 )
 
-func (Noop) Synced() bool                                                { return true }
-func (Noop) Replay(func(pool, key string, ips []net.IP, ref bool) error) {}
-func (Noop) ReleaseService(string, string, net.IP) bool                  { return true }
-func (Noop) Referenced(net.IP) bool                                      { return false }
-func (Noop) ServiceAddress(string, net.IP, bool)                         {}
-func (Noop) PrepareShutdown()                                            {}
-func (Noop) Start(<-chan struct{}, *rest.Config, func(string)) error     { return nil }
-func (Noop) Sync(string) error                                           { return nil }
-func (Noop) Keys() []string                                              { return nil }
+func (Noop) Synced() bool                                                  { return true }
+func (Noop) Replay(func(pool, key string, ips []net.IP, ref bool) error)   {}
+func (Noop) ReleaseService(string, string, net.IP) bool                    { return true }
+func (Noop) Referenced(net.IP) bool                                        { return false }
+func (Noop) ServiceAddress(string, net.IP, bool)                           {}
+func (Noop) PrepareShutdown()                                              {}
+func (Noop) Start(<-chan struct{}, *rest.Config, func(string, bool)) error { return nil }
+func (Noop) Sync(string) error                                             { return nil }
+func (Noop) Keys() []string                                                { return nil }

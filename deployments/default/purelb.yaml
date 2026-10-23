@@ -186,6 +186,8 @@ rules:
   verbs:
   - get
   - list
+  # egress watches Leases for election eligibility and liveness
+  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

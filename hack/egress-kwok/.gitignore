@@ -1,0 +1,7 @@
+.work/
+.bin/
+results/
+/allocator
+/egress-kwok
+*.kubeconfig
+*.pprof

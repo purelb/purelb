@@ -14,3 +14,5 @@ rules:
   verbs:
   - get
   - list
+  # egress watches Leases for election eligibility and liveness
+  - watch

@@ -108,8 +108,12 @@ func (p *SidecarPool) Allocate(ctx context.Context, req AllocRequest) ([]net.IP,
 	if req.Reference {
 		return req.Explicit, nil
 	}
+	pool := p.name
+	if req.Range != "" {
+		pool = req.Range
+	}
 	areq := &ipamv1.AllocateRequest{
-		Pool:       p.name,
+		Pool:       pool,
 		Service:    req.Key,
 		SharingKey: req.SharingKey,
 	}

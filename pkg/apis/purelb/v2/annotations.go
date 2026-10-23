@@ -111,6 +111,18 @@ const (
 	SkipIPv6DADAnnotation string = "purelb.io/skip-ipv6-dad"
 
 	// ============================================================================
+	// Egress (pods and nodes)
+	// ============================================================================
+
+	// EgressOptOutAnnotation set to "false" on a pod excludes it from every
+	// Egress and ClusterEgress whose optOut is Allowed.
+	EgressOptOutAnnotation = "purelb.io/egress"
+
+	// EgressCapableLabel is set to "true" on nodes whose datapath supports
+	// egress, by the allocator from each node's EgressNodeState.
+	EgressCapableLabel = "purelb.io/egress-capable"
+
+	// ============================================================================
 	// Lease annotations (coordination between nodes)
 	// ============================================================================
 

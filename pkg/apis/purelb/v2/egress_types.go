@@ -414,6 +414,7 @@ type ClusterEgressList struct {
 // announcing the address read it.
 //
 // +genclient
+// +resourceName=egressendpoints
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:resource:shortName=egep
 // +kubebuilder:subresource:status
@@ -569,6 +570,7 @@ type EgressEndpointsList struct {
 // pods per object. Only the allocator reads it.
 //
 // +genclient
+// +resourceName=egressmembers
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:resource:shortName=egm
 type EgressMembers struct {
@@ -596,6 +598,10 @@ type EgressMemberNode struct {
 
 // EgressMemberPod is one selected pod.
 type EgressMemberPod struct {
+	// Namespace is set for a ClusterEgress's pods, which span namespaces.
+	// +kubebuilder:validation:MaxLength=63
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 	// +kubebuilder:validation:MaxLength=36
