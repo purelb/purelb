@@ -35,6 +35,9 @@ const (
 	reasonNodesLagging   = "NodesLagging"
 	reasonSlotsExhausted = "SlotsExhausted"
 	reasonSliceExhausted = "SliceExhausted"
+
+	reasonReservedPortAmbiguous = "ReservedPortAmbiguous"
+	reasonReservedPortConflict  = "ReservedPortConflict"
 )
 
 // cond is one condition's outcome. A zero reason means True.

@@ -18,6 +18,8 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"slices"
+	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -129,8 +131,7 @@ func endpointsLabels(run *run, spec purelbv2.EgressEndpointsSpec) map[string]str
 }
 
 // syncEndpoints writes an EgressEndpoints for each of the policy's
-// addresses with its slices (§5.6), keeping its reserved ports, which a
-// later stage owns. Slices change only once every gating node has acked
+// addresses with its slices and reserved ports (§5.6). Slices change only once every gating node has acked
 // the current generation (§5.7), so one generation is in flight at a
 // time; a change of slices goes on the priority lane. Releasing addresses
 // the policy no longer holds is the teardown stage's.
@@ -141,6 +142,7 @@ func (r *Reconciler) syncEndpoints(run *run, addrs []address) {
 	for _, a := range addrs {
 		name := egress.EndpointsName(run.p.ref, a.ip)
 		spec := r.endpointsSpec(run, a)
+		spec.Reserved = r.reservedPorts(run, a, spec.ServicePorts)
 		cur, err := r.endpoints.EgressEndpointses(r.namespace).Get(name)
 		if err != nil {
 			spec.Slices = r.planAddress(run, a, name, spec.SliceSize, nil, nil, added)
@@ -161,7 +163,6 @@ func (r *Reconciler) syncEndpoints(run *run, addrs []address) {
 				"wanted", spec.SliceSize, "msg", "keeping the slice size while slices exist")
 			spec.SliceSize = cur.Spec.SliceSize
 		}
-		spec.Reserved = cur.Spec.Reserved
 		acked, excluded := r.gate(run, cur, owner)
 		spec.ExcludedNodes = excluded
 		spec.Slices = cur.Spec.Slices
@@ -229,6 +230,55 @@ func (r *Reconciler) planAddress(run *run, a address, ee string, size int32, cur
 			a.ip, plan.overBudget, slotBudget)
 	}
 	return plan.slices
+}
+
+// reservedPorts assigns each reserved port to the node and pod its
+// selector picks among the policy's selected pods (D19). A port matching
+// several pods, or a Service port on the address, goes to no pod.
+func (r *Reconciler) reservedPorts(run *run, a address, svcPorts []purelbv2.EgressServicePort) []purelbv2.EgressReservedAssignment {
+	if run.p.spec.Ports == nil || a.identity != "" {
+		return nil
+	}
+	var out []purelbv2.EgressReservedAssignment
+	for _, rp := range run.p.spec.Ports.Reserved {
+		ra := purelbv2.EgressReservedAssignment{Protocol: rp.Protocol, Port: rp.Port}
+		if ra.Protocol == "" {
+			ra.Protocol = string(corev1.ProtocolTCP)
+		}
+		out = append(out, ra)
+		if slices.Contains(svcPorts, purelbv2.EgressServicePort{Protocol: ra.Protocol, Port: ra.Port}) {
+			run.conds.fail(condPortCapacity, reasonReservedPortConflict, "reserved port %s/%d is a Service port on %s",
+				ra.Protocol, ra.Port, a.ip)
+			continue
+		}
+		sel, err := metav1.LabelSelectorAsSelector(&rp.PodSelector)
+		if err != nil {
+			continue
+		}
+		var matched []string
+		var node, pod string
+		for n, ms := range run.sel.nodes {
+			for _, m := range ms {
+				obj, ok, _ := r.pods.GetByKey(m.namespace + "/" + m.name)
+				if ok && sel.Matches(labels.Set(obj.(*corev1.Pod).Labels)) {
+					matched = append(matched, m.namespace+"/"+m.name)
+					node, pod = n, m.name
+					if run.p.ref.Kind == egress.KindClusterEgress {
+						pod = m.namespace + "." + m.name
+					}
+				}
+			}
+		}
+		switch {
+		case len(matched) == 1:
+			out[len(out)-1].Node, out[len(out)-1].Pod = node, pod
+		case len(matched) > 1:
+			sort.Strings(matched)
+			run.conds.fail(condPortCapacity, reasonReservedPortAmbiguous, "reserved port %s/%d selects %d pods: %v",
+				ra.Protocol, ra.Port, len(matched), matched)
+		}
+	}
+	return out
 }
 
 // activate marks every Pending slice Active: the gating nodes have acked

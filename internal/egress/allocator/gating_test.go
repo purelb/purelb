@@ -198,14 +198,7 @@ func TestLagEviction(t *testing.T) {
 
 	g.clock = t0.Add(60 * time.Second)
 	g.renew(t, "n2")
-	ref, _ := parsePolicyKey("egress/voice/sip")
-	run := &run{conds: conditions{}}
-	run.p, _, _ = g.r.load(ref)
-	g.r.scope(run)
-	g.r.selectPods(run)
-	g.r.syncEndpoints(run, g.r.allocate(run))
-	g.settle(t)
-	assert.Equal(t, reasonNodesLagging, run.conds[condDatapathReady].reason)
+	assert.Equal(t, reasonNodesLagging, allocatedEndpoints(t, g.fixture, "egress/voice/sip")[condDatapathReady].reason)
 	ep = g.ep(t)
 	assert.Equal(t, []string{"n2"}, ep.Spec.ExcludedNodes)
 	assert.Equal(t, sliceActive, states(ep)["n1"], "no longer gated by n2")
@@ -283,13 +276,48 @@ func TestSlotBudget(t *testing.T) {
 		Spec: purelbv2.LBNodeAgentSpec{Egress: &purelbv2.LBNodeAgentEgressSpec{ReservedClusterSlots: slotBudget}}}
 	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
 		node("n1", true), pod("voice", "a-1", "n1", sel), agent, egressObj("voice", "sip", nil))
-	ref, _ := parsePolicyKey("egress/voice/sip")
-	run := &run{conds: conditions{}}
-	run.p, _, _ = g.r.load(ref)
-	g.r.scope(run)
-	g.r.selectPods(run)
-	g.r.syncEndpoints(run, g.r.allocate(run))
-	g.settle(t)
-	assert.Equal(t, reasonSlotsExhausted, run.conds[condDatapathReady].reason)
+	assert.Equal(t, reasonSlotsExhausted, allocatedEndpoints(t, g.fixture, "egress/voice/sip")[condDatapathReady].reason)
 	assert.Empty(t, states(g.ep(t)))
+}
+
+// A reserved port goes to the one selected pod its selector picks, and
+// its block holds no slice; one matching two pods goes to no pod.
+func TestReservedPorts(t *testing.T) {
+	sel := map[string]string{"app": "a"}
+	reg := pod("voice", "registrar-0", "n1", map[string]string{"app": "a", "role": "registrar"})
+	reserve := func(selector map[string]string) func(*purelbv2.EgressSpec) {
+		return func(s *purelbv2.EgressSpec) {
+			s.Ports = &purelbv2.EgressPorts{Reserved: []purelbv2.EgressReservedPort{
+				{Protocol: "UDP", Port: 5060, PodSelector: metav1.LabelSelector{MatchLabels: selector}}}}
+		}
+	}
+	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
+		node("n1", true), node("n2", true), reg, pod("voice", "a-2", "n2", sel),
+		egressObj("voice", "one", reserve(map[string]string{"role": "registrar"})),
+		egressObj("voice", "two", reserve(sel)))
+
+	g.reconcile(t, "egress/voice/one")
+	ep := g.ep(t)
+	assert.Equal(t, []purelbv2.EgressReservedAssignment{{Protocol: "UDP", Port: 5060, Node: "n1", Pod: "registrar-0"}}, ep.Spec.Reserved)
+	for _, s := range ep.Spec.Slices {
+		assert.False(t, covers(ep.Spec.SliceSize, s.Index, []int32{5060}), "slice %d holds the reserved port", s.Index)
+	}
+
+	conds := allocatedEndpoints(t, g.fixture, "egress/voice/two")
+	assert.Equal(t, reasonReservedPortAmbiguous, conds[condPortCapacity].reason)
+}
+
+// allocatedEndpoints runs a policy's pipeline through syncEndpoints and
+// returns its conditions.
+func allocatedEndpoints(t *testing.T, f *fixture, key string) conditions {
+	t.Helper()
+	ref, err := parsePolicyKey(key)
+	require.NoError(t, err)
+	run := &run{conds: conditions{}}
+	run.p, _, _ = f.r.load(ref)
+	f.r.scope(run)
+	f.r.selectPods(run)
+	f.r.syncEndpoints(run, f.r.allocate(run))
+	f.settle(t)
+	return run.conds
 }
