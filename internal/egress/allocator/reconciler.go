@@ -30,10 +30,14 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 
 	coreallocator "purelb.io/internal/allocator"
 	"purelb.io/internal/egress"
@@ -42,6 +46,7 @@ import (
 	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	"purelb.io/pkg/generated/clientset/versioned"
+	purelbscheme "purelb.io/pkg/generated/clientset/versioned/scheme"
 	"purelb.io/pkg/generated/informers/externalversions"
 	listers "purelb.io/pkg/generated/listers/purelb/v2"
 )
@@ -89,6 +94,12 @@ type Reconciler struct {
 	drainSince map[string]map[int32]time.Time
 	timers     map[string]time.Time
 	now        func() time.Time
+	// Queue goroutine only: when each SingleAnnouncer address first had
+	// two announcers, and whether its SplitBrain event was recorded.
+	split         map[string]time.Time
+	splitReported map[string]bool
+
+	recorder record.EventRecorder
 
 	egresses        listers.EgressLister
 	clusterEgresses listers.ClusterEgressLister
@@ -98,6 +109,7 @@ type Reconciler struct {
 	agents          listers.LBNodeAgentLister
 	nodeStateIdx    cache.Indexer
 	endpointsIdx    cache.Indexer
+	membersIdx      cache.Indexer
 	pods            cache.Indexer
 	namespaces      cache.Indexer
 	nodes           cache.Indexer
@@ -115,7 +127,7 @@ var (
 func New(logger log.Logger, alloc *coreallocator.Allocator, namespace string) *Reconciler {
 	return &Reconciler{logger: logger, alloc: alloc, namespace: namespace, writeOwner: map[string]string{},
 		behind: map[string]map[string]time.Time{}, drainSince: map[string]map[int32]time.Time{},
-		timers: map[string]time.Time{}, now: time.Now}
+		timers: map[string]time.Time{}, now: time.Now, split: map[string]time.Time{}, splitReported: map[string]bool{}}
 }
 
 // Start discovers the egress CRDs and, when they exist, starts the
@@ -154,6 +166,19 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 		return nil
 	}
 
+	if r.recorder == nil {
+		sch := runtime.NewScheme()
+		if err := clientgoscheme.AddToScheme(sch); err != nil {
+			return err
+		}
+		if err := purelbscheme.AddToScheme(sch); err != nil {
+			return err
+		}
+		b := record.NewBroadcaster()
+		b.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kube.CoreV1().Events("")})
+		r.recorder = b.NewRecorder(sch, corev1.EventSource{Component: "purelb-egress"})
+	}
+
 	r.writer = newWriter(writers, func(key string, priority bool) { enqueue(writePrefix+key, priority) })
 	r.writer.run(stop)
 
@@ -174,6 +199,9 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 		return err
 	}
 	em := pns.Purelb().V2().EgressMemberses()
+	if err := em.Informer().AddIndexers(cache.Indexers{idxMemberPod: memberPodIndex}); err != nil {
+		return err
+	}
 	pods := kf.Core().V1().Pods().Informer()
 	if err := pods.SetTransform(k8s.SlimPod(purelbv2.EgressOptOutAnnotation)); err != nil {
 		return err
@@ -189,14 +217,14 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 
 	r.egresses, r.clusterEgresses, r.nodeStates, r.agents = eg.Lister(), ceg.Lister(), ens.Lister(), lbna.Lister()
 	r.endpoints, r.members = ee.Lister(), em.Lister()
-	r.nodeStateIdx, r.endpointsIdx = ens.Informer().GetIndexer(), ee.Informer().GetIndexer()
+	r.nodeStateIdx, r.endpointsIdx, r.membersIdx = ens.Informer().GetIndexer(), ee.Informer().GetIndexer(), em.Informer().GetIndexer()
 	r.pods, r.namespaces, r.nodes = pods.GetIndexer(), nss.GetIndexer(), nodes.GetIndexer()
 	r.services, r.leases, r.statefulSets = svcs.GetIndexer(), leases.GetIndexer(), stss.GetIndexer()
 
 	r.handle(eg.Informer(), r.policyOf)
 	r.handle(ceg.Informer(), r.policyOf)
 	r.handleEndpoints(ee.Informer())
-	r.handle(em.Informer(), r.ownerOf)
+	r.handle(em.Informer(), r.membersPolicies)
 	r.handleNodeStates(ens.Informer())
 	r.handle(lbna.Informer(), func(interface{}) []string { return r.allPolicies() })
 	r.handle(pods, r.podPolicies)
@@ -329,6 +357,25 @@ func (r *Reconciler) podPolicies(obj interface{}) []string {
 	}
 	keys := r.clusterPolicies()
 	egs, _ := r.egresses.Egresses(pod.Namespace).List(labels.Everything())
+	for _, e := range egs {
+		keys = append(keys, r.policyOf(e)...)
+	}
+	return keys
+}
+
+// membersPolicies are the policies an EgressMembers change can affect:
+// its owner, and the lower-ranked policies its pods may now outrank, in
+// its namespace (every policy for a ClusterEgress's).
+func (r *Reconciler) membersPolicies(obj interface{}) []string {
+	m, ok := obj.(*purelbv2.EgressMembers)
+	if !ok {
+		return nil
+	}
+	if m.Labels[egress.LabelKind] == egress.KindClusterEgress {
+		return r.allPolicies()
+	}
+	keys := r.clusterPolicies()
+	egs, _ := r.egresses.Egresses(m.Labels[egress.LabelNamespace]).List(labels.Everything())
 	for _, e := range egs {
 		keys = append(keys, r.policyOf(e)...)
 	}
@@ -478,16 +525,19 @@ func (r *Reconciler) reconcile(ref egress.PolicyRef) error {
 	}
 	if !run.revoked && !run.retained {
 		r.selectPods(run)
+		policyEffective(run)
 	}
 	r.syncMembers(run)
 	var addrs []address
+	var eps map[string]*purelbv2.EgressEndpoints
 	if !run.revoked && !run.retained {
 		addrs = r.allocate(run)
-		r.syncEndpoints(run, addrs)
+		eps = r.syncEndpoints(run, addrs)
 	}
 	if !run.retained {
 		r.syncFinalizer(run, r.retire(run, addrs), deleting || run.disallowed)
 	}
+	r.syncStatus(run, addrs, eps)
 	logging.Debug(r.logger, "op", "egressReconcile", "policy", ref.String(),
 		"selected", run.sel.selected, "revoked", run.revoked, "retained", run.retained)
 	return nil

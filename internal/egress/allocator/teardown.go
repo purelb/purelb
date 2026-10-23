@@ -113,6 +113,10 @@ func (r *Reconciler) retireEndpoints(owner string, conds conditions, ep *purelbv
 			spec.Until = &metav1.Time{Time: r.now().Add(r.releaseQuarantine(ep.Spec.ServiceGroup)).Truncate(time.Second)}
 			logging.Info(r.logger, "op", "egressRelease", "endpoints", ep.Name, "address", ep.Spec.Address,
 				"until", spec.Until.Time, "msg", "address quarantined")
+			if ref, ok := r.ownerRef(ep.Labels); ok {
+				r.event(ref, nil, nil, false, false, "AddressQuarantined", "%s quarantined until %s",
+					ep.Spec.Address, spec.Until.Format(time.RFC3339))
+			}
 		}
 	}
 	if apiequality.Semantic.DeepEqual(ep.Spec, spec) {
@@ -242,6 +246,8 @@ func (r *Reconciler) expireTombstone(name string) error {
 		return err
 	}
 	logging.Info(r.logger, "op", "egressRelease", "endpoints", name, "address", ep.Spec.Address, "msg", "quarantine ended; address released")
+	r.event(ref, nil, nil, false, false, "AddressReleased", "%s released", ep.Spec.Address)
+	forgetAddress(ep.Spec.Address)
 	client := r.purelb.PurelbV2().EgressEndpointses(r.namespace)
 	r.write(key, "EgressEndpoints/"+name, false, func(ctx context.Context) error {
 		return client.Delete(ctx, name, metav1.DeleteOptions{})

@@ -35,6 +35,7 @@ const nodePrefix = "node:"
 // status.observedGeneration. A node with a claim outstanding is written on
 // the priority lane (D-conc).
 func (r *Reconciler) syncNodeState(node string) error {
+	r.syncNodeLabel(node)
 	objs, _ := r.endpointsIdx.ByIndex(idxSliceNode, node)
 	var slices []purelbv2.EgressNodeSlice
 	for _, o := range objs {
@@ -163,6 +164,9 @@ func (r *Reconciler) handleNodeStates(inf cache.SharedIndexInformer) {
 			}
 			owners(claimsAndAcksChanged(o, n), true)
 			owners(drainedChanged(o, n), false)
+			if !apiequality.Semantic.DeepEqual(o.Status.Capability, n.Status.Capability) {
+				r.enqueue(nodePrefix+n.Name, false)
+			}
 		},
 		DeleteFunc: all,
 	})

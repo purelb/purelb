@@ -108,6 +108,8 @@ func (r *Reconciler) selectPods(run *run) {
 				run.sel.exclude(pod, excludedNotSTS)
 			case !r.egressCapable(pod.Spec.NodeName):
 				run.sel.exclude(pod, excludedUnsupported)
+			case r.outranked(run, pod):
+				run.sel.exclude(pod, excludedOutranked)
 			default:
 				m := member{namespace: pod.Namespace, name: pod.Name, uid: string(pod.UID)}
 				if perPod {

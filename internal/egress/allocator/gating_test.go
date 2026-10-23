@@ -79,6 +79,9 @@ func specOf(o runtime.Object) interface{} {
 	return nil
 }
 
+// capable is a node's status reporting it egress-capable (D29).
+var capable = purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{EgressCapable: true}}
+
 func liveLease(node string, renew time.Time) *coordinationv1.Lease {
 	return &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: purelbv2.LeasePrefix + node},
@@ -154,13 +157,13 @@ func TestSliceActivation(t *testing.T) {
 	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
 		node("n1", true), node("n2", true), pod("voice", "a-1", "n1", sel), liveLease("n2", t0),
 		egressObj("voice", "sip", nil))
+	g.status(t, "n1", capable)
 	g.reconcile(t, "egress/voice/sip")
 	ep := g.ep(t)
 	assert.Equal(t, map[string]string{"n1": slicePending}, states(ep))
 	assert.Equal(t, defaultReserveSlices, reserves(ep))
 	ns := g.syncNode(t, "n1")
 	assert.Equal(t, []purelbv2.EgressNodeSlice{{Endpoints: ep.Name, Address: "192.168.10.10", Index: 1, State: slicePending}}, ns.Spec.Slices)
-	assert.Equal(t, "n1", ns.OwnerReferences[0].Name)
 
 	// n2 announces the address but hasn't installed this generation.
 	g.status(t, "n2", purelbv2.EgressNodeStateStatus{Announcing: []purelbv2.EgressAnnouncing{
@@ -294,7 +297,10 @@ func TestReservedPorts(t *testing.T) {
 	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
 		node("n1", true), node("n2", true), reg, pod("voice", "a-2", "n2", sel),
 		egressObj("voice", "one", reserve(map[string]string{"role": "registrar"})),
-		egressObj("voice", "two", reserve(sel)))
+		egressObj("voice", "two", func(s *purelbv2.EgressSpec) {
+			reserve(sel)(s)
+			s.Priority = 10 // not outranked by "one"
+		}))
 
 	g.reconcile(t, "egress/voice/one")
 	ep := g.ep(t)
@@ -320,4 +326,25 @@ func allocatedEndpoints(t *testing.T, f *fixture, key string) conditions {
 	f.r.syncEndpoints(run, f.r.allocate(run))
 	f.settle(t)
 	return run.conds
+}
+
+// The allocator creates a node's EgressNodeState, owned by its Node, and
+// keeps the egress-capable label to the node's report (D29).
+func TestNodeStateAndLabel(t *testing.T) {
+	sel := map[string]string{"app": "a"}
+	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
+		node("n1", true), pod("voice", "a-1", "n1", sel), egressObj("voice", "sip", nil))
+	g.reconcile(t, "egress/voice/sip")
+	ns := g.syncNode(t, "n1")
+	assert.Equal(t, "Node", ns.OwnerReferences[0].Kind)
+	assert.Equal(t, "n1", ns.OwnerReferences[0].Name)
+	n, err := g.kube.CoreV1().Nodes().Get(context.Background(), "n1", metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.NotContains(t, n.Labels, purelbv2.EgressCapableLabel, "nothing reported: not capable")
+
+	g.status(t, "n1", capable)
+	g.syncNode(t, "n1")
+	n, err = g.kube.CoreV1().Nodes().Get(context.Background(), "n1", metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "true", n.Labels[purelbv2.EgressCapableLabel])
 }

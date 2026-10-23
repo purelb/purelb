@@ -179,6 +179,11 @@ func (r *Reconciler) gate(conds conditions, cur *purelbv2.EgressEndpoints, owner
 			excluded[n] = true
 			logging.Info(r.logger, "op", "egressGate", "endpoints", cur.Name, "node", n,
 				"msg", "node evicted from gating for ack lag", "acked", gen, "generation", cur.Generation)
+			if ref, ok := r.ownerRef(cur.Labels); ok {
+				sg, _, _ := r.alloc.ServiceGroup(cur.Spec.ServiceGroup)
+				r.event(ref, cur, sg, true, true, reasonNodesLagging, "%s: %s evicted from gating; acked generation %d of %d",
+					cur.Spec.Address, n, gen, cur.Generation)
+			}
 			continue
 		}
 		acked = false

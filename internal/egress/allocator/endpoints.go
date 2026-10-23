@@ -134,11 +134,13 @@ func endpointsLabels(run *run, spec purelbv2.EgressEndpointsSpec) map[string]str
 // addresses with its slices and reserved ports (§5.6). Slices change only once every gating node has acked
 // the current generation (§5.7), so one generation is in flight at a
 // time; a change of slices goes on the priority lane. Releasing addresses
-// the policy no longer holds is the teardown stage's.
-func (r *Reconciler) syncEndpoints(run *run, addrs []address) {
+// the policy no longer holds is the teardown stage's. It returns each
+// address's EgressEndpoints as written, for status.
+func (r *Reconciler) syncEndpoints(run *run, addrs []address) map[string]*purelbv2.EgressEndpoints {
 	client := r.purelb.PurelbV2().EgressEndpointses(r.namespace)
 	owner := run.p.ref.String()
 	added := map[string]int{} // slots this reconcile takes per node
+	out := map[string]*purelbv2.EgressEndpoints{}
 	for _, a := range addrs {
 		name := egress.EndpointsName(run.p.ref, a.ip)
 		spec := r.endpointsSpec(run, a)
@@ -150,10 +152,12 @@ func (r *Reconciler) syncEndpoints(run *run, addrs []address) {
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.namespace, Labels: endpointsLabels(run, spec)},
 				Spec:       spec,
 			}
+			out[name] = want
 			r.write(owner, "EgressEndpoints/"+name, len(spec.Slices) > 0, func(ctx context.Context) error {
 				_, err := client.Create(ctx, want, metav1.CreateOptions{})
 				return err
 			})
+			r.event(run.p.ref, nil, run.group, false, false, "AddressAllocated", "%s allocated from ServiceGroup %s", a.ip, run.group.Name)
 			continue
 		}
 		if len(cur.Spec.Slices) > 0 && cur.Spec.SliceSize != spec.SliceSize {
@@ -169,18 +173,23 @@ func (r *Reconciler) syncEndpoints(run *run, addrs []address) {
 		if acked {
 			spec.Slices = r.planAddress(run, a, name, spec.SliceSize, activate(cur.Spec.Slices), r.freedSlices(cur, owner), added)
 		}
+		r.observeAnnouncers(run, cur)
 		lbls := endpointsLabels(run, spec)
+		out[name] = cur
 		if apiequality.Semantic.DeepEqual(cur.Spec, spec) && apiequality.Semantic.DeepEqual(cur.Labels, lbls) {
 			continue
 		}
+		r.sliceEvents(run, cur, cur.Spec.Slices, spec.Slices)
 		upd := cur.DeepCopy()
 		upd.Spec, upd.Labels = spec, lbls
+		out[name] = upd
 		r.write(owner, "EgressEndpoints/"+name, !apiequality.Semantic.DeepEqual(cur.Spec.Slices, spec.Slices),
 			func(ctx context.Context) error {
 				_, err := client.Update(ctx, upd, metav1.UpdateOptions{})
 				return err
 			})
 	}
+	return out
 }
 
 // planAddress plans one address's slices: one for each node with selected

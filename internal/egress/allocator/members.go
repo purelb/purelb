@@ -18,6 +18,7 @@ import (
 	"context"
 	"sort"
 
+	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -102,6 +103,7 @@ func (r *Reconciler) syncMembers(run *run) {
 	for _, m := range existing {
 		have[m.Name] = m
 	}
+	r.podEvents(run, existing)
 	client := r.purelb.PurelbV2().EgressMemberses(r.namespace)
 	for _, want := range desiredMembers(run) {
 		want.Namespace = r.namespace
@@ -128,4 +130,46 @@ func (r *Reconciler) syncMembers(run *run) {
 			return client.Delete(ctx, name, metav1.DeleteOptions{})
 		})
 	}
+}
+
+// podEvents records PodSelected and PodDeselected against the policy's
+// current EgressMembers.
+func (r *Reconciler) podEvents(run *run, existing []*purelbv2.EgressMembers) {
+	was := map[string]bool{}
+	for _, m := range existing {
+		for k := range membersPods(m) {
+			was[k] = true
+		}
+	}
+	now := map[string]bool{}
+	for _, ms := range run.sel.nodes {
+		for _, m := range ms {
+			now[m.namespace+"/"+m.name] = true
+		}
+	}
+	emit := func(key, reason, verb string) {
+		if obj, ok, _ := r.pods.GetByKey(key); ok {
+			r.recorder.Eventf(obj.(*corev1.Pod), corev1.EventTypeNormal, reason, "%s by %s", verb, run.p.ref.String())
+		}
+	}
+	for k := range now {
+		if !was[k] {
+			emit(k, "PodSelected", "selected")
+		}
+	}
+	for k := range was {
+		if !now[k] {
+			emit(k, "PodDeselected", "deselected")
+		}
+	}
+}
+
+// membersPods is the "namespace/name" of every pod an EgressMembers lists.
+func membersPods(m *purelbv2.EgressMembers) map[string]bool {
+	keys, _ := memberPodIndex(m)
+	out := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		out[k] = true
+	}
+	return out
 }

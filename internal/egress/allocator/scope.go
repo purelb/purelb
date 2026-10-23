@@ -60,7 +60,8 @@ type run struct {
 	// the finalizer once withdrawn (§5.9).
 	disallowed bool
 
-	sel selection
+	sel     selection
+	outrank outranking
 }
 
 // scope resolves the policy's group and checks it against the group's

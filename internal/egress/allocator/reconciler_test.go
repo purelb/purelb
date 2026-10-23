@@ -16,6 +16,7 @@ package allocator
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -43,6 +44,40 @@ type nopEvents struct{}
 func (nopEvents) Infof(runtime.Object, string, string, ...interface{})  {}
 func (nopEvents) Errorf(runtime.Object, string, string, ...interface{}) {}
 func (nopEvents) ForceSync()                                            {}
+
+// recorder keeps every event with its object.
+type recorder struct {
+	mu     sync.Mutex
+	events []recorded
+}
+
+type recorded struct {
+	obj                  runtime.Object
+	typ, reason, message string
+}
+
+func (r *recorder) Event(obj runtime.Object, typ, reason, message string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, recorded{obj: obj, typ: typ, reason: reason, message: message})
+}
+
+func (r *recorder) Eventf(obj runtime.Object, typ, reason, format string, args ...interface{}) {
+	r.Event(obj, typ, reason, fmt.Sprintf(format, args...))
+}
+
+func (r *recorder) AnnotatedEventf(obj runtime.Object, _ map[string]string, typ, reason, format string, args ...interface{}) {
+	r.Eventf(obj, typ, reason, format, args...)
+}
+
+// take returns and clears the recorded events.
+func (r *recorder) take() []recorded {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.events
+	r.events = nil
+	return out
+}
 
 // queue records what the reconciler enqueues.
 type queue struct {
@@ -99,6 +134,7 @@ func started(t *testing.T, crds bool, objs ...runtime.Object) (*Reconciler, *kub
 	alloc := coreallocator.New(log.NewNopLogger())
 	alloc.SetClient(nopEvents{})
 	r := New(log.NewNopLogger(), alloc, testNS)
+	r.recorder = &recorder{}
 	alloc.SetEgress(r)
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
