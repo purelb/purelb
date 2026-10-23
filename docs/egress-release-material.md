@@ -19,3 +19,21 @@ notes and docs of the release that ships it. Not user-facing prose.
   `EgressMembers`, `EgressNodeState` (cluster-scoped).
 - `ServiceGroup.spec.egress` and `LBNodeAgent.spec.egress`. Absent, egress is
   refused / disabled.
+
+## Install methods
+
+Egress ships like k8gobgp: a kustomize component (`deployments/components/egress`)
+and a Helm value, `egress.enabled` (default true). It is idle until an
+LBNodeAgent sets `spec.egress.enabled`.
+
+| Install | Manifest | CRDs only |
+| --- | --- | --- |
+| Everything: PureLB + k8gobgp + egress (default) | `install-<ver>.yaml` | `install-crds-<ver>.yaml` |
+| PureLB + k8gobgp | `install-noegress-<ver>.yaml` (new) | `install-crds-noegress-<ver>.yaml` (new) |
+| PureLB only | `install-nobgp-<ver>.yaml` | `install-crds-nobgp-<ver>.yaml` |
+
+- **`install-<ver>.yaml` now includes egress.** Users who want today's
+  PureLB + k8gobgp install without egress switch to `install-noegress-<ver>.yaml`.
+- **`install-nobgp-<ver>.yaml` now also means "without egress".**
+- Helm always installs the egress CRDs (Helm can't template `crds/`);
+  `egress.enabled=false` leaves out the egress RBAC.

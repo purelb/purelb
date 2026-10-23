@@ -1,0 +1,56 @@
+{{- if .Values.egress.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "purelb.fullname" . }}:egress:allocator
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+rules:
+# Rules below are injected from deployments/components/egress/egress-allocator-rbac.yaml
+# at `make helm` time — that file is the single source of truth. Direct
+# edits here fail `make check-helm-rbac-source`.
+# @@INJECT_EGRESS_ALLOCATOR_RULES@@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "purelb.fullname" . }}:egress:allocator
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "purelb.fullname" . }}:egress:allocator
+subjects:
+- kind: ServiceAccount
+  name: allocator
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "purelb.fullname" . }}:egress:lbnodeagent
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+rules:
+# Rules below are injected from deployments/components/egress/egress-lbnodeagent-rbac.yaml
+# at `make helm` time — that file is the single source of truth. Direct
+# edits here fail `make check-helm-rbac-source`.
+# @@INJECT_EGRESS_LBNODEAGENT_RULES@@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "purelb.fullname" . }}:egress:lbnodeagent
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "purelb.fullname" . }}:egress:lbnodeagent
+subjects:
+- kind: ServiceAccount
+  name: lbnodeagent
+  namespace: {{ .Release.Namespace }}
+{{- end }}

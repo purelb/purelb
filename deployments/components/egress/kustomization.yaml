@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# The egress CRDs are generated into ../../crds by `make crd`, so builds
+# that include this component need --load-restrictor LoadRestrictionsNone.
+resources:
+- ../../crds/purelb.io_egresses.yaml
+- ../../crds/purelb.io_clusteregresses.yaml
+- ../../crds/purelb.io_egressendpoints.yaml
+- ../../crds/purelb.io_egressmembers.yaml
+- ../../crds/purelb.io_egressnodestates.yaml
+- egress-allocator-rbac.yaml
+- egress-lbnodeagent-rbac.yaml

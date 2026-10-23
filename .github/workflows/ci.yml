@@ -302,6 +302,12 @@ jobs:
           MANIFEST_SUFFIX: ${{ github.ref_name }}
         run: make install-manifest
 
+      - name: Generate install manifest (without egress)
+        env:
+          SUFFIX: ${{ github.ref_name }}
+          MANIFEST_SUFFIX: ${{ github.ref_name }}
+        run: make install-manifest-noegress
+
       - name: Generate manifests (without BGP)
         env:
           SUFFIX: ${{ github.ref_name }}
@@ -319,6 +325,12 @@ jobs:
           SUFFIX: ${{ github.ref_name }}
           MANIFEST_SUFFIX: ${{ github.ref_name }}
         run: make install-crds
+
+      - name: Generate CRDs-only install manifest (without egress)
+        env:
+          SUFFIX: ${{ github.ref_name }}
+          MANIFEST_SUFFIX: ${{ github.ref_name }}
+        run: make install-crds-noegress
 
       - name: Generate CRDs-only install manifest (without BGP)
         env:
@@ -349,9 +361,11 @@ jobs:
           sha256sum purelb-${{ github.ref_name }}.tgz > SHA256SUMS
           sha256sum deployments/purelb-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/install-${{ github.ref_name }}.yaml >> SHA256SUMS
+          sha256sum deployments/install-noegress-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/purelb-nobgp-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/install-nobgp-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/install-crds-${{ github.ref_name }}.yaml >> SHA256SUMS
+          sha256sum deployments/install-crds-noegress-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum deployments/install-crds-nobgp-${{ github.ref_name }}.yaml >> SHA256SUMS
           sha256sum kubectl-purelb-* >> SHA256SUMS
 
@@ -373,9 +387,11 @@ jobs:
             purelb-${{ github.ref_name }}.tgz
             deployments/purelb-${{ github.ref_name }}.yaml
             deployments/install-${{ github.ref_name }}.yaml
+            deployments/install-noegress-${{ github.ref_name }}.yaml
             deployments/purelb-nobgp-${{ github.ref_name }}.yaml
             deployments/install-nobgp-${{ github.ref_name }}.yaml
             deployments/install-crds-${{ github.ref_name }}.yaml
+            deployments/install-crds-noegress-${{ github.ref_name }}.yaml
             deployments/install-crds-nobgp-${{ github.ref_name }}.yaml
             kubectl-purelb-linux-amd64
             kubectl-purelb-linux-arm64

@@ -299,6 +299,13 @@ allocator:
     seccompProfile:
       type: RuntimeDefault
 
+# Egress gives selected pods stable source addresses from PureLB pools.
+# Installed but idle: nothing happens on a node until an LBNodeAgent sets
+# spec.egress.enabled. Setting this false leaves the egress RBAC out; the
+# egress CRDs are always installed, because Helm can't template crds/.
+egress:
+  enabled: true
+
 # k8gobgp sidecar — per-node BGP route announcement for remote VIPs.
 # When enabled, k8gobgp runs as a sidecar in the lbnodeagent DaemonSet pod.
 # It shares hostNetwork:true and announces VIP routes to upstream BGP routers.

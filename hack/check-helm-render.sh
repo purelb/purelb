@@ -121,4 +121,19 @@ expect "Deployment: allocator startupProbe is /healthz" "^allocator startupProbe
 expect "Deployment: allocator readinessProbe is /readyz" "^allocator readinessProbe /readyz 7472$" "$out"
 refuse "Deployment: allocator startupProbe never /readyz" "^allocator startupProbe /readyz" "$out"
 
+# Egress: its RBAC renders by default (egress.enabled defaults to true)
+# and not at all when disabled. A whole-chart render, because
+# `helm template -s` errors on a template that renders nothing.
+kinds() { python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d:
+        print(d["kind"] + "/" + d["metadata"]["name"])'; }
+out=$($HELM template t "$CHART" --kube-version 1.31.0 | kinds)
+expect "egress: allocator ClusterRole by default" "^ClusterRole/.*:egress:allocator$" "$out"
+expect "egress: lbnodeagent ClusterRole by default" "^ClusterRole/.*:egress:lbnodeagent$" "$out"
+expect "egress: allocator binding by default" "^ClusterRoleBinding/.*:egress:allocator$" "$out"
+out=$($HELM template t "$CHART" --kube-version 1.31.0 --set egress.enabled=false | kinds)
+refuse "egress: nothing egress with egress.enabled=false" "egress" "$out"
+
 exit $fail
