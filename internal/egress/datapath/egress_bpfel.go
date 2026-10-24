@@ -52,6 +52,13 @@ type egressFragKey struct {
 	Pad    [2]uint8
 }
 
+type egressHolders struct {
+	_       structs.HostLayout
+	N       uint32
+	Pad     uint32
+	Holders [32]uint64
+}
+
 type egressNode struct {
 	_     structs.HostLayout
 	V4    uint32
@@ -103,10 +110,12 @@ const (
 	egressMapPoolIfs        = "pool_ifs"
 	egressMapReserved       = "reserved"
 	egressMapSlices         = "slices"
+	egressMapSteer          = "steer"
 	egressMapSvcPorts       = "svc_ports"
 	egressProgPlAnnounceEth = "pl_announce_eth"
 	egressProgPlAnnounceL3  = "pl_announce_l3"
 	egressProgPlAnnounceTun = "pl_announce_tun"
+	egressProgPlSteer       = "pl_steer"
 )
 
 // loadEgress returns the embedded CollectionSpec for egress.
@@ -154,6 +163,7 @@ type egressProgramSpecs struct {
 	PlAnnounceEth *ebpf.ProgramSpec `ebpf:"pl_announce_eth"`
 	PlAnnounceL3  *ebpf.ProgramSpec `ebpf:"pl_announce_l3"`
 	PlAnnounceTun *ebpf.ProgramSpec `ebpf:"pl_announce_tun"`
+	PlSteer       *ebpf.ProgramSpec `ebpf:"pl_steer"`
 }
 
 // egressMapSpecs contains maps before they are loaded into the kernel.
@@ -170,6 +180,7 @@ type egressMapSpecs struct {
 	PoolIfs        *ebpf.MapSpec `ebpf:"pool_ifs"`
 	Reserved       *ebpf.MapSpec `ebpf:"reserved"`
 	Slices         *ebpf.MapSpec `ebpf:"slices"`
+	Steer          *ebpf.MapSpec `ebpf:"steer"`
 	SvcPorts       *ebpf.MapSpec `ebpf:"svc_ports"`
 }
 
@@ -209,6 +220,7 @@ type egressMaps struct {
 	PoolIfs        *ebpf.Map `ebpf:"pool_ifs"`
 	Reserved       *ebpf.Map `ebpf:"reserved"`
 	Slices         *ebpf.Map `ebpf:"slices"`
+	Steer          *ebpf.Map `ebpf:"steer"`
 	SvcPorts       *ebpf.Map `ebpf:"svc_ports"`
 }
 
@@ -224,6 +236,7 @@ func (m *egressMaps) Close() error {
 		m.PoolIfs,
 		m.Reserved,
 		m.Slices,
+		m.Steer,
 		m.SvcPorts,
 	)
 }
@@ -241,6 +254,7 @@ type egressPrograms struct {
 	PlAnnounceEth *ebpf.Program `ebpf:"pl_announce_eth"`
 	PlAnnounceL3  *ebpf.Program `ebpf:"pl_announce_l3"`
 	PlAnnounceTun *ebpf.Program `ebpf:"pl_announce_tun"`
+	PlSteer       *ebpf.Program `ebpf:"pl_steer"`
 }
 
 func (p *egressPrograms) Close() error {
@@ -248,6 +262,7 @@ func (p *egressPrograms) Close() error {
 		p.PlAnnounceEth,
 		p.PlAnnounceL3,
 		p.PlAnnounceTun,
+		p.PlSteer,
 	)
 }
 

@@ -83,8 +83,12 @@ type Agent struct {
 	// elect is the node's Lease election, set before Start.
 	elect Elector
 
-	status   *statusWriter
-	datapath *datapath
+	status *statusWriter
+	runner *runner
+	// dp is the datapath goroutine's state; apply brings it in line with
+	// a desired state (tests replace it).
+	dp    *dpState
+	apply func(dpWant) (*purelbv2.EgressCapability, error)
 	// capability is the datapath's last probe, nil before the first.
 	// Written by the datapath goroutine, read by the queue goroutine.
 	capability atomic.Pointer[purelbv2.EgressCapability]
@@ -118,8 +122,10 @@ var (
 
 // New returns the agent's egress controller for node; Start brings it up.
 func New(logger log.Logger, node, namespace string) *Agent {
-	return &Agent{logger: logger, node: node, namespace: namespace, datapath: newDatapath(), now: time.Now,
-		statusInterval: statusInterval}
+	a := &Agent{logger: logger, node: node, namespace: namespace, runner: newRunner(), now: time.Now,
+		statusInterval: statusInterval, dp: &dpState{}}
+	a.apply = a.applyDatapath
+	return a
 }
 
 // Configure takes a config delivery, its agents already filtered to this
@@ -173,7 +179,7 @@ func (a *Agent) start(stop <-chan struct{}, kube kubernetes.Interface, purelb ve
 	a.status = newStatusWriter(a.logger, a.node, kube, purelb)
 	a.status.interval = a.statusInterval
 	go a.status.run(stop)
-	go a.datapath.run(stop)
+	go a.runner.run(stop)
 	a.enqueue.Store(&enqueue)
 	enqueue(keyConfig, false)
 	return nil
@@ -203,6 +209,8 @@ func (a *Agent) Sync(key string) error {
 		a.syncConfig()
 	case keyNode:
 		a.syncNode()
+	case keyDatapath:
+		a.syncDatapath()
 	}
 	return nil
 }
@@ -210,13 +218,13 @@ func (a *Agent) Sync(key string) error {
 // Keys returns the agent's keys, for ForceSync. It runs on the caller's
 // goroutine, so it reads no queue-goroutine state.
 func (a *Agent) Keys() []string {
-	return []string{keyConfig, keyNode}
+	return []string{keyConfig, keyNode, keyDatapath}
 }
 
 // Live fails once one datapath item has run for longer than
 // livenessStuckAfter.
 func (a *Agent) Live() error {
-	return a.datapath.live(a.now())
+	return a.runner.live(a.now())
 }
 
 // syncConfig turns egress on or off to match the latest delivery (D-idle:
@@ -234,7 +242,7 @@ func (a *Agent) syncConfig() {
 		a.startSession(*d.spec)
 	case want && !equality.Semantic.DeepEqual(a.on.spec, *d.spec):
 		a.on.spec = *d.spec
-		a.probe()
+		a.syncDatapath()
 	case !want && a.on != nil:
 		a.stopSession()
 		a.status.disable()
@@ -260,7 +268,8 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	}
 	s.nodeStates, s.nodes = ens.Lister(), nodes.GetIndexer()
 
-	// The status is recomputed when this node's own objects change.
+	// The status is recomputed when this node's own objects change; the
+	// datapath when any node's underlay addresses do (nodes map).
 	mine := func(obj interface{}) {
 		if t, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 			obj = t.Obj
@@ -269,9 +278,18 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 			a.add(keyNode, false)
 		}
 	}
-	h := cache.ResourceEventHandlerFuncs{AddFunc: mine, UpdateFunc: func(_, o interface{}) { mine(o) }, DeleteFunc: mine}
-	_, _ = ens.Informer().AddEventHandler(h)
-	_, _ = nodes.AddEventHandler(h)
+	_, _ = ens.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: mine,
+		UpdateFunc: func(_, o interface{}) { mine(o) }, DeleteFunc: mine})
+	nodeChanged := func(obj interface{}) {
+		mine(obj)
+		a.add(keyDatapath, false)
+	}
+	_, _ = nodes.AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: nodeChanged, DeleteFunc: nodeChanged,
+		UpdateFunc: func(o, n interface{}) {
+			if !equality.Semantic.DeepEqual(o.(*corev1.Node).Status.Addresses, n.(*corev1.Node).Status.Addresses) {
+				nodeChanged(n)
+			}
+		}})
 
 	own.Start(s.stop)
 	kf.Start(s.stop)
@@ -280,11 +298,10 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 			return
 		}
 		s.synced.Store(true)
-		a.add(keyNode, false)
+		a.add(keyDatapath, false)
 	}()
 	a.on = s
 	logging.Info(a.logger, "op", "egressEnable", "node", a.node, "msg", "egress enabled on this node")
-	a.probe()
 }
 
 // stopSession stops egress's informers.
@@ -292,17 +309,6 @@ func (a *Agent) stopSession() {
 	close(a.on.stop)
 	a.on = nil
 	logging.Info(a.logger, "op", "egressDisable", "node", a.node, "msg", "egress disabled on this node")
-}
-
-// probe asks the datapath goroutine for this node's capability; it
-// requeues keyNode with the result.
-func (a *Agent) probe() {
-	spec := a.on.spec
-	a.datapath.submit(func() {
-		c := probeCapability(spec)
-		a.capability.Store(c)
-		a.add(keyNode, false)
-	})
 }
 
 // syncNode hands this node's EgressNodeState status to the status writer.

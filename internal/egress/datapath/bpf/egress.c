@@ -15,6 +15,11 @@
 //   address's pool interface, and a reply for a pod on this node goes on to
 //   the stack with the reply flag; anything else is forged and dropped.
 //
+// pl_steer runs at tcx egress of purelb-eg0 on a pod node (design 6.8): a
+// packet whose mark carries a slot gets the tunnel key of one of the slot's
+// holders, and the mark field is cleared so the outer route lookup can't
+// match the slot rule again (ELOOP).
+//
 // Packets not addressed to an egress address take the fast path on an
 // uplink: one header read and one map lookup, uncounted. Transit is
 // redirected, never punted to the stack.
@@ -62,7 +67,8 @@
 #define REPLY_FLAG 0x80u
 #define DIRECT_MAX 63
 
-#define GENEVE_VNI 1
+#define GENEVE_VNI  1
+#define MAX_HOLDERS 32
 #define FRAG_MISS  0xffffffffffffffffull // owner_of: a later fragment with no frags entry
 
 #define PTB6_QUOTE  1232 // 1280 - 40 - 8: an ICMPv6 error fits the IPv6 minimum MTU
@@ -88,6 +94,8 @@ enum reason {
 	R_FORGED_INNER_DST, // tunnel: neither transit nor a reply this node owns
 	R_TTL_EXPIRED,      // tunnel: transit whose TTL or hop limit would expire
 	R_NO_ROUTE,         // tunnel: no route in the pool interface's table
+	R_STEERED,          // steering: a slot's packet keyed to a holder
+	R_NO_HOLDER,        // steering: a slot with no holder (dropped)
 	R_MAX,
 };
 
@@ -148,6 +156,14 @@ struct underlay_key {
 	__u32 addr[4];
 	__u8 v6;
 	__u8 pad[3];
+};
+
+// A slot's holders (steer): the elected owner of a local address, or a
+// routed address's live advertisers (D1, D7).
+struct holders {
+	__u32 n;
+	__u32 pad;
+	__u64 holders[MAX_HOLDERS];
 };
 
 struct pool_if {
@@ -282,6 +298,14 @@ struct {
 	__type(key, __u32);
 	__type(value, struct pool_if);
 } pool_ifs SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 256);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, __u32);
+	__type(value, struct holders);
+} steer SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -1087,6 +1111,55 @@ int pl_announce_tun(struct __sk_buff *skb)
 	}
 	count(R_FORGED_INNER_DST, f->dst.family);
 	return TCX_DROP;
+}
+
+// ---- steering ----------------------------------------------------------------
+
+SEC("tcx/egress")
+int pl_steer(struct __sk_buff *skb)
+{
+	struct egress_config *c;
+	struct scratch *s;
+	struct holders *st;
+	struct node *n;
+	__u32 field, idx;
+	__u8 fam = skb->protocol == ETH_P_IPV6_BE ? AF_INET6_ : AF_INET_;
+
+	s = scr();
+	c = config();
+	if (!s || !c)
+		return TCX_NEXT;
+	field = (skb->mark >> (c->mark_shift & 24)) & 0xff;
+	// No slot (or a reply pl_announce already keyed): never overwrite a key.
+	if (field == 0 || (field & REPLY_FLAG))
+		return TCX_NEXT;
+	s->ifindex = field; // the key in scratch, as in uplink()
+	st = bpf_map_lookup_elem(&steer, &s->ifindex);
+	if (!st || st->n == 0 || st->n > MAX_HOLDERS) {
+		count(R_NO_HOLDER, fam);
+		return TCX_DROP;
+	}
+	// bpf_get_hash_recalc is the flow hash ip_fragment copies to every
+	// fragment, so a datagram's fragments reach the same holder.
+	idx = bpf_get_hash_recalc(skb) % st->n;
+	if (idx >= MAX_HOLDERS)
+		return TCX_DROP;
+	s->owner = st->holders[idx];
+	n = bpf_map_lookup_elem(&nodes, &s->owner);
+	if (!n) {
+		count(R_NO_NODE, fam);
+		return TCX_DROP;
+	}
+	s->f.dst.family = fam; // set_key picks the outer family from it
+	if (set_key(skb, c, s, n) < 0) {
+		count(R_NO_NODE, fam);
+		return TCX_DROP;
+	}
+	// The outer route lookup uses skb->mark: cleared, it can't match the
+	// slot rule (the underlay throw routes are the backstop).
+	set_mark(skb, c, 0);
+	count(R_STEERED, fam);
+	return TCX_NEXT;
 }
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

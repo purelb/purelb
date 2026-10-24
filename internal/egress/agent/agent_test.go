@@ -16,6 +16,7 @@ package agent
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -44,11 +45,14 @@ var testNodeObj = &corev1.Node{
 }
 
 // fixture is an Agent started on fake clients, with its work queue run by
-// one goroutine, as the agent's queue goroutine runs it.
+// one goroutine, as the agent's queue goroutine runs it. Its datapath is a
+// fake that records each desired state (the kernel's needs privileges:
+// internal/egress/datapath tests it).
 type fixture struct {
 	a      *Agent
 	kube   *kubefake.Clientset
 	purelb *purelbfake.Clientset
+	wants  chan dpWant
 }
 
 func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
@@ -71,6 +75,13 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	purelb := purelbfake.NewSimpleClientset(purelbObjs...)
 	a := New(log.NewNopLogger(), testNode, "purelb-system")
 	a.statusInterval = 50 * time.Millisecond
+	wants := make(chan dpWant, 100)
+	a.apply = func(w dpWant) (*purelbv2.EgressCapability, error) {
+		wants <- w
+		c := probeCapability(w.spec)
+		c.TunnelEncapsulation = "L3"
+		return c, nil
+	}
 	keys := make(chan string, 1000)
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
@@ -85,7 +96,7 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 			}
 		}
 	}()
-	return &fixture{a: a, kube: kube, purelb: purelb}
+	return &fixture{a: a, kube: kube, purelb: purelb, wants: wants}
 }
 
 func agentWith(spec *purelbv2.LBNodeAgentEgressSpec) *purelbv2.Config {
@@ -152,6 +163,7 @@ func TestEnableReportsCapability(t *testing.T) {
 	c := ens.Status.Capability
 	assert.NotEmpty(t, c.Kernel)
 	assert.Equal(t, defaultMarkField, c.MarkField)
+	assert.Equal(t, "L3", c.TunnelEncapsulation)
 	assert.Equal(t, &purelbv2.EgressUnderlay{IPv4: "10.0.0.1", IPv6: "fd00::1"}, c.Underlay)
 }
 
@@ -275,7 +287,7 @@ func TestConfigurePicksFirstEgressAgent(t *testing.T) {
 // The datapath runs only the latest item, and fails liveness only when
 // one item runs past the bound.
 func TestDatapath(t *testing.T) {
-	d := newDatapath()
+	d := newRunner()
 	release := make(chan struct{})
 	ran := make(chan int, 10)
 	d.submit(func() { <-release; ran <- 0 })
@@ -297,4 +309,57 @@ func TestDatapath(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	require.Eventually(t, func() bool { return d.live(time.Now().Add(time.Hour)) == nil }, time.Second, time.Millisecond)
+}
+
+// The datapath gets every node's underlay addresses, and again when one
+// changes, but not for an unrelated Node update (status heartbeats).
+func TestDatapathWant(t *testing.T) {
+	peer := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n2"}, Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+		{Type: corev1.NodeInternalIP, Address: "10.0.0.2"}}}}
+	f := newFixture(t, true, testNodeObj, peer)
+	f.a.Configure(agentWith(&purelbv2.LBNodeAgentEgressSpec{Enabled: true, TunnelPort: 7000}))
+	var w dpWant
+	require.Eventually(t, func() bool {
+		select {
+		case w = <-f.wants:
+			return len(w.nodes) == 2
+		default:
+			return false
+		}
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, testNode, w.self)
+	assert.Equal(t, int32(7000), w.spec.TunnelPort)
+	assert.Equal(t, dpNode{name: "n1", v4: netip.MustParseAddr("10.0.0.1"), v6: netip.MustParseAddr("fd00::1")}, w.nodes[0])
+	assert.Equal(t, dpNode{name: "n2", v4: netip.MustParseAddr("10.0.0.2")}, w.nodes[1])
+
+	drain := func() {
+		for {
+			select {
+			case <-f.wants:
+			case <-time.After(300 * time.Millisecond):
+				return
+			}
+		}
+	}
+	drain()
+	ctx := context.Background()
+	peer.Labels = map[string]string{"x": "y"}
+	_, err := f.kube.CoreV1().Nodes().Update(ctx, peer, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	select {
+	case w := <-f.wants:
+		t.Fatalf("re-applied for a Node update without an address change: %v", w)
+	case <-time.After(300 * time.Millisecond):
+	}
+	peer.Status.Addresses = append(peer.Status.Addresses, corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "fd00::2"})
+	_, err = f.kube.CoreV1().Nodes().Update(ctx, peer, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		select {
+		case w = <-f.wants:
+			return len(w.nodes) == 2 && w.nodes[1].v6.IsValid()
+		default:
+			return false
+		}
+	}, 5*time.Second, 10*time.Millisecond)
 }

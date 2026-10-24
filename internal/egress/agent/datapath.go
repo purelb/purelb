@@ -32,10 +32,10 @@ const livenessStuckAfter = 120 * time.Second
 // defaultMarkField is the mark byte when the LBNodeAgent sets none (D18).
 const defaultMarkField = "0x000000ff"
 
-// datapath runs kernel work on its own goroutine (D-conc). Each item is a
+// runner runs kernel work on its own goroutine (D-conc). Each item is a
 // whole desired state, so only the latest submitted item runs; the queue
 // goroutine never waits for the kernel.
-type datapath struct {
+type runner struct {
 	next atomic.Pointer[func()]
 	kick chan struct{}
 	// started is when the running item began (Unix nanoseconds), 0 when
@@ -43,12 +43,12 @@ type datapath struct {
 	started atomic.Int64
 }
 
-func newDatapath() *datapath {
-	return &datapath{kick: make(chan struct{}, 1)}
+func newRunner() *runner {
+	return &runner{kick: make(chan struct{}, 1)}
 }
 
 // submit replaces the pending item with f.
-func (d *datapath) submit(f func()) {
+func (d *runner) submit(f func()) {
 	d.next.Store(&f)
 	select {
 	case d.kick <- struct{}{}:
@@ -57,7 +57,7 @@ func (d *datapath) submit(f func()) {
 }
 
 // run runs items until stop closes.
-func (d *datapath) run(stop <-chan struct{}) {
+func (d *runner) run(stop <-chan struct{}) {
 	for {
 		select {
 		case <-stop:
@@ -76,7 +76,7 @@ func (d *datapath) run(stop <-chan struct{}) {
 
 // live fails once one item has run for longer than livenessStuckAfter. An
 // idle goroutine is always live.
-func (d *datapath) live(now time.Time) error {
+func (d *runner) live(now time.Time) error {
 	started := d.started.Load()
 	if started == 0 {
 		return nil

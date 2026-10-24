@@ -138,7 +138,7 @@ jobs:
             ./addrguard.test -test.v -test.skip '^TestAttacher'
           sudo env EGRESS_BPF_TESTS=required \
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin -- \
-            ./datapath.test -test.v
+            ./datapath.test -test.v -test.skip '^TestNetns'
 
       # Attaching to real links, in a throwaway network namespace so the
       # runner's own interfaces are untouched. Creating the namespace needs
@@ -165,6 +165,17 @@ jobs:
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin -- \
             ./bpfpin.test -test.v | tee bpfpin.out
           grep -q -- '--- PASS: TestPinAdoptRelease' bpfpin.out
+
+      # Egress's tunnel, end to end, between network namespaces: steering,
+      # transit, replies through the tunnel (D3).
+      - name: Run the egress tunnel tests in network namespaces
+        run: |
+          set -o pipefail
+          sudo modprobe geneve
+          sudo env EGRESS_BPF_TESTS=required PURELB_NETNS_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
+            ./datapath.test -test.v -test.run '^TestNetns' | tee tunnel.out
+          grep -q -- '--- PASS: TestNetnsTunnelEndToEnd' tunnel.out
 
   # The same tests on a matrix of distribution kernels, each in a QEMU VM:
   # the verifier differs between kernels, and the runner's tests one.

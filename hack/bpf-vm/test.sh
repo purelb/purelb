@@ -48,12 +48,15 @@ cat >"$W/cmds" <<'CMDS'
 bpf,net_admin /t/addrguard.test -test.v -test.skip ^TestAttacher
 bpf,net_admin,sys_admin,net_raw /t/addrguard.test -test.v -test.run ^TestAttacher
 bpf,net_admin,sys_admin /t/bpfpin.test -test.v
-bpf,net_admin /t/datapath.test -test.v
+bpf,net_admin /t/datapath.test -test.v -test.skip ^TestNetns
+bpf,net_admin,sys_admin,net_raw /t/datapath.test -test.v -test.run ^TestNetns
 CMDS
 
 failed=()
 for k in $KERNELS; do
-	kdir=$($HERE/kernels.sh "$k")
+	# The egress module set (Geneve, nf_tables, ...): a superset of the
+	# base modules, which the egress tunnel tests need.
+	kdir=$(BPF_VM_MODULES=egress $HERE/kernels.sh "$k")
 	log="$LOGS/$k.log"
 	echo "=== $k"
 	result=PASS
@@ -62,7 +65,7 @@ for k in $KERNELS; do
 	fi
 	# A renamed test would otherwise pass as "no tests to run".
 	for t in TestAttacherInNetns TestAttacherPinsInNetns TestPinAdoptRelease TestAdoptNothingOrStale TestSweep \
-		TestLoad TestReplySteering TestPacketTooBig; do
+		TestLoad TestReplySteering TestPacketTooBig TestNetnsTunnelEndToEnd TestNetnsUplinkL3; do
 		if ! grep -q -- "--- PASS: $t" "$log"; then
 			result=FAIL
 		fi

@@ -198,3 +198,25 @@ func ignoreNotExist(err error) error {
 	}
 	return err
 }
+
+// MaxHolders is the most holders a slot steers among.
+const MaxHolders = 32
+
+// SetSteer makes slot steer among holders (D1, D7); the pod node's
+// traffic in it picks one by flow hash.
+func (o *Objects) SetSteer(slot uint8, holders []uint64) error {
+	if slot == 0 || slot > 127 {
+		return fmt.Errorf("slot %d is not 1-127", slot)
+	}
+	if len(holders) == 0 || len(holders) > MaxHolders {
+		return fmt.Errorf("%d holders: a slot steers among 1 to %d", len(holders), MaxHolders)
+	}
+	v := egressHolders{N: uint32(len(holders))}
+	copy(v.Holders[:], holders)
+	return o.Steer.Put(uint32(slot), &v)
+}
+
+// DeleteSteer removes slot's holders: its traffic is dropped.
+func (o *Objects) DeleteSteer(slot uint8) error {
+	return ignoreNotExist(o.Steer.Delete(uint32(slot)))
+}
