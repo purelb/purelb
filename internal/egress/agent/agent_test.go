@@ -88,8 +88,8 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	return &fixture{a: a, kube: kube, purelb: purelb}
 }
 
-func agentWith(spec *purelbv2.LBNodeAgentEgressSpec) []*purelbv2.LBNodeAgent {
-	return []*purelbv2.LBNodeAgent{{Spec: purelbv2.LBNodeAgentSpec{Egress: spec}}}
+func agentWith(spec *purelbv2.LBNodeAgentEgressSpec) *purelbv2.Config {
+	return &purelbv2.Config{Agents: []*purelbv2.LBNodeAgent{{Spec: purelbv2.LBNodeAgentSpec{Egress: spec}}}}
 }
 
 // nodeState returns this node's EgressNodeState, or nil.
@@ -262,11 +262,11 @@ func TestStatusWriterRetries(t *testing.T) {
 // Configure takes the first matching LBNodeAgent that has an egress spec.
 func TestConfigurePicksFirstEgressAgent(t *testing.T) {
 	a := New(log.NewNopLogger(), testNode, "purelb-system")
-	a.Configure([]*purelbv2.LBNodeAgent{
+	a.Configure(&purelbv2.Config{Agents: []*purelbv2.LBNodeAgent{
 		{Spec: purelbv2.LBNodeAgentSpec{}},
 		{Spec: purelbv2.LBNodeAgentSpec{Egress: &purelbv2.LBNodeAgentEgressSpec{Enabled: true, TunnelPort: 7000}}},
 		{Spec: purelbv2.LBNodeAgentSpec{Egress: &purelbv2.LBNodeAgentEgressSpec{Enabled: false}}},
-	})
+	}})
 	d := a.config.Load()
 	require.NotNil(t, d.spec)
 	assert.Equal(t, int32(7000), d.spec.TunnelPort)

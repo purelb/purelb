@@ -160,7 +160,7 @@ func newConfigChanged(
 	myNode string,
 	selector *atomic.Pointer[election.InterfaceSelector],
 	report *selectorReporter,
-	configureEgress func([]*purelbv2.LBNodeAgent),
+	configureEgress func(*purelbv2.Config),
 ) func(*purelbv2.Config) k8s.SyncState {
 	return func(cfg *purelbv2.Config) k8s.SyncState {
 		client := getClient()
@@ -215,7 +215,7 @@ func newConfigChanged(
 
 		cfg.Agents = purelbv2.AgentsForNode(cfg.Agents, node.Labels)
 		if configureEgress != nil {
-			configureEgress(cfg.Agents)
+			configureEgress(cfg)
 		}
 
 		// Report the agent whose configuration is actually applied, which is
@@ -523,6 +523,7 @@ func main() {
 	}
 
 	ctrl.SetElection(elect)
+	egress.SetElection(elect)
 
 	// A scanned link's change renews the lease at once, and so does the
 	// end of its hold-down.

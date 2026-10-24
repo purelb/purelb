@@ -80,6 +80,9 @@ type Agent struct {
 	// goroutine only.
 	configured bool
 
+	// elect is the node's Lease election, set before Start.
+	elect Elector
+
 	status   *statusWriter
 	datapath *datapath
 	// capability is the datapath's last probe, nil before the first.
@@ -91,10 +94,12 @@ type Agent struct {
 	statusInterval time.Duration
 }
 
-// delivery is one config delivery's egress spec; spec is nil when no
-// LBNodeAgent for this node has one.
+// delivery is what egress takes from one config delivery: this node's
+// egress spec, nil when no LBNodeAgent for this node has one, and the
+// ServiceGroups by name. Read-only once stored.
 type delivery struct {
-	spec *purelbv2.LBNodeAgentEgressSpec
+	spec   *purelbv2.LBNodeAgentEgressSpec
+	groups map[string]*purelbv2.ServiceGroup
 }
 
 // session is what runs while egress is enabled on this node.
@@ -117,16 +122,20 @@ func New(logger log.Logger, node, namespace string) *Agent {
 		statusInterval: statusInterval}
 }
 
-// Configure takes the egress spec of a config delivery: the first
-// LBNodeAgent for this node that has one, of agents (already filtered to
-// this node, in precedence order). It runs on the CR-controller goroutine.
-func (a *Agent) Configure(agents []*purelbv2.LBNodeAgent) {
-	d := &delivery{}
-	for _, ag := range agents {
+// Configure takes a config delivery, its agents already filtered to this
+// node in precedence order: the egress spec of the first LBNodeAgent that
+// has one (the rule the allocator's slot budget uses), and the
+// ServiceGroups. It runs on the CR-controller goroutine.
+func (a *Agent) Configure(cfg *purelbv2.Config) {
+	d := &delivery{groups: map[string]*purelbv2.ServiceGroup{}}
+	for _, ag := range cfg.Agents {
 		if ag.Spec.Egress != nil {
 			d.spec = ag.Spec.Egress.DeepCopy()
 			break
 		}
+	}
+	for _, g := range cfg.Groups {
+		d.groups[g.Name] = g
 	}
 	a.config.Store(d)
 	a.add(keyConfig, false)

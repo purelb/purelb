@@ -17,6 +17,7 @@ package election
 import (
 	"context"
 	"net"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1464,4 +1465,70 @@ func TestForgetKey(t *testing.T) {
 	setCandidates(e, subnet, []string{"b"})
 	assert.Equal(t, series-1, testutil.CollectAndCount(winnerChanges),
 		"a winner seen only before ForgetKey must not count as a handover")
+}
+
+// amongElection is an election with three live nodes, a and b on
+// 10.0.0.0/24 and c on 10.0.1.0/24.
+func amongElection(t *testing.T) *Election {
+	t.Helper()
+	e, err := New(Config{Namespace: "purelb", NodeName: "a", Client: fake.NewSimpleClientset(), StopCh: make(chan struct{})})
+	require.NoError(t, err)
+	e.state.Store(&electionState{
+		liveNodes:     []string{"a", "b", "c"},
+		subnetToNodes: map[string][]string{"10.0.0.0/24": {"a", "b"}, "10.0.1.0/24": {"c"}},
+		nodeToSubnets: map[string][]string{"a": {"10.0.0.0/24"}, "b": {"10.0.0.0/24"}, "c": {"10.0.1.0/24"}},
+	})
+	return e
+}
+
+func only(nodes ...string) func(string) bool {
+	return func(n string) bool { return slices.Contains(nodes, n) }
+}
+
+// WinnerAmong elects among the eligible subnet candidates only, prefers
+// the preferred ones when any is a candidate, and never falls back
+// outside eligible (D7a).
+func TestWinnerAmong(t *testing.T) {
+	e := amongElection(t)
+	assert.Equal(t, election("10.0.0.9", []string{"a", "b"})[0], e.WinnerAmong("10.0.0.9", nil, nil))
+	assert.Equal(t, "b", e.WinnerAmong("10.0.0.9", only("b", "c"), nil))
+	assert.Equal(t, "", e.WinnerAmong("10.0.0.9", only("c"), nil), "c lacks the subnet; no fallback")
+	assert.Equal(t, "a", e.WinnerAmong("10.0.0.9", nil, []string{"a"}))
+	assert.Equal(t, "b", e.WinnerAmong("10.0.0.9", only("b"), []string{"a"}), "an ineligible preference is ignored")
+	assert.Equal(t, election("10.0.0.9", []string{"a", "b"})[0], e.WinnerAmong("10.0.0.9", nil, []string{"c"}),
+		"a preference outside the candidates falls back to every eligible candidate")
+	assert.Equal(t, "", e.WinnerAmong("not-an-ip", nil, nil))
+	assert.Equal(t, "", e.WinnerAmong("192.0.2.1", nil, nil), "no candidate has the subnet")
+
+	e.MarkUnhealthy()
+	assert.Equal(t, "", e.WinnerAmong("10.0.0.9", nil, nil), "a node with an unhealthy lease owns nothing")
+}
+
+// While this node's lease is unhealthy, steering keeps the last
+// membership it saw while healthy (D1); owning still returns "".
+func TestSteeringLastKnownGood(t *testing.T) {
+	e := amongElection(t)
+	assert.Equal(t, "b", e.SteeringWinner("10.0.0.9", only("b"), nil))
+	assert.Equal(t, []string{"a", "b", "c"}, e.SteeringLive())
+
+	// Partitioned: the lease goes unhealthy and every other lease looks
+	// expired.
+	e.MarkUnhealthy()
+	e.state.Store(&electionState{liveNodes: []string{}, subnetToNodes: map[string][]string{}, nodeToSubnets: map[string][]string{}})
+	assert.Equal(t, "b", e.SteeringWinner("10.0.0.9", only("b"), nil), "last known good")
+	assert.Equal(t, []string{"a", "b", "c"}, e.SteeringLive())
+	assert.Equal(t, "", e.WinnerAmong("10.0.0.9", only("b"), nil))
+
+	// Healthy again: steering follows the current membership.
+	e.leaseHealthy.Store(true)
+	assert.Equal(t, "", e.SteeringWinner("10.0.0.9", only("b"), nil))
+	assert.Empty(t, e.SteeringLive())
+}
+
+// Before the lease was ever healthy there is no steering view.
+func TestSteeringBeforeHealthy(t *testing.T) {
+	e := amongElection(t)
+	e.MarkUnhealthy()
+	assert.Equal(t, "", e.SteeringWinner("10.0.0.9", nil, nil))
+	assert.Nil(t, e.SteeringLive())
 }
