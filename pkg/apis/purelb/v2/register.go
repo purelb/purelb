@@ -55,6 +55,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&ClusterEgressList{},
 		&EgressEndpoints{},
 		&EgressEndpointsList{},
+		&EgressAddress{},
+		&EgressAddressList{},
 		&EgressMembers{},
 		&EgressMembersList{},
 		&EgressNodeState{},

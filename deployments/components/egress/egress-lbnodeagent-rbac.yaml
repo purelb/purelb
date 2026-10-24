@@ -9,6 +9,7 @@ rules:
   - purelb.io
   resources:
   - clusteregresses
+  - egressaddresses
   - egressendpoints
   - egresses
   - egressnodestates

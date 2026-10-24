@@ -10,5 +10,6 @@ resources:
 - ../crds/purelb.io_egresses.yaml
 - ../crds/purelb.io_clusteregresses.yaml
 - ../crds/purelb.io_egressendpoints.yaml
+- ../crds/purelb.io_egressaddresses.yaml
 - ../crds/purelb.io_egressmembers.yaml
 - ../crds/purelb.io_egressnodestates.yaml

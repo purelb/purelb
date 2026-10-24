@@ -15,7 +15,7 @@ GOBGP_IMAGE_TAG ?= 0.2.8
 GOBGP_CRD_DIR   ?= deployments/components/gobgp
 CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml \
 	deployments/crds/purelb.io_egresses.yaml deployments/crds/purelb.io_clusteregresses.yaml \
-	deployments/crds/purelb.io_egressendpoints.yaml deployments/crds/purelb.io_egressmembers.yaml \
+	deployments/crds/purelb.io_egressendpoints.yaml deployments/crds/purelb.io_egressaddresses.yaml deployments/crds/purelb.io_egressmembers.yaml \
 	deployments/crds/purelb.io_egressnodestates.yaml
 
 # Helm RBAC templates whose rules `make helm` injects from a kustomize

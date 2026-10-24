@@ -33,6 +33,7 @@ var pureLBCRDs = []string{
 	"egresses.purelb.io",
 	"clusteregresses.purelb.io",
 	"egressendpoints.purelb.io",
+	"egressaddresses.purelb.io",
 	"egressmembers.purelb.io",
 	"egressnodestates.purelb.io",
 }

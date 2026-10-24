@@ -566,6 +566,73 @@ type EgressEndpointsList struct {
 	Items           []EgressEndpoints `json:"items"`
 }
 
+// EgressAddress makes one egress address known to every egress node:
+// what a node needs to elect the address's owner, advertise it, or guard
+// it, without its slice table. The allocator writes it with the address's
+// EgressEndpoints, which owns it, and changes it only when these fields
+// change, so it costs one event per node per address change rather than
+// per slice change.
+//
+// +genclient
+// +resourceName=egressaddresses
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:resource:shortName=egaddr
+// +kubebuilder:printcolumn:name="Address",type=string,JSONPath=`.spec.address`
+// +kubebuilder:printcolumn:name="State",type=string,JSONPath=`.spec.state`
+// +kubebuilder:printcolumn:name="Group",type=string,JSONPath=`.spec.serviceGroup`
+// +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.poolType`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+type EgressAddress struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec EgressAddressSpec `json:"spec"`
+}
+
+// EgressAddressSpec is one egress address as every egress node sees it.
+type EgressAddressSpec struct {
+	// State: Quarantined is a tombstone; no node announces it.
+	// +kubebuilder:validation:Enum=Active;Quarantined
+	State string `json:"state"`
+
+	// +kubebuilder:validation:MaxLength=45
+	Address string `json:"address"`
+	// +kubebuilder:validation:Enum=IPv4;IPv6
+	Family string `json:"family"`
+
+	// +kubebuilder:validation:MaxLength=63
+	ServiceGroup string `json:"serviceGroup"`
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	Pool string `json:"pool,omitempty"`
+	// +kubebuilder:validation:Enum=Local;Routed
+	PoolType string `json:"poolType"`
+	// +kubebuilder:validation:Enum=SingleAnnouncer;MultiAnnouncer
+	Placement string `json:"placement"`
+
+	// SharedWith names the Service that owns a shared address, which
+	// egress never places (D31).
+	// +optional
+	SharedWith *EgressServiceRef `json:"sharedWith,omitempty"`
+
+	// PreferredNodes are the nodes a local pool's election prefers: a
+	// PerPod address's pod node, or with preferPodNodes the nodes holding
+	// an Active or Draining slice (§5.5).
+	// +kubebuilder:validation:MaxItems=1000
+	// +kubebuilder:validation:items:MaxLength=253
+	// +optional
+	PreferredNodes []string `json:"preferredNodes,omitempty"`
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// EgressAddressList is a list of EgressAddresses.
+type EgressAddressList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []EgressAddress `json:"items"`
+}
+
 // EgressMembers lists one policy's selected pods per node, at most 500
 // pods per object. Only the allocator reads it.
 //

@@ -70,6 +70,7 @@ rules:
 - apiGroups:
   - purelb.io
   resources:
+  - egressaddresses
   - egressendpoints
   - egressmembers
   - egressnodestates

@@ -121,6 +121,9 @@ func (r *Reconciler) handleEndpoints(inf cache.SharedIndexInformer) {
 		for _, k := range r.ownerOf(firstNonNil(n, o)) {
 			r.enqueue(k, false)
 		}
+		if e, _ := firstNonNil(n, o).(*purelbv2.EgressEndpoints); e != nil {
+			r.enqueue(addressPrefix+e.Name, false)
+		}
 		if n != nil && n.Spec.State == stateQuarantined {
 			r.enqueue(tombstonePrefix+n.Name, false)
 		}
