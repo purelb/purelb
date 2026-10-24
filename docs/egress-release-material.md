@@ -12,6 +12,15 @@ notes and docs of the release that ships it. Not user-facing prose.
   LBNodeAgent CRD (`spec.egress.excludedNetworks`, `podNetworks`), so it
   applies to load-balancer-only installs too. Stated in the prerequisites page
   and the chart's `kubeVersion`.
+- **kube-apiserver memory with egress in use.** The API server's watch cache
+  keeps at least 75 s of events per resource as decoded objects, and egress
+  writes EgressNodeState and EgressEndpoints often. Measured on kwok at 500
+  nodes, 500 addresses and a 5,000-pod rollout at 50/s: about +4.6 GiB at the
+  rollout's peak (5.4 GiB against 0.9 GiB) and +1.1 GiB in steady state, with
+  no throttling or late Lease renewals. It scales with how fast pods start
+  and stop on nodes. Size the control plane for it; disabling the watch cache
+  for these resources is not recommended (it moves the reads to etcd).
+  Evidence: `hack/egress-kwok/RESULTS.md`.
 
 ## Load-balancer-visible changes
 

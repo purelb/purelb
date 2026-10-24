@@ -46,6 +46,9 @@ claim latency.
 `RUNS=baseline` repeats the run with no Egress policies, so the difference is
 the load egress adds.
 
+`memsample.sh <dir>`, started beside `run.sh`, samples the kube-apiserver's
+memory every 5 s and a heap profile every 60 s, for one cluster's lifetime.
+
 ## Reproduce
 
 On a dedicated host (16 vCPU for N=500; not a workstation):
@@ -53,7 +56,7 @@ On a dedicated host (16 vCPU for N=500; not a workstation):
 ```sh
 GOOS=linux GOARCH=amd64 go build -o allocator ./cmd/allocator
 GOOS=linux GOARCH=amd64 go build -o egress-kwok ./hack/egress-kwok
-# copy allocator, egress-kwok, run.sh and deployments/crds/purelb.io_*.yaml (as crds/) to the
+# copy allocator, egress-kwok, run.sh, memsample.sh and deployments/crds/purelb.io_*.yaml (as crds/) to the
 # host, with kwokctl v0.8.0 in .bin/
 ./run.sh
 ```
