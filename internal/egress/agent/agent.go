@@ -127,13 +127,7 @@ func New(logger log.Logger, node, namespace string) *Agent {
 // has one (the rule the allocator's slot budget uses), and the
 // ServiceGroups. It runs on the CR-controller goroutine.
 func (a *Agent) Configure(cfg *purelbv2.Config) {
-	d := &delivery{groups: map[string]*purelbv2.ServiceGroup{}}
-	for _, ag := range cfg.Agents {
-		if ag.Spec.Egress != nil {
-			d.spec = ag.Spec.Egress.DeepCopy()
-			break
-		}
-	}
+	d := &delivery{groups: map[string]*purelbv2.ServiceGroup{}, spec: purelbv2.EgressSpecFor(cfg.Agents).DeepCopy()}
 	for _, g := range cfg.Groups {
 		d.groups[g.Name] = g
 	}

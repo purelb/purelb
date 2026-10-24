@@ -26,6 +26,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 
+	"purelb.io/internal/bpfpin"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
@@ -110,6 +111,9 @@ type Guard struct {
 	cfgCh chan configUpdate
 	stop  chan struct{}
 	done  chan struct{}
+	// pinDir is where the guard pins its links while egress is enabled
+	// (bpfpin.Dir; tests use their own).
+	pinDir string
 	// retained keeps the attachments reachable after the attacher stops:
 	// cilium/ebpf closes a link's fd when it is garbage collected, which
 	// would detach the guard before the process exits.
@@ -117,10 +121,12 @@ type Guard struct {
 }
 
 // configUpdate is what SetConfig hands the attacher: the parsed spec (nil
-// means disabled) and the agent it came from, for events.
+// means disabled), the agent it came from, for events, and whether to pin
+// the guard's links (pinning).
 type configUpdate struct {
 	spec  *Spec
 	agent *purelbv2.LBNodeAgent
+	pin   bool
 }
 
 // Spec is the parsed address guard configuration.
@@ -188,6 +194,7 @@ func newGuard(l log.Logger, myNode string, loadWanted bool, objs *addrguardObjec
 		cfgCh:          make(chan configUpdate, 1),
 		stop:           make(chan struct{}),
 		done:           make(chan struct{}),
+		pinDir:         bpfpin.Dir,
 	}
 }
 
@@ -233,7 +240,7 @@ func (g *Guard) SetConfig(cfg *purelbv2.Config) error {
 	if spec != nil && spec.Closed && g.loadWanted && !g.applied.Load() {
 		g.down.Store(true)
 	}
-	u := configUpdate{spec: spec, agent: agent}
+	u := configUpdate{spec: spec, agent: agent, pin: pinning(cfg, g.pinDir)}
 	// Latest wins: replace an update the attacher hasn't picked up yet.
 	select {
 	case <-g.cfgCh:
@@ -241,6 +248,19 @@ func (g *Guard) SetConfig(cfg *purelbv2.Config) error {
 	}
 	g.cfgCh <- u
 	return nil
+}
+
+// pinning reports whether the guard pins its links (D12): only while egress
+// is enabled on this node and its bpffs directory is mounted, so that
+// egress's programs, which stay attached across an agent restart, never
+// run in front of an empty slot where the guard was. Otherwise the guard's
+// links live and die with the agent, as without egress.
+func pinning(cfg *purelbv2.Config, dir string) bool {
+	if cfg == nil {
+		return false
+	}
+	spec := purelbv2.EgressSpecFor(cfg.Agents)
+	return spec != nil && spec.Enabled && bpfpin.Usable(dir)
 }
 
 // specFor parses the guard configuration out of the agent governing this

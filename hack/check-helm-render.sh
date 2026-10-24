@@ -151,6 +151,27 @@ expect "lbnodeagent root filesystem read-only" "^lbnodeagent True$" "$rofs"
 expect "allocator root filesystem read-only" "^allocator True$" "$rofs"
 refuse "no container with a writable root filesystem" " (False|None)$" "$rofs"
 
+# The pin directory (D12): the node's /sys/fs/bpf/purelb over the agent's
+# /sys/fs/bpf, only with egress, and with or without gobgp.
+pins() { python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d:
+        s = d["spec"]["template"]["spec"]
+        for v in s.get("volumes") or []:
+            if "hostPath" in v:
+                print("volume", v["name"], v["hostPath"]["path"])
+        for c in s["containers"]:
+            for m in c.get("volumeMounts") or []:
+                print("mount", c["name"], m["name"], m["mountPath"])'; }
+for gobgp in true false; do
+	out=$(render daemonset.yaml --set gobgp.enabled=$gobgp | pins)
+	expect "egress (gobgp=$gobgp): pin directory hostPath" "^volume bpf-pins /sys/fs/bpf/purelb$" "$out"
+	expect "egress (gobgp=$gobgp): mounted over /sys/fs/bpf" "^mount lbnodeagent bpf-pins /sys/fs/bpf$" "$out"
+	out=$(render daemonset.yaml --set gobgp.enabled=$gobgp --set egress.enabled=false | pins)
+	refuse "no egress (gobgp=$gobgp): no pin directory" "bpf-pins" "$out"
+done
+
 # The Lease FlowSchema is core: it renders whatever egress and gobgp say,
 # and names the release namespace's lbnodeagent.
 out=$(render flowschema-lbnodeagent-leases.yaml --namespace purelb-test --set egress.enabled=false --set gobgp.enabled=false)

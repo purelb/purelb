@@ -33,7 +33,7 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 HERE=hack/bpf-vm
-KERNELS=${BPF_VM_KERNELS:-debian-6.12.111 debian-6.18.12-bpo ubuntu-6.8.0-146-generic ubuntu-6.17.0-1022-azure}
+KERNELS=${BPF_VM_KERNELS:-debian-6.6.15 debian-6.12.111 debian-6.18.12-bpo ubuntu-6.8.0-146-generic ubuntu-6.17.0-1022-azure}
 
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
@@ -42,9 +42,11 @@ mkdir -p "$LOGS"
 mkdir -p "$W/files"
 CGO_ENABLED=0 go build -o "$W/vminit" ./$HERE/vminit
 CGO_ENABLED=0 go test -c -o "$W/files/addrguard.test" ./internal/addrguard/
+CGO_ENABLED=0 go test -c -o "$W/files/bpfpin.test" ./internal/bpfpin/
 cat >"$W/cmds" <<'CMDS'
-bpf,net_admin /t/addrguard.test -test.v -test.skip TestAttacherInNetns
-bpf,net_admin,sys_admin,net_raw /t/addrguard.test -test.v -test.run ^TestAttacherInNetns$
+bpf,net_admin /t/addrguard.test -test.v -test.skip ^TestAttacher
+bpf,net_admin,sys_admin,net_raw /t/addrguard.test -test.v -test.run ^TestAttacher
+bpf,net_admin,sys_admin /t/bpfpin.test -test.v
 CMDS
 
 failed=()
@@ -57,9 +59,11 @@ for k in $KERNELS; do
 		result=FAIL
 	fi
 	# A renamed test would otherwise pass as "no tests to run".
-	if ! grep -q -- '--- PASS: TestAttacherInNetns' "$log"; then
-		result=FAIL
-	fi
+	for t in TestAttacherInNetns TestAttacherPinsInNetns TestPinAdoptRelease TestAdoptNothingOrStale TestSweep; do
+		if ! grep -q -- "--- PASS: $t" "$log"; then
+			result=FAIL
+		fi
+	done
 	grep -E '^vminit: (kernel|module)|^--- (FAIL|SKIP)|ns/packet|^VMTEST ' "$log" | sed 's/^/    /'
 	echo "    $result"
 	if [ $result = FAIL ]; then

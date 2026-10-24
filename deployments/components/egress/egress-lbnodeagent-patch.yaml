@@ -1,0 +1,23 @@
+# The agent pins egress's BPF links (and the address guard's, while egress is
+# enabled) so they stay attached across agent restarts and upgrades (D12).
+# The node's /sys/fs/bpf/purelb is mounted over the container's /sys/fs/bpf:
+# the container's /sys is sysfs, where the runtime can't create a
+# /sys/fs/bpf/purelb mount point.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: lbnodeagent
+  namespace: purelb-system
+spec:
+  template:
+    spec:
+      volumes:
+      - name: bpf-pins
+        hostPath:
+          path: /sys/fs/bpf/purelb
+          type: DirectoryOrCreate
+      containers:
+      - name: lbnodeagent
+        volumeMounts:
+        - name: bpf-pins
+          mountPath: /sys/fs/bpf

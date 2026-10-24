@@ -123,8 +123,10 @@ jobs:
       - name: Generate Kubernetes client code
         run: make generate
 
-      - name: Build the test binary
-        run: go test -c -o addrguard.test ./internal/addrguard/
+      - name: Build the test binaries
+        run: |
+          go test -c -o addrguard.test ./internal/addrguard/
+          go test -c -o bpfpin.test ./internal/bpfpin/
 
       # The verifier's behaviour depends on the kernel: record which one ran.
       - name: Run the BPF tests with the agent's capabilities
@@ -132,7 +134,7 @@ jobs:
           uname -r
           sudo env ADDRGUARD_BPF_TESTS=required \
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin -- \
-            ./addrguard.test -test.v -test.skip TestAttacherInNetns
+            ./addrguard.test -test.v -test.skip '^TestAttacher'
 
       # Attaching to real links, in a throwaway network namespace so the
       # runner's own interfaces are untouched. Creating the namespace needs
@@ -140,14 +142,25 @@ jobs:
       # test's frames (an AF_PACKET socket) CAP_NET_RAW. CAP_SYS_ADMIN counts
       # as CAP_PERFMON to the verifier: loading exactly as the agent does is
       # the step above's.
-      - name: Run the attacher test in a network namespace
+      - name: Run the attacher tests in a network namespace
         run: |
           set -o pipefail
           sudo env ADDRGUARD_BPF_TESTS=required ADDRGUARD_NETNS_TESTS=required \
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
-            ./addrguard.test -test.v -test.run '^TestAttacherInNetns$' | tee netns.out
+            ./addrguard.test -test.v -test.run '^TestAttacher' | tee netns.out
           # A renamed test would otherwise pass as "no tests to run".
           grep -q -- '--- PASS: TestAttacherInNetns' netns.out
+          grep -q -- '--- PASS: TestAttacherPinsInNetns' netns.out
+
+      # Pinning (D12): links that outlive the agent, taken over by the next.
+      # Needs a bpffs, and CAP_SYS_ADMIN for the network namespace.
+      - name: Run the pinning tests in a network namespace
+        run: |
+          set -o pipefail
+          sudo env PURELB_NETNS_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin -- \
+            ./bpfpin.test -test.v | tee bpfpin.out
+          grep -q -- '--- PASS: TestPinAdoptRelease' bpfpin.out
 
   # The same tests on a matrix of distribution kernels, each in a QEMU VM:
   # the verifier differs between kernels, and the runner's tests one.

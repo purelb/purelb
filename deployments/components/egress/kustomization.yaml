@@ -13,3 +13,9 @@ resources:
 - egress-allocator-rbac.yaml
 - egress-lbnodeagent-rbac.yaml
 - egress-node-label-vap.yaml
+
+patches:
+- path: egress-lbnodeagent-patch.yaml
+  target:
+    kind: DaemonSet
+    name: lbnodeagent

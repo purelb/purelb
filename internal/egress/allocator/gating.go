@@ -290,10 +290,8 @@ func (r *Reconciler) slotLimit(node string, kind string) int {
 		return slotBudget
 	}
 	agents, _ := r.agents.List(labels.Everything())
-	for _, a := range purelbv2.AgentsForNode(agents, obj.(*corev1.Node).Labels) {
-		if a.Spec.Egress != nil {
-			return slotBudget - int(a.Spec.Egress.ReservedClusterSlots)
-		}
+	if spec := purelbv2.EgressSpecFor(purelbv2.AgentsForNode(agents, obj.(*corev1.Node).Labels)); spec != nil {
+		return slotBudget - int(spec.ReservedClusterSlots)
 	}
 	return slotBudget
 }

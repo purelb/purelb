@@ -69,6 +69,19 @@ func FirstLocalAgent(agents []*LBNodeAgent) *LBNodeAgent {
 	return nil
 }
 
+// EgressSpecFor returns the egress spec of the first agent that has one,
+// or nil. agents are a node's, in precedence order (AgentsForNode). The
+// node agent's egress, its address guard and the allocator's slot budget
+// all resolve a node's egress settings this way.
+func EgressSpecFor(agents []*LBNodeAgent) *LBNodeAgentEgressSpec {
+	for _, agent := range agents {
+		if agent != nil && agent.Spec.Egress != nil {
+			return agent.Spec.Egress
+		}
+	}
+	return nil
+}
+
 // IsCatchAll reports whether the selector matches all nodes: nil, or
 // empty (no matchLabels and no matchExpressions). It is exported because
 // it defines the precedence classes used by AgentsForNode, and callers
