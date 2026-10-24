@@ -93,11 +93,11 @@ jobs:
       - name: Download modules
         run: go mod download
 
-      - name: Regenerate the eBPF object
+      - name: Regenerate the eBPF objects
         run: make bpf
 
-      - name: Fail if it differs from the committed object
-        run: git diff --exit-code -- internal/addrguard/
+      - name: Fail if they differ from the committed objects
+        run: git diff --exit-code -- internal/addrguard/ internal/egress/datapath/
 
   # Load the address guard into the runner's kernel and run crafted packets
   # through it, with exactly the lbnodeagent container's BPF-relevant
@@ -127,6 +127,7 @@ jobs:
         run: |
           go test -c -o addrguard.test ./internal/addrguard/
           go test -c -o bpfpin.test ./internal/bpfpin/
+          go test -c -o datapath.test ./internal/egress/datapath/
 
       # The verifier's behaviour depends on the kernel: record which one ran.
       - name: Run the BPF tests with the agent's capabilities
@@ -135,6 +136,9 @@ jobs:
           sudo env ADDRGUARD_BPF_TESTS=required \
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin -- \
             ./addrguard.test -test.v -test.skip '^TestAttacher'
+          sudo env EGRESS_BPF_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin -- \
+            ./datapath.test -test.v
 
       # Attaching to real links, in a throwaway network namespace so the
       # runner's own interfaces are untouched. Creating the namespace needs
