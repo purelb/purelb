@@ -468,12 +468,21 @@ func run(ctx context.Context, admin *rest.Config, c config) runResult {
 
 	phase("claim-burst", func() {
 		var wg sync.WaitGroup
+		skipped := 0
 		for i := 0; i < c.BurstPods; i++ {
 			p := i % c.Policies
-			n := rand.IntN(c.Nodes)
-			for used[[2]int{p, n}] {
-				n = rand.IntN(c.Nodes)
+			// a node with no pod of this policy; none left on a small cluster
+			var free []int
+			for n := range c.Nodes {
+				if !used[[2]int{p, n}] {
+					free = append(free, n)
+				}
 			}
+			if len(free) == 0 {
+				skipped++
+				continue
+			}
+			n := free[rand.IntN(len(free))]
 			used[[2]int{p, n}] = true
 			wg.Add(1)
 			go func() {
@@ -484,6 +493,9 @@ func run(ctx context.Context, admin *rest.Config, c config) runResult {
 				}
 				agents[n].cniAdd(p)
 			}()
+		}
+		if skipped > 0 {
+			logf("claim-burst: %d pods skipped, their policy has a pod on every node", skipped)
 		}
 		wg.Wait()
 	})

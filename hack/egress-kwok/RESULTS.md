@@ -55,7 +55,7 @@ the run's data (allocator log, a CPU profile) and is in `711ca3e4`:
 v3's lower p50 came with a long tail of conflicts and retries; v5 trades a few
 seconds of p50 for half the p99.
 
-## Proposed API budget (for approval)
+## API budget (approved by the user 2026-10-23)
 
 For Verification 4 at 500 nodes, 500 addresses and a 5,000-pod rollout at
 50/s, set about 20% above the worse of the two final runs:
@@ -72,22 +72,66 @@ For Verification 4 at 500 nodes, 500 addresses and a 5,000-pod rollout at
 | Rollout settles | ≤ 2× the baseline | 1.71–1.74× |
 | 429s, APF rejections, late Lease renewals | 0 (hard) | 0 |
 
+## kube-apiserver memory (explained; accepted and documented)
+
+The egress runs peaked at 5.0–5.5 GiB of kube-apiserver memory against
+0.86–0.89 GiB for the baseline. The cause is the API server's watch cache
+holding the event history of the egress CRDs, mostly EgressNodeState. The
+user decided (2026-10-23) to accept it and document the API server sizing,
+rather than reduce the writes.
+
+Measured on the merged build (`8c6f275b`) with `memsample.sh` beside
+`run.sh`, three runs:
+
+| | baseline v7 | egress v7 | egress v7, EgressNodeState watch cache off |
+| --- | --- | --- | --- |
+| Peak, steady / rollout / claim burst | 713 / 886 / 879 MiB | 1,846 / 5,433 / 5,503 MiB | 1,774 / 2,914 / 3,238 MiB |
+| Live heap, steady / nearest the rollout peak | 242–323 MB (every profile) | 573 / 1,658 MB | 546 / 959 MB |
+| Late Lease renewals | 0 | 0 | 0 |
+| Claims p99, rollout / burst | — | 33.5 / 3.5 s | 33.8 / 26.2 s |
+
+- **It is Go heap.** The container's memory is all anonymous (file 0), and
+  heap in use follows it. Live heap is about half of it; the rest is the
+  garbage collector's headroom (GOGC 100).
+- **It is decoded CRD objects from etcd watch events.** In every egress heap
+  profile, 55–60% of the live heap was allocated under
+  `etcd3.(*watchChan).prepareObjs` → `decodeObj`, through the CRD-only
+  schema coercion, conversion and `Unstructured.DeepCopy`. A CRD object is
+  held as nested maps, many times its 2–3 KB of JSON; a Pod is a typed
+  struct, which is why the baseline's 200 pod events/s cost far less.
+- **The watch cache holds them.** Each resource's watch cache keeps at least
+  75 s of events (`DefaultEventFreshDuration`, the 60 s bookmark interval plus
+  15 s), doubling up to 102,400 events, and each event holds its decoded
+  object (`k8s.io/apiserver` v0.36.1, `pkg/storage/cacher`). The buffer
+  shrinks only when full and stale, so a burst's history stays until newer
+  events overwrite it. That is why the steady phase, after the bootstrap's
+  writes, already sat at about 1.8 GiB.
+- **EgressNodeState is most of it.** Its watch cache received 380–390
+  events/s at the rollout's peak (pods: about 200/s, EgressEndpoints 50–110/s),
+  and the heap peaked at the same moment. With only that resource's watch
+  cache turned off (`--extra-args
+  kube-apiserver=watch-cache-sizes=egressnodestates.purelb.io#0` on
+  `kwokctl create cluster`), the rollout peak fell by 2.5 GiB. The rest above
+  the baseline is the same effect for EgressEndpoints, and headroom.
+- **Turning the cache off is not a remedy.** It is a cluster-wide API server
+  flag, and it sends those reads to etcd: the claim burst's p99 went from
+  3.5 s to 26.2 s in that run.
+
+**Sizing (documented):** at 500 nodes, 500 addresses and a 5,000-pod rollout
+at 50/s, egress adds about 4.6 GiB to the kube-apiserver's peak memory (about
+1.1 GiB in steady state). It scales with the rate of EgressNodeState and
+EgressEndpoints writes: pods starting and stopping on nodes without a slice,
+and the agents' acks (1/s per node at most).
+
 ## Open findings
 
-1. **kube-apiserver memory.** 5.0–5.1 GiB peak during the rollout against
-   0.86 GiB for the baseline, and 1.71–1.75 GiB already in the steady phase
-   (baseline 0.68 GiB). Not yet explained. The candidates are the roughly
-   1,000 name-field-selector watches (each agent watches its own
-   EgressNodeState and the addresses it announces) and the watch cache of
-   objects rewritten several hundred times a second. It is not in the
-   budget above until it is measured (`apiserver_watch_cache_*`, Go
-   memstats).
-2. **Events.** At 73–75/s they are the allocator's largest write, mostly the
+1. **Events.** At 73–75/s they are the allocator's largest write, mostly the
    per-pod `PodSelected`/`PodDeselected` and per-slice events of §12.1, and
    recording them is 11% of the allocator's CPU (profile, v5).
-3. **EgressNodeState status.** The agents' acks are 58% of egress writes and
+2. **EgressNodeState status.** The agents' acks are 58% of egress writes and
    their watch fan-out (to the allocator's cluster-wide EgressNodeState
-   watch) is 2.0 MiB/s, the largest egress watch stream.
+   watch) is 2.0 MiB/s, the largest egress watch stream. They are also most
+   of the kube-apiserver memory above.
 
 ## Limits of the simulation
 
