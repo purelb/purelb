@@ -82,6 +82,10 @@ type Controller interface {
 
 	// Keys returns every egress key, so ForceSync can reprocess them.
 	Keys() []string
+
+	// Live reports whether egress's own goroutines are turning over; an
+	// error fails /healthz, as a wedged work item does.
+	Live() error
 }
 
 // Noop is the default hook: no egress.
@@ -102,3 +106,4 @@ func (Noop) PrepareShutdown()                                              {}
 func (Noop) Start(<-chan struct{}, *rest.Config, func(string, bool)) error { return nil }
 func (Noop) Sync(string) error                                             { return nil }
 func (Noop) Keys() []string                                                { return nil }
+func (Noop) Live() error                                                   { return nil }

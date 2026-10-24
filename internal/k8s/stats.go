@@ -156,19 +156,18 @@ func healthHandler(logger log.Logger, name string, check func() error, logFailur
 // restarting the container fixes none of them, it only adds churn on top
 // of whatever is already wrong.
 func (c *Client) Live() error {
-	started := c.syncStartedAt.Load()
-	if started == 0 {
-		// No work item in flight. The goroutine blocks in queue.Get()
-		// for as long as the cluster is quiet, which on a healthy
-		// cluster is indefinitely -- so idle is always live. Stamping a
-		// "last progress" time instead would make a quiet cluster
-		// indistinguishable from a wedged one.
-		return nil
+	// No work item in flight (started 0) is live: the goroutine blocks
+	// in queue.Get() for as long as the cluster is quiet, which on a
+	// healthy cluster is indefinitely. Stamping a "last progress" time
+	// instead would make a quiet cluster indistinguishable from a wedged
+	// one.
+	if started := c.syncStartedAt.Load(); started != 0 {
+		if stuck := time.Since(time.Unix(0, started)); stuck > livenessStuckAfter {
+			return fmt.Errorf("service-sync goroutine stuck in one work item for %s", stuck.Round(time.Second))
+		}
 	}
-	if stuck := time.Since(time.Unix(0, started)); stuck > livenessStuckAfter {
-		return fmt.Errorf("service-sync goroutine stuck in one work item for %s", stuck.Round(time.Second))
-	}
-	return nil
+	// Egress's datapath goroutine is bracketed the same way.
+	return c.egressHook().Live()
 }
 
 // Ready reports whether this process can act on Services. It backs

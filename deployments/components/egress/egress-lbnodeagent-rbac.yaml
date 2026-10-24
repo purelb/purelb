@@ -19,6 +19,12 @@ rules:
 - apiGroups:
   - purelb.io
   resources:
+  - egressnodestates
+  verbs:
+  - create
+- apiGroups:
+  - purelb.io
+  resources:
   - egressnodestates/status
   verbs:
   - get

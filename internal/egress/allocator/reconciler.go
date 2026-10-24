@@ -456,6 +456,10 @@ func (r *Reconciler) Keys() []string {
 	return append(append(r.allPolicies(), r.nodeKeys()...), r.tombstoneKeys()...)
 }
 
+// Live is always nil: the allocator's egress work runs on the work queue,
+// whose liveness internal/k8s already tracks.
+func (r *Reconciler) Live() error { return nil }
+
 // Synced reports whether egress has replayed its state, or has none.
 func (r *Reconciler) Synced() bool {
 	return r.synced.Load()

@@ -34,7 +34,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"purelb.io/internal/addrguard"
-	"purelb.io/internal/egresshook"
+	egressagent "purelb.io/internal/egress/agent"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
@@ -160,6 +160,7 @@ func newConfigChanged(
 	myNode string,
 	selector *atomic.Pointer[election.InterfaceSelector],
 	report *selectorReporter,
+	configureEgress func([]*purelbv2.LBNodeAgent),
 ) func(*purelbv2.Config) k8s.SyncState {
 	return func(cfg *purelbv2.Config) k8s.SyncState {
 		client := getClient()
@@ -213,6 +214,9 @@ func newConfigChanged(
 		}
 
 		cfg.Agents = purelbv2.AgentsForNode(cfg.Agents, node.Labels)
+		if configureEgress != nil {
+			configureEgress(cfg.Agents)
+		}
 
 		// Report the agent whose configuration is actually applied, which is
 		// the first one with a Local spec, not simply the highest-precedence
@@ -415,9 +419,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// egress is the node's egress hook; egresshook.Noop until egress is
-	// built into the agent.
-	var egress egresshook.Agent = egresshook.Noop{}
+	// egress is the node's egress controller; it stays off until an
+	// LBNodeAgent enables it for this node (D-idle).
+	egress := egressagent.New(logger, *myNode, *namespace)
 
 	// Set up controller
 	ctrl, err := NewController(
@@ -449,7 +453,7 @@ func main() {
 	// of the election (no subnets below) and the announcer withdraws
 	// everything (local.NewAnnouncer is given guard.StandingDown).
 	report := &selectorReporter{standingDown: ctrl.guard.StandingDown}
-	configChanged := newConfigChanged(logger, func() nodeClient { return client }, ctrl, *myNode, &selector, report)
+	configChanged := newConfigChanged(logger, func() nodeClient { return client }, ctrl, *myNode, &selector, report, egress.Configure)
 
 	client, err = k8s.New(&k8s.Config{
 		ProcessName:        "purelb-lbnodeagent",
@@ -466,6 +470,7 @@ func main() {
 		ServiceChanged: ctrl.ServiceChanged,
 		ServiceDeleted: ctrl.DeleteBalancer,
 		ConfigChanged:  configChanged,
+		Egress:         egress,
 		// Note: Shutdown is handled explicitly in main() after client.Run() returns
 		// to ensure proper ordering: mark unhealthy -> withdraw -> delete lease -> cleanup
 	})
