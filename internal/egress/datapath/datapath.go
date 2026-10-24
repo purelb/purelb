@@ -117,6 +117,20 @@ func words(a netip.Addr) (w [4]uint32, family uint8) {
 	return w, familyV6
 }
 
+// unwords is words' inverse.
+func unwords(w [4]uint32, v6 bool) netip.Addr {
+	if !v6 {
+		var b [4]byte
+		binary.NativeEndian.PutUint32(b[:], w[0])
+		return netip.AddrFrom4(b)
+	}
+	var b [16]byte
+	for i := range w {
+		binary.NativeEndian.PutUint32(b[4*i:], w[i])
+	}
+	return netip.AddrFrom16(b)
+}
+
 func addrKey(a netip.Addr) egressAddrKey {
 	w, f := words(a)
 	return egressAddrKey{Addr: w, Family: f}

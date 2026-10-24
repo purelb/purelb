@@ -151,6 +151,47 @@ func (o *Objects) DeleteNode(id uint64, n Node) error {
 	return ignoreNotExist(o.Nodes.Delete(id))
 }
 
+// RecoverNodes returns the nodes the maps hold, as an earlier agent left
+// them in the pinned maps, and removes underlay addresses that belong to
+// none of them (D12: recover from the kernel, then prune).
+func (o *Objects) RecoverNodes() (map[uint64]Node, error) {
+	nodes := map[uint64]Node{}
+	var id uint64
+	var v egressNode
+	it := o.Nodes.Iterate()
+	for it.Next(&id, &v) {
+		n := Node{MAC: append(net.HardwareAddr(nil), v.Mac[:]...)}
+		if v.HasV4 != 0 {
+			n.V4 = unwords([4]uint32{v.V4}, false)
+		}
+		if v.HasV6 != 0 {
+			n.V6 = unwords(v.V6, true)
+		}
+		nodes[id] = n
+	}
+	if err := it.Err(); err != nil {
+		return nil, err
+	}
+	var k egressUnderlayKey
+	var stale []egressUnderlayKey
+	ui := o.NodeByUnderlay.Iterate()
+	for ui.Next(&k, &id) {
+		n, ok := nodes[id]
+		if a := unwords(k.Addr, k.V6 != 0); !ok || (a != n.V4 && a != n.V6) {
+			stale = append(stale, k)
+		}
+	}
+	if err := ui.Err(); err != nil {
+		return nil, err
+	}
+	for i := range stale {
+		if err := ignoreNotExist(o.NodeByUnderlay.Delete(&stale[i])); err != nil {
+			return nil, err
+		}
+	}
+	return nodes, nil
+}
+
 // SetPoolInterface numbers pool interface ifindex: its routing table is
 // 7900 + n and a reply arriving on it directly is marked 0x81 + n.
 func (o *Objects) SetPoolInterface(ifindex int, n uint32) error {

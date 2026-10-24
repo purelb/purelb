@@ -128,6 +128,7 @@ jobs:
           go test -c -o addrguard.test ./internal/addrguard/
           go test -c -o bpfpin.test ./internal/bpfpin/
           go test -c -o datapath.test ./internal/egress/datapath/
+          go test -c -o agent.test ./internal/egress/agent/
 
       # The verifier's behaviour depends on the kernel: record which one ran.
       - name: Run the BPF tests with the agent's capabilities
@@ -176,6 +177,17 @@ jobs:
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
             ./datapath.test -test.v -test.run '^TestNetns' | tee tunnel.out
           grep -q -- '--- PASS: TestNetnsTunnelEndToEnd' tunnel.out
+
+      # The agent's own datapath apply, run without CAP_SYS_ADMIN as the
+      # agent runs it: first apply, repeat, node changes, the tunnel deleted
+      # under it, and a restart that takes over its pins.
+      - name: Run the egress agent's datapath apply in a network namespace
+        run: |
+          set -o pipefail
+          sudo env PURELB_NETNS_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin -- \
+            ./agent.test -test.v -test.run '^TestNetns' | tee agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapath' agent.out
 
   # The same tests on a matrix of distribution kernels, each in a QEMU VM:
   # the verifier differs between kernels, and the runner's tests one.

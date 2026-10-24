@@ -24,6 +24,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 	corev1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/bpfpin"
@@ -55,14 +56,17 @@ type dpNode struct {
 // dpState is what the datapath goroutine owns: the loaded programs, the
 // tunnel and the links attached to it.
 type dpState struct {
-	nl     *netlink.Handle
-	pinDir string
-	objs   *datapath.Objects
-	mode   string
-	port   uint16
-	tun    netlink.Link
-	links  map[string]link.Link
-	nodes  map[uint64]datapath.Node
+	nl *netlink.Handle
+	// pinRoot is where links and maps are pinned when it is a bpffs
+	// (bpfpin.Dir; tests use their own); pinDir is pinRoot once it was.
+	pinRoot string
+	pinDir  string
+	objs    *datapath.Objects
+	mode    string
+	port    uint16
+	tun     netlink.Link
+	links   map[string]link.Link
+	nodes   map[uint64]datapath.Node
 }
 
 // syncDatapath hands the datapath its desired state: this node's egress
@@ -116,21 +120,30 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	c.EgressCapable = false
 	st := a.dp
 	if st.nl == nil {
-		h, err := netlink.NewHandle()
+		// Route only: with no family, NewHandle also opens xfrm and
+		// netfilter sockets and fails where either is unavailable.
+		h, err := netlink.NewHandle(unix.NETLINK_ROUTE)
 		if err != nil {
-			return c, err
+			return c, fmt.Errorf("opening a netlink socket: %w", err)
 		}
 		st.nl = h
 	}
 	if st.objs == nil {
-		if bpfpin.Usable(bpfpin.Dir) {
-			st.pinDir = bpfpin.Dir
+		if bpfpin.Usable(st.pinRoot) {
+			st.pinDir = st.pinRoot
 		}
 		objs, err := datapath.Load(st.pinDir)
 		if err != nil {
 			return c, err
 		}
-		st.objs, st.links, st.nodes = objs, map[string]link.Link{}, map[uint64]datapath.Node{}
+		// Pinned maps come back holding an earlier agent's nodes: start
+		// from those, so the ones gone meanwhile are pruned below.
+		nodes, err := objs.RecoverNodes()
+		if err != nil {
+			_ = objs.Close()
+			return c, fmt.Errorf("reading the node map: %w", err)
+		}
+		st.objs, st.links, st.nodes = objs, map[string]link.Link{}, nodes
 	}
 
 	self := datapath.NodeID(w.self)
@@ -177,7 +190,11 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	var errs []error
 	for id, n := range st.nodes {
 		if _, ok := want[id]; !ok || !sameNode(n, want[id]) {
-			errs = append(errs, st.objs.DeleteNode(id, n))
+			// Kept on failure, so the next apply retries the delete.
+			if err := st.objs.DeleteNode(id, n); err != nil {
+				errs = append(errs, err)
+				continue
+			}
 			delete(st.nodes, id)
 		}
 	}

@@ -44,12 +44,14 @@ CGO_ENABLED=0 go build -o "$W/vminit" ./$HERE/vminit
 CGO_ENABLED=0 go test -c -o "$W/files/addrguard.test" ./internal/addrguard/
 CGO_ENABLED=0 go test -c -o "$W/files/bpfpin.test" ./internal/bpfpin/
 CGO_ENABLED=0 go test -c -o "$W/files/datapath.test" ./internal/egress/datapath/
+CGO_ENABLED=0 go test -c -o "$W/files/agent.test" ./internal/egress/agent/
 cat >"$W/cmds" <<'CMDS'
 bpf,net_admin /t/addrguard.test -test.v -test.skip ^TestAttacher
 bpf,net_admin,sys_admin,net_raw /t/addrguard.test -test.v -test.run ^TestAttacher
 bpf,net_admin,sys_admin /t/bpfpin.test -test.v
 bpf,net_admin /t/datapath.test -test.v -test.skip ^TestNetns
 bpf,net_admin,sys_admin,net_raw /t/datapath.test -test.v -test.run ^TestNetns
+bpf,net_admin,sys_admin /t/agent.test -test.v -test.run ^TestNetns
 CMDS
 
 failed=()
@@ -65,7 +67,8 @@ for k in $KERNELS; do
 	fi
 	# A renamed test would otherwise pass as "no tests to run".
 	for t in TestAttacherInNetns TestAttacherPinsInNetns TestPinAdoptRelease TestAdoptNothingOrStale TestSweep \
-		TestLoad TestReplySteering TestPacketTooBig TestNetnsTunnelEndToEnd TestNetnsUplinkL3; do
+		TestLoad TestRecoverNodes TestReplySteering TestPacketTooBig TestNetnsTunnelEndToEnd TestNetnsUplinkL3 \
+		TestNetnsApplyDatapath TestNetnsApplyDatapathL2; do
 		if ! grep -q -- "--- PASS: $t" "$log"; then
 			result=FAIL
 		fi

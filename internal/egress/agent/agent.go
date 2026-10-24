@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 
+	"purelb.io/internal/bpfpin"
 	"purelb.io/internal/egresshook"
 	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -123,7 +124,7 @@ var (
 // New returns the agent's egress controller for node; Start brings it up.
 func New(logger log.Logger, node, namespace string) *Agent {
 	a := &Agent{logger: logger, node: node, namespace: namespace, runner: newRunner(), now: time.Now,
-		statusInterval: statusInterval, dp: &dpState{}}
+		statusInterval: statusInterval, dp: &dpState{pinRoot: bpfpin.Dir}}
 	a.apply = a.applyDatapath
 	return a
 }
