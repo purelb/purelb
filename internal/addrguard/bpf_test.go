@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -525,6 +526,98 @@ func TestBPFNonPortProtocols(t *testing.T) {
 	h.assertPass(gre6, "GRE allowed")
 	h.assertPass(ah4, "AH allowed")
 	h.assertPass(ah6, "AH allowed")
+}
+
+// An egress address's slices pass every port-carrying protocol on their
+// ports and nothing else; a PerPod address's every-port entry also passes
+// port-less protocols (design 6.10, D4). Both families, and neither
+// family's entry matches the other's address.
+func TestBPFEgressSlices(t *testing.T) {
+	h := guarded(t)
+	for _, a := range []netip.Addr{vip4, vip6} {
+		require.NoError(t, h.objs.AgEgress.Put(egressKey(a, sliceSpec{base: 32768, size: 4096}), uint8(1)))
+	}
+	for _, c := range []struct {
+		name  string
+		proto uint8
+		port  uint16
+		pass  bool
+	}{
+		{"tcp in the slice", protoTCP, 33000, true},
+		{"udp in the slice: slices are every protocol's", protoUDP, 32768, true},
+		{"sctp at the slice's last port", protoSCTP, 36863, true},
+		{"tcp just past the slice", protoTCP, 36864, false},
+		{"udp just before it", protoUDP, 32767, false},
+		{"a Service port still passes as one", protoTCP, 80, true},
+	} {
+		for _, fam := range []string{"v4", "v6"} {
+			var pkt []byte
+			if fam == "v4" {
+				pkt = frame(0x0800, nil, ipv4(client4, vip4, c.proto, v4opts{}, l4(c.port)))
+			} else {
+				pkt = frame(0x86dd, nil, ipv6(client6, vip6, c.proto, l4(c.port)))
+			}
+			if c.pass {
+				h.assertPass(pkt, c.name+" "+fam)
+			} else {
+				h.assertDrop(pkt, c.name+" "+fam)
+			}
+		}
+	}
+	assert.Equal(t, uint64(6), h.reason(actPass, reasonEgressSlice, famV4), "3 cases x 2 hooks")
+	assert.Equal(t, uint64(6), h.reason(actPass, reasonEgressSlice, famV6))
+	assert.Equal(t, uint64(2), h.reason(actPass, reasonPortAllowed, famV4), "Service ports keep their reason")
+
+	gre4 := frame(0x0800, nil, ipv4(client4, vip4, protoGRE, v4opts{}, make([]byte, 8)))
+	gre6 := frame(0x86dd, nil, ipv6(client6, vip6, protoGRE, make([]byte, 8)))
+	h.assertDrop(gre4, "a sliced address passes no port-less protocol")
+	h.assertDrop(gre6, "a sliced address passes no port-less protocol")
+	for _, a := range []netip.Addr{vip4, vip6} {
+		require.NoError(t, h.objs.AgEgress.Put(egressKey(a, sliceSpec{}), uint8(1)))
+	}
+	h.assertPass(gre4, "a PerPod address passes every protocol")
+	h.assertPass(gre6, "a PerPod address passes every protocol")
+	h.assertPass(tcp4(vip4, 9), "and every port")
+
+	// 192.0.2.10 as the first bytes of an IPv6 address is not the IPv4
+	// address: the family byte keeps them apart.
+	h2 := newHarness(t)
+	alias := netip.AddrFrom16([16]byte{192, 0, 2, 10})
+	h2.addVIP(alias)
+	require.NoError(t, h2.objs.AgEgress.Put(egressKey(vip4, sliceSpec{}), uint8(1)))
+	h2.assertDrop(tcp6(alias, 33000), "an IPv4 entry never matches an IPv6 address")
+}
+
+// A full ag_egress refuses the next slice with ErrMapFull, from the
+// kernel's own error.
+func TestBPFEgressMapFull(t *testing.T) {
+	h := newHarness(t)
+	d := &mapDataplane{objs: &h.objs}
+	max := int(h.objs.AgEgress.MaxEntries())
+	var b [16]byte
+	b[0] = 0xfd
+	for i := 0; i < max; i++ {
+		b[12], b[13], b[14], b[15] = byte(i>>24), byte(i>>16), byte(i>>8), byte(i)
+		require.NoError(t, d.putSlice(netip.AddrFrom16(b), sliceSpec{}), "entry %d of %d", i, max)
+	}
+	b[11] = 1
+	err := d.putSlice(netip.AddrFrom16(b), sliceSpec{})
+	assert.ErrorIs(t, err, ErrMapFull)
+}
+
+// ProgramIDs are the loaded tcx programs' IDs.
+func TestBPFProgramIDs(t *testing.T) {
+	h := newHarness(t)
+	g := newGuard(log.NewNopLogger(), "node1", true, &h.objs, nil)
+	ids := g.ProgramIDs()
+	require.Len(t, ids, 2)
+	for i, p := range []*ebpf.Program{h.objs.AgTcx, h.objs.AgTcxL3} {
+		info, err := p.Info()
+		require.NoError(t, err)
+		id, _ := info.ID()
+		assert.Equal(t, id, ids[i])
+	}
+	assert.Nil(t, newGuard(log.NewNopLogger(), "node1", false, nil, nil).ProgramIDs(), "none when not loaded")
 }
 
 func TestBPFVLANTags(t *testing.T) {

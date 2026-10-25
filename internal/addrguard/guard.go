@@ -15,6 +15,7 @@
 package addrguard
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"slices"
 	"sync/atomic"
 
+	"github.com/cilium/ebpf"
 	"github.com/go-kit/log"
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -39,15 +41,23 @@ type portSpec struct {
 	port  uint16
 }
 
-// svcState is what one Service contributes: its ingress addresses, and the
-// ports allowed on each of them.
+// sliceSpec is one egress slice: size ports from base, a power of two
+// aligned on its size; size 0 is every port (a PerPod address).
+type sliceSpec struct {
+	base uint16
+	size uint32
+}
+
+// svcState is what one Service, or one egress address, contributes: its
+// addresses, and the ports and egress slices allowed on each of them.
 type svcState struct {
-	vips  []netip.Addr
-	ports []portSpec
+	vips   []netip.Addr
+	ports  []portSpec
+	slices []sliceSpec
 }
 
 func (s svcState) equal(o svcState) bool {
-	return slices.Equal(s.vips, o.vips) && slices.Equal(s.ports, o.ports)
+	return slices.Equal(s.vips, o.vips) && slices.Equal(s.ports, o.ports) && slices.Equal(s.slices, o.slices)
 }
 
 // Guard is the address guard announcer. It keeps the BPF maps in step with
@@ -76,8 +86,10 @@ type Guard struct {
 	perService     map[string]svcState
 	vipRefs        map[netip.Addr]int
 	ports          map[netip.Addr]map[portSpec]int
+	slices         map[netip.Addr]map[sliceSpec]int
 	installedVIP   map[netip.Addr]bool
 	installedPorts map[netip.Addr]map[portSpec]bool
+	installedSlice map[netip.Addr]map[sliceSpec]bool
 	failed         map[netip.Addr]bool
 
 	// Read by the metrics collector and, through StandingDown, by the node
@@ -188,8 +200,10 @@ func newGuard(l log.Logger, myNode string, loadWanted bool, objs *addrguardObjec
 		perService:     map[string]svcState{},
 		vipRefs:        map[netip.Addr]int{},
 		ports:          map[netip.Addr]map[portSpec]int{},
+		slices:         map[netip.Addr]map[sliceSpec]int{},
 		installedVIP:   map[netip.Addr]bool{},
 		installedPorts: map[netip.Addr]map[portSpec]bool{},
+		installedSlice: map[netip.Addr]map[sliceSpec]bool{},
 		failed:         map[netip.Addr]bool{},
 		cfgCh:          make(chan configUpdate, 1),
 		stop:           make(chan struct{}),
@@ -347,6 +361,67 @@ func (g *Guard) DeleteBalancer(nsName, _ string, _ net.IP) error {
 	return g.update(nsName, svcState{})
 }
 
+// EgressSlice is one of an egress address's slices: Size ports from Base,
+// a power of two aligned on its size; Size 0 is every port, a PerPod
+// address's (D4).
+type EgressSlice struct {
+	Base uint16
+	Size uint32
+}
+
+// EgressPort is a reserved or Service port of an egress address.
+type EgressPort struct {
+	Proto uint8
+	Port  uint16
+}
+
+// UpdateEgress replaces what egress address a contributes (design 6.10):
+// guarded as a VIP, with ports and slices allowed; present false withdraws
+// it. An address shared with a Service is counted once for each. Call it
+// on the work-queue goroutine, which owns this state with SetBalancer: the
+// agent's egress keys run on the same queue as Services. A full ag_egress
+// fails with ErrMapFull; like every failed write, it is retried at the
+// next update.
+func (g *Guard) UpdateEgress(a netip.Addr, present bool, ports []EgressPort, sl []EgressSlice) error {
+	a = a.Unmap()
+	var want svcState
+	if present {
+		want.vips = []netip.Addr{a}
+		for _, p := range ports {
+			want.ports = append(want.ports, portSpec{proto: p.Proto, port: p.Port})
+		}
+		for _, x := range sl {
+			want.slices = append(want.slices, sliceSpec{base: x.Base, size: x.Size})
+		}
+		slices.SortFunc(want.ports, func(x, y portSpec) int {
+			return cmp.Or(cmp.Compare(x.proto, y.proto), cmp.Compare(x.port, y.port))
+		})
+		slices.SortFunc(want.slices, func(x, y sliceSpec) int {
+			return cmp.Or(cmp.Compare(x.base, y.base), cmp.Compare(x.size, y.size))
+		})
+	}
+	// "egress:" never collides with a Service's "namespace/name".
+	return g.update("egress:"+a.String(), want)
+}
+
+// ProgramIDs are the guard's tcx programs, for egress to attach after
+// whichever a link carries ([guard, pl_announce], D12); none when the
+// program isn't loaded.
+func (g *Guard) ProgramIDs() []ebpf.ProgramID {
+	if g.objs == nil {
+		return nil
+	}
+	var ids []ebpf.ProgramID
+	for _, p := range []*ebpf.Program{g.objs.AgTcx, g.objs.AgTcxL3} {
+		if info, err := p.Info(); err == nil {
+			if id, ok := info.ID(); ok {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
 // update replaces nsName's contribution with want and brings the maps for
 // every affected VIP in line.
 func (g *Guard) update(nsName string, want svcState) error {
@@ -434,14 +509,26 @@ func (g *Guard) contribute(s svcState, delta int) {
 		if len(g.ports[v]) == 0 {
 			delete(g.ports, v)
 		}
+		for _, x := range s.slices {
+			if g.slices[v] == nil {
+				g.slices[v] = map[sliceSpec]int{}
+			}
+			g.slices[v][x] += delta
+			if g.slices[v][x] <= 0 {
+				delete(g.slices[v], x)
+			}
+		}
+		if len(g.slices[v]) == 0 {
+			delete(g.slices, v)
+		}
 	}
 }
 
 // reconcileVIP makes the kernel maps match the wanted state for v.
 //
 // Order matters, because the program treats "VIP key present" as "filter
-// this address": ports are written before the VIP key is published, and the
-// VIP key is removed before its ports. If a write fails, the VIP key is
+// this address": ports and egress slices are written before the VIP key is
+// published, and the VIP key is removed before them. If a write fails, the VIP key is
 // removed -- the VIP fails open rather than dropping real Service ports --
 // and v is retried on the next sync.
 func (g *Guard) reconcileVIP(v netip.Addr) error {
@@ -451,6 +538,12 @@ func (g *Guard) reconcileVIP(v netip.Addr) error {
 	if have == nil {
 		have = map[portSpec]bool{}
 		g.installedPorts[v] = have
+	}
+	wantSl := g.slices[v]
+	haveSl := g.installedSlice[v]
+	if haveSl == nil {
+		haveSl = map[sliceSpec]bool{}
+		g.installedSlice[v] = haveSl
 	}
 
 	// A failed write leaves v's rules incomplete. Fail-closed keeps the
@@ -490,6 +583,16 @@ func (g *Guard) reconcileVIP(v netip.Addr) error {
 			have[p] = true
 			logging.Debug(g.logger, "op", "addressGuard", "event", "portAllowed", "ip", v, "proto", p.proto, "port", p.port)
 		}
+		for x := range wantSl {
+			if haveSl[x] {
+				continue
+			}
+			if err := g.dp.putSlice(v, x); err != nil {
+				return failOpen("allow egress slice", err)
+			}
+			haveSl[x] = true
+			logging.Debug(g.logger, "op", "addressGuard", "event", "sliceAllowed", "ip", v, "base", x.base, "size", x.size)
+		}
 		if !g.installedVIP[v] {
 			if err := g.dp.putVIP(v); err != nil {
 				return failOpen("guard address", err)
@@ -515,8 +618,21 @@ func (g *Guard) reconcileVIP(v netip.Addr) error {
 		delete(have, p)
 		logging.Debug(g.logger, "op", "addressGuard", "event", "portRemoved", "ip", v, "proto", p.proto, "port", p.port)
 	}
+	for x := range haveSl {
+		if wantSl[x] > 0 && wantVIP {
+			continue
+		}
+		if err := g.dp.delSlice(v, x); err != nil {
+			return failOpen("remove egress slice", err)
+		}
+		delete(haveSl, x)
+		logging.Debug(g.logger, "op", "addressGuard", "event", "sliceRemoved", "ip", v, "base", x.base, "size", x.size)
+	}
 	if len(have) == 0 && !wantVIP {
 		delete(g.installedPorts, v)
+	}
+	if len(haveSl) == 0 && !wantVIP {
+		delete(g.installedSlice, v)
 	}
 	delete(g.failed, v)
 	return nil

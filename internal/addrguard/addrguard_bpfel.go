@@ -13,6 +13,16 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type addrguardEgressKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Family    uint8
+	Pad       [3]uint8
+	Addr      [4]uint32
+	Port      uint16
+	Pad2      [2]uint8
+}
+
 type addrguardGuardConfig struct {
 	_    structs.HostLayout
 	Mode uint32
@@ -41,6 +51,7 @@ type addrguardScratch struct {
 	H     [4]uint8
 	Type  uint8
 	_     [3]byte
+	Ek    addrguardEgressKey
 }
 
 type addrguardVipCounters struct {
@@ -54,6 +65,7 @@ type addrguardVipCounters struct {
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	addrguardMapAgConfig  = "ag_config"
+	addrguardMapAgEgress  = "ag_egress"
 	addrguardMapAgPorts   = "ag_ports"
 	addrguardMapAgProtos  = "ag_protos"
 	addrguardMapAgReasons = "ag_reasons"
@@ -118,6 +130,7 @@ type addrguardProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type addrguardMapSpecs struct {
 	AgConfig  *ebpf.MapSpec `ebpf:"ag_config"`
+	AgEgress  *ebpf.MapSpec `ebpf:"ag_egress"`
 	AgPorts   *ebpf.MapSpec `ebpf:"ag_ports"`
 	AgProtos  *ebpf.MapSpec `ebpf:"ag_protos"`
 	AgReasons *ebpf.MapSpec `ebpf:"ag_reasons"`
@@ -154,6 +167,7 @@ func (o *addrguardObjects) Close() error {
 // It can be passed to loadAddrguardObjects or ebpf.CollectionSpec.LoadAndAssign.
 type addrguardMaps struct {
 	AgConfig  *ebpf.Map `ebpf:"ag_config"`
+	AgEgress  *ebpf.Map `ebpf:"ag_egress"`
 	AgPorts   *ebpf.Map `ebpf:"ag_ports"`
 	AgProtos  *ebpf.Map `ebpf:"ag_protos"`
 	AgReasons *ebpf.Map `ebpf:"ag_reasons"`
@@ -166,6 +180,7 @@ type addrguardMaps struct {
 func (m *addrguardMaps) Close() error {
 	return _AddrguardClose(
 		m.AgConfig,
+		m.AgEgress,
 		m.AgPorts,
 		m.AgProtos,
 		m.AgReasons,

@@ -67,6 +67,7 @@ for k in $KERNELS; do
 	fi
 	# A renamed test would otherwise pass as "no tests to run".
 	for t in TestAttacherInNetns TestAttacherPinsInNetns TestPinAdoptRelease TestAdoptNothingOrStale TestSweep \
+		TestBPFEgressSlices TestBPFEgressMapFull TestBPFProgramIDs \
 		TestLoad TestRecoverNodes TestReplySteering TestPacketTooBig TestNetnsTunnelEndToEnd TestNetnsUplinkL3 \
 		TestNetnsApplyDatapath TestNetnsApplyDatapathL2 TestNetnsApplyDatapathPools TestNetnsWatchRoutes \
 		TestNetnsWatchTunnel TestNetnsWatchNft TestNetnsApplyDatapathHeals \
