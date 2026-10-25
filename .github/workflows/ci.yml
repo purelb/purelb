@@ -173,10 +173,13 @@ jobs:
         run: |
           set -o pipefail
           sudo modprobe geneve
+          sudo modprobe nft_ct
           sudo env EGRESS_BPF_TESTS=required PURELB_NETNS_TESTS=required \
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
             ./datapath.test -test.v -test.run '^TestNetns' | tee tunnel.out
           grep -q -- '--- PASS: TestNetnsTunnelEndToEnd' tunnel.out
+          grep -q -- '--- PASS: TestNetnsHardening' tunnel.out
+          grep -q -- '--- PASS: TestNetnsPoolTables' tunnel.out
 
       # The agent's own datapath apply, run without CAP_SYS_ADMIN as the
       # agent runs it: first apply, repeat, node changes, the tunnel deleted
@@ -188,6 +191,11 @@ jobs:
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin -- \
             ./agent.test -test.v -test.run '^TestNetns' | tee agent.out
           grep -q -- '--- PASS: TestNetnsApplyDatapath' agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapathPools' agent.out
+          grep -q -- '--- PASS: TestNetnsWatchRoutes' agent.out
+          grep -q -- '--- PASS: TestNetnsWatchTunnel' agent.out
+          grep -q -- '--- PASS: TestNetnsWatchNft' agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapathHeals' agent.out
 
   # The same tests on a matrix of distribution kernels, each in a QEMU VM:
   # the verifier differs between kernels, and the runner's tests one.

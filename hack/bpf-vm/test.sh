@@ -68,7 +68,9 @@ for k in $KERNELS; do
 	# A renamed test would otherwise pass as "no tests to run".
 	for t in TestAttacherInNetns TestAttacherPinsInNetns TestPinAdoptRelease TestAdoptNothingOrStale TestSweep \
 		TestLoad TestRecoverNodes TestReplySteering TestPacketTooBig TestNetnsTunnelEndToEnd TestNetnsUplinkL3 \
-		TestNetnsApplyDatapath TestNetnsApplyDatapathL2; do
+		TestNetnsApplyDatapath TestNetnsApplyDatapathL2 TestNetnsApplyDatapathPools TestNetnsWatchRoutes \
+		TestNetnsWatchTunnel TestNetnsWatchNft TestNetnsApplyDatapathHeals \
+		TestNetnsHardening TestNetnsAnnounceInTunnel TestNetnsPoolTables; do
 		if ! grep -q -- "--- PASS: $t" "$log"; then
 			result=FAIL
 		fi

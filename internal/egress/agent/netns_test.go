@@ -15,16 +15,19 @@
 package agent
 
 import (
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/go-kit/log"
+	"github.com/google/nftables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
@@ -201,6 +204,63 @@ func ids(names ...string) []uint64 {
 	return ids
 }
 
+// setElems is the members of the hardening sets named.
+func setElems(t *testing.T, names ...string) []string {
+	t.Helper()
+	c, err := nftables.New()
+	require.NoError(t, err)
+	tbl := &nftables.Table{Family: nftables.TableFamilyINet, Name: datapath.NftTable}
+	var out []string
+	for _, n := range names {
+		set, err := c.GetSetByName(tbl, n)
+		require.NoError(t, err, n)
+		elems, err := c.GetSetElements(set)
+		require.NoError(t, err, n)
+		for _, e := range elems {
+			a, _ := netip.AddrFromSlice(e.Key)
+			out = append(out, a.String())
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// dummy adds an up dummy interface with addrs and returns its ifindex.
+func dummy(t *testing.T, name string, addrs ...string) int {
+	t.Helper()
+	require.NoError(t, netlink.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name}}))
+	l, err := netlink.LinkByName(name)
+	require.NoError(t, err)
+	for _, a := range addrs {
+		addr, err := netlink.ParseAddr(a)
+		require.NoError(t, err)
+		addr.Flags = unix.IFA_F_NODAD
+		require.NoError(t, netlink.AddrAdd(l, addr))
+	}
+	require.NoError(t, netlink.LinkSetUp(l))
+	return l.Attrs().Index
+}
+
+func tableDsts(t *testing.T, table int) []string {
+	t.Helper()
+	var dsts []string
+	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		routes, err := netlink.RouteListFiltered(fam, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
+		require.NoError(t, err)
+		for _, r := range routes {
+			d := "default"
+			if r.Dst != nil {
+				if ones, _ := r.Dst.Mask.Size(); ones != 0 {
+					d = r.Dst.String()
+				}
+			}
+			dsts = append(dsts, d)
+		}
+	}
+	sort.Strings(dsts)
+	return dsts
+}
+
 func throws(t *testing.T, table int) []string {
 	t.Helper()
 	var dsts []string
@@ -246,6 +306,8 @@ func TestNetnsApplyDatapath(t *testing.T) {
 	allThrows := []string{"10.0.0.2/32", "10.0.0.3/32", "fd00::2/128"}
 	assert.Equal(t, allThrows, throws(t, datapath.TunnelTable))
 	assert.Equal(t, allThrows, throws(t, datapath.ProhibitTable))
+	assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "fd00::1", "fd00::2"}, setElems(t, "nodes4", "nodes6"),
+		"the hardening chains admit every node's underlay, this one's included")
 
 	// The same state again changes nothing.
 	apply(t, a, want(node("node-b", "10.0.0.2", "fd00::2"), node("node-c", "10.0.0.3", "")))
@@ -261,6 +323,7 @@ func TestNetnsApplyDatapath(t *testing.T) {
 	apply(t, a, want(node("node-b", "10.0.0.2", "fd00::2")))
 	assert.Equal(t, ids("node-b"), nodeIDs(t, a))
 	assert.Equal(t, []string{"10.0.0.2/32", "fd00::2/128"}, throws(t, datapath.TunnelTable))
+	assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "fd00::1", "fd00::2"}, setElems(t, "nodes4", "nodes6"))
 
 	// The tunnel device deleted under the agent: a new one, programs
 	// attached to it, the stale pins replaced.
@@ -312,4 +375,223 @@ func TestNetnsApplyDatapathL2(t *testing.T) {
 	assert.Equal(t, datapath.TunnelMAC(datapath.NodeID("node-a")).String(), tun.Attrs().HardwareAddr.String())
 	assert.NotZero(t, tun.Attrs().RawFlags&unix.IFF_NOARP)
 	assert.False(t, tun.(*netlink.Geneve).InnerProtoInherit)
+}
+
+// TestNetnsApplyDatapathPools numbers pool interfaces, mirrors their
+// tables and reports what each lacks; a restarted agent keeps the numbers
+// its predecessor gave them.
+func TestNetnsApplyDatapathPools(t *testing.T) {
+	dir := sandbox(t)
+	pool0 := dummy(t, "pool0", "192.0.2.1/24", "2001:db8:1::1/64")
+	pool1 := dummy(t, "pool1", "198.51.100.1/24")
+	require.NoError(t, netlink.RouteAdd(&netlink.Route{Dst: &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
+		Gw: net.ParseIP("192.0.2.254"), LinkIndex: pool0}))
+
+	a := newNetnsAgent(dir)
+	w := want(node("node-b", "10.0.0.2", "fd00::2"))
+	w.pools = map[int]dpPool{pool0: {name: "pool0", v4: true, v6: true}}
+	apply(t, a, w)
+	assert.Equal(t, map[int]uint32{pool0: 0}, a.dp.pools)
+	recovered, err := a.dp.objs.RecoverPoolInterfaces()
+	require.NoError(t, err)
+	assert.Equal(t, map[int]uint32{pool0: 0}, recovered, "pool_ifs names it")
+	assert.Equal(t, []string{"192.0.2.0/24", "2001:db8:1::/64", "default", "fe80::/64"}, tableDsts(t, datapath.PoolTable(0)))
+	assert.Equal(t, poolReport{noGateway6: true}, a.dp.reports[pool0], "no IPv6 default, arp_announce 0")
+	assert.Equal(t, map[int]bool{pool0: true}, a.poolSet(), "the route watcher follows it")
+
+	w.pools[pool1] = dpPool{name: "pool1", v4: true}
+	apply(t, a, w)
+	assert.Equal(t, map[int]uint32{pool0: 0, pool1: 1}, a.dp.pools)
+	assert.Equal(t, poolReport{noGateway4: true}, a.dp.reports[pool1])
+
+	// Restarted with pool0 gone: pool1 keeps table 7901, pool0's is emptied.
+	closeAgent(a)
+	b := newNetnsAgent(dir)
+	defer closeAgent(b)
+	delete(w.pools, pool0)
+	apply(t, b, w)
+	assert.Equal(t, map[int]uint32{pool1: 1}, b.dp.pools)
+	recovered, err = b.dp.objs.RecoverPoolInterfaces()
+	require.NoError(t, err)
+	assert.Equal(t, map[int]uint32{pool1: 1}, recovered)
+	assert.Empty(t, tableDsts(t, datapath.PoolTable(0)))
+	assert.Equal(t, []string{"198.51.100.0/24", "fe80::/64"}, tableDsts(t, datapath.PoolTable(1)))
+}
+
+// runWatcher runs a watcher on a thread in the test's namespace until the
+// test ends, and returns a function reporting whether it kicked within a
+// wait. It requires the first kick, made on subscribing.
+func runWatcher(t *testing.T, run func(stop <-chan struct{}, kick func())) func(time.Duration) bool {
+	t.Helper()
+	ns, err := netns.Get()
+	require.NoError(t, err)
+	kicks := make(chan struct{}, 16)
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop); _ = ns.Close() })
+	go func() {
+		runtime.LockOSThread() // discarded with the goroutine
+		if netns.Set(ns) != nil {
+			return
+		}
+		run(stop, func() {
+			select {
+			case kicks <- struct{}{}:
+			default:
+			}
+		})
+	}()
+	kicked := func(wait time.Duration) bool {
+		select {
+		case <-kicks:
+			return true
+		case <-time.After(wait):
+			return false
+		}
+	}
+	require.True(t, kicked(2*time.Second), "once on subscribing")
+	return kicked
+}
+
+// settle drains the kicks one change made.
+func settle(kicked func(time.Duration) bool) {
+	for kicked(100 * time.Millisecond) {
+	}
+}
+
+// TestNetnsWatchRoutes wakes the datapath for main-table routes out of a
+// pool interface and for routes deleted from the agent's own tables, and
+// for nothing else.
+func TestNetnsWatchRoutes(t *testing.T) {
+	sandbox(t)
+	pool0 := dummy(t, "pool0", "192.0.2.1/24", "2001:db8:1::1/64")
+	eth0, err := netlink.LinkByName("eth0")
+	require.NoError(t, err)
+	kicked := runWatcher(t, func(stop <-chan struct{}, kick func()) {
+		watchRoutes(log.NewNopLogger(), stop, func() map[int]bool { return map[int]bool{pool0: true} }, kick)
+	})
+
+	for _, r := range []*netlink.Route{
+		{Dst: cidrNet("203.0.113.0/24"), Gw: net.ParseIP("192.0.2.254"), LinkIndex: pool0},
+		{Dst: cidrNet("2001:db8:9::/64"), Gw: net.ParseIP("2001:db8:1::fe"), LinkIndex: pool0},
+	} {
+		require.NoError(t, netlink.RouteAdd(r))
+		assert.True(t, kicked(2*time.Second), "a main-table route out of a pool interface: %s", r.Dst)
+		settle(kicked)
+	}
+	own := []*netlink.Route{
+		{Dst: cidrNet("203.0.113.0/24"), Gw: net.ParseIP("192.0.2.254"), LinkIndex: pool0, Table: datapath.PoolTable(0)},
+		{Dst: cidrNet("10.0.0.9/32"), Type: unix.RTN_THROW, Table: datapath.TunnelTable},
+		{Dst: cidrNet("fd00::9/128"), Type: unix.RTN_THROW, Table: datapath.ProhibitTable},
+	}
+	for _, r := range append([]*netlink.Route{
+		{Dst: cidrNet("203.0.113.0/24"), LinkIndex: eth0.Attrs().Index, Table: 100},
+		{Dst: cidrNet("198.18.0.0/24"), Gw: net.ParseIP("10.0.0.254"), LinkIndex: eth0.Attrs().Index},
+	}, own...) {
+		require.NoError(t, netlink.RouteAdd(r))
+		assert.False(t, kicked(300*time.Millisecond), "added outside main, or not a pool interface: %v", r)
+	}
+	for _, r := range own {
+		require.NoError(t, netlink.RouteDel(r))
+		assert.True(t, kicked(2*time.Second), "deleted from the agent's own table %d", r.Table)
+		settle(kicked)
+	}
+}
+
+// TestNetnsWatchTunnel wakes the datapath when the tunnel device goes
+// down or away, and for no other device.
+func TestNetnsWatchTunnel(t *testing.T) {
+	sandbox(t)
+	tun := dummy(t, datapath.TunnelName)
+	other := dummy(t, "other0")
+	kicked := runWatcher(t, func(stop <-chan struct{}, kick func()) { watchTunnel(log.NewNopLogger(), stop, kick) })
+
+	o, err := netlink.LinkByIndex(other)
+	require.NoError(t, err)
+	require.NoError(t, netlink.LinkSetDown(o))
+	require.NoError(t, netlink.LinkDel(o))
+	assert.False(t, kicked(300*time.Millisecond), "another device")
+	l, err := netlink.LinkByIndex(tun)
+	require.NoError(t, err)
+	require.NoError(t, netlink.LinkSetDown(l))
+	assert.True(t, kicked(2*time.Second), "the tunnel set down")
+	settle(kicked)
+	require.NoError(t, netlink.LinkDel(l))
+	assert.True(t, kicked(2*time.Second), "the tunnel deleted")
+}
+
+// TestNetnsWatchNft wakes the datapath when something in the hardening
+// table is deleted, and not for other tables.
+func TestNetnsWatchNft(t *testing.T) {
+	sandbox(t)
+	c, err := nftables.New()
+	require.NoError(t, err)
+	require.NoError(t, datapath.SyncHardening(c, datapath.Hardening{TunnelPort: 6082}))
+	kicked := runWatcher(t, func(stop <-chan struct{}, kick func()) { watchNft(log.NewNopLogger(), stop, kick) })
+
+	other := c.AddTable(&nftables.Table{Family: nftables.TableFamilyINet, Name: "other"})
+	c.AddChain(&nftables.Chain{Name: "c", Table: other})
+	require.NoError(t, c.Flush())
+	c.DelTable(other)
+	require.NoError(t, c.Flush())
+	assert.False(t, kicked(300*time.Millisecond), "another table")
+
+	tbl := &nftables.Table{Family: nftables.TableFamilyINet, Name: datapath.NftTable}
+	ch, err := c.ListChain(tbl, "tun_in")
+	require.NoError(t, err)
+	rules, err := c.GetRules(tbl, ch)
+	require.NoError(t, err)
+	require.NoError(t, c.DelRule(rules[0]))
+	require.NoError(t, c.Flush())
+	assert.True(t, kicked(2*time.Second), "a rule deleted")
+	settle(kicked)
+	c.DelTable(tbl)
+	require.NoError(t, c.Flush())
+	assert.True(t, kicked(2*time.Second), "the table deleted (a flushed ruleset)")
+}
+
+// TestNetnsApplyDatapathHeals restores what something else removed: the
+// hardening table, an element of it, a detached link.
+func TestNetnsApplyDatapathHeals(t *testing.T) {
+	dir := sandbox(t)
+	a := newNetnsAgent(dir)
+	defer closeAgent(a)
+	w := want(node("node-b", "10.0.0.2", "fd00::2"))
+	apply(t, a, w)
+	nodes := setElems(t, "nodes4", "nodes6")
+	c, err := nftables.New()
+	require.NoError(t, err)
+	tbl := &nftables.Table{Family: nftables.TableFamilyINet, Name: datapath.NftTable}
+
+	c.DelTable(tbl)
+	require.NoError(t, c.Flush())
+	apply(t, a, w)
+	assert.Equal(t, nodes, setElems(t, "nodes4", "nodes6"), "the table is back")
+
+	set, err := c.GetSetByName(tbl, "nodes4")
+	require.NoError(t, err)
+	require.NoError(t, c.SetDeleteElements(set, []nftables.SetElement{{Key: netip.MustParseAddr("10.0.0.2").AsSlice()}}))
+	require.NoError(t, c.Flush())
+	apply(t, a, w)
+	assert.Equal(t, nodes, setElems(t, "nodes4", "nodes6"), "the element is back")
+
+	tun, err := netlink.LinkByName(datapath.TunnelName)
+	require.NoError(t, err)
+	l, err := link.LoadPinnedLink(filepath.Join(dir, "pl_steer-"+datapath.TunnelName), nil)
+	require.NoError(t, err)
+	require.NoError(t, l.Unpin())
+	require.NoError(t, l.Detach())
+	_ = l.Close()
+	assert.Empty(t, chain(t, tun.Attrs().Index, ebpf.AttachTCXEgress), "detached outside the agent")
+	apply(t, a, w)
+	assert.Equal(t, []ebpf.ProgramID{progID(t, a.dp.objs.PlSteer)}, chain(t, tun.Attrs().Index, ebpf.AttachTCXEgress),
+		"attached again")
+	assert.FileExists(t, filepath.Join(dir, "pl_steer-"+datapath.TunnelName), "and pinned again")
+}
+
+func cidrNet(s string) *net.IPNet {
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return n
 }

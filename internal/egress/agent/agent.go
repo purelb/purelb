@@ -93,6 +93,9 @@ type Agent struct {
 	// capability is the datapath's last probe, nil before the first.
 	// Written by the datapath goroutine, read by the queue goroutine.
 	capability atomic.Pointer[purelbv2.EgressCapability]
+	// pools are the pool interfaces' ifindexes, for the route watcher.
+	// Written by the datapath goroutine.
+	pools atomic.Pointer[map[int]bool]
 
 	now func() time.Time
 	// statusInterval is the status writer's interval; tests shorten it.
@@ -294,6 +297,22 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 
 	own.Start(s.stop)
 	kf.Start(s.stop)
+	kick := func() { a.add(keyDatapath, false) }
+	go watchRoutes(a.logger, s.stop, a.poolSet, kick)
+	go watchTunnel(a.logger, s.stop, kick)
+	go watchNft(a.logger, s.stop, kick)
+	go func() {
+		t := time.NewTicker(reconcileInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-s.stop:
+				return
+			case <-t.C:
+				kick()
+			}
+		}
+	}()
 	go func() {
 		if !cache.WaitForCacheSync(s.stop, ens.Informer().HasSynced, nodes.HasSynced) {
 			return
@@ -303,6 +322,14 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	}()
 	a.on = s
 	logging.Info(a.logger, "op", "egressEnable", "node", a.node, "msg", "egress enabled on this node")
+}
+
+// poolSet is the pool interfaces the datapath last mirrored.
+func (a *Agent) poolSet() map[int]bool {
+	if p := a.pools.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // stopSession stops egress's informers.

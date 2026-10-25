@@ -18,11 +18,13 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"slices"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 	corev1 "k8s.io/api/core/v1"
@@ -45,6 +47,15 @@ type dpWant struct {
 	spec  purelbv2.LBNodeAgentEgressSpec
 	self  string
 	nodes []dpNode
+	// pools are this node's pool interfaces by ifindex: where its local
+	// pools' egress addresses are placed (design 6.9).
+	pools map[int]dpPool
+}
+
+// dpPool is one pool interface and the families placed on it.
+type dpPool struct {
+	name   string
+	v4, v6 bool
 }
 
 // dpNode is one node's underlay: its InternalIPs (D3).
@@ -67,6 +78,21 @@ type dpState struct {
 	tun     netlink.Link
 	links   map[string]link.Link
 	nodes   map[uint64]datapath.Node
+	// nft is the nftables connection (tests make their own); hardening
+	// what was last written through it.
+	nft       *nftables.Conn
+	hardening *datapath.Hardening
+	// pools numbers the pool interfaces (ifindex: n, table 7900 + n);
+	// reports is what was last logged about each.
+	pools   map[int]uint32
+	reports map[int]poolReport
+}
+
+// poolReport is what a pool interface lacks: a default route in a family
+// placed on it (NoGateway), or arp_announce 2 (IPv4).
+type poolReport struct {
+	noGateway4, noGateway6 bool
+	arpAnnounce            int
 }
 
 // syncDatapath hands the datapath its desired state: this node's egress
@@ -143,13 +169,24 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 			_ = objs.Close()
 			return c, fmt.Errorf("reading the node map: %w", err)
 		}
-		st.objs, st.links, st.nodes = objs, map[string]link.Link{}, nodes
+		// And its pool interface numbers, which addresses' tables use.
+		pools, err := objs.RecoverPoolInterfaces()
+		if err != nil {
+			_ = objs.Close()
+			return c, fmt.Errorf("reading the pool interface map: %w", err)
+		}
+		st.objs, st.links, st.nodes, st.pools = objs, map[string]link.Link{}, nodes, pools
+		st.reports = map[int]poolReport{}
 	}
 
 	self := datapath.NodeID(w.self)
 	port := uint16(6082)
 	if w.spec.TunnelPort != 0 {
 		port = uint16(w.spec.TunnelPort)
+	}
+	// The hardening chains before the tunnel opens its port (design 6.12).
+	if err := a.syncHardening(st, w, port); err != nil {
+		return c, err
 	}
 	mode, tun, err := datapath.EnsureTunnel(st.nl, w.spec.TunnelEncapsulation, port, datapath.TunnelMAC(self))
 	if err != nil {
@@ -158,6 +195,15 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	if st.tun == nil || st.tun.Attrs().Index != tun.Attrs().Index {
 		// A new device: links to the old one went with it.
 		for name, l := range st.links {
+			_ = l.Close()
+			delete(st.links, name)
+		}
+	}
+	for name, l := range st.links {
+		// Detached by something else: attached again below.
+		if info, err := l.Info(); err != nil || info.TCX() == nil || int(info.TCX().Ifindex) != tun.Attrs().Index {
+			logging.Info(a.logger, "op", "egressDatapath", "node", a.node, "link", name,
+				"msg", "a datapath link was detached outside the agent; attaching it again")
 			_ = l.Close()
 			delete(st.links, name)
 		}
@@ -209,6 +255,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		st.nodes[id] = n
 	}
 	errs = append(errs, datapath.SyncThrows(st.nl, underlay))
+	errs = append(errs, a.syncPools(st, w))
 
 	shift := uint8(0)
 	switch w.spec.MarkField {
@@ -248,6 +295,126 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	logging.Debug(a.logger, "op", "egressDatapath", "node", a.node, "tunnel", mode, "port", port,
 		"nodes", len(st.nodes), "pinned", st.pinDir != "", "msg", "datapath applied")
 	return c, nil
+}
+
+// syncHardening writes the hardening chains unless the kernel already
+// holds them as wanted; something else may have removed them (another
+// firewall flushing the ruleset), which is logged.
+func (a *Agent) syncHardening(st *dpState, w dpWant, port uint16) error {
+	h := datapath.Hardening{TunnelPort: port}
+	for _, n := range w.nodes {
+		for _, ip := range []netip.Addr{n.v4, n.v6} {
+			if ip.IsValid() {
+				h.Nodes = append(h.Nodes, ip)
+			}
+		}
+	}
+	if st.nft == nil {
+		c, err := nftables.New()
+		if err != nil {
+			return fmt.Errorf("opening an nftables connection: %w", err)
+		}
+		st.nft = c
+	}
+	intact, err := datapath.HardeningIntact(st.nft, h)
+	if err != nil {
+		return fmt.Errorf("reading the hardening chains: %w", err)
+	}
+	if intact {
+		st.hardening = &h
+		return nil
+	}
+	if st.hardening != nil && reflect.DeepEqual(*st.hardening, h) {
+		logging.Info(a.logger, "op", "egressHardening", "node", a.node,
+			"msg", "the hardening chains were changed outside the agent; restoring them")
+	}
+	if err := datapath.SyncHardening(st.nft, h); err != nil {
+		return fmt.Errorf("writing the hardening chains: %w", err)
+	}
+	st.hardening = &h
+	return nil
+}
+
+// syncPools numbers w's pool interfaces, keeping the numbers they have,
+// mirrors their tables, and reports what each lacks when that changes.
+// The numbering changes table-first: a new interface's table is filled
+// before pool_ifs names it, a removed one leaves pool_ifs before its
+// table is emptied.
+func (a *Agent) syncPools(st *dpState, w dpWant) error {
+	var errs []error
+	next := map[int]uint32{}
+	used := map[uint32]bool{}
+	for ifindex, n := range st.pools {
+		if _, ok := w.pools[ifindex]; !ok {
+			if err := st.objs.DeletePoolInterface(ifindex); err != nil {
+				errs = append(errs, err)
+			} else {
+				continue
+			}
+		}
+		next[ifindex], used[n] = n, true
+	}
+	var added []int
+	for ifindex := range w.pools {
+		if _, ok := next[ifindex]; !ok {
+			added = append(added, ifindex)
+		}
+	}
+	slices.Sort(added)
+	for _, ifindex := range added {
+		n := uint32(0)
+		for n < datapath.MaxPoolInterfaces && used[n] {
+			n++
+		}
+		if n == datapath.MaxPoolInterfaces {
+			errs = append(errs, fmt.Errorf("more than %d pool interfaces", datapath.MaxPoolInterfaces))
+			break
+		}
+		next[ifindex], used[n] = n, true
+	}
+	status, err := datapath.SyncPoolTables(st.nl, next)
+	errs = append(errs, err)
+	for _, ifindex := range added {
+		if n, ok := next[ifindex]; ok {
+			if err := st.objs.SetPoolInterface(ifindex, n); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	st.pools = next
+	watch := map[int]bool{}
+	for ifindex := range next {
+		watch[ifindex] = true
+	}
+	a.pools.Store(&watch)
+
+	for ifindex := range st.reports {
+		if _, ok := w.pools[ifindex]; !ok {
+			delete(st.reports, ifindex)
+		}
+	}
+	for ifindex, p := range w.pools {
+		s := status[ifindex]
+		r := poolReport{noGateway4: p.v4 && !s.Gateway4, noGateway6: p.v6 && !s.Gateway6, arpAnnounce: 2}
+		if p.v4 {
+			if r.arpAnnounce, err = datapath.ArpAnnounce(p.name); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if old, ok := st.reports[ifindex]; ok && old == r {
+			continue
+		}
+		st.reports[ifindex] = r
+		if r.noGateway4 || r.noGateway6 || r.arpAnnounce < 2 {
+			logging.Info(a.logger, "op", "egressPools", "node", a.node, "interface", p.name, "table", datapath.PoolTable(next[ifindex]),
+				"noGatewayIPv4", r.noGateway4, "noGatewayIPv6", r.noGateway6, "arpAnnounce", r.arpAnnounce,
+				"msg", "pool interface not ready for egress: NoGateway is a missing default route; arp_announce must be 2")
+		} else {
+			logging.Debug(a.logger, "op", "egressPools", "node", a.node, "interface", p.name, "table", datapath.PoolTable(next[ifindex]),
+				"msg", "pool interface table mirrored")
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func sameNode(a, b datapath.Node) bool {
