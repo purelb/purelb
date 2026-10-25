@@ -22,7 +22,6 @@ import (
 	"context"
 	"net"
 	"net/netip"
-	"slices"
 	"sync/atomic"
 	"time"
 
@@ -111,6 +110,25 @@ type Agent struct {
 	// Services announcing each (Inherit). Queue goroutine only.
 	services map[netip.Addr]map[string]bool
 
+	// placer places dedicated addresses (the announcer). placed are the
+	// ones placed, shared the held shared ones (placed by their Service),
+	// dadFailed the placed ones logged as failing DAD; partitionTimer
+	// syncs when the lease would count as partitioned. Queue goroutine
+	// only.
+	placer         egresshook.Placer
+	placed         map[netip.Addr]placement
+	shared         map[netip.Addr]bool
+	dadFailed      map[netip.Addr]bool
+	partitionTimer *time.Timer
+	// installed are the addresses the datapath last installed held.
+	// Written by the datapath goroutine.
+	installed atomic.Pointer[map[netip.Addr]bool]
+	// placedSet is placed's addresses, for the address watcher. Written
+	// by the queue goroutine.
+	placedSet atomic.Pointer[map[netip.Addr]bool]
+	// addrFlags lists the node's addresses and their IFA flags.
+	addrFlags func() (map[netip.Addr]int, error)
+
 	now func() time.Time
 	// statusInterval is the status writer's interval; tests shorten it.
 	statusInterval time.Duration
@@ -146,7 +164,8 @@ var (
 func New(logger log.Logger, node, namespace string) *Agent {
 	a := &Agent{logger: logger, node: node, namespace: namespace, runner: newRunner(), now: time.Now,
 		statusInterval: statusInterval, dp: &dpState{pinRoot: bpfpin.Dir},
-		guarded: map[netip.Addr]bool{}, services: map[netip.Addr]map[string]bool{}}
+		guarded: map[netip.Addr]bool{}, services: map[netip.Addr]map[string]bool{},
+		placed: map[netip.Addr]placement{}, dadFailed: map[netip.Addr]bool{}, addrFlags: listAddrFlags}
 	a.apply = a.applyDatapath
 	return a
 }
@@ -334,6 +353,7 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	go watchRoutes(a.logger, s.stop, a.poolSet, kick)
 	go watchTunnel(a.logger, s.stop, kick)
 	go watchNft(a.logger, s.stop, kick)
+	go watchAddrs(a.logger, s.stop, a.placedAddrs, kick)
 	go func() {
 		t := time.NewTicker(reconcileInterval)
 		defer t.Stop()
@@ -355,6 +375,14 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	}()
 	a.on = s
 	logging.Info(a.logger, "op", "egressEnable", "node", a.node, "msg", "egress enabled on this node")
+}
+
+// placedAddrs is the addresses egress last placed.
+func (a *Agent) placedAddrs() map[netip.Addr]bool {
+	if p := a.placedSet.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // poolSet is the pool interfaces the datapath last mirrored.
@@ -381,6 +409,9 @@ func (a *Agent) stopSession() {
 		}
 	}
 	a.guarded = map[netip.Addr]bool{}
+	a.withdrawPlaced("egress disabled")
+	a.shared = nil
+	a.installed.Store(nil)
 	a.acks.Store(nil)
 	logging.Info(a.logger, "op", "egressDisable", "node", a.node, "msg", "egress disabled on this node")
 }
@@ -399,7 +430,14 @@ func (a *Agent) syncNode() {
 	c.Underlay = underlay(s.nodes, a.node)
 	st := &purelbv2.EgressNodeStateStatus{Capability: c}
 	if acks := a.acks.Load(); acks != nil {
-		st.Announcing = slices.Clone(*acks)
+		// Only what this node announces now: an address it holds but
+		// couldn't place isn't announced, and gates nothing (D6).
+		for _, ack := range *acks {
+			addr, err := netip.ParseAddr(ack.Address)
+			if _, placed := a.placed[addr]; err == nil && (placed || a.shared[addr]) {
+				st.Announcing = append(st.Announcing, ack)
+			}
+		}
 	}
 	a.status.set(st)
 }
@@ -441,8 +479,16 @@ func slimNode(obj interface{}) (interface{}, error) {
 	}, nil
 }
 
-// PrepareShutdown runs before any address is withdrawn.
-func (a *Agent) PrepareShutdown() {}
+// PrepareShutdown runs at the start of a graceful shutdown, after the
+// work-queue goroutine has stopped: egress withdraws the addresses it
+// placed while the lease still stands (design 5.5; the repoint ahead of it
+// is Phase 5's).
+func (a *Agent) PrepareShutdown() {
+	if a.on == nil {
+		return
+	}
+	a.withdrawPlaced("shutdown")
+}
 
 // apiContext bounds one API call, as internal/k8s does.
 func apiContext() (context.Context, context.CancelFunc) {

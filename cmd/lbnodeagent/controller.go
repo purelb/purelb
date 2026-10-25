@@ -40,6 +40,9 @@ type controller struct {
 	// guard is also announcers[0], kept typed for the node agent's
 	// fail-closed wiring (StandingDown, SetStandDownHook). nil in tests.
 	guard *addrguard.Guard
+	// placer is announcers[1], the local announcer, which places egress's
+	// addresses (D31).
+	placer egresshook.Placer
 }
 
 // NewController configures a new controller. If error is non-nil then
@@ -48,6 +51,7 @@ type controller struct {
 // loaded only then.
 func NewController(l log.Logger, myNode string, guardEnabled bool, egress egresshook.Agent) (*controller, error) {
 	guard := addrguard.NewAnnouncer(l, myNode, guardEnabled)
+	announcer := local.NewAnnouncer(l, myNode, guard.StandingDown, guard.Withheld, egress)
 	con := &controller{
 		logger: l,
 		myNode: myNode,
@@ -58,9 +62,10 @@ func NewController(l log.Logger, myNode string, guardEnabled bool, egress egress
 		// asks the guard whether this node must stand down (fail-closed).
 		announcers: []lbnodeagent.Announcer{
 			guard,
-			local.NewAnnouncer(l, myNode, guard.StandingDown, guard.Withheld, egress),
+			announcer,
 		},
-		guard: guard,
+		guard:  guard,
+		placer: announcer.(egresshook.Placer),
 	}
 
 	return con, nil

@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	kubeinformers "k8s.io/client-go/informers"
@@ -575,6 +576,14 @@ func (r *Reconciler) reconcile(ref egress.PolicyRef) error {
 	if !run.revoked && !run.retained {
 		addrs = r.allocate(run)
 		eps = r.syncEndpoints(run, addrs)
+		// The addresses carry the policy's skipIPv6DAD, which no
+		// EgressEndpoints change announces.
+		for name := range eps {
+			if a, err := r.addresses.EgressAddresses(r.namespace).Get(name); err == nil &&
+				!apiequality.Semantic.DeepEqual(a.Spec.SkipIPv6DAD, p.spec.SkipIPv6DAD) && a.Spec.SharedWith == nil {
+				r.enqueue(addressPrefix+name, false)
+			}
+		}
 	}
 	if !run.retained {
 		r.syncFinalizer(run, r.retire(run, addrs), deleting || run.disallowed)

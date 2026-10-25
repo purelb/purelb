@@ -16,6 +16,7 @@ package agent
 
 import (
 	"testing"
+	"time"
 
 	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
@@ -89,6 +90,10 @@ func (f *fakeElector) SteeringWinner(key string, eligible func(string) bool, pre
 }
 
 func (f *fakeElector) SteeringLive() []string { return nil }
+
+func (f *fakeElector) LastRenewal() time.Time { return time.Time{} }
+
+func (f *fakeElector) LeaseDuration() time.Duration { return 10 * time.Second }
 
 // Owning asks WinnerAmong and steering SteeringWinner, both with the
 // group's eligibility and the preferred nodes.

@@ -17,6 +17,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -52,6 +53,10 @@ type dpWant struct {
 	pools map[int]dpPool
 	// hold is the egress addresses' entries and the acks they earn (D6).
 	hold holdings
+	// guardLinks are the interfaces the address guard is attached to and
+	// guardProgs its programs: pl_announce's uplinks, right behind it.
+	guardLinks []int
+	guardProgs []ebpf.ProgramID
 }
 
 // dpPool is one pool interface and the families placed on it.
@@ -79,7 +84,10 @@ type dpState struct {
 	port    uint16
 	tun     netlink.Link
 	links   map[string]link.Link
-	nodes   map[uint64]datapath.Node
+	linkIfs map[string]int // each link's interface
+	// unparsed are the uplinks pl_announce can't parse, as last logged.
+	unparsed map[string]bool
+	nodes    map[uint64]datapath.Node
 	// nft is the nftables connection (tests make their own); hardening
 	// what was last written through it.
 	nft       *nftables.Conn
@@ -107,6 +115,12 @@ func (a *Agent) syncDatapath() {
 		return
 	}
 	w := dpWant{spec: s.spec, self: a.node, hold: a.syncHoldings(s)}
+	w.pools = w.hold.pools
+	a.shared = w.hold.shared
+	a.syncPlacement(w.hold)
+	if a.guard != nil {
+		w.guardLinks, w.guardProgs = a.guard.Interfaces(), a.guard.ProgramIDs()
+	}
 	for _, obj := range s.nodes.List() {
 		n := obj.(*corev1.Node)
 		u := underlay(s.nodes, n.Name)
@@ -134,9 +148,11 @@ func (a *Agent) syncDatapath() {
 				"msg", "the egress datapath is not ready; retrying")
 			time.AfterFunc(datapathRetry, func() { a.add(keyDatapath, false) })
 		} else {
-			// Installed: the generations it covers may be acked.
+			// Installed: the generations it covers may be acked, and the
+			// addresses it holds placed.
 			acks := w.hold.acks
 			a.acks.Store(&acks)
+			a.installedHeld(w)
 		}
 		a.capability.Store(c)
 		a.add(keyNode, false)
@@ -189,6 +205,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 			return c, fmt.Errorf("reading the address maps: %w", err)
 		}
 		st.objs, st.links, st.nodes, st.pools, st.addrs = objs, map[string]link.Link{}, nodes, pools, addrs
+		st.linkIfs = map[string]int{}
 		st.reports = map[int]poolReport{}
 	}
 
@@ -208,17 +225,21 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	if st.tun == nil || st.tun.Attrs().Index != tun.Attrs().Index {
 		// A new device: links to the old one went with it.
 		for name, l := range st.links {
-			_ = l.Close()
-			delete(st.links, name)
+			if st.tun != nil && st.linkIfs[name] == st.tun.Attrs().Index {
+				_ = l.Close()
+				delete(st.links, name)
+				delete(st.linkIfs, name)
+			}
 		}
 	}
 	for name, l := range st.links {
 		// Detached by something else: attached again below.
-		if info, err := l.Info(); err != nil || info.TCX() == nil || int(info.TCX().Ifindex) != tun.Attrs().Index {
+		if info, err := l.Info(); err != nil || info.TCX() == nil || int(info.TCX().Ifindex) != st.linkIfs[name] {
 			logging.Info(a.logger, "op", "egressDatapath", "node", a.node, "link", name,
 				"msg", "a datapath link was detached outside the agent; attaching it again")
 			_ = l.Close()
 			delete(st.links, name)
+			delete(st.linkIfs, name)
 		}
 	}
 	st.mode, st.port, st.tun = mode, port, tun
@@ -269,7 +290,20 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	}
 	errs = append(errs, datapath.SyncThrows(st.nl, underlay))
 	errs = append(errs, a.syncPools(st, w))
-	errs = append(errs, syncAddresses(st, w.hold.addrs))
+	// A local address forwards transit in its pool interface's table.
+	addrs := maps.Clone(w.hold.addrs)
+	for addr, ifindex := range w.hold.ifaces {
+		n, ok := st.pools[ifindex]
+		if !ok {
+			errs = append(errs, fmt.Errorf("address %s: pool interface %d has no table", addr, ifindex))
+			delete(addrs, addr)
+			continue
+		}
+		e := *addrs[addr]
+		e.Table = datapath.PoolTableBase + n
+		addrs[addr] = &e
+	}
+	errs = append(errs, syncAddresses(st, addrs))
 
 	shift := uint8(0)
 	switch w.spec.MarkField {
@@ -299,11 +333,14 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		if _, ok := st.links[x.name]; ok {
 			continue
 		}
-		l, err := datapath.AttachTCX(st.pinDir, x.name, tun.Attrs().Index, x.prog, x.hook, 0)
+		l, err := datapath.AttachTCX(st.pinDir, x.name, tun.Attrs().Index, x.prog, x.hook, nil)
 		if err != nil {
 			return c, fmt.Errorf("attaching %s: %w", x.name, err)
 		}
-		st.links[x.name] = l
+		st.links[x.name], st.linkIfs[x.name] = l, tun.Attrs().Index
+	}
+	if err := a.syncUplinks(st, w); err != nil {
+		return c, err
 	}
 	c.EgressCapable = true
 	logging.Debug(a.logger, "op", "egressDatapath", "node", a.node, "tunnel", mode, "port", port,

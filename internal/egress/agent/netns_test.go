@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/link"
 	"github.com/go-kit/log"
 	"github.com/google/nftables"
@@ -639,4 +640,74 @@ func TestNetnsApplyDatapathAddresses(t *testing.T) {
 	delete(w.hold.addrs, a4)
 	apply(t, b, w)
 	assert.Equal(t, w.hold.addrs, recovered(b), "an address gone while the agent was down is pruned")
+}
+
+// pl_announce is on the uplinks only while the node holds an egress
+// address: without the guard the default-route interfaces and the pool
+// interfaces; with it, the guard's interfaces, right behind it. Links to
+// interfaces no longer wanted go with their pins, and a restart takes the
+// pinned ones over in place.
+func TestNetnsApplyDatapathUplinks(t *testing.T) {
+	dir := sandbox(t)
+	eth0, err := netlink.LinkByName("eth0")
+	require.NoError(t, err)
+	for _, gw := range []string{"10.0.0.254", "fd00::fe"} {
+		require.NoError(t, netlink.RouteAdd(&netlink.Route{LinkIndex: eth0.Attrs().Index, Gw: net.ParseIP(gw)}))
+	}
+	require.NoError(t, netlink.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "eth1"}}))
+	eth1, err := netlink.LinkByName("eth1")
+	require.NoError(t, err)
+	require.NoError(t, netlink.LinkSetUp(eth1))
+	e0, e1 := eth0.Attrs().Index, eth1.Attrs().Index
+	a4 := netip.MustParseAddr("192.0.2.10")
+	held := &datapath.AddressEntries{Address: datapath.Address{Held: true, SliceSize: 4096, Base: 1024, Table: 254},
+		Slices: map[uint16]uint64{}, Reserved: map[datapath.PortKey]uint64{}, Services: map[datapath.PortKey]bool{}}
+	pinned := func(name string) bool {
+		_, err := os.Stat(filepath.Join(dir, name))
+		return err == nil
+	}
+
+	a := newNetnsAgent(dir)
+	w := want(node("node-b", "10.0.0.2", "fd00::2"))
+	w.hold.addrs = map[netip.Addr]*datapath.AddressEntries{a4: {}}
+	apply(t, a, w)
+	assert.Empty(t, chain(t, e0, ebpf.AttachTCXIngress), "nothing held: no uplink")
+	assert.Empty(t, chain(t, e1, ebpf.AttachTCXIngress))
+
+	w.hold.addrs[a4] = held
+	w.pools = map[int]dpPool{e1: {name: "eth1", v4: true}}
+	apply(t, a, w)
+	pl := progID(t, a.dp.objs.PlAnnounceEth)
+	assert.Equal(t, []ebpf.ProgramID{pl}, chain(t, e0, ebpf.AttachTCXIngress), "the default-route interface")
+	assert.Equal(t, []ebpf.ProgramID{pl}, chain(t, e1, ebpf.AttachTCXIngress), "the pool interface")
+	assert.True(t, pinned("pl_announce-eth0"))
+	assert.True(t, pinned("pl_announce-eth1"))
+
+	// The guard on eth0 only: pl_announce follows its set, behind it.
+	guard, err := ebpf.NewProgram(&ebpf.ProgramSpec{Type: ebpf.SchedCLS, License: "Apache-2.0",
+		Instructions: asm.Instructions{asm.Mov.Imm(asm.R0, -1), asm.Return()}})
+	require.NoError(t, err)
+	defer guard.Close()
+	gl, err := link.AttachTCX(link.TCXOptions{Program: guard, Interface: e0, Attach: ebpf.AttachTCXIngress, Anchor: link.Head()})
+	require.NoError(t, err)
+	defer gl.Close()
+	w.guardLinks, w.guardProgs = []int{e0}, []ebpf.ProgramID{9999999, progID(t, guard)}
+	apply(t, a, w)
+	assert.Equal(t, []ebpf.ProgramID{progID(t, guard), pl}, chain(t, e0, ebpf.AttachTCXIngress))
+	assert.Empty(t, chain(t, e1, ebpf.AttachTCXIngress), "not one of the guard's")
+	assert.False(t, pinned("pl_announce-eth1"))
+
+	// A restart takes the pinned link over in place.
+	closeAgent(a)
+	b := newNetnsAgent(dir)
+	defer closeAgent(b)
+	apply(t, b, w)
+	assert.Equal(t, []ebpf.ProgramID{progID(t, guard), progID(t, b.dp.objs.PlAnnounceEth)}, chain(t, e0, ebpf.AttachTCXIngress))
+
+	// Holding nothing: off the uplinks, pins gone; the tunnel's stays.
+	w.hold.addrs[a4] = &datapath.AddressEntries{}
+	apply(t, b, w)
+	assert.Equal(t, []ebpf.ProgramID{progID(t, guard)}, chain(t, e0, ebpf.AttachTCXIngress))
+	assert.False(t, pinned("pl_announce-eth0"))
+	assert.True(t, pinned("pl_announce-"+datapath.TunnelName))
 }

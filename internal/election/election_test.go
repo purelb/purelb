@@ -16,6 +16,7 @@ package election
 
 import (
 	"context"
+	"errors"
 	"net"
 	"slices"
 	"sync/atomic"
@@ -27,8 +28,10 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
 
@@ -501,6 +504,38 @@ func TestRenewFailures(t *testing.T) {
 		e.leaseHealthy.Store(false)
 	}
 	assert.False(t, e.IsHealthy())
+}
+
+// LastRenewal follows successful lease writes only: it stops moving when
+// renewals fail at their Get (a partition from the API server), which
+// IsHealthy deliberately doesn't count.
+func TestLastRenewal(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	e, err := New(Config{Namespace: "purelb", NodeName: "test-node", Client: client, StopCh: make(chan struct{}),
+		LeaseDuration: 10 * time.Second})
+	require.NoError(t, err)
+	assert.True(t, e.LastRenewal().IsZero(), "no lease written yet")
+	assert.Equal(t, 10*time.Second, e.LeaseDuration())
+
+	_, err = client.CoreV1().Nodes().Create(context.Background(),
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "test-node"}}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	require.NoError(t, e.createOrUpdateLease())
+	created := e.LastRenewal()
+	assert.WithinDuration(t, time.Now(), created, time.Second)
+
+	require.NoError(t, e.renewLease())
+	renewed := e.LastRenewal()
+	assert.False(t, renewed.Before(created))
+
+	client.PrependReactor("get", "leases", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("connection refused")
+	})
+	for range maxRenewFailures + 1 {
+		require.Error(t, e.renewLease())
+	}
+	assert.Equal(t, renewed, e.LastRenewal(), "a failed renewal is not a renewal")
+	assert.True(t, e.IsHealthy(), "Get failures still don't mark the lease unhealthy (LB unchanged)")
 }
 
 // TestAtomicStateAccess tests concurrent access to election state

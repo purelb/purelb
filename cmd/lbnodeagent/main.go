@@ -525,6 +525,7 @@ func main() {
 	ctrl.SetElection(elect)
 	egress.SetElection(elect)
 	egress.SetGuard(ctrl.guard)
+	egress.SetPlacer(ctrl.placer)
 
 	// A scanned link's change renews the lease at once, and so does the
 	// end of its hold-down.
@@ -563,7 +564,7 @@ func main() {
 	}
 
 	// Graceful shutdown sequence:
-	// 0. Let egress repoint its traffic before any address goes
+	// 0. Egress withdraws the addresses it placed, while the lease stands
 	// 1. Mark election unhealthy - Winner() returns "" for all queries
 	// 2. Force sync to trigger address withdrawal on all services
 	// 3. Wait for traffic to drain and GARP to propagate
@@ -572,7 +573,8 @@ func main() {
 	// 6. Clean up local networking (dummy interface)
 	logging.Info(logger, "op", "shutdown", "msg", "starting graceful shutdown sequence")
 
-	// Step 0: egress repoints its traffic while the addresses are still up
+	// Step 0: egress withdraws its own addresses before the lease goes
+	// (design 5.5), so peers take over from a node that has let go
 	egress.PrepareShutdown()
 
 	// Step 1: Mark unhealthy - this causes Winner() to return ""

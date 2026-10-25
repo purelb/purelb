@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/go-kit/log"
@@ -77,8 +78,9 @@ func watch[T any](logger log.Logger, what string, stop <-chan struct{},
 	}
 }
 
-// watchRoutes kicks when a main-table route out of a pool interface
-// changes, or a route in one of the agent's own tables is deleted. pools
+// watchRoutes kicks when a main-table route out of a pool interface or a
+// default route changes, or a route in one of the agent's own tables is
+// deleted. pools
 // is read on this goroutine; the datapath goroutine publishes it.
 func watchRoutes(logger log.Logger, stop <-chan struct{}, pools func() map[int]bool, kick func()) {
 	watch(logger, "routes", stop, func(done <-chan struct{}) (<-chan netlink.RouteUpdate, error) {
@@ -104,6 +106,23 @@ func watchTunnel(logger log.Logger, stop <-chan struct{}, kick func()) {
 			}})
 	}, func(u netlink.LinkUpdate) {
 		if u.Link.Attrs().Name == datapath.TunnelName && (u.Header.Type == unix.RTM_DELLINK || u.IfInfomsg.Flags&unix.IFF_UP == 0) {
+			kick()
+		}
+	}, kick)
+}
+
+// watchAddrs kicks when an address egress placed is deleted, as an IPv6
+// address is when its interface goes down (D31: placed again at once).
+// placed is read on this goroutine; the queue goroutine publishes it.
+func watchAddrs(logger log.Logger, stop <-chan struct{}, placed func() map[netip.Addr]bool, kick func()) {
+	watch(logger, "addresses", stop, func(done <-chan struct{}) (<-chan netlink.AddrUpdate, error) {
+		ch := make(chan netlink.AddrUpdate, 256)
+		return ch, netlink.AddrSubscribeWithOptions(ch, done, netlink.AddrSubscribeOptions{
+			ErrorCallback: func(err error) {
+				logging.Info(logger, "op", "egressWatch", "watch", "addresses", "error", err, "msg", "watch failed; resubscribing")
+			}})
+	}, func(u netlink.AddrUpdate) {
+		if addr, ok := netip.AddrFromSlice(u.LinkAddress.IP); ok && !u.NewAddr && placed()[addr.Unmap()] {
 			kick()
 		}
 	}, kick)
@@ -173,12 +192,14 @@ func nftTableOf(e *nftables.MonitorEvent) string {
 	return ""
 }
 
-// poolRoute reports whether r is a main-table route out of one of pools.
+// poolRoute reports whether r is a main-table route out of one of pools,
+// or a main-table default route (what pl_announce's uplinks follow without
+// the guard).
 func poolRoute(r netlink.Route, pools map[int]bool) bool {
 	if r.Table != unix.RT_TABLE_MAIN {
 		return false
 	}
-	if pools[r.LinkIndex] {
+	if pools[r.LinkIndex] || defaultRoute(r) {
 		return true
 	}
 	for _, nh := range r.MultiPath {
@@ -194,4 +215,13 @@ func poolRoute(r netlink.Route, pools map[int]bool) bool {
 func ownTable(table int) bool {
 	return table == datapath.TunnelTable || table == datapath.ProhibitTable ||
 		(table >= datapath.PoolTableBase && table < datapath.PoolTableBase+datapath.MaxPoolInterfaces)
+}
+
+// defaultRoute reports whether r is a default route, either family.
+func defaultRoute(r netlink.Route) bool {
+	if r.Dst == nil {
+		return true
+	}
+	ones, _ := r.Dst.Mask.Size()
+	return ones == 0
 }

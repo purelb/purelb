@@ -434,110 +434,90 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 		}
 		delete(a.quietWithdrawn, renewalKey(nsName, lbIP.String()))
 
-		if cfg.localNameRegex != nil {
-			// The user specified an announcement interface regex so use it to
-			// try to find a local interface
-			lbIPNet, localif, err := findLocal(cfg.localNameRegex, cfg.spec.DummyInterface, lbIP)
-			if err != nil {
-				// The regex didn't resolve; try the explicitly-configured
-				// extra interfaces (spec.interfaces) before falling through.
-				if xNet, xIf, xErr := a.tryExtraInterfaces(cfg, lbIP); xErr == nil {
-					lbIPNet, localif, err = xNet, xIf, nil
-				} else if errors.Is(xErr, errIndeterminate) {
-					err = xErr
-				}
+		lbIPNet, localif, err := a.resolveLocal(cfg, lbIP)
+		var noDefault *noDefaultInterface
+		if errors.As(err, &noDefault) {
+			// No default interface and no fallback interfaces configured:
+			// keep the historical hard-error path.
+			logging.Info(l, "event", "announceError", "err", noDefault.err)
+			retErr = noDefault.err
+			continue
+		}
+		if err == nil {
+			// We found a local interface, announce the address on it
+			if err := a.announceLocal(cfg, svc, preferred, localif, lbIP, lbIPNet); err != nil {
+				retErr = err
 			}
-			if err == nil {
-				// We found a local interface, announce the address on it
-				if err := a.announceLocal(cfg, svc, preferred, localif, lbIP, lbIPNet); err != nil {
-					retErr = err
-				}
-			} else if a.isRemotePool(cfg, lbIP) {
-				// lbIP is from a remote pool, so add it to dummyInt
-				if err := a.announceRemote(cfg, svc, epSlices, lbIP); err != nil {
-					retErr = err
-				}
-			} else if errors.Is(err, errIndeterminate) {
-				// A partial netlink dump made resolution uncertain. Do not
-				// withdraw on uncertain evidence — the next SetBalancer
-				// cycle re-checks.
-				logging.Info(l, "event", "resolutionIndeterminate", "ip", lbIP,
-					"msg", "interface resolution indeterminate this cycle, skipping withdrawal")
-			} else {
-				// lbIP is from a local pool but no local interface matches.
-				// Withdraw any stale announcement: the annotation slot alone
-				// is not enough — a previously-announced VIP would stay on
-				// the NIC with a live renewal timer re-adding it while
-				// another node wins the election (duplicate ARP responders).
-				if err := a.deleteAddress(nsName, "noLocalInterface", lbIP); err != nil {
-					retErr = err
-				}
-				a.clearOwnAnnounceSlot(svc, lbIP)
-				logging.Info(l, "event", "noLocalInterface", "ip", lbIP,
-					"msg", "local pool IP has no matching local interface, not announcing")
+		} else if a.isRemotePool(cfg, lbIP) {
+			// lbIP is from a remote pool, so add it to dummyInt
+			if err := a.announceRemote(cfg, svc, epSlices, lbIP); err != nil {
+				retErr = err
 			}
-
+		} else if errors.Is(err, errIndeterminate) {
+			// A partial netlink dump made resolution uncertain. Do not
+			// withdraw on uncertain evidence — the next SetBalancer
+			// cycle re-checks.
+			logging.Info(l, "event", "resolutionIndeterminate", "ip", lbIP,
+				"msg", "interface resolution indeterminate this cycle, skipping withdrawal")
 		} else {
-			// The user wants us to determine the "default" interface
-			var lbIPNet net.IPNet
-			var localif netlink.Link
-			announceInt, err := netutil.DefaultInterface(purelbv2.AddrFamily(lbIP))
-			if err != nil {
-				if len(cfg.spec.Interfaces) == 0 {
-					// No fallback interfaces configured: keep the historical
-					// hard-error path.
-					logging.Info(l, "event", "announceError", "err", err)
-					retErr = err
-					continue
-				}
-			} else {
-				lbIPNet, localif, err = checkLocal(announceInt, lbIP)
+			// lbIP is from a local pool but no local interface matches.
+			// Withdraw any stale announcement: the annotation slot alone
+			// is not enough — a previously-announced VIP would stay on
+			// the NIC with a live renewal timer re-adding it while
+			// another node wins the election (duplicate ARP responders).
+			if err := a.deleteAddress(nsName, "noLocalInterface", lbIP); err != nil {
+				retErr = err
 			}
-			if err != nil {
-				// The default interface didn't resolve; try the
-				// explicitly-configured extra interfaces (spec.interfaces)
-				// before falling through.
-				if xNet, xIf, xErr := a.tryExtraInterfaces(cfg, lbIP); xErr == nil {
-					lbIPNet, localif, err = xNet, xIf, nil
-				} else if errors.Is(xErr, errIndeterminate) {
-					err = xErr
-				}
-			}
-			if err == nil {
-				// We found a local interface, announce the address on it
-				if err := a.announceLocal(cfg, svc, preferred, localif, lbIP, lbIPNet); err != nil {
-					retErr = err
-				}
-			} else if a.isRemotePool(cfg, lbIP) {
-				// lbIP is from a remote pool, so add it to dummyInt
-				if err := a.announceRemote(cfg, svc, epSlices, lbIP); err != nil {
-					retErr = err
-				}
-			} else if errors.Is(err, errIndeterminate) {
-				// A partial netlink dump made resolution uncertain. Do not
-				// withdraw on uncertain evidence — the next SetBalancer
-				// cycle re-checks.
-				logging.Info(l, "event", "resolutionIndeterminate", "ip", lbIP,
-					"msg", "interface resolution indeterminate this cycle, skipping withdrawal")
-			} else {
-				// lbIP is from a local pool but doesn't match the default
-				// interface or any extra interface. Withdraw any stale
-				// announcement: the annotation slot alone is not enough — a
-				// previously-announced VIP would stay on the NIC with a live
-				// renewal timer re-adding it while another node wins the
-				// election (duplicate ARP responders).
-				if err := a.deleteAddress(nsName, "noLocalInterface", lbIP); err != nil {
-					retErr = err
-				}
-				a.clearOwnAnnounceSlot(svc, lbIP)
-				logging.Info(l, "event", "noLocalInterface", "ip", lbIP,
-					"msg", "local pool IP has no matching local interface, not announcing")
-			}
+			a.clearOwnAnnounceSlot(svc, lbIP)
+			logging.Info(l, "event", "noLocalInterface", "ip", lbIP,
+				"msg", "local pool IP has no matching local interface, not announcing")
 		}
 	}
 
 	// Return the most recent error
 	return retErr
+}
+
+// noDefaultInterface is resolveLocal's error when there is no default
+// interface and no fallback interfaces are configured.
+type noDefaultInterface struct{ err error }
+
+func (e *noDefaultInterface) Error() string { return e.err.Error() }
+
+// resolveLocal finds the local interface lbIP goes on: one matching the
+// interface regex (when set) or the default interface of lbIP's family,
+// with an address containing lbIP, else the first such interface in
+// spec.interfaces. errIndeterminate means a partial netlink dump made the
+// answer uncertain this cycle.
+func (a *announcer) resolveLocal(cfg *announcerConfig, lbIP net.IP) (net.IPNet, netlink.Link, error) {
+	var lbIPNet net.IPNet
+	var localif netlink.Link
+	var err error
+	if cfg.localNameRegex != nil {
+		// The user specified an announcement interface regex so use it to
+		// try to find a local interface
+		lbIPNet, localif, err = findLocal(cfg.localNameRegex, cfg.spec.DummyInterface, lbIP)
+	} else {
+		// The user wants us to determine the "default" interface
+		var announceInt netlink.Link
+		announceInt, err = netutil.DefaultInterface(purelbv2.AddrFamily(lbIP))
+		if err != nil && len(cfg.spec.Interfaces) == 0 {
+			return lbIPNet, nil, &noDefaultInterface{err: err}
+		}
+		if err == nil {
+			lbIPNet, localif, err = checkLocal(announceInt, lbIP)
+		}
+	}
+	if err != nil {
+		// Not found; try the explicitly-configured extra interfaces
+		// (spec.interfaces) before giving up.
+		if xNet, xIf, xErr := a.tryExtraInterfaces(cfg, lbIP); xErr == nil {
+			return xNet, xIf, nil
+		} else if errors.Is(xErr, errIndeterminate) {
+			err = xErr
+		}
+	}
+	return lbIPNet, localif, err
 }
 
 // tryExtraInterfaces tries to resolve lbIP on the interfaces listed in
@@ -1377,6 +1357,30 @@ func getLocalAddressOptions(c *announcerConfig) AddressOptions {
 // semantics and silently suppress announcements for affinity-placed
 // addresses.
 func (a *announcer) sendGARPSequence(c *announcerConfig, lbIP net.IP, ifName string, preferred []string) {
+	ipStr := lbIP.String()
+	a.sendAnnouncements(c, lbIP, ifName, func() (bool, string) {
+		if a.election == nil {
+			return true, ""
+		}
+		// Verify we still own this address before sending. This must ask
+		// the election the SAME question that placed the address --
+		// WinnerWithPreference, with the same preferred set -- not plain
+		// Winner. They differ exactly when a service opts into
+		// NodeAffinityAnnotation, and then the node holding the address is
+		// not the plain-Winner node, so every packet was skipped and an
+		// affinity-placed VIP never announced itself at all. The
+		// observable was a moved VIP receiving no traffic until the
+		// upstream ARP/ND caches aged out.
+		winner := a.election.WinnerWithPreference(ipStr, preferred)
+		return winner == a.myNode, winner
+	})
+}
+
+// sendAnnouncements runs the GARP / unsolicited NA sequence for lbIP on
+// ifName per the GARPConfig, asking still before each packet (with
+// verifyBeforeSend) whether this node still holds the address, and who
+// does if not, for the log.
+func (a *announcer) sendAnnouncements(c *announcerConfig, lbIP net.IP, ifName string, still func() (bool, string)) {
 	if c == nil || c.spec.GARPConfig == nil {
 		return // GARP not configured
 	}
@@ -1453,18 +1457,8 @@ func (a *announcer) sendGARPSequence(c *announcerConfig, lbIP net.IP, ifName str
 				time.Sleep(interval)
 			}
 
-			// Verify we still own this address before sending. This must
-			// ask the election the SAME question that placed the address
-			// -- WinnerWithPreference, with the same preferred set -- not
-			// plain Winner. They differ exactly when a service opts into
-			// NodeAffinityAnnotation, and then the node holding the
-			// address is not the plain-Winner node, so every packet was
-			// skipped and an affinity-placed VIP never announced itself
-			// at all. The observable was a moved VIP receiving no traffic
-			// until the upstream ARP/ND caches aged out.
-			if verifyBeforeSend && a.election != nil {
-				winner := a.election.WinnerWithPreference(ipStr, preferred)
-				if winner != a.myNode {
+			if verifyBeforeSend {
+				if ok, winner := still(); !ok {
 					logging.Debug(a.logger, "op", op, "ip", ipStr, "packet", i+1, "of", count,
 						"msg", "skipping announcement, no longer winner", "winner", winner)
 					return // Stop the sequence, we lost ownership

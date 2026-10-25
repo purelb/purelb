@@ -111,6 +111,11 @@ type Guard struct {
 	down          atomic.Bool
 	applied       atomic.Bool
 	standDownHook atomic.Pointer[func(bool)]
+	// links are the interfaces the guard is attached to, by ifindex,
+	// sorted; linksHook is called when they change. Written by the
+	// attacher goroutine.
+	links     atomic.Pointer[[]int]
+	linksHook atomic.Pointer[func()]
 	// loadWanted is the startup decision: the guard was configured for this
 	// node when the agent started, so the program was loaded (or tried to
 	// be). Fixed before any goroutine runs. The program is loaded only for a
@@ -224,6 +229,22 @@ func (g *Guard) StandingDown() bool {
 // pull the node out of (or back into) elections and re-sync Services.
 func (g *Guard) SetStandDownHook(fn func(standingDown bool)) {
 	g.standDownHook.Store(&fn)
+}
+
+// Interfaces is the interfaces the guard is attached to, by ifindex. Safe
+// from any goroutine.
+func (g *Guard) Interfaces() []int {
+	if l := g.links.Load(); l != nil {
+		return *l
+	}
+	return nil
+}
+
+// SetLinksHook registers fn, called from the attacher goroutine whenever
+// Interfaces changes: egress attaches its uplink program behind the guard
+// on the same interfaces.
+func (g *Guard) SetLinksHook(fn func()) {
+	g.linksHook.Store(&fn)
 }
 
 // SetClient implements lbnodeagent.Announcer.

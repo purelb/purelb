@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cilium/ebpf"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
@@ -41,11 +42,21 @@ import (
 // and Services alike.
 type Guard interface {
 	UpdateEgress(a netip.Addr, present bool, ports []addrguard.EgressPort, slices []addrguard.EgressSlice) error
+	// StandingDown reports whether the fail-closed guard isn't working:
+	// the node then withdraws its routed advertisements (design 6.10).
+	StandingDown() bool
+	// Interfaces are the interfaces the guard is attached to, and
+	// ProgramIDs its programs: pl_announce goes right behind it there.
+	// SetLinksHook's function runs when Interfaces changes.
+	Interfaces() []int
+	ProgramIDs() []ebpf.ProgramID
+	SetLinksHook(func())
 }
 
 // SetGuard gives egress the node's address guard. Call it before Start.
 func (a *Agent) SetGuard(g Guard) {
 	a.guard = g
+	g.SetLinksHook(func() { a.add(keyDatapath, false) })
 }
 
 // eeWatch is one scoped EgressEndpoints watch (D6): a name watch for an
@@ -67,6 +78,18 @@ type holdings struct {
 	egress   []netip.Addr
 	services []datapath.ServicePort
 	acks     []purelbv2.EgressAnnouncing
+	// ifaces are the held local addresses' pool interfaces (ifindex),
+	// whose tables they forward transit in; pools those interfaces.
+	ifaces map[netip.Addr]int
+	pools  map[int]dpPool
+	// place is how to place each held dedicated address (D31); shared
+	// the held addresses the Service path places.
+	place  map[netip.Addr]placeWant
+	shared map[netip.Addr]bool
+	// unheld are the dedicated (egress-only) addresses this node doesn't
+	// hold, with their placement keys. One it holds but hasn't read in
+	// full yet is in neither place nor unheld.
+	unheld map[netip.Addr]string
 }
 
 // syncHoldings decides which egress addresses this node holds (§5.5),
@@ -75,7 +98,9 @@ type holdings struct {
 // its watches has done its initial full read, so a node taking an address
 // over never serves it from a stale slice table. Queue goroutine only.
 func (a *Agent) syncHoldings(s *session) holdings {
-	h := holdings{addrs: map[netip.Addr]*datapath.AddressEntries{}}
+	h := holdings{addrs: map[netip.Addr]*datapath.AddressEntries{}, ifaces: map[netip.Addr]int{},
+		pools: map[int]dpPool{}, place: map[netip.Addr]placeWant{}, shared: map[netip.Addr]bool{},
+		unheld: map[netip.Addr]string{}}
 	d := a.config.Load()
 	if d == nil {
 		return h
@@ -85,6 +110,7 @@ func (a *Agent) syncHoldings(s *session) holdings {
 
 	type heldAddr struct {
 		ea    *purelbv2.EgressAddress
+		g     *purelbv2.ServiceGroup
 		addr  netip.Addr
 		names []string // name-watched EgressEndpoints; none for routed
 	}
@@ -100,9 +126,12 @@ func (a *Agent) syncHoldings(s *session) holdings {
 		h.addrs[addr] = &datapath.AddressEntries{}
 		g := d.groups[ea.Spec.ServiceGroup]
 		if !a.holds(s, ea, g, addr) {
+			if ea.Spec.SharedWith == nil {
+				h.unheld[addr] = placementKey(ea)
+			}
 			continue
 		}
-		x := heldAddr{ea: ea, addr: addr}
+		x := heldAddr{ea: ea, g: g, addr: addr}
 		if ea.Spec.PoolType == "Routed" && ea.Spec.SharedWith == nil {
 			if !slices.Contains(routedGroups, ea.Spec.ServiceGroup) {
 				routedGroups = append(routedGroups, ea.Spec.ServiceGroup)
@@ -134,6 +163,14 @@ func (a *Agent) syncHoldings(s *session) holdings {
 			logging.Info(a.logger, "op", "egressHold", "node", a.node, "address", x.addr, "error", err)
 			continue
 		}
+		ifindex, pw, err := a.placing(s, x.ea, x.g, x.addr)
+		if err != nil {
+			// Not held: without its pool interface it has no table and
+			// can't be placed. Retried at the next sync.
+			logging.Info(a.logger, "op", "egressHold", "node", a.node, "address", x.addr, "error", err,
+				"msg", "no interface to place the address on; not holding it")
+			continue
+		}
 		if a.guard != nil {
 			if err := a.guard.UpdateEgress(x.addr, true, ports, gslices); err != nil {
 				// Not acked: a slice the guard can't pass stays Pending
@@ -145,6 +182,19 @@ func (a *Agent) syncHoldings(s *session) holdings {
 			guarded[x.addr] = true
 		}
 		h.addrs[x.addr] = e
+		if ifindex != 0 {
+			h.ifaces[x.addr] = ifindex
+			pool := h.pools[ifindex]
+			pool.name = pw.iface
+			pool.v4 = pool.v4 || x.addr.Is4()
+			pool.v6 = pool.v6 || x.addr.Is6()
+			h.pools[ifindex] = pool
+		}
+		if x.ea.Spec.SharedWith != nil {
+			h.shared[x.addr] = true
+		} else {
+			h.place[x.addr] = pw
+		}
 		for p := range e.Services {
 			h.services = append(h.services, datapath.ServicePort{Addr: x.addr, Proto: p.Proto, Port: p.Port})
 		}
@@ -187,7 +237,10 @@ func (a *Agent) holds(s *session, ea *purelbv2.EgressAddress, g *purelbv2.Servic
 	case ea.Spec.SharedWith != nil:
 		return len(a.services[addr]) > 0
 	case ea.Spec.PoolType == "Routed":
-		return eligibility(s.nodes, g)(a.node)
+		// Every live selector node advertises (D7); one whose guard
+		// stands down or that has been cut off from the API for 3 lease
+		// durations withdraws (design 6.10, 8.8).
+		return eligibility(s.nodes, g)(a.node) && (a.guard == nil || !a.guard.StandingDown()) && !a.partitioned()
 	default:
 		return a.localOwner(s, ea.Spec.Address, g, ea.Spec.PreferredNodes) == a.node
 	}
@@ -343,8 +396,16 @@ func protoNumber(p string) uint8 {
 	return 6
 }
 
-// Referenced reports whether egress uses ip on this node.
-func (a *Agent) Referenced(net.IP) bool { return false }
+// Referenced reports whether egress has placed ip on this node. It runs
+// on the work-queue goroutine.
+func (a *Agent) Referenced(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	_, placed := a.placed[addr.Unmap()]
+	return placed
+}
 
 // ServiceAddress records a Service address this node announces (true) or
 // no longer announces: a shared egress address is held where its Service

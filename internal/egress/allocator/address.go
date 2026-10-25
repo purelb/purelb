@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 
+	"purelb.io/internal/egress"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -80,6 +81,11 @@ func (r *Reconciler) addressSpec(ep *purelbv2.EgressEndpoints) purelbv2.EgressAd
 		Pool: s.Pool, PoolType: s.PoolType, Placement: s.Placement, SharedWith: s.SharedWith}
 	if s.State != stateActive {
 		return spec
+	}
+	ref := egress.PolicyRef{Kind: ep.Labels[egress.LabelKind], Namespace: ep.Labels[egress.LabelNamespace], Name: ep.Labels[egress.LabelName]}
+	if p, ok, _ := r.load(ref); ok && s.SharedWith == nil && p.spec.SkipIPv6DAD != nil {
+		skip := *p.spec.SkipIPv6DAD
+		spec.SkipIPv6DAD = &skip
 	}
 	prefer := s.Identity != ""
 	if g, _, ok := r.alloc.ServiceGroup(s.ServiceGroup); ok && g.Spec.Egress != nil && g.Spec.Egress.PreferPodNodes {

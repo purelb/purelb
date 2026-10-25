@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,12 +34,14 @@ import (
 	"purelb.io/internal/addrguard"
 	"purelb.io/internal/egress"
 	"purelb.io/internal/egress/datapath"
+	"purelb.io/internal/egresshook"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 // winners is an Elector whose winners the test sets, by address.
 type winners struct {
-	m atomic.Pointer[map[string]string]
+	m       atomic.Pointer[map[string]string]
+	renewed atomic.Int64
 }
 
 func (w *winners) set(m map[string]string) { w.m.Store(&m) }
@@ -50,10 +54,78 @@ func (w *winners) SteeringWinner(key string, _ func(string) bool, _ []string) st
 }
 func (w *winners) SteeringLive() []string { return nil }
 
+// LastRenewal is renewed (nanoseconds; 0: just now), LeaseDuration 10 s.
+func (w *winners) LastRenewal() time.Time {
+	if n := w.renewed.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Now()
+}
+func (w *winners) LeaseDuration() time.Duration { return 10 * time.Second }
+
 // fakeGuard records UpdateEgress calls and refuses the addresses in fail.
 type fakeGuard struct {
 	calls chan string
 	fail  map[netip.Addr]bool // set before the agent starts
+	down  atomic.Bool
+}
+
+func (g *fakeGuard) StandingDown() bool { return g.down.Load() }
+
+func (g *fakeGuard) Interfaces() []int { return nil }
+
+func (g *fakeGuard) ProgramIDs() []ebpf.ProgramID { return nil }
+
+func (g *fakeGuard) SetLinksHook(func()) {}
+
+// fakePlacer places addresses into its own address list, which the
+// agent's addrFlags reads; the pool interface is "eth1" (ifindex 7).
+type fakePlacer struct {
+	calls   chan string
+	present sync.Map // netip.Addr: IFA flags
+	fail    atomic.Bool
+}
+
+func (p *fakePlacer) EgressInterface(net.IP) (int, string, error) { return 7, "eth1", nil }
+
+func (p *fakePlacer) PlaceEgress(key string, ip net.IP, pl egresshook.EgressPlacement) error {
+	addr, _ := netip.AddrFromSlice(ip)
+	if p.fail.Load() {
+		p.calls <- fmt.Sprintf("place failed %s", addr.Unmap())
+		return errors.New("no such interface")
+	}
+	p.present.Store(addr.Unmap(), 0)
+	p.calls <- fmt.Sprintf("place %s %s routed=%v %s%s skipDAD=%v", key, addr.Unmap(), pl.Routed, pl.Subnet,
+		pl.Aggregation, pl.SkipDAD)
+	return nil
+}
+
+func (p *fakePlacer) WithdrawEgress(key string, ip net.IP) error {
+	addr, _ := netip.AddrFromSlice(ip)
+	p.present.Delete(addr.Unmap())
+	p.calls <- fmt.Sprintf("withdraw %s %s", key, addr.Unmap())
+	return nil
+}
+
+func (p *fakePlacer) flags() (map[netip.Addr]int, error) {
+	out := map[netip.Addr]int{}
+	p.present.Range(func(k, v any) bool {
+		out[k.(netip.Addr)] = v.(int)
+		return true
+	})
+	return out, nil
+}
+
+// next returns the next placer call.
+func (p *fakePlacer) next(t *testing.T) string {
+	t.Helper()
+	select {
+	case c := <-p.calls:
+		return c
+	case <-time.After(5 * time.Second):
+		t.Fatal("no placer call")
+		return ""
+	}
 }
 
 func (g *fakeGuard) UpdateEgress(a netip.Addr, present bool, ports []addrguard.EgressPort, sl []addrguard.EgressSlice) error {
@@ -99,12 +171,35 @@ func endpoints(name, ip, poolType string, gen int64, slices ...purelbv2.EgressSl
 // given, and the ServiceGroup "sg".
 func holding(t *testing.T, w *winners, g *fakeGuard, objs ...runtime.Object) *fixture {
 	t.Helper()
+	return holdingWith(t, w, g, &fakePlacer{calls: make(chan string, 100)}, nil, objs...)
+}
+
+// holdingWith is holding with placer p, and hook run on each desired
+// state the datapath applies: its error fails the apply.
+func holdingWith(t *testing.T, w *winners, g *fakeGuard, p *fakePlacer, hook func(dpWant) error,
+	objs ...runtime.Object) *fixture {
+	t.Helper()
 	f := newFixture(t, true, objs...)
+	if hook != nil {
+		apply := f.a.apply
+		f.a.apply = func(dw dpWant) (*purelbv2.EgressCapability, error) {
+			c, err := apply(dw)
+			if herr := hook(dw); herr != nil {
+				return c, herr
+			}
+			return c, err
+		}
+	}
 	f.a.SetElection(w)
 	f.a.SetGuard(g)
+	f.placer = p
+	f.a.SetPlacer(f.placer)
+	f.a.addrFlags = f.placer.flags
 	cfg := agentWith(&purelbv2.LBNodeAgentEgressSpec{Enabled: true})
 	cfg.Groups = []*purelbv2.ServiceGroup{{ObjectMeta: metav1.ObjectMeta{Name: "sg"},
-		Spec: purelbv2.ServiceGroupSpec{Egress: &purelbv2.ServiceGroupEgressSpec{}}}}
+		Spec: purelbv2.ServiceGroupSpec{Egress: &purelbv2.ServiceGroupEgressSpec{},
+			Remote: &purelbv2.ServiceGroupRemoteSpec{V4Pool: &purelbv2.AddressPool{
+				Pool: "198.51.100.0/24", Subnet: "198.51.100.0/24", Aggregation: "/32"}}}}}
 	f.a.Configure(cfg)
 	return f
 }
@@ -230,6 +325,9 @@ func TestHoldShared(t *testing.T) {
 	f := newFixture(t, true, testNodeObj, ea, ee)
 	f.a.SetElection(w)
 	f.a.SetGuard(g)
+	p := &fakePlacer{calls: make(chan string, 100)}
+	f.a.SetPlacer(p)
+	f.a.addrFlags = p.flags
 	// Before the session: nothing else runs on the queue goroutine yet.
 	f.a.ServiceAddress("app/web", net.ParseIP("192.0.2.20"), true)
 	cfg := agentWith(&purelbv2.LBNodeAgentEgressSpec{Enabled: true})
@@ -241,6 +339,15 @@ func TestHoldShared(t *testing.T) {
 	addr := netip.MustParseAddr("192.0.2.20")
 	assert.True(t, got.hold.addrs[addr].Held)
 	assert.Equal(t, []datapath.ServicePort{{Addr: addr, Proto: 6, Port: 443}}, got.hold.services)
+	// Its table is the pool interface's the Service placed it on, but
+	// egress never places it (D31); it is announced, so it is acked.
+	assert.Equal(t, map[netip.Addr]int{addr: 7}, got.hold.ifaces)
+	assert.Equal(t, map[int]dpPool{7: {name: "eth1", v4: true}}, got.pools)
+	require.Eventually(t, func() bool {
+		ens, err := f.purelb.PurelbV2().EgressNodeStates().Get(context.Background(), testNode, metav1.GetOptions{})
+		return err == nil && len(ens.Status.Announcing) == 1
+	}, 5*time.Second, 20*time.Millisecond)
+	assert.Empty(t, p.calls, "a shared address is the Service's to place")
 }
 
 // An address the guard refuses (its map full) is not acked, so its slices

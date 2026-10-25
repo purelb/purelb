@@ -622,6 +622,11 @@ type EgressAddressSpec struct {
 	// +kubebuilder:validation:items:MaxLength=253
 	// +optional
 	PreferredNodes []string `json:"preferredNodes,omitempty"`
+
+	// SkipIPv6DAD is the policy's skipIPv6DAD for a dedicated address
+	// (D31). Absent, the pool's setting applies.
+	// +optional
+	SkipIPv6DAD *bool `json:"skipIPv6DAD,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

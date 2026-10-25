@@ -53,6 +53,7 @@ type fixture struct {
 	kube   *kubefake.Clientset
 	purelb *purelbfake.Clientset
 	wants  chan dpWant
+	placer *fakePlacer // holding's
 }
 
 func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {

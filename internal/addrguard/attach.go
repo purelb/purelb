@@ -17,6 +17,7 @@ package addrguard
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"path/filepath"
@@ -477,6 +478,13 @@ func (a *attacher) publish(ready bool, why string) {
 	if fn := a.g.standDownHook.Load(); fn != nil && down != prev {
 		(*fn)(down)
 	}
+	links := slices.Sorted(maps.Keys(a.attached))
+	if old := a.g.links.Load(); old == nil || !slices.Equal(*old, links) {
+		a.g.links.Store(&links)
+		if fn := a.g.linksHook.Load(); fn != nil {
+			(*fn)()
+		}
+	}
 }
 
 // rewatch replaces a subscription whose channel netlink closed (it does
@@ -704,13 +712,13 @@ func (a *attacher) reconcileLinks(logExcluded bool) (bool, string) {
 // and WireGuard: no link-layer header.
 const arphrdNone = "none"
 
-// linkLayer reports which tcx program fits l: ag_tcx for Ethernet, whose
+// LinkLayer reports which tcx program fits l: ag_tcx for Ethernet, whose
 // network header follows a 14-byte Ethernet header, or ag_tcx_l3 (l3 true)
 // for links with no link-layer header, whose packets start with it. Each
 // type here was measured at tcx ingress (QinQ included: its inner tag sits
 // at 14); the guard refuses any other type rather than read a link it
 // can't parse.
-func linkLayer(l netlink.Link) (l3 bool, err error) {
+func LinkLayer(l netlink.Link) (l3 bool, err error) {
 	switch l.Attrs().EncapType {
 	case "ether":
 		return false, nil
@@ -735,7 +743,7 @@ func linkLayer(l netlink.Link) (l3 bool, err error) {
 func (a *attacher) attach(l netlink.Link, hook string, old *attachment) (*attachment, error) {
 	attrs := l.Attrs()
 	at := &attachment{name: attrs.Name, want: hook}
-	l3, err := linkLayer(l)
+	l3, err := LinkLayer(l)
 	if err != nil {
 		return nil, err
 	}

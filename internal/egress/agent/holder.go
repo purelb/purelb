@@ -15,6 +15,8 @@
 package agent
 
 import (
+	"time"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -34,6 +36,10 @@ type Elector interface {
 	SteeringWinner(key string, eligible func(node string) bool, preferred []string) string
 	// SteeringLive is the live nodes in the steering view.
 	SteeringLive() []string
+	// LastRenewal is when this node's lease was last written, the zero
+	// time before the first write; LeaseDuration how long a lease lasts.
+	LastRenewal() time.Time
+	LeaseDuration() time.Duration
 }
 
 // SetElection gives egress the node's election. Call it before Start.

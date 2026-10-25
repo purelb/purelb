@@ -127,6 +127,9 @@ type Election struct {
 
 	// renewFailures counts consecutive renewal failures
 	renewFailures atomic.Int32
+	// renewed is when this node's lease was last written successfully, in
+	// Unix nanoseconds (LastRenewal).
+	renewed atomic.Int64
 
 	// renewTicker triggers periodic lease renewal
 	renewTicker *time.Ticker
@@ -313,6 +316,22 @@ func (e *Election) MarkUnhealthy() {
 // IsHealthy returns whether this node's lease is currently valid
 func (e *Election) IsHealthy() bool {
 	return e.leaseHealthy.Load()
+}
+
+// LastRenewal is when this node's lease was last written successfully,
+// the zero time before the first write. Unlike IsHealthy it also falls
+// behind while every renewal fails at its Get, as during a partition from
+// the API server.
+func (e *Election) LastRenewal() time.Time {
+	if n := e.renewed.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
+}
+
+// LeaseDuration is how long a lease is valid.
+func (e *Election) LeaseDuration() time.Duration {
+	return e.config.LeaseDuration
 }
 
 // MemberCount returns the number of nodes with valid leases
@@ -756,6 +775,7 @@ func (e *Election) createOrUpdateLease() error {
 			"lease", e.leaseName, "subnets", subnetsAnnotation, "msg", "lease created")
 		e.leaseHealthy.Store(true)
 		e.renewFailures.Store(0)
+		e.renewed.Store(time.Now().UnixNano())
 		RecordLeaseHealthy(true)
 		if subnetCount >= 0 {
 			RecordLocalSubnetCount(subnetCount)
@@ -787,6 +807,7 @@ func (e *Election) createOrUpdateLease() error {
 		"lease", e.leaseName, "subnets", subnetsAnnotation, "msg", "lease updated")
 	e.leaseHealthy.Store(true)
 	e.renewFailures.Store(0)
+	e.renewed.Store(time.Now().UnixNano())
 	RecordLeaseHealthy(true)
 	if subnetCount >= 0 {
 		RecordLocalSubnetCount(subnetCount)
@@ -849,6 +870,7 @@ func (e *Election) renewLease() error {
 	}
 
 	// Success - reset failures and mark healthy
+	e.renewed.Store(time.Now().UnixNano())
 	RecordLeaseRenewal()
 	if e.renewFailures.Load() > 0 {
 		logging.Info(e.config.Logger, "op", "election", "action", "renewRecovered",

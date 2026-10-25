@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -129,6 +130,16 @@ func TestAttacherInNetns(t *testing.T) {
 	assert.True(t, attachedNew, "attached to the new ifindex")
 	_, attachedOld := a.attached[old.Attrs().Index]
 	assert.False(t, attachedOld, "the old ifindex is forgotten")
+
+	// Egress follows the guard's interfaces (pl_announce behind it): they
+	// are published, and the hook runs when they change, only then.
+	var linkChanges atomic.Int32
+	g.SetLinksHook(func() { linkChanges.Add(1) })
+	a.publish(true, "")
+	v0, _ := netlink.LinkByName("agv0")
+	assert.ElementsMatch(t, []int{v0.Attrs().Index, now.Attrs().Index}, g.Interfaces())
+	a.publish(true, "")
+	assert.Equal(t, int32(1), linkChanges.Load(), "published once per change")
 
 	// A hook change replaces the attachment. agd0 asked for xdp and got
 	// tcx; asked for tcx now, it keeps the tcx link it has -- attaching the
@@ -461,7 +472,7 @@ func TestLinkLayer(t *testing.T) {
 		{&netlink.GenericLink{LinkAttrs: netlink.LinkAttrs{EncapType: "unknown824"}, LinkType: "nlmon"}, false, true},
 		{&netlink.GenericLink{LinkAttrs: netlink.LinkAttrs{EncapType: "none"}, LinkType: "something-else"}, false, true},
 	} {
-		l3, err := linkLayer(tc.link)
+		l3, err := LinkLayer(tc.link)
 		name := tc.link.Type() + "/" + tc.link.Attrs().EncapType
 		if tc.err {
 			assert.Error(t, err, name)

@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"purelb.io/internal/egress"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -121,4 +122,42 @@ func TestEgressAddressKeys(t *testing.T) {
 	f := newFixture(t, []*purelbv2.ServiceGroup{group("default")}, ep)
 	assert.Contains(t, f.r.Keys(), addressPrefix+ep.Name)
 	assert.True(t, f.q.has(addressPrefix+ep.Name))
+}
+
+// A dedicated address carries its policy's skipIPv6DAD (D31), and a change
+// of it alone, which no EgressEndpoints change announces, queues the
+// address again.
+func TestEgressAddressSkipIPv6DAD(t *testing.T) {
+	sip := egressObj("voice", "sip", func(s *purelbv2.EgressSpec) { s.SkipIPv6DAD = ptr(true) })
+	f := newFixture(t, []*purelbv2.ServiceGroup{dualGroup("default")}, namespace("voice", nil), sip)
+	f.reconcile(t, "egress/voice/sip")
+	eps := f.endpoints(t)
+	require.Len(t, eps, 2)
+	for _, ep := range eps {
+		f.reconcile(t, addressPrefix+ep.Name)
+		assert.Equal(t, ptr(true), f.address(t, ep.Name).Spec.SkipIPv6DAD, ep.Spec.Address)
+	}
+
+	f.q.mu.Lock()
+	f.q.keys = nil // only what follows the policy change
+	f.q.mu.Unlock()
+	sip.Spec.SkipIPv6DAD = nil
+	_, err := f.purelb.PurelbV2().Egresses("voice").Update(context.Background(), sip, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	f.settle(t)
+	f.reconcile(t, "egress/voice/sip")
+	for _, ep := range eps {
+		require.True(t, f.q.has(addressPrefix+ep.Name), "the policy change queues %s", ep.Name)
+		f.reconcile(t, addressPrefix+ep.Name)
+		assert.Nil(t, f.address(t, ep.Name).Spec.SkipIPv6DAD, "absent: the pool's setting applies")
+	}
+
+	// A shared address is the Service's: the pool's setting wins.
+	shared := addrEndpoints("e-voice.sip-9", "Active", "")
+	shared.Labels = map[string]string{egress.LabelKind: egress.KindEgress, egress.LabelNamespace: "voice", egress.LabelName: "sip"}
+	shared.Spec.SharedWith = &purelbv2.EgressServiceRef{Name: "web"}
+	sip.Spec.SkipIPv6DAD = ptr(true)
+	f2 := newFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil), sip, shared)
+	f2.reconcile(t, addressPrefix+shared.Name)
+	assert.Nil(t, f2.address(t, shared.Name).Spec.SkipIPv6DAD)
 }

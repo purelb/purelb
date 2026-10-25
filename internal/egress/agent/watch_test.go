@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"net"
 	"testing"
 
 	"github.com/google/nftables"
@@ -25,16 +26,21 @@ import (
 	"purelb.io/internal/egress/datapath"
 )
 
-// Only main-table routes out of a pool interface, a multipath hop
-// included, wake the datapath.
+// Main-table routes out of a pool interface, a multipath hop included,
+// and main-table default routes wake the datapath.
 func TestPoolRoute(t *testing.T) {
 	pools := map[int]bool{3: true}
 	main := unix.RT_TABLE_MAIN
-	assert.True(t, poolRoute(netlink.Route{Table: main, LinkIndex: 3}, pools))
-	assert.True(t, poolRoute(netlink.Route{Table: main, MultiPath: []*netlink.NexthopInfo{{LinkIndex: 2}, {LinkIndex: 3}}}, pools))
-	assert.False(t, poolRoute(netlink.Route{Table: main, LinkIndex: 2}, pools))
-	assert.False(t, poolRoute(netlink.Route{Table: 7900, LinkIndex: 3}, pools))
-	assert.False(t, poolRoute(netlink.Route{Table: main, LinkIndex: 3}, nil))
+	dst := &net.IPNet{IP: net.ParseIP("192.0.2.0").To4(), Mask: net.CIDRMask(24, 32)}
+	assert.True(t, poolRoute(netlink.Route{Table: main, Dst: dst, LinkIndex: 3}, pools))
+	assert.True(t, poolRoute(netlink.Route{Table: main, Dst: dst, MultiPath: []*netlink.NexthopInfo{{LinkIndex: 2}, {LinkIndex: 3}}}, pools))
+	assert.False(t, poolRoute(netlink.Route{Table: main, Dst: dst, LinkIndex: 2}, pools))
+	assert.False(t, poolRoute(netlink.Route{Table: 7900, Dst: dst, LinkIndex: 3}, pools))
+	assert.False(t, poolRoute(netlink.Route{Table: main, Dst: dst, LinkIndex: 3}, nil))
+	// A main-table default route, any interface: the uplinks follow it.
+	assert.True(t, poolRoute(netlink.Route{Table: main, LinkIndex: 2}, nil))
+	assert.True(t, poolRoute(netlink.Route{Table: main, Dst: &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}, LinkIndex: 2}, nil))
+	assert.False(t, poolRoute(netlink.Route{Table: 100, LinkIndex: 2}, nil))
 }
 
 // The agent's own tables are 7700, 7799 and 7900-7963.

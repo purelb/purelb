@@ -231,13 +231,13 @@ func TunnelMTU(h *netlink.Handle, mode string, peers6 []netip.Addr) int {
 	return mtu
 }
 
-// AttachTCX attaches prog to ifindex at hook, right after program after
-// when it is in that chain (the guard: [guard, pl_announce]) and at the
-// head otherwise. With pinDir set (D12) the link is pinned there as name,
-// and a link an earlier agent pinned as name is taken over in place
-// instead. Programs are matched by ID: finding one by name would need
-// CAP_SYS_ADMIN.
-func AttachTCX(pinDir, name string, ifindex int, prog *ebpf.Program, hook ebpf.AttachType, after ebpf.ProgramID) (link.Link, error) {
+// AttachTCX attaches prog to ifindex at hook, right after the first
+// program of after that is in that chain (the guard, whose Ethernet or L3
+// program it is: [guard, pl_announce]) and at the head otherwise. With
+// pinDir set (D12) the link is pinned there as name, and a link an earlier
+// agent pinned as name is taken over in place instead. Programs are
+// matched by ID: finding one by name would need CAP_SYS_ADMIN.
+func AttachTCX(pinDir, name string, ifindex int, prog *ebpf.Program, hook ebpf.AttachType, after []ebpf.ProgramID) (link.Link, error) {
 	path := ""
 	if pinDir != "" {
 		path = filepath.Join(pinDir, name)
@@ -246,8 +246,11 @@ func AttachTCX(pinDir, name string, ifindex int, prog *ebpf.Program, hook ebpf.A
 		}
 	}
 	anchor := link.Head()
-	if after != 0 && inChain(ifindex, hook, after) {
-		anchor = link.AfterProgramByID(after)
+	for _, id := range after {
+		if id != 0 && inChain(ifindex, hook, id) {
+			anchor = link.AfterProgramByID(id)
+			break
+		}
 	}
 	l, err := link.AttachTCX(link.TCXOptions{Program: prog, Interface: ifindex, Attach: hook, Anchor: anchor})
 	if err != nil {

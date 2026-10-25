@@ -129,6 +129,7 @@ jobs:
           go test -c -o bpfpin.test ./internal/bpfpin/
           go test -c -o datapath.test ./internal/egress/datapath/
           go test -c -o agent.test ./internal/egress/agent/
+          go test -c -o local.test ./internal/local/
 
       # The verifier's behaviour depends on the kernel: record which one ran.
       - name: Run the BPF tests with the agent's capabilities
@@ -197,6 +198,16 @@ jobs:
           grep -q -- '--- PASS: TestNetnsWatchNft' agent.out
           grep -q -- '--- PASS: TestNetnsApplyDatapathHeals' agent.out
           grep -q -- '--- PASS: TestNetnsApplyDatapathAddresses' agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapathUplinks' agent.out
+
+      # Egress's addresses placed through the announcer's VIP path (D31).
+      - name: Run the egress address placement test in a network namespace
+        run: |
+          set -o pipefail
+          sudo env PURELB_NETNS_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+net_admin,+sys_admin -- \
+            ./local.test -test.v -test.run '^TestNetns' | tee local.out
+          grep -q -- '--- PASS: TestNetnsPlaceEgress' local.out
 
   # The same tests on a matrix of distribution kernels, each in a QEMU VM:
   # the verifier differs between kernels, and the runner's tests one.

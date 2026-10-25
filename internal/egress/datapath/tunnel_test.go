@@ -151,7 +151,7 @@ func (h *host) attach(t *testing.T, dev string, prog *ebpf.Program, hook ebpf.At
 	var l link.Link
 	require.NoError(t, h.in(func() error {
 		var err error
-		l, err = AttachTCX("", "", idx, prog, hook, 0)
+		l, err = AttachTCX("", "", idx, prog, hook, nil)
 		return err
 	}), "%s: attach to %s", h.name, dev)
 	t.Cleanup(func() { _ = l.Close() })
@@ -519,7 +519,8 @@ func TestNetnsAttachTCX(t *testing.T) {
 	h := newHost(t, "node")
 	require.NoError(t, h.nl.LinkAdd(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "ul"}}))
 	idx := h.link(t, "ul").Attrs().Index
-	guard, other := markProg(t, 0), markProg(t, 1)
+	// The guard has an Ethernet and an L3 program; one is attached.
+	guard, guardL3, other := markProg(t, 0), markProg(t, 2), markProg(t, 1)
 	o := load(t)
 	ids := func() []ebpf.ProgramID {
 		var res *link.QueryResult
@@ -549,7 +550,8 @@ func TestNetnsAttachTCX(t *testing.T) {
 		if ol, err = link.AttachTCX(link.TCXOptions{Program: other, Interface: idx, Attach: ebpf.AttachTCXIngress}); err != nil {
 			return err
 		}
-		pl, err = AttachTCX(dir, "pl_announce-ul", idx, o.PlAnnounceEth, ebpf.AttachTCXIngress, id(guard))
+		pl, err = AttachTCX(dir, "pl_announce-ul", idx, o.PlAnnounceEth, ebpf.AttachTCXIngress,
+			[]ebpf.ProgramID{id(guardL3), id(guard)})
 		return err
 	}))
 	defer gl.Close()
@@ -560,7 +562,8 @@ func TestNetnsAttachTCX(t *testing.T) {
 	o2 := load(t)
 	require.NoError(t, h.in(func() error {
 		var err error
-		pl, err = AttachTCX(dir, "pl_announce-ul", idx, o2.PlAnnounceEth, ebpf.AttachTCXIngress, id(guard))
+		pl, err = AttachTCX(dir, "pl_announce-ul", idx, o2.PlAnnounceEth, ebpf.AttachTCXIngress,
+			[]ebpf.ProgramID{id(guardL3), id(guard)})
 		return err
 	}))
 	assert.Equal(t, []ebpf.ProgramID{id(guard), id(o2.PlAnnounceEth), id(other)}, ids(), "taken over in place")
