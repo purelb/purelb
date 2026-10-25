@@ -59,9 +59,10 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	t.Helper()
 	var kubeObjs, purelbObjs []runtime.Object
 	for _, o := range objs {
-		if _, ok := o.(*purelbv2.EgressNodeState); ok {
+		switch o.(type) {
+		case *purelbv2.EgressNodeState, *purelbv2.EgressAddress, *purelbv2.EgressEndpoints:
 			purelbObjs = append(purelbObjs, o)
-		} else {
+		default:
 			kubeObjs = append(kubeObjs, o)
 		}
 	}
@@ -343,12 +344,14 @@ func TestDatapathWant(t *testing.T) {
 	}
 	drain()
 	ctx := context.Background()
-	peer.Labels = map[string]string{"x": "y"}
+	// An update egress doesn't read (an annotation: labels decide
+	// eligibility and addresses the node map) re-applies nothing.
+	peer.Annotations = map[string]string{"x": "y"}
 	_, err := f.kube.CoreV1().Nodes().Update(ctx, peer, metav1.UpdateOptions{})
 	require.NoError(t, err)
 	select {
 	case w := <-f.wants:
-		t.Fatalf("re-applied for a Node update without an address change: %v", w)
+		t.Fatalf("re-applied for a Node update egress doesn't read: %v", w)
 	case <-time.After(300 * time.Millisecond):
 	}
 	peer.Status.Addresses = append(peer.Status.Addresses, corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "fd00::2"})

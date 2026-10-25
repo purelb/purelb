@@ -87,3 +87,33 @@ func TestRecoverNodes(t *testing.T) {
 	require.NoError(t, it.Err())
 	assert.Equal(t, map[netip.Addr]uint64{a.V4: NodeID("a"), a.V6: NodeID("a"), b.V4: NodeID("b")}, have)
 }
+
+// RecoverAddresses reads back what SetAddress, SetSlice, SetReserved and
+// SetServicePort wrote, both families, including entries of an address
+// without an addr_cfg entry; an address not held can have no slice size.
+func TestRecoverAddresses(t *testing.T) {
+	o := load(t)
+	a4, a6, orphan := netip.MustParseAddr("192.0.2.7"), netip.MustParseAddr("2001:db8::7"), netip.MustParseAddr("192.0.2.9")
+	require.NoError(t, o.SetAddress(a4, Address{Held: true, SliceSize: 4096, Base: 1024, Table: 7900}))
+	require.NoError(t, o.SetAddress(a6, Address{}))
+	require.Error(t, o.SetAddress(a6, Address{Held: true}), "a held address needs its slice size")
+	require.NoError(t, o.SetSlice(a4, 9, NodeID("b")))
+	require.NoError(t, o.SetReserved(a4, 17, 5060, NodeID("c")))
+	require.NoError(t, o.SetServicePort(a4, 6, 443))
+	require.NoError(t, o.SetSlice(orphan, 3, NodeID("b")))
+
+	got, err := o.RecoverAddresses()
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	assert.Equal(t, Address{Held: true, SliceSize: 4096, Base: 1024, Table: 7900}, got[a4].Address)
+	assert.Equal(t, map[uint16]uint64{9: NodeID("b")}, got[a4].Slices)
+	assert.Equal(t, map[PortKey]uint64{{Proto: 17, Port: 5060}: NodeID("c")}, got[a4].Reserved)
+	assert.Equal(t, map[PortKey]bool{{Proto: 6, Port: 443}: true}, got[a4].Services)
+	assert.Equal(t, Address{}, got[a6].Address, "not held, no slice size")
+	var e egressAddrEntry
+	k := addrKey(a6)
+	require.NoError(t, o.AddrCfg.Lookup(&k, &e))
+	assert.Zero(t, e.Shift, "an unknown slice size is written as shift 0")
+	assert.Equal(t, Address{}, got[orphan].Address)
+	assert.Equal(t, map[uint16]uint64{3: NodeID("b")}, got[orphan].Slices)
+}

@@ -21,6 +21,8 @@ package agent
 import (
 	"context"
 	"net"
+	"net/netip"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -96,6 +98,18 @@ type Agent struct {
 	// pools are the pool interfaces' ifindexes, for the route watcher.
 	// Written by the datapath goroutine.
 	pools atomic.Pointer[map[int]bool]
+	// acks are the EgressEndpoints generations the datapath last
+	// installed, for status.announcing (D6). Written by the datapath
+	// goroutine.
+	acks atomic.Pointer[[]purelbv2.EgressAnnouncing]
+
+	// guard is the node's address guard, nil without one; guarded the
+	// addresses egress has put in it. Queue goroutine only.
+	guard   Guard
+	guarded map[netip.Addr]bool
+	// services are the Service addresses this node announces, with the
+	// Services announcing each (Inherit). Queue goroutine only.
+	services map[netip.Addr]map[string]bool
 
 	now func() time.Time
 	// statusInterval is the status writer's interval; tests shorten it.
@@ -117,6 +131,10 @@ type session struct {
 	synced     atomic.Bool
 	nodeStates listers.EgressNodeStateLister
 	nodes      cache.Indexer
+	// addresses are every egress address (EgressAddress); watches the
+	// scoped EgressEndpoints watches (D6). Queue goroutine only.
+	addresses listers.EgressAddressNamespaceLister
+	watches   map[string]*eeWatch
 }
 
 var (
@@ -127,7 +145,8 @@ var (
 // New returns the agent's egress controller for node; Start brings it up.
 func New(logger log.Logger, node, namespace string) *Agent {
 	a := &Agent{logger: logger, node: node, namespace: namespace, runner: newRunner(), now: time.Now,
-		statusInterval: statusInterval, dp: &dpState{pinRoot: bpfpin.Dir}}
+		statusInterval: statusInterval, dp: &dpState{pinRoot: bpfpin.Dir},
+		guarded: map[netip.Addr]bool{}, services: map[netip.Addr]map[string]bool{}}
 	a.apply = a.applyDatapath
 	return a
 }
@@ -258,7 +277,7 @@ func (a *Agent) syncConfig() {
 
 // startSession starts egress's informers and its first capability probe.
 func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
-	s := &session{stop: make(chan struct{}), spec: spec}
+	s := &session{stop: make(chan struct{}), spec: spec, watches: map[string]*eeWatch{}}
 	own := externalversions.NewSharedInformerFactoryWithOptions(a.purelb, resync,
 		externalversions.WithTweakListOptions(func(o *metav1.ListOptions) {
 			o.FieldSelector = fields.OneTermEqualSelector("metadata.name", a.node).String()
@@ -271,9 +290,17 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 		return
 	}
 	s.nodeStates, s.nodes = ens.Lister(), nodes.GetIndexer()
+	// Every egress address, on every egress node (§6.10, D6).
+	pf := externalversions.NewSharedInformerFactoryWithOptions(a.purelb, resync, externalversions.WithNamespace(a.namespace))
+	eas := pf.Purelb().V2().EgressAddresses()
+	s.addresses = eas.Lister().EgressAddresses(a.namespace)
+	kickDP := func(interface{}) { a.add(keyDatapath, false) }
+	_, _ = eas.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: kickDP, DeleteFunc: kickDP,
+		UpdateFunc: func(_, o interface{}) { kickDP(o) }})
 
 	// The status is recomputed when this node's own objects change; the
-	// datapath when any node's underlay addresses do (nodes map).
+	// datapath when any node's underlay addresses (nodes map) or labels
+	// (eligibility) do.
 	mine := func(obj interface{}) {
 		if t, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 			obj = t.Obj
@@ -288,15 +315,21 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 		mine(obj)
 		a.add(keyDatapath, false)
 	}
+	// A node's labels decide its eligibility (the D29 label and
+	// announcerNodeSelector, §5.5), so a label change re-runs the holder
+	// decision as an address change does.
 	_, _ = nodes.AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: nodeChanged, DeleteFunc: nodeChanged,
 		UpdateFunc: func(o, n interface{}) {
-			if !equality.Semantic.DeepEqual(o.(*corev1.Node).Status.Addresses, n.(*corev1.Node).Status.Addresses) {
+			on, nn := o.(*corev1.Node), n.(*corev1.Node)
+			if !equality.Semantic.DeepEqual(on.Status.Addresses, nn.Status.Addresses) ||
+				!equality.Semantic.DeepEqual(on.Labels, nn.Labels) {
 				nodeChanged(n)
 			}
 		}})
 
 	own.Start(s.stop)
 	kf.Start(s.stop)
+	pf.Start(s.stop)
 	kick := func() { a.add(keyDatapath, false) }
 	go watchRoutes(a.logger, s.stop, a.poolSet, kick)
 	go watchTunnel(a.logger, s.stop, kick)
@@ -314,7 +347,7 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 		}
 	}()
 	go func() {
-		if !cache.WaitForCacheSync(s.stop, ens.Informer().HasSynced, nodes.HasSynced) {
+		if !cache.WaitForCacheSync(s.stop, ens.Informer().HasSynced, nodes.HasSynced, eas.Informer().HasSynced) {
 			return
 		}
 		s.synced.Store(true)
@@ -332,10 +365,23 @@ func (a *Agent) poolSet() map[int]bool {
 	return nil
 }
 
-// stopSession stops egress's informers.
+// stopSession stops egress's informers and takes its addresses out of the
+// guard.
 func (a *Agent) stopSession() {
+	for _, w := range a.on.watches {
+		close(w.stop)
+	}
 	close(a.on.stop)
 	a.on = nil
+	if a.guard != nil {
+		for addr := range a.guarded {
+			if err := a.guard.UpdateEgress(addr, false, nil, nil); err != nil {
+				logging.Info(a.logger, "op", "egressDisable", "node", a.node, "address", addr, "error", err)
+			}
+		}
+	}
+	a.guarded = map[netip.Addr]bool{}
+	a.acks.Store(nil)
 	logging.Info(a.logger, "op", "egressDisable", "node", a.node, "msg", "egress disabled on this node")
 }
 
@@ -351,7 +397,11 @@ func (a *Agent) syncNode() {
 	}
 	c = c.DeepCopy()
 	c.Underlay = underlay(s.nodes, a.node)
-	a.status.set(&purelbv2.EgressNodeStateStatus{Capability: c})
+	st := &purelbv2.EgressNodeStateStatus{Capability: c}
+	if acks := a.acks.Load(); acks != nil {
+		st.Announcing = slices.Clone(*acks)
+	}
+	a.status.set(st)
 }
 
 // underlay is the node's InternalIPs, one per family (D3).
@@ -390,12 +440,6 @@ func slimNode(obj interface{}) (interface{}, error) {
 		Status:     corev1.NodeStatus{Addresses: n.Status.Addresses},
 	}, nil
 }
-
-// Referenced reports whether egress uses ip on this node.
-func (a *Agent) Referenced(net.IP) bool { return false }
-
-// ServiceAddress records a Service address this node announces.
-func (a *Agent) ServiceAddress(string, net.IP, bool) {}
 
 // PrepareShutdown runs before any address is withdrawn.
 func (a *Agent) PrepareShutdown() {}

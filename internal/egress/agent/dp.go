@@ -50,6 +50,8 @@ type dpWant struct {
 	// pools are this node's pool interfaces by ifindex: where its local
 	// pools' egress addresses are placed (design 6.9).
 	pools map[int]dpPool
+	// hold is the egress addresses' entries and the acks they earn (D6).
+	hold holdings
 }
 
 // dpPool is one pool interface and the families placed on it.
@@ -86,6 +88,8 @@ type dpState struct {
 	// reports is what was last logged about each.
 	pools   map[int]uint32
 	reports map[int]poolReport
+	// addrs are the address entries in the maps.
+	addrs map[netip.Addr]*datapath.AddressEntries
 }
 
 // poolReport is what a pool interface lacks: a default route in a family
@@ -102,7 +106,7 @@ func (a *Agent) syncDatapath() {
 	if s == nil || !s.synced.Load() {
 		return
 	}
-	w := dpWant{spec: s.spec, self: a.node}
+	w := dpWant{spec: s.spec, self: a.node, hold: a.syncHoldings(s)}
 	for _, obj := range s.nodes.List() {
 		n := obj.(*corev1.Node)
 		u := underlay(s.nodes, n.Name)
@@ -129,6 +133,10 @@ func (a *Agent) syncDatapath() {
 			logging.Info(a.logger, "op", "egressDatapath", "node", a.node, "error", err,
 				"msg", "the egress datapath is not ready; retrying")
 			time.AfterFunc(datapathRetry, func() { a.add(keyDatapath, false) })
+		} else {
+			// Installed: the generations it covers may be acked.
+			acks := w.hold.acks
+			a.acks.Store(&acks)
 		}
 		a.capability.Store(c)
 		a.add(keyNode, false)
@@ -175,7 +183,12 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 			_ = objs.Close()
 			return c, fmt.Errorf("reading the pool interface map: %w", err)
 		}
-		st.objs, st.links, st.nodes, st.pools = objs, map[string]link.Link{}, nodes, pools
+		addrs, err := objs.RecoverAddresses()
+		if err != nil {
+			_ = objs.Close()
+			return c, fmt.Errorf("reading the address maps: %w", err)
+		}
+		st.objs, st.links, st.nodes, st.pools, st.addrs = objs, map[string]link.Link{}, nodes, pools, addrs
 		st.reports = map[int]poolReport{}
 	}
 
@@ -256,6 +269,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	}
 	errs = append(errs, datapath.SyncThrows(st.nl, underlay))
 	errs = append(errs, a.syncPools(st, w))
+	errs = append(errs, syncAddresses(st, w.hold.addrs))
 
 	shift := uint8(0)
 	switch w.spec.MarkField {
@@ -301,7 +315,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 // holds them as wanted; something else may have removed them (another
 // firewall flushing the ruleset), which is logged.
 func (a *Agent) syncHardening(st *dpState, w dpWant, port uint16) error {
-	h := datapath.Hardening{TunnelPort: port}
+	h := datapath.Hardening{TunnelPort: port, Egress: w.hold.egress, ServicePorts: w.hold.services}
 	for _, n := range w.nodes {
 		for _, ip := range []netip.Addr{n.v4, n.v6} {
 			if ip.IsValid() {
@@ -412,6 +426,109 @@ func (a *Agent) syncPools(st *dpState, w dpWant) error {
 		} else {
 			logging.Debug(a.logger, "op", "egressPools", "node", a.node, "interface", p.name, "table", datapath.PoolTable(next[ifindex]),
 				"msg", "pool interface table mirrored")
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// syncAddresses makes the address maps hold want: each address's entry and
+// its slices, reserved and Service ports, added or changed before the
+// stale ones are removed; an address no longer wanted loses its entries
+// before its addr_cfg entry. An entry that fails stays as it was in
+// st.addrs, so the next apply tries it again.
+func syncAddresses(st *dpState, want map[netip.Addr]*datapath.AddressEntries) error {
+	var errs []error
+	o := st.objs
+	for addr, w := range want {
+		have := st.addrs[addr]
+		if have == nil {
+			have = &datapath.AddressEntries{Slices: map[uint16]uint64{}, Reserved: map[datapath.PortKey]uint64{},
+				Services: map[datapath.PortKey]bool{}}
+			st.addrs[addr] = have
+			have.SliceSize = ^uint32(0) // never equal: written below
+		}
+		if have.Address != w.Address {
+			if err := o.SetAddress(addr, w.Address); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", addr, err))
+				continue
+			}
+			have.Address = w.Address
+		}
+		for idx, owner := range w.Slices {
+			if have.Slices[idx] != owner {
+				if err := o.SetSlice(addr, idx, owner); err != nil {
+					errs = append(errs, err)
+					continue
+				}
+				have.Slices[idx] = owner
+			}
+		}
+		for p, owner := range w.Reserved {
+			if have.Reserved[p] != owner {
+				if err := o.SetReserved(addr, p.Proto, p.Port, owner); err != nil {
+					errs = append(errs, err)
+					continue
+				}
+				have.Reserved[p] = owner
+			}
+		}
+		for p := range w.Services {
+			if !have.Services[p] {
+				if err := o.SetServicePort(addr, p.Proto, p.Port); err != nil {
+					errs = append(errs, err)
+					continue
+				}
+				have.Services[p] = true
+			}
+		}
+		errs = append(errs, pruneEntries(o, addr, have, w))
+	}
+	for addr, have := range st.addrs {
+		if _, ok := want[addr]; ok {
+			continue
+		}
+		if err := pruneEntries(o, addr, have, &datapath.AddressEntries{}); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := o.DeleteAddress(addr); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		delete(st.addrs, addr)
+	}
+	return errors.Join(errs...)
+}
+
+// pruneEntries removes have's slices, reserved and Service ports that w
+// doesn't have.
+func pruneEntries(o *datapath.Objects, addr netip.Addr, have, w *datapath.AddressEntries) error {
+	var errs []error
+	for idx := range have.Slices {
+		if _, ok := w.Slices[idx]; !ok {
+			if err := o.DeleteSlice(addr, idx); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			delete(have.Slices, idx)
+		}
+	}
+	for p := range have.Reserved {
+		if _, ok := w.Reserved[p]; !ok {
+			if err := o.DeleteReserved(addr, p.Proto, p.Port); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			delete(have.Reserved, p)
+		}
+	}
+	for p := range have.Services {
+		if !w.Services[p] {
+			if err := o.DeleteServicePort(addr, p.Proto, p.Port); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			delete(have.Services, p)
 		}
 	}
 	return errors.Join(errs...)

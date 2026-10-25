@@ -196,6 +196,7 @@ jobs:
           grep -q -- '--- PASS: TestNetnsWatchTunnel' agent.out
           grep -q -- '--- PASS: TestNetnsWatchNft' agent.out
           grep -q -- '--- PASS: TestNetnsApplyDatapathHeals' agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapathAddresses' agent.out
 
   # The same tests on a matrix of distribution kernels, each in a QEMU VM:
   # the verifier differs between kernels, and the runner's tests one.

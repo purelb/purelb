@@ -41,6 +41,10 @@ const (
 	LabelPool         = "purelb.io/egress-pool"
 )
 
+// FirstSlicePort is the lowest port a slice may cover: the allocator plans
+// slices from it and the datapath treats lower ports as no slice's.
+const FirstSlicePort = 1024
+
 // Finalizer is added to a policy after its first allocation (D5).
 const Finalizer = "purelb.io/egress"
 

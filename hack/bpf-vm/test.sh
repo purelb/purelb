@@ -70,7 +70,8 @@ for k in $KERNELS; do
 		TestBPFEgressSlices TestBPFEgressMapFull TestBPFProgramIDs \
 		TestLoad TestRecoverNodes TestReplySteering TestPacketTooBig TestNetnsTunnelEndToEnd TestNetnsUplinkL3 \
 		TestNetnsApplyDatapath TestNetnsApplyDatapathL2 TestNetnsApplyDatapathPools TestNetnsWatchRoutes \
-		TestNetnsWatchTunnel TestNetnsWatchNft TestNetnsApplyDatapathHeals \
+		TestNetnsWatchTunnel TestNetnsWatchNft TestNetnsApplyDatapathHeals TestNetnsApplyDatapathAddresses \
+		TestRecoverAddresses \
 		TestNetnsHardening TestNetnsAnnounceInTunnel TestNetnsPoolTables; do
 		if ! grep -q -- "--- PASS: $t" "$log"; then
 			result=FAIL

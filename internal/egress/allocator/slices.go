@@ -17,6 +17,7 @@ package allocator
 import (
 	"sort"
 
+	"purelb.io/internal/egress"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -29,7 +30,7 @@ const (
 
 const (
 	// firstPort is the lowest port a slice may cover.
-	firstPort = 1024
+	firstPort = egress.FirstSlicePort
 
 	// defaultReserveSlices applies when the group doesn't set one (D17).
 	defaultReserveSlices = 4

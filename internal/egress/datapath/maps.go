@@ -48,20 +48,92 @@ func (o *Objects) SetConfig(c Config) error {
 type Address struct {
 	Held       bool   // this node announces or advertises it
 	WholeOwner uint64 // PerPod: the NodeID owning every port; 0: sliced
-	SliceSize  uint32 // a power of two
+	SliceSize  uint32 // a power of two; 0 when not held and not known
 	Base       uint16 // first slice port
 	Table      uint32 // the pool interface's routing table, for transit
 }
 
 // SetAddress installs or updates a.
 func (o *Objects) SetAddress(a netip.Addr, v Address) error {
-	if v.SliceSize == 0 || v.SliceSize&(v.SliceSize-1) != 0 || v.SliceSize > 1<<15 {
+	unknown := v.SliceSize == 0 && !v.Held && v.WholeOwner == 0
+	if !unknown && (v.SliceSize == 0 || v.SliceSize&(v.SliceSize-1) != 0 || v.SliceSize > 1<<15) {
 		return fmt.Errorf("slice size %d is not a power of two up to 32768", v.SliceSize)
 	}
-	e := egressAddrEntry{Held: b2u(v.Held), WholeOwner: v.WholeOwner, Base: v.Base, Table: v.Table,
-		Shift: uint8(bits.TrailingZeros32(v.SliceSize))}
+	e := egressAddrEntry{Held: b2u(v.Held), WholeOwner: v.WholeOwner, Base: v.Base, Table: v.Table}
+	if !unknown {
+		e.Shift = uint8(bits.TrailingZeros32(v.SliceSize))
+	}
 	k := addrKey(a)
 	return o.AddrCfg.Put(&k, &e)
+}
+
+// PortKey is one (protocol, port) of an address.
+type PortKey struct {
+	Proto uint8
+	Port  uint16
+}
+
+// AddressEntries are one address's entries in the maps.
+type AddressEntries struct {
+	Address
+	Slices   map[uint16]uint64 // index: owner
+	Reserved map[PortKey]uint64
+	Services map[PortKey]bool
+}
+
+// RecoverAddresses returns the address entries the maps hold, as an
+// earlier agent left them in the pinned maps, so the next apply prunes the
+// ones gone meanwhile (D12: recover from the kernel, then prune). Slices,
+// reserved and Service ports of an address with no addr_cfg entry come
+// back under it too, so they are pruned with it.
+func (o *Objects) RecoverAddresses() (map[netip.Addr]*AddressEntries, error) {
+	out := map[netip.Addr]*AddressEntries{}
+	get := func(w [4]uint32, family uint8) *AddressEntries {
+		a := unwords(w, family == familyV6)
+		e := out[a]
+		if e == nil {
+			e = &AddressEntries{Slices: map[uint16]uint64{}, Reserved: map[PortKey]uint64{}, Services: map[PortKey]bool{}}
+			out[a] = e
+		}
+		return e
+	}
+	var ak egressAddrKey
+	var av egressAddrEntry
+	it := o.AddrCfg.Iterate()
+	for it.Next(&ak, &av) {
+		e := get(ak.Addr, ak.Family)
+		e.Address = Address{Held: av.Held != 0, WholeOwner: av.WholeOwner, Base: av.Base, Table: av.Table,
+			SliceSize: 1 << av.Shift}
+		if av.Shift == 0 && av.Held == 0 && av.WholeOwner == 0 {
+			e.SliceSize = 0
+		}
+	}
+	if err := it.Err(); err != nil {
+		return nil, err
+	}
+	var sk egressSliceKey
+	var owner uint64
+	si := o.Slices.Iterate()
+	for si.Next(&sk, &owner) {
+		get(sk.Addr, sk.Family).Slices[sk.Index] = owner
+	}
+	if err := si.Err(); err != nil {
+		return nil, err
+	}
+	var pk egressPortKey
+	ri := o.Reserved.Iterate()
+	for ri.Next(&pk, &owner) {
+		get(pk.Addr, pk.Family).Reserved[PortKey{Proto: pk.Proto, Port: pk.Port}] = owner
+	}
+	if err := ri.Err(); err != nil {
+		return nil, err
+	}
+	var one uint8
+	vi := o.SvcPorts.Iterate()
+	for vi.Next(&pk, &one) {
+		get(pk.Addr, pk.Family).Services[PortKey{Proto: pk.Proto, Port: pk.Port}] = true
+	}
+	return out, vi.Err()
 }
 
 // DeleteAddress removes a.

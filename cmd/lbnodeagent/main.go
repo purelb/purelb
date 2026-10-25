@@ -524,6 +524,7 @@ func main() {
 
 	ctrl.SetElection(elect)
 	egress.SetElection(elect)
+	egress.SetGuard(ctrl.guard)
 
 	// A scanned link's change renews the lease at once, and so does the
 	// end of its hold-down.

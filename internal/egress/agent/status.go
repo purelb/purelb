@@ -152,11 +152,17 @@ func (w *statusWriter) writeOff() error {
 		return err
 	}
 	w.written = nil
-	if c := cur.Status.Capability; c == nil || !c.EgressCapable {
+	capable := cur.Status.Capability != nil && cur.Status.Capability.EgressCapable
+	if !capable && len(cur.Status.Announcing) == 0 {
 		return nil
 	}
 	st := cur.Status.DeepCopy()
-	st.Capability.EgressCapable = false
+	if st.Capability != nil {
+		st.Capability.EgressCapable = false
+	}
+	// A node with egress off holds nothing: an ack left behind would keep
+	// it in the allocator's gating (D6).
+	st.Announcing = nil
 	if err := w.patch(st); err != nil {
 		return err
 	}

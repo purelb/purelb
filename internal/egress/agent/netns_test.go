@@ -595,3 +595,48 @@ func cidrNet(s string) *net.IPNet {
 	}
 	return n
 }
+
+// TestNetnsApplyDatapathAddresses installs the address entries a holder
+// builds, changes and removes them, and prunes, after a restart, the ones
+// that went away while the agent was down.
+func TestNetnsApplyDatapathAddresses(t *testing.T) {
+	dir := sandbox(t)
+	a4, a6 := netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("2001:db8::10")
+	entries := func(held bool, slices map[uint16]uint64) *datapath.AddressEntries {
+		e := &datapath.AddressEntries{Slices: slices, Reserved: map[datapath.PortKey]uint64{}, Services: map[datapath.PortKey]bool{}}
+		if held {
+			e.Address = datapath.Address{Held: true, SliceSize: 4096, Base: 1024, Table: 254}
+			e.Reserved[datapath.PortKey{Proto: 17, Port: 5060}] = datapath.NodeID("node-b")
+			e.Services[datapath.PortKey{Proto: 6, Port: 443}] = true
+		}
+		return e
+	}
+	recovered := func(a *Agent) map[netip.Addr]*datapath.AddressEntries {
+		got, err := a.dp.objs.RecoverAddresses()
+		require.NoError(t, err)
+		return got
+	}
+
+	a := newNetnsAgent(dir)
+	w := want(node("node-b", "10.0.0.2", "fd00::2"))
+	w.hold.addrs = map[netip.Addr]*datapath.AddressEntries{
+		a4: entries(true, map[uint16]uint64{9: datapath.NodeID("node-b"), 10: datapath.NodeID("node-a")}),
+		a6: entries(false, map[uint16]uint64{}),
+	}
+	apply(t, a, w)
+	assert.Equal(t, w.hold.addrs, recovered(a))
+
+	// A slice freed, another moved, the IPv6 address now held too.
+	w.hold.addrs[a4] = entries(true, map[uint16]uint64{10: datapath.NodeID("node-b")})
+	w.hold.addrs[a6] = entries(true, map[uint16]uint64{12: datapath.NodeID("node-a")})
+	apply(t, a, w)
+	assert.Equal(t, w.hold.addrs, recovered(a))
+
+	// The agent exits; the IPv4 address goes while it is down.
+	closeAgent(a)
+	b := newNetnsAgent(dir)
+	defer closeAgent(b)
+	delete(w.hold.addrs, a4)
+	apply(t, b, w)
+	assert.Equal(t, w.hold.addrs, recovered(b), "an address gone while the agent was down is pruned")
+}
