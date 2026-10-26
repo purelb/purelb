@@ -100,7 +100,7 @@ func TestDeferWhileInFlight(t *testing.T) {
 	_, err := g.kube.CoreV1().Pods("voice").Create(context.Background(), pod("voice", "a-2", "n2", sel), metav1.CreateOptions{})
 	require.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
-	g.q.reset()
+	g.q.resetKeepingWrites()
 	require.True(t, g.r.writer.inProgress(key))
 	require.NoError(t, g.r.Sync("egress/voice/sip")) // n2 now wanted, but the write is in flight
 	close(release)

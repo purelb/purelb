@@ -135,7 +135,7 @@ func resourceOf(l map[string]string) string {
 // egressResources are the objects the egress control plane writes, apart
 // from Leases (renewed all the time) and Pods (the driver's).
 var egressResources = map[string]bool{
-	"egressendpoints": true, "egressendpoints/status": true, "egressmembers": true,
+	"egressendpoints": true, "egressendpoints/status": true, "egressaddresses": true, "egressmembers": true,
 	"egressnodestates": true, "egressnodestates/status": true, "egresses": true, "egresses/status": true,
 	"clusteregresses": true, "clusteregresses/status": true, "nodes": true,
 }

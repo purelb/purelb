@@ -61,6 +61,12 @@ func (f *fakeDataplane) putPort(a netip.Addr, p portSpec) error {
 func (f *fakeDataplane) delPort(a netip.Addr, p portSpec) error {
 	return f.do(fmt.Sprintf("delPort %s %d/%d", a, p.proto, p.port))
 }
+func (f *fakeDataplane) putSlice(a netip.Addr, x sliceSpec) error {
+	return f.do(fmt.Sprintf("putSlice %s %d+%d", a, x.base, x.size))
+}
+func (f *fakeDataplane) delSlice(a netip.Addr, x sliceSpec) error {
+	return f.do(fmt.Sprintf("delSlice %s %d+%d", a, x.base, x.size))
+}
 
 func testGuard() (*Guard, *fakeDataplane) {
 	g := newGuard(log.NewNopLogger(), "node1", true, nil, nil)
@@ -817,4 +823,59 @@ func TestInterruptedDumps(t *testing.T) {
 	linkList = links(nil)
 	a.retry()
 	assert.False(t, g.StandingDown(), "recovered on the tick, not on some unrelated event")
+}
+
+// An egress address is guarded like a VIP: its ports and slices go in
+// before the address key and out after it; an address shared with a
+// Service is counted once for each, so either can leave without
+// unguarding it.
+func TestGuardEgress(t *testing.T) {
+	g, f := testGuard()
+	a := netip.MustParseAddr("2001:db8::7")
+	require.NoError(t, g.UpdateEgress(a, true, []EgressPort{{Proto: 17, Port: 5060}},
+		[]EgressSlice{{Base: 36864, Size: 4096}, {Base: 32768, Size: 4096}}))
+	require.Len(t, f.calls, 4)
+	assert.Equal(t, "putVIP 2001:db8::7", f.calls[3], "the address key last")
+	assert.ElementsMatch(t, []string{"putPort 2001:db8::7 17/5060", "putSlice 2001:db8::7 32768+4096",
+		"putSlice 2001:db8::7 36864+4096"}, f.calls[:3])
+
+	f.calls = nil
+	require.NoError(t, g.UpdateEgress(a, true, nil, []EgressSlice{{Base: 32768, Size: 4096}, {Base: 36864, Size: 4096}}))
+	assert.Equal(t, []string{"delPort 2001:db8::7 17/5060"}, f.calls, "the same slices in another order change nothing")
+
+	// Shared with a Service: the Service leaving keeps the address and
+	// the slices; egress leaving then removes them, the key first.
+	require.NoError(t, g.SetBalancer(svc("a", []string{"2001:db8::7"}, port(v1.ProtocolTCP, 443, 0)), nil))
+	f.calls = nil
+	require.NoError(t, g.DeleteBalancer("ns/a", "", nil))
+	assert.Equal(t, []string{"delPort 2001:db8::7 6/443"}, f.calls)
+	f.calls = nil
+	require.NoError(t, g.UpdateEgress(a, false, nil, nil))
+	require.Len(t, f.calls, 3)
+	assert.Equal(t, "delVIP 2001:db8::7", f.calls[0], "the address key first")
+	assert.Zero(t, g.vipCount.Load())
+}
+
+// A slice the map can't take fails the update with ErrMapFull, and is
+// retried at the next one. Fail-closed keeps the address guarded (its
+// other slices pass, the missing one stays blocked); fail-open unguards
+// it rather than block a slice.
+func TestGuardEgressMapFull(t *testing.T) {
+	for _, closed := range []bool{true, false} {
+		g, f := testGuard()
+		g.closed.Store(closed)
+		g.configured.Store(true)
+		f.failOp = "putSlice"
+		a := netip.MustParseAddr("192.0.2.7")
+		err := g.UpdateEgress(a, true, nil, []EgressSlice{{Base: 32768, Size: 4096}})
+		require.Error(t, err)
+		assert.Equal(t, closed, g.installedVIP[a], "closed %v: the address key", closed)
+		assert.Equal(t, int64(1), g.failedCount.Load())
+
+		f.failOp = ""
+		require.NoError(t, g.UpdateEgress(a, true, nil, []EgressSlice{{Base: 32768, Size: 4096}}), "retried")
+		assert.True(t, g.installedVIP[a])
+		assert.True(t, g.installedSlice[a][sliceSpec{base: 32768, size: 4096}])
+		assert.Zero(t, g.failedCount.Load())
+	}
 }

@@ -21,7 +21,9 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -35,6 +37,8 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
+
+	"purelb.io/internal/bpfpin"
 )
 
 // TestAttacherInNetns drives the attacher against the real kernel, inside a
@@ -126,6 +130,16 @@ func TestAttacherInNetns(t *testing.T) {
 	assert.True(t, attachedNew, "attached to the new ifindex")
 	_, attachedOld := a.attached[old.Attrs().Index]
 	assert.False(t, attachedOld, "the old ifindex is forgotten")
+
+	// Egress follows the guard's interfaces (pl_announce behind it): they
+	// are published, and the hook runs when they change, only then.
+	var linkChanges atomic.Int32
+	g.SetLinksHook(func() { linkChanges.Add(1) })
+	a.publish(true, "")
+	v0, _ := netlink.LinkByName("agv0")
+	assert.ElementsMatch(t, []int{v0.Attrs().Index, now.Attrs().Index}, g.Interfaces())
+	a.publish(true, "")
+	assert.Equal(t, int32(1), linkChanges.Load(), "published once per change")
 
 	// A hook change replaces the attachment. agd0 asked for xdp and got
 	// tcx; asked for tcx now, it keeps the tcx link it has -- attaching the
@@ -458,7 +472,7 @@ func TestLinkLayer(t *testing.T) {
 		{&netlink.GenericLink{LinkAttrs: netlink.LinkAttrs{EncapType: "unknown824"}, LinkType: "nlmon"}, false, true},
 		{&netlink.GenericLink{LinkAttrs: netlink.LinkAttrs{EncapType: "none"}, LinkType: "something-else"}, false, true},
 	} {
-		l3, err := linkLayer(tc.link)
+		l3, err := LinkLayer(tc.link)
 		name := tc.link.Type() + "/" + tc.link.Attrs().EncapType
 		if tc.err {
 			assert.Error(t, err, name)
@@ -467,4 +481,142 @@ func TestLinkLayer(t *testing.T) {
 		require.NoError(t, err, name)
 		assert.Equal(t, tc.l3, l3, name)
 	}
+}
+
+// TestAttacherPinsInNetns covers pinning (D12) against the real kernel: a
+// pinned guard outlives its agent, the next agent takes its links over in
+// place, and pins never outlive their configuration. Same privileges as
+// TestAttacherInNetns, plus a bpffs at /sys/fs/bpf.
+func TestAttacherPinsInNetns(t *testing.T) {
+	h := newHarness(t)
+	if !bpfpin.Usable("/sys/fs/bpf") {
+		if os.Getenv("ADDRGUARD_NETNS_TESTS") == "required" {
+			t.Fatal("netns test required but there is no bpffs at /sys/fs/bpf")
+		}
+		t.Skip("no bpffs at /sys/fs/bpf")
+	}
+	dir, err := os.MkdirTemp("/sys/fs/bpf", "addrguard-test-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	orig, err := netns.Get()
+	require.NoError(t, err)
+	defer orig.Close()
+	ns, err := netns.New()
+	if err != nil {
+		if os.Getenv("ADDRGUARD_NETNS_TESTS") == "required" {
+			t.Fatalf("netns test required but namespace creation failed: %v", err)
+		}
+		t.Skipf("cannot create a network namespace: %v", err)
+	}
+	defer func() {
+		require.NoError(t, netns.Set(orig))
+		ns.Close()
+	}()
+	mk := func(l netlink.Link) netlink.Link {
+		require.NoError(t, netlink.LinkAdd(l))
+		got, err := netlink.LinkByName(l.Attrs().Name)
+		require.NoError(t, err)
+		require.NoError(t, netlink.LinkSetUp(got))
+		return got
+	}
+	veth := mk(&netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: "agv0"}, PeerName: "agv1"})
+	peer, _ := netlink.LinkByName("agv1")
+	require.NoError(t, netlink.LinkSetUp(peer))
+	dummy := mk(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "agd0"}})
+
+	newAttacher := func(objs *addrguardObjects) *attacher {
+		g := newGuard(log.NewNopLogger(), "node1", true, objs, nil)
+		g.pinDir = dir
+		return &attacher{g: g, md: &mapDataplane{objs: objs}, attached: map[int]*attachment{},
+			special: map[netip.Addr]bool{}, warnedLinks: map[string]bool{}}
+	}
+	progID := func(p *ebpf.Program) ebpf.ProgramID {
+		info, err := p.Info()
+		require.NoError(t, err)
+		id, _ := info.ID()
+		return id
+	}
+	pinned := func(name string) bool {
+		_, err := os.Stat(filepath.Join(dir, name))
+		return err == nil
+	}
+	spec := &Spec{XDP: true, Extra: []string{"agv0", "agd0"}}
+
+	// Pinned while egress is enabled: agv0 at XDP, agd0 at tcx.
+	a1 := newAttacher(&h.objs)
+	a1.spec, a1.pin = spec, true
+	ok, why := a1.reconcileLinks(true)
+	require.True(t, ok, why)
+	assert.True(t, pinned("addrguard-xdp-agv0"))
+	assert.True(t, pinned("addrguard-tcx-agd0"))
+
+	// The agent exits: its descriptors close, the pinned links stay.
+	for _, at := range a1.attached {
+		require.NoError(t, at.link.Close())
+	}
+	id, err := queryXDP(veth.Attrs().Index)
+	require.NoError(t, err)
+	assert.Equal(t, progID(h.objs.AgXdp), id, "XDP stays attached")
+	ids, err := queryTCX(dummy.Attrs().Index)
+	require.NoError(t, err)
+	assert.Equal(t, []ebpf.ProgramID{progID(h.objs.AgTcx)}, ids, "tcx stays attached")
+
+	// The next agent loads its own program and takes the links over in
+	// place: one guard in each chain, the new program, still first.
+	var next addrguardObjects
+	require.NoError(t, loadAddrguardObjects(&next, nil))
+	defer next.Close()
+	a2 := newAttacher(&next)
+	a2.spec, a2.pin = spec, true
+	ok, why = a2.reconcileLinks(true)
+	require.True(t, ok, why)
+	id, err = queryXDP(veth.Attrs().Index)
+	require.NoError(t, err)
+	assert.Equal(t, progID(next.AgXdp), id, "XDP adopted with the new program")
+	ids, err = queryTCX(dummy.Attrs().Index)
+	require.NoError(t, err)
+	assert.Equal(t, []ebpf.ProgramID{progID(next.AgTcx)}, ids, "tcx adopted in place, not attached twice")
+	assert.True(t, pinned("addrguard-tcx-agd0"))
+
+	// Egress disabled: the pins go, the links stay attached to this agent.
+	a2.pin = false
+	a2.reconcileLinks(false)
+	assert.False(t, pinned("addrguard-xdp-agv0"))
+	assert.False(t, pinned("addrguard-tcx-agd0"))
+	ids, err = queryTCX(dummy.Attrs().Index)
+	require.NoError(t, err)
+	assert.Equal(t, []ebpf.ProgramID{progID(next.AgTcx)}, ids)
+
+	// Pinned again, then agd0 leaves the guarded set: detaching it unpins
+	// it, so it really detaches.
+	a2.pin = true
+	a2.reconcileLinks(false)
+	require.True(t, pinned("addrguard-tcx-agd0"))
+	a2.spec = &Spec{XDP: true, Extra: []string{"agv0"}}
+	a2.reconcileLinks(false)
+	assert.False(t, pinned("addrguard-tcx-agd0"))
+	ids, err = queryTCX(dummy.Attrs().Index)
+	require.NoError(t, err)
+	assert.Empty(t, ids, "agd0 detached")
+
+	// A guard link an earlier agent pinned for an interface no longer
+	// guarded is detached, and with the guard disabled every pin goes.
+	stale, err := link.AttachTCX(link.TCXOptions{Program: next.AgTcx, Interface: dummy.Attrs().Index, Attach: ebpf.AttachTCXIngress})
+	require.NoError(t, err)
+	require.NoError(t, stale.Pin(filepath.Join(dir, "addrguard-tcx-agd0")))
+	require.NoError(t, stale.Close())
+	a2.reconcileLinks(false)
+	assert.False(t, pinned("addrguard-tcx-agd0"), "stale pin swept")
+	ids, err = queryTCX(dummy.Attrs().Index)
+	require.NoError(t, err)
+	assert.Empty(t, ids)
+	a2.spec = nil
+	a2.reconcileLinks(false)
+	assert.False(t, pinned("addrguard-xdp-agv0"))
+	id, err = queryXDP(veth.Attrs().Index)
+	require.NoError(t, err)
+	assert.Zero(t, id, "the disabled guard is detached")
 }

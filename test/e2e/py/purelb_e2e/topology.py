@@ -31,6 +31,10 @@ that picks the wrong band fails in a way that looks like a product bug:
     .244-.247   multi-interface               c::1-c::20
     .248-.250   namespace-scoped tenants      d::1-d::20
     .224/28     external (sidecar) IPAM       e::/120
+    .221-.223   egress (local pool)           ee::1-ee::3
+
+Routed egress (test_egress.py) uses 10.252.0.0/24 and fd00:10:252::/64,
+outside every remote band test_remote.py uses.
 
 .241-.250 and .244-.250 do overlap on paper; they belong to suites that
 never run concurrently, which is exactly the kind of constraint that
@@ -117,6 +121,15 @@ class Subnet:
     @property
     def tenant_pool_b_v6(self) -> Optional[str]:
         return self.v6_band("e", first=0x30, last=0x50)
+
+    @property
+    def egress_pool(self) -> str:
+        """The .221-.223 band, for egress addresses (test_egress.py)."""
+        return self.band(221, 223)
+
+    @property
+    def egress_pool_v6(self) -> Optional[str]:
+        return self.v6_band("ee", last=3)
 
 
 @dataclass(frozen=True)

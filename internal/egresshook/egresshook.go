@@ -63,8 +63,42 @@ type Agent interface {
 	ServiceAddress(key string, ip net.IP, announced bool)
 
 	// PrepareShutdown runs at the start of a graceful shutdown, before
-	// any address is withdrawn.
+	// any address is withdrawn and while the lease stands: egress
+	// withdraws the addresses it placed.
 	PrepareShutdown()
+}
+
+// Placer is how egress places its own addresses on this node (D31):
+// through the announcer's VIP path, on the work-queue goroutine, as a
+// Service's address is placed. Shared addresses are the Service's and
+// never come through here.
+type Placer interface {
+	// EgressInterface is the interface a local-pool address goes on,
+	// chosen by the rules a Service's address follows.
+	EgressInterface(ip net.IP) (ifindex int, name string, err error)
+
+	// PlaceEgress adds ip for key, an "egress/<uid>" name no Service can
+	// take, and keeps it renewed. A local address goes on its pool
+	// interface and is announced by GARP or unsolicited NA (garpConfig)
+	// while still reports true; a routed one goes on the dummy interface
+	// with the pool's prefix.
+	PlaceEgress(key string, ip net.IP, p EgressPlacement) error
+
+	// WithdrawEgress removes ip placed for key, unless a Service on this
+	// node announces it too.
+	WithdrawEgress(key string, ip net.IP) error
+}
+
+// EgressPlacement is how PlaceEgress places one address.
+type EgressPlacement struct {
+	Routed bool
+	// Subnet and Aggregation are a routed address's pool's.
+	Subnet, Aggregation string
+	// SkipDAD skips IPv6 duplicate address detection (local only).
+	SkipDAD bool
+	// Still reports whether this node still holds the address, before
+	// each GARP or NA; nil means always.
+	Still func() bool
 }
 
 // Controller is how internal/k8s runs egress's own objects in either
@@ -82,6 +116,10 @@ type Controller interface {
 
 	// Keys returns every egress key, so ForceSync can reprocess them.
 	Keys() []string
+
+	// Live reports whether egress's own goroutines are turning over; an
+	// error fails /healthz, as a wedged work item does.
+	Live() error
 }
 
 // Noop is the default hook: no egress.
@@ -102,3 +140,4 @@ func (Noop) PrepareShutdown()                                              {}
 func (Noop) Start(<-chan struct{}, *rest.Config, func(string, bool)) error { return nil }
 func (Noop) Sync(string) error                                             { return nil }
 func (Noop) Keys() []string                                                { return nil }
+func (Noop) Live() error                                                   { return nil }

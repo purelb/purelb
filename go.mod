@@ -7,6 +7,7 @@ require (
 	github.com/cilium/ebpf v0.22.0
 	github.com/go-kit/log v0.2.1
 	github.com/google/go-cmp v0.7.0
+	github.com/google/nftables v0.3.0
 	github.com/mdlayher/arp v0.0.0-20220221190821-c37aaafac7f9
 	github.com/mdlayher/ethernet v0.0.0-20220221185849-529eae5b6118
 	github.com/mdlayher/ndp v1.1.0
@@ -58,6 +59,7 @@ require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/liggitt/tabwriter v0.0.0-20181228230101-89fcab3d43de // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
+	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
 	github.com/mdlayher/packet v1.1.2 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/moby/spdystream v0.5.1 // indirect

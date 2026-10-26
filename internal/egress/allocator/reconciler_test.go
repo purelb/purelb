@@ -17,6 +17,7 @@ package allocator
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -106,6 +107,20 @@ func (q *queue) reset() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.keys = nil
+}
+
+// resetKeepingWrites clears every key but finished writes' notifications,
+// which settle needs while writes are in flight.
+func (q *queue) resetKeepingWrites() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var keep []string
+	for _, k := range q.keys {
+		if strings.HasPrefix(k, writePrefix) {
+			keep = append(keep, k)
+		}
+	}
+	q.keys = keep
 }
 
 // started returns a Reconciler started on fake clients, with the egress

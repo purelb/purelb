@@ -33,7 +33,7 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 HERE=hack/bpf-vm
-KERNELS=${BPF_VM_KERNELS:-debian-6.12.111 debian-6.18.12-bpo ubuntu-6.8.0-146-generic ubuntu-6.17.0-1022-azure}
+KERNELS=${BPF_VM_KERNELS:-debian-6.6.15 debian-6.12.111 debian-6.18.12-bpo ubuntu-6.8.0-146-generic ubuntu-6.17.0-1022-azure}
 
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
@@ -42,14 +42,25 @@ mkdir -p "$LOGS"
 mkdir -p "$W/files"
 CGO_ENABLED=0 go build -o "$W/vminit" ./$HERE/vminit
 CGO_ENABLED=0 go test -c -o "$W/files/addrguard.test" ./internal/addrguard/
+CGO_ENABLED=0 go test -c -o "$W/files/bpfpin.test" ./internal/bpfpin/
+CGO_ENABLED=0 go test -c -o "$W/files/datapath.test" ./internal/egress/datapath/
+CGO_ENABLED=0 go test -c -o "$W/files/agent.test" ./internal/egress/agent/
+CGO_ENABLED=0 go test -c -o "$W/files/local.test" ./internal/local/
 cat >"$W/cmds" <<'CMDS'
-bpf,net_admin /t/addrguard.test -test.v -test.skip TestAttacherInNetns
-bpf,net_admin,sys_admin,net_raw /t/addrguard.test -test.v -test.run ^TestAttacherInNetns$
+bpf,net_admin /t/addrguard.test -test.v -test.skip ^TestAttacher
+bpf,net_admin,sys_admin,net_raw /t/addrguard.test -test.v -test.run ^TestAttacher
+bpf,net_admin,sys_admin /t/bpfpin.test -test.v
+bpf,net_admin /t/datapath.test -test.v -test.skip ^TestNetns
+bpf,net_admin,sys_admin,net_raw /t/datapath.test -test.v -test.run ^TestNetns
+bpf,net_admin,sys_admin /t/agent.test -test.v -test.run ^TestNetns
+net_admin,sys_admin /t/local.test -test.v -test.run ^TestNetns
 CMDS
 
 failed=()
 for k in $KERNELS; do
-	kdir=$($HERE/kernels.sh "$k")
+	# The egress module set (Geneve, nf_tables, ...): a superset of the
+	# base modules, which the egress tunnel tests need.
+	kdir=$(BPF_VM_MODULES=egress $HERE/kernels.sh "$k")
 	log="$LOGS/$k.log"
 	echo "=== $k"
 	result=PASS
@@ -57,9 +68,17 @@ for k in $KERNELS; do
 		result=FAIL
 	fi
 	# A renamed test would otherwise pass as "no tests to run".
-	if ! grep -q -- '--- PASS: TestAttacherInNetns' "$log"; then
-		result=FAIL
-	fi
+	for t in TestAttacherInNetns TestAttacherPinsInNetns TestPinAdoptRelease TestAdoptNothingOrStale TestSweep \
+		TestBPFEgressSlices TestBPFEgressMapFull TestBPFProgramIDs \
+		TestLoad TestRecoverNodes TestReplySteering TestPacketTooBig TestNetnsTunnelEndToEnd TestNetnsUplinkL3 \
+		TestNetnsApplyDatapath TestNetnsApplyDatapathL2 TestNetnsApplyDatapathPools TestNetnsWatchRoutes \
+		TestNetnsWatchTunnel TestNetnsWatchNft TestNetnsApplyDatapathHeals TestNetnsApplyDatapathAddresses \
+		TestRecoverAddresses TestNetnsPlaceEgress TestNetnsApplyDatapathUplinks \
+		TestNetnsHardening TestNetnsAnnounceInTunnel TestNetnsPoolTables; do
+		if ! grep -q -- "--- PASS: $t" "$log"; then
+			result=FAIL
+		fi
+	done
 	grep -E '^vminit: (kernel|module)|^--- (FAIL|SKIP)|ns/packet|^VMTEST ' "$log" | sed 's/^/    /'
 	echo "    $result"
 	if [ $result = FAIL ]; then

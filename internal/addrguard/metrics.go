@@ -116,6 +116,7 @@ var reasonNames = [reasonMax]string{
 	reasonProtoDenied:  "proto_denied",
 	reasonICMPDenied:   "icmp_denied",
 	reasonMalformed:    "malformed",
+	reasonEgressSlice:  "egress_slice",
 }
 
 var familyNames = [2]string{famV4: "ipv4", famV6: "ipv6"}

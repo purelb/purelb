@@ -9,6 +9,7 @@ rules:
   - purelb.io
   resources:
   - clusteregresses
+  - egressaddresses
   - egressendpoints
   - egresses
   - egressnodestates
@@ -16,6 +17,12 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - purelb.io
+  resources:
+  - egressnodestates
+  verbs:
+  - create
 - apiGroups:
   - purelb.io
   resources:

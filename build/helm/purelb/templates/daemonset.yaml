@@ -107,6 +107,14 @@ spec:
         securityContext:
           {{- toYaml . | nindent 10 }}
         {{- end }}
+        {{- if .Values.egress.enabled }}
+        # The node's /sys/fs/bpf/purelb over /sys/fs/bpf, for pinning (D12):
+        # the container's /sys is sysfs, where the runtime can't create a
+        # /sys/fs/bpf/purelb mount point.
+        volumeMounts:
+        - name: bpf-pins
+          mountPath: /sys/fs/bpf
+        {{- end }}
         {{- if .Values.gobgp.enabled }}
       - name: k8gobgp
         image: "{{ .Values.gobgp.image.repository }}:{{ .Values.gobgp.image.tag }}"
@@ -219,10 +227,18 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.gobgp.enabled }}
+      {{- if or .Values.gobgp.enabled .Values.egress.enabled }}
       volumes:
+      {{- if .Values.gobgp.enabled }}
       - name: gobgp-socket
         emptyDir: {}
       - name: tmp
         emptyDir: {}
+      {{- end }}
+      {{- if .Values.egress.enabled }}
+      - name: bpf-pins
+        hostPath:
+          path: /sys/fs/bpf/purelb
+          type: DirectoryOrCreate
+      {{- end }}
       {{- end }}

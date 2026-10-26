@@ -121,6 +121,9 @@ func (r *Reconciler) handleEndpoints(inf cache.SharedIndexInformer) {
 		for _, k := range r.ownerOf(firstNonNil(n, o)) {
 			r.enqueue(k, false)
 		}
+		if e, _ := firstNonNil(n, o).(*purelbv2.EgressEndpoints); e != nil {
+			r.enqueue(addressPrefix+e.Name, false)
+		}
 		if n != nil && n.Spec.State == stateQuarantined {
 			r.enqueue(tombstonePrefix+n.Name, false)
 		}
@@ -167,12 +170,43 @@ func (r *Reconciler) handleNodeStates(inf cache.SharedIndexInformer) {
 			}
 			owners(claimsAndAcksChanged(o, n), true)
 			owners(drainedChanged(o, n), false)
-			if !apiequality.Semantic.DeepEqual(o.Status.Capability, n.Status.Capability) {
+			capChanged := !apiequality.Semantic.DeepEqual(o.Status.Capability, n.Status.Capability)
+			if capChanged {
 				r.enqueue(nodePrefix+n.Name, false)
+			}
+			if capChanged || !apiequality.Semantic.DeepEqual(o.Status.Conditions, n.Status.Conditions) ||
+				!apiequality.Semantic.DeepEqual(o.Status.AddressFaults, n.Status.AddressFaults) {
+				// The policies whose addresses the node holds, has slices
+				// of, or reports a fault with (nodeConditions).
+				owners(r.reportedOn(o, n), false)
 			}
 		},
 		DeleteFunc: all,
 	})
+}
+
+// reportedOn are the EgressEndpoints a node's report bears on, before
+// and after a change: those it announces, claims or drains, has slices
+// of, or reports a fault with.
+func (r *Reconciler) reportedOn(o, n *purelbv2.EgressNodeState) map[string]bool {
+	out := statusRefs(n)
+	for ee := range statusRefs(o) {
+		out[ee] = true
+	}
+	if objs, err := r.endpointsIdx.ByIndex(idxSliceNode, n.Name); err == nil {
+		for _, obj := range objs {
+			out[obj.(*purelbv2.EgressEndpoints).Name] = true
+		}
+	}
+	for _, ns := range []*purelbv2.EgressNodeState{o, n} {
+		for _, f := range ns.Status.AddressFaults {
+			objs, _ := r.endpointsIdx.ByIndex(idxAddress, f.Address)
+			for _, obj := range objs {
+				out[obj.(*purelbv2.EgressEndpoints).Name] = true
+			}
+		}
+	}
+	return out
 }
 
 func unwrap(obj interface{}) interface{} {

@@ -16,6 +16,7 @@ package addrguard
 
 import (
 	"encoding/binary"
+	"math/bits"
 	"net/netip"
 )
 
@@ -42,7 +43,8 @@ const (
 	reasonProtoDenied  = 5
 	reasonICMPDenied   = 6
 	reasonMalformed    = 7
-	reasonMax          = 8
+	reasonEgressSlice  = 8
+	reasonMax          = 9
 
 	// ag_unread reasons (enum unread_reason).
 	unreadTruncated = 0
@@ -72,6 +74,20 @@ func vip4Key(a netip.Addr) [4]byte { return a.As4() }
 
 // vip6Key is the ag_vip6 key for a.
 func vip6Key(a netip.Addr) [16]byte { return a.As16() }
+
+// egressKey is the ag_egress key of slice s of address a: its family,
+// address and the slice's high port bits (prefixlen 32 + 128 + 16 -
+// log2 size; the first 32 bits are the family byte and its zero padding),
+// or every port for a PerPod address (Size 0).
+func egressKey(a netip.Addr, s sliceSpec) addrguardEgressKey {
+	pk := portKey(a, 0, s.base)
+	k := addrguardEgressKey{Prefixlen: 32 + 128, Family: pk.Family, Addr: pk.Addr}
+	if s.size != 0 {
+		k.Prefixlen += 16 - uint32(bits.TrailingZeros32(s.size))
+		k.Port = pk.Port
+	}
+	return k
+}
 
 // portKey is the ag_ports key allowing proto/port on address a.
 func portKey(a netip.Addr, proto uint8, port uint16) addrguardPortKey {

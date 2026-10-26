@@ -27,6 +27,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/util/workqueue"
+
+	"purelb.io/internal/egresshook"
 )
 
 func TestMetricsAddr(t *testing.T) {
@@ -81,6 +83,19 @@ func TestLiveDetectsStuckWorkItem(t *testing.T) {
 	err := c.Live()
 	require.Error(t, err, "past the threshold the goroutine is wedged")
 	assert.Contains(t, err.Error(), "stuck in one work item")
+}
+
+// stuckEgress is an egress hook whose datapath goroutine is wedged.
+type stuckEgress struct{ egresshook.Noop }
+
+func (stuckEgress) Live() error { return errors.New("egress datapath goroutine stuck") }
+
+// Egress's own goroutine counts toward liveness too (§8.7).
+func TestLiveIncludesEgress(t *testing.T) {
+	c := &Client{egress: stuckEgress{}}
+	err := c.Live()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "egress datapath")
 }
 
 func TestReady(t *testing.T) {

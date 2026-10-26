@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	kubeinformers "k8s.io/client-go/informers"
@@ -112,10 +113,14 @@ type Reconciler struct {
 	written sync.Map
 
 	recorder record.EventRecorder
+	// cniEgress are the CNI egress-gateway kinds the cluster serves
+	// (watchCNIEgress).
+	cniEgress atomic.Pointer[[]string]
 
 	egresses        listers.EgressLister
 	clusterEgresses listers.ClusterEgressLister
 	endpoints       listers.EgressEndpointsLister
+	addresses       listers.EgressAddressLister
 	members         listers.EgressMembersLister
 	nodeStates      listers.EgressNodeStateLister
 	agents          listers.LBNodeAgentLister
@@ -205,12 +210,15 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	ens := pf.Purelb().V2().EgressNodeStates()
 	lbna := pf.Purelb().V2().LBNodeAgents()
 	ee := pns.Purelb().V2().EgressEndpointses()
-	if err := ens.Informer().AddIndexers(cache.Indexers{idxAnnouncing: announcingIndex, idxClaims: claimsIndex}); err != nil {
+	if err := ens.Informer().AddIndexers(cache.Indexers{idxAnnouncing: announcingIndex, idxClaims: claimsIndex,
+		idxFault: faultIndex}); err != nil {
 		return err
 	}
-	if err := ee.Informer().AddIndexers(cache.Indexers{idxSliceNode: sliceNodeIndex, idxOwner: ownerIndex}); err != nil {
+	if err := ee.Informer().AddIndexers(cache.Indexers{idxSliceNode: sliceNodeIndex, idxOwner: ownerIndex,
+		idxAddress: addressIndex}); err != nil {
 		return err
 	}
+	ea := pns.Purelb().V2().EgressAddresses()
 	em := pns.Purelb().V2().EgressMemberses()
 	if err := em.Informer().AddIndexers(cache.Indexers{idxMemberPod: memberPodIndex, idxOwner: ownerIndex}); err != nil {
 		return err
@@ -232,7 +240,7 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	leases := kns.Coordination().V1().Leases().Informer()
 
 	r.egresses, r.clusterEgresses, r.nodeStates, r.agents = eg.Lister(), ceg.Lister(), ens.Lister(), lbna.Lister()
-	r.endpoints, r.members = ee.Lister(), em.Lister()
+	r.endpoints, r.members, r.addresses = ee.Lister(), em.Lister(), ea.Lister()
 	r.nodeStateIdx, r.endpointsIdx, r.membersIdx = ens.Informer().GetIndexer(), ee.Informer().GetIndexer(), em.Informer().GetIndexer()
 	r.pods, r.namespaces, r.nodes = pods.GetIndexer(), nss.GetIndexer(), nodes.GetIndexer()
 	r.services, r.leases, r.statefulSets = svcs.GetIndexer(), leases.GetIndexer(), stss.GetIndexer()
@@ -241,6 +249,12 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	r.handle(ceg.Informer(), r.policyOf)
 	r.handleEndpoints(ee.Informer())
 	r.handle(em.Informer(), r.membersPolicies)
+	r.handle(ea.Informer(), func(obj interface{}) []string {
+		if a, ok := obj.(*purelbv2.EgressAddress); ok {
+			return []string{addressPrefix + a.Name}
+		}
+		return nil
+	})
 	r.handleNodeStates(ens.Informer())
 	r.handle(lbna.Informer(), func(interface{}) []string { return r.allPolicies() })
 	r.handle(pods, r.podPolicies)
@@ -256,13 +270,14 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	r.handle(stss, r.statefulSetPolicies)
 	r.handleLeases(leases)
 
+	go r.watchCNIEgress(stop, kube.Discovery())
 	pf.Start(stop)
 	pns.Start(stop)
 	kf.Start(stop)
 	kns.Start(stop)
 	go func() {
 		if !cache.WaitForCacheSync(stop, eg.Informer().HasSynced, ceg.Informer().HasSynced, ens.Informer().HasSynced, lbna.Informer().HasSynced,
-			ee.Informer().HasSynced, em.Informer().HasSynced, pods.HasSynced, nss.HasSynced, nodes.HasSynced,
+			ee.Informer().HasSynced, em.Informer().HasSynced, ea.Informer().HasSynced, pods.HasSynced, nss.HasSynced, nodes.HasSynced,
 			svcs.HasSynced, leases.HasSynced, stss.HasSynced) {
 			return
 		}
@@ -453,8 +468,12 @@ func (r *Reconciler) Keys() []string {
 	if !r.enabled || !r.synced.Load() {
 		return nil
 	}
-	return append(append(r.allPolicies(), r.nodeKeys()...), r.tombstoneKeys()...)
+	return append(append(append(r.allPolicies(), r.nodeKeys()...), r.tombstoneKeys()...), r.addressKeys()...)
 }
+
+// Live is always nil: the allocator's egress work runs on the work queue,
+// whose liveness internal/k8s already tracks.
+func (r *Reconciler) Live() error { return nil }
 
 // Synced reports whether egress has replayed its state, or has none.
 func (r *Reconciler) Synced() bool {
@@ -474,6 +493,9 @@ func (r *Reconciler) Sync(key string) error {
 	}
 	if name, ok := strings.CutPrefix(key, tombstonePrefix); ok {
 		return r.expireTombstone(name)
+	}
+	if name, ok := strings.CutPrefix(key, addressPrefix); ok {
+		return r.syncAddress(name)
 	}
 	ref, err := parsePolicyKey(key)
 	if err != nil {
@@ -560,6 +582,15 @@ func (r *Reconciler) reconcile(ref egress.PolicyRef) error {
 	if !run.revoked && !run.retained {
 		addrs = r.allocate(run)
 		eps = r.syncEndpoints(run, addrs)
+		// The addresses carry the policy's skipIPv6DAD, which no
+		// EgressEndpoints change announces.
+		for name := range eps {
+			if a, err := r.addresses.EgressAddresses(r.namespace).Get(name); err == nil &&
+				!apiequality.Semantic.DeepEqual(a.Spec.SkipIPv6DAD, p.spec.SkipIPv6DAD) && a.Spec.SharedWith == nil {
+				r.enqueue(addressPrefix+name, false)
+			}
+		}
+		r.nodeConditions(run, eps)
 	}
 	if !run.retained {
 		r.syncFinalizer(run, r.retire(run, addrs), deleting || run.disallowed)

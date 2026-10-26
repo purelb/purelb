@@ -93,11 +93,11 @@ jobs:
       - name: Download modules
         run: go mod download
 
-      - name: Regenerate the eBPF object
+      - name: Regenerate the eBPF objects
         run: make bpf
 
-      - name: Fail if it differs from the committed object
-        run: git diff --exit-code -- internal/addrguard/
+      - name: Fail if they differ from the committed objects
+        run: git diff --exit-code -- internal/addrguard/ internal/egress/datapath/
 
   # Load the address guard into the runner's kernel and run crafted packets
   # through it, with exactly the lbnodeagent container's BPF-relevant
@@ -123,8 +123,13 @@ jobs:
       - name: Generate Kubernetes client code
         run: make generate
 
-      - name: Build the test binary
-        run: go test -c -o addrguard.test ./internal/addrguard/
+      - name: Build the test binaries
+        run: |
+          go test -c -o addrguard.test ./internal/addrguard/
+          go test -c -o bpfpin.test ./internal/bpfpin/
+          go test -c -o datapath.test ./internal/egress/datapath/
+          go test -c -o agent.test ./internal/egress/agent/
+          go test -c -o local.test ./internal/local/
 
       # The verifier's behaviour depends on the kernel: record which one ran.
       - name: Run the BPF tests with the agent's capabilities
@@ -132,7 +137,10 @@ jobs:
           uname -r
           sudo env ADDRGUARD_BPF_TESTS=required \
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin -- \
-            ./addrguard.test -test.v -test.skip TestAttacherInNetns
+            ./addrguard.test -test.v -test.skip '^TestAttacher'
+          sudo env EGRESS_BPF_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin -- \
+            ./datapath.test -test.v -test.skip '^TestNetns'
 
       # Attaching to real links, in a throwaway network namespace so the
       # runner's own interfaces are untouched. Creating the namespace needs
@@ -140,14 +148,66 @@ jobs:
       # test's frames (an AF_PACKET socket) CAP_NET_RAW. CAP_SYS_ADMIN counts
       # as CAP_PERFMON to the verifier: loading exactly as the agent does is
       # the step above's.
-      - name: Run the attacher test in a network namespace
+      - name: Run the attacher tests in a network namespace
         run: |
           set -o pipefail
           sudo env ADDRGUARD_BPF_TESTS=required ADDRGUARD_NETNS_TESTS=required \
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
-            ./addrguard.test -test.v -test.run '^TestAttacherInNetns$' | tee netns.out
+            ./addrguard.test -test.v -test.run '^TestAttacher' | tee netns.out
           # A renamed test would otherwise pass as "no tests to run".
           grep -q -- '--- PASS: TestAttacherInNetns' netns.out
+          grep -q -- '--- PASS: TestAttacherPinsInNetns' netns.out
+
+      # Pinning (D12): links that outlive the agent, taken over by the next.
+      # Needs a bpffs, and CAP_SYS_ADMIN for the network namespace.
+      - name: Run the pinning tests in a network namespace
+        run: |
+          set -o pipefail
+          sudo env PURELB_NETNS_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin -- \
+            ./bpfpin.test -test.v | tee bpfpin.out
+          grep -q -- '--- PASS: TestPinAdoptRelease' bpfpin.out
+
+      # Egress's tunnel, end to end, between network namespaces: steering,
+      # transit, replies through the tunnel (D3).
+      - name: Run the egress tunnel tests in network namespaces
+        run: |
+          set -o pipefail
+          sudo modprobe geneve
+          sudo modprobe nft_ct
+          sudo env EGRESS_BPF_TESTS=required PURELB_NETNS_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
+            ./datapath.test -test.v -test.run '^TestNetns' | tee tunnel.out
+          grep -q -- '--- PASS: TestNetnsTunnelEndToEnd' tunnel.out
+          grep -q -- '--- PASS: TestNetnsHardening' tunnel.out
+          grep -q -- '--- PASS: TestNetnsPoolTables' tunnel.out
+
+      # The agent's own datapath apply, run without CAP_SYS_ADMIN as the
+      # agent runs it: first apply, repeat, node changes, the tunnel deleted
+      # under it, and a restart that takes over its pins.
+      - name: Run the egress agent's datapath apply in a network namespace
+        run: |
+          set -o pipefail
+          sudo env PURELB_NETNS_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin -- \
+            ./agent.test -test.v -test.run '^TestNetns' | tee agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapath' agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapathPools' agent.out
+          grep -q -- '--- PASS: TestNetnsWatchRoutes' agent.out
+          grep -q -- '--- PASS: TestNetnsWatchTunnel' agent.out
+          grep -q -- '--- PASS: TestNetnsWatchNft' agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapathHeals' agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapathAddresses' agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapathUplinks' agent.out
+
+      # Egress's addresses placed through the announcer's VIP path (D31).
+      - name: Run the egress address placement test in a network namespace
+        run: |
+          set -o pipefail
+          sudo env PURELB_NETNS_TESTS=required \
+            setpriv --inh-caps=-all --bounding-set=-all,+net_admin,+sys_admin -- \
+            ./local.test -test.v -test.run '^TestNetns' | tee local.out
+          grep -q -- '--- PASS: TestNetnsPlaceEgress' local.out
 
   # The same tests on a matrix of distribution kernels, each in a QEMU VM:
   # the verifier differs between kernels, and the runner's tests one.

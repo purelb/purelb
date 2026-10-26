@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	k8stesting "k8s.io/client-go/testing"
 
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	"purelb.io/internal/egress"
@@ -107,6 +108,27 @@ type fixture struct {
 func newFixture(t *testing.T, groups []*purelbv2.ServiceGroup, objs ...runtime.Object) *fixture {
 	t.Helper()
 	r, kube, purelb, q := started(t, true, objs...)
+	// The fake tracker ignores subresources: an update of a policy would
+	// replace its status. The API server keeps the stored status, so the
+	// writer's concurrent finalizer update and status patch never clobber
+	// each other; do the same here.
+	purelb.PrependReactor("update", "*", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		u := a.(k8stesting.UpdateAction)
+		if u.GetSubresource() != "" {
+			return false, nil, nil
+		}
+		old, err := purelb.Tracker().Get(u.GetResource(), u.GetNamespace(), u.GetObject().(metav1.Object).GetName())
+		if err != nil {
+			return false, nil, nil
+		}
+		switch o := u.GetObject().(type) {
+		case *purelbv2.Egress:
+			o.Status = old.(*purelbv2.Egress).Status
+		case *purelbv2.ClusterEgress:
+			o.Status = old.(*purelbv2.ClusterEgress).Status
+		}
+		return false, nil, nil
+	})
 	r.alloc.SetListServices(func() []corev1.Service {
 		var out []corev1.Service
 		for _, o := range r.services.List() {

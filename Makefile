@@ -15,7 +15,7 @@ GOBGP_IMAGE_TAG ?= 0.2.8
 GOBGP_CRD_DIR   ?= deployments/components/gobgp
 CRDS = deployments/crds/purelb.io_lbnodeagents.yaml deployments/crds/purelb.io_servicegroups.yaml \
 	deployments/crds/purelb.io_egresses.yaml deployments/crds/purelb.io_clusteregresses.yaml \
-	deployments/crds/purelb.io_egressendpoints.yaml deployments/crds/purelb.io_egressmembers.yaml \
+	deployments/crds/purelb.io_egressendpoints.yaml deployments/crds/purelb.io_egressaddresses.yaml deployments/crds/purelb.io_egressmembers.yaml \
 	deployments/crds/purelb.io_egressnodestates.yaml
 
 # Helm RBAC templates whose rules `make helm` injects from a kustomize
@@ -137,13 +137,18 @@ proto:  ## Regenerate sidecar IPAM gRPC stubs (needs protoc on PATH)
 # Needs Docker. Runs as the invoking user so the outputs aren't root-owned.
 BPF_BUILDER := purelb-bpf-builder:local
 .PHONY: bpf
-bpf:  ## Regenerate the address guard eBPF object (needs Docker)
+# Each object builds from its own package directory: clang embeds the
+# source path in the object's BTF, so the directory is part of the bytes.
+BPF_PKGS := internal/addrguard internal/egress/datapath
+bpf:  ## Regenerate the address guard and egress eBPF objects (needs Docker)
 	docker build -q -t $(BPF_BUILDER) hack/bpf-builder >/dev/null
-	docker run --rm --user $$(id -u):$$(id -g) \
-	  -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOTOOLCHAIN=local \
-	  -e GOMODCACHE=/gomodcache -v $$(go env GOMODCACHE):/gomodcache \
-	  -v $(CURDIR):/src -w /src/internal/addrguard \
-	  $(BPF_BUILDER) go generate ./...
+	for pkg in $(BPF_PKGS); do \
+	  docker run --rm --user $$(id -u):$$(id -g) \
+	    -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOTOOLCHAIN=local \
+	    -e GOMODCACHE=/gomodcache -v $$(go env GOMODCACHE):/gomodcache \
+	    -v $(CURDIR):/src -w /src/$$pkg \
+	    $(BPF_BUILDER) go generate ./... || exit 1; \
+	done
 
 .PHONY: bpf-vm-test
 bpf-vm-test: generate ## Run the address guard BPF tests on a kernel matrix in VMs (needs qemu, KVM)

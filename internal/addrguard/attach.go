@@ -17,8 +17,10 @@ package addrguard
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -29,6 +31,7 @@ import (
 	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 
+	"purelb.io/internal/bpfpin"
 	"purelb.io/internal/logging"
 	"purelb.io/internal/netutil"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -46,14 +49,18 @@ type attachment struct {
 	hook string // what is attached
 	want string // what was asked for; differs after an XDP->tcx fallback
 	l3   bool   // tcx: ag_tcx_l3 (no link-layer header), not ag_tcx
+	// pinned is where the link is pinned, "" when it isn't.
+	pinned string
 }
 
 // attacher is the state owned by the attacher goroutine.
 type attacher struct {
-	g        *Guard
-	md       *mapDataplane // nil when the program isn't loaded
-	spec     *Spec
-	agent    *purelbv2.LBNodeAgent
+	g     *Guard
+	md    *mapDataplane // nil when the program isn't loaded
+	spec  *Spec
+	agent *purelbv2.LBNodeAgent
+	// pin is whether to pin the attachments (D12): egress is enabled.
+	pin      bool
 	attached map[int]*attachment
 	special  map[netip.Addr]bool // broadcast/anycast entries we inserted
 	defaults map[int]bool
@@ -169,7 +176,7 @@ func (g *Guard) run() {
 
 func (a *attacher) apply(u configUpdate) {
 	defer a.g.applied.Store(true)
-	a.spec, a.agent = u.spec, u.agent
+	a.spec, a.agent, a.pin = u.spec, u.agent, u.pin
 	a.noteRestartRequired()
 	if a.spec == nil {
 		a.warnedUnavailable = false
@@ -428,7 +435,7 @@ func (a *attacher) lose(idx int, at *attachment) {
 		"msg", "something else detached the address guard; attaching it again")
 	a.warn("AddressGuardDetached", "on node %s, something detached the address guard from %s (%s); it is being attached again",
 		a.g.myNode, at.name, at.hook)
-	_ = at.link.Close()
+	a.release(at)
 	attachedVec.DeleteLabelValues(at.name, at.hook)
 	a.forgetChain(idx, at.name)
 	delete(a.attached, idx)
@@ -470,6 +477,13 @@ func (a *attacher) publish(ready bool, why string) {
 	}
 	if fn := a.g.standDownHook.Load(); fn != nil && down != prev {
 		(*fn)(down)
+	}
+	links := slices.Sorted(maps.Keys(a.attached))
+	if old := a.g.links.Load(); old == nil || !slices.Equal(*old, links) {
+		a.g.links.Store(&links)
+		if fn := a.g.linksHook.Load(); fn != nil {
+			(*fn)()
+		}
 	}
 }
 
@@ -588,6 +602,7 @@ func (a *attacher) reconcileLinks(logExcluded bool) (bool, string) {
 		for idx := range a.attached {
 			a.detach(idx)
 		}
+		a.sweepPins()
 		unattachedVec.Reset()
 		return false, "not configured"
 	}
@@ -628,6 +643,7 @@ func (a *attacher) reconcileLinks(logExcluded bool) (bool, string) {
 		hook := a.wantHook(l)
 		old := a.attached[idx]
 		if old != nil && old.want == hook {
+			a.syncPin(old)
 			continue
 		}
 		at, err := a.attach(l, hook, old)
@@ -646,6 +662,7 @@ func (a *attacher) reconcileLinks(logExcluded bool) (bool, string) {
 			continue
 		}
 		delete(a.warnedLinks, at.name)
+		a.syncPin(at)
 		if old != nil && at.link == old.link {
 			a.attached[idx] = at
 			logging.Debug(a.g.logger, "op", "addressGuard", "event", "guardAttachmentKept", "interface", at.name,
@@ -655,7 +672,7 @@ func (a *attacher) reconcileLinks(logExcluded bool) (bool, string) {
 		// Make before break: the new hook is in place before the old one
 		// goes, so a hook change opens no window.
 		if old != nil {
-			_ = old.link.Close()
+			a.release(old)
 			attachedVec.DeleteLabelValues(old.name, old.hook)
 		}
 		a.attached[idx] = at
@@ -676,6 +693,7 @@ func (a *attacher) reconcileLinks(logExcluded bool) (bool, string) {
 			"hook", map[bool]string{true: hookXDP, false: hookTCX}[a.spec.XDP], "failurePolicy", policy,
 			"interfaces", names)
 	}
+	a.sweepPins()
 	// The state, for alerting: attach_errors_total says only that an attempt
 	// failed, not whether the interface is unguarded now.
 	unattachedVec.Reset()
@@ -694,13 +712,13 @@ func (a *attacher) reconcileLinks(logExcluded bool) (bool, string) {
 // and WireGuard: no link-layer header.
 const arphrdNone = "none"
 
-// linkLayer reports which tcx program fits l: ag_tcx for Ethernet, whose
+// LinkLayer reports which tcx program fits l: ag_tcx for Ethernet, whose
 // network header follows a 14-byte Ethernet header, or ag_tcx_l3 (l3 true)
 // for links with no link-layer header, whose packets start with it. Each
 // type here was measured at tcx ingress (QinQ included: its inner tag sits
 // at 14); the guard refuses any other type rather than read a link it
 // can't parse.
-func linkLayer(l netlink.Link) (l3 bool, err error) {
+func LinkLayer(l netlink.Link) (l3 bool, err error) {
 	switch l.Attrs().EncapType {
 	case "ether":
 		return false, nil
@@ -725,12 +743,16 @@ func linkLayer(l netlink.Link) (l3 bool, err error) {
 func (a *attacher) attach(l netlink.Link, hook string, old *attachment) (*attachment, error) {
 	attrs := l.Attrs()
 	at := &attachment{name: attrs.Name, want: hook}
-	l3, err := linkLayer(l)
+	l3, err := LinkLayer(l)
 	if err != nil {
 		return nil, err
 	}
 	at.l3 = l3
 	if hook == hookXDP {
+		if lk := a.adopt(at, hookXDP, attrs.Index, a.g.objs.AgXdp); lk != nil {
+			at.link, at.hook = lk, hookXDP
+			return at, nil
+		}
 		lk, err := link.AttachXDP(link.XDPOptions{Program: a.g.objs.AgXdp, Interface: attrs.Index, Flags: link.XDPDriverMode})
 		if err == nil {
 			at.link, at.hook = lk, hookXDP
@@ -739,12 +761,16 @@ func (a *attacher) attach(l netlink.Link, hook string, old *attachment) (*attach
 		logging.Info(a.g.logger, "op", "addressGuard", "event", "xdpFallbackToTcx", "interface", attrs.Name, "error", err)
 	}
 	if old != nil && old.hook == hookTCX && old.l3 == l3 {
-		at.link, at.hook = old.link, hookTCX
+		at.link, at.hook, at.pinned = old.link, hookTCX, old.pinned
 		return at, nil
 	}
 	prog := a.g.objs.AgTcx
 	if l3 {
 		prog = a.g.objs.AgTcxL3
+	}
+	if lk := a.adopt(at, hookTCX, attrs.Index, prog); lk != nil {
+		at.link, at.hook = lk, hookTCX
+		return at, nil
 	}
 	lk, err := link.AttachTCX(link.TCXOptions{
 		Program:   prog,
@@ -759,9 +785,91 @@ func (a *attacher) attach(l netlink.Link, hook string, old *attachment) (*attach
 	return at, nil
 }
 
+// pinPrefix starts the name of every link the guard pins.
+const pinPrefix = "addrguard-"
+
+// pinPath is where the guard pins its hook's link to the interface name.
+func (a *attacher) pinPath(hook, name string) string {
+	return filepath.Join(a.g.pinDir, pinPrefix+hook+"-"+name)
+}
+
+// adopt takes over the link an earlier agent pinned for hook on the
+// interface, with prog swapped in, so it keeps its place at the head of
+// the chain and the interface is never unguarded across the restart. Nil
+// when there is none.
+func (a *attacher) adopt(at *attachment, hook string, ifindex int, prog *ebpf.Program) link.Link {
+	path := a.pinPath(hook, at.name)
+	lk, err := bpfpin.Adopt(path, ifindex, prog)
+	if err != nil {
+		logging.Info(a.g.logger, "op", "addressGuard", "event", "guardAdoptFailed", "interface", at.name, "hook", hook, "error", err)
+		return nil
+	}
+	if lk != nil {
+		at.pinned = path
+		logging.Info(a.g.logger, "op", "addressGuard", "event", "guardAdopted", "interface", at.name, "hook", hook,
+			"msg", "took over the guard link pinned by an earlier agent")
+	}
+	return lk
+}
+
+// syncPin pins or unpins at to match pin.
+func (a *attacher) syncPin(at *attachment) {
+	switch {
+	case a.pin && at.pinned == "":
+		path := a.pinPath(at.hook, at.name)
+		if err := at.link.Pin(path); err != nil {
+			logging.Info(a.g.logger, "op", "addressGuard", "event", "guardPinFailed", "interface", at.name, "error", err)
+			return
+		}
+		at.pinned = path
+		logging.Debug(a.g.logger, "op", "addressGuard", "event", "guardPinned", "interface", at.name, "path", path)
+	case !a.pin && at.pinned != "":
+		if err := at.link.Unpin(); err != nil {
+			logging.Info(a.g.logger, "op", "addressGuard", "event", "guardUnpinFailed", "interface", at.name, "error", err)
+			return
+		}
+		at.pinned = ""
+		logging.Debug(a.g.logger, "op", "addressGuard", "event", "guardUnpinned", "interface", at.name)
+	}
+}
+
+// release detaches at: a pinned link stays attached until it is unpinned.
+// The explicit detach takes effect at once; on 6.6 a detach that waits for
+// the last close is asynchronous (spike 4).
+func (a *attacher) release(at *attachment) {
+	if at.pinned != "" {
+		if err := at.link.Unpin(); err != nil {
+			logging.Info(a.g.logger, "op", "addressGuard", "event", "guardUnpinFailed", "interface", at.name, "error", err)
+		}
+	}
+	_ = at.link.Detach()
+	_ = at.link.Close()
+}
+
+// sweepPins detaches guard links an earlier agent pinned that this one
+// hasn't taken over: for an interface no longer guarded, or with the guard
+// now disabled, so no pinned guard outlives its configuration.
+func (a *attacher) sweepPins() {
+	if !bpfpin.Usable(a.g.pinDir) {
+		return
+	}
+	kept := map[string]bool{}
+	for _, at := range a.attached {
+		kept[at.pinned] = true
+	}
+	gone, err := bpfpin.Sweep(a.g.pinDir, pinPrefix, func(path string) bool { return kept[path] })
+	for _, path := range gone {
+		logging.Info(a.g.logger, "op", "addressGuard", "event", "guardPinRemoved", "path", path,
+			"msg", "detached a guard link an earlier agent pinned")
+	}
+	if err != nil {
+		logging.Info(a.g.logger, "op", "addressGuard", "event", "guardPinSweepFailed", "error", err)
+	}
+}
+
 func (a *attacher) detach(idx int) {
 	at := a.attached[idx]
-	_ = at.link.Close()
+	a.release(at)
 	attachedVec.DeleteLabelValues(at.name, at.hook)
 	a.forgetChain(idx, at.name)
 	delete(a.attached, idx)

@@ -104,6 +104,20 @@ func TestRedacted(t *testing.T) {
 			assert.IsType(t, &purelbv2.Egress{}, e.obj, "no node: to the Egress")
 		}
 	}
+
+	// A node's report reconciles the policy (it has a slice there), whose
+	// conditions then count the nodes without naming them.
+	g.q.mu.Lock()
+	g.q.keys = nil
+	g.q.mu.Unlock()
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Conditions: []metav1.Condition{
+		{Type: "DatapathCompatible", Status: metav1.ConditionFalse, Reason: "KernelTooOld"}}})
+	require.True(t, g.q.has("egress/voice/sip"), "the node's report queues the policy")
+	g.reconcile(t, "egress/voice/sip")
+	c := condition(t, g.egress(t, "voice", "sip"), condDatapathCompatible)
+	assert.Equal(t, "KernelTooOld", c.Reason)
+	assert.NotContains(t, c.Message, "n1")
+	assert.Contains(t, c.Message, "1 nodes")
 }
 
 // Two live nodes announcing a SingleAnnouncer address for two lease
@@ -128,6 +142,75 @@ func TestSplitBrain(t *testing.T) {
 	c := condition(t, g.egress(t, "voice", "sip"), condAnnounced)
 	assert.Equal(t, reasonSplitBrain, c.Reason)
 	assert.True(t, hasEvent(g.events(), reasonSplitBrain, "192.168.10.10"))
+}
+
+// What the nodes report reaches the policy (§4.8): a holder's address
+// fault, a node condition of a holder or pod node, tunnels in different
+// modes; UnderlayEncrypted and CNIEgressPolicy are warnings Ready ignores.
+func TestNodeReports(t *testing.T) {
+	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
+		node("n1", true), node("n2", true), liveLease("n1", t0), liveLease("n2", t0), egressObj("voice", "sip", nil))
+	g.reconcile(t, "egress/voice/sip")
+	ep := g.ep(t)
+	addr := ep.Spec.Address
+	ann := []purelbv2.EgressAnnouncing{{Endpoints: ep.Name, Address: addr, Generation: ep.Generation}}
+	cap3 := &purelbv2.EgressCapability{EgressCapable: true, TunnelEncapsulation: "L3"}
+	ok := func(typ string) metav1.Condition {
+		return metav1.Condition{Type: typ, Status: metav1.ConditionTrue, Reason: typ}
+	}
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Announcing: ann, Capability: cap3,
+		Conditions: []metav1.Condition{ok("DatapathReady"), ok("DatapathCompatible"), ok("UnderlayEncrypted")}})
+	g.reconcile(t, "egress/voice/sip")
+	e := g.egress(t, "voice", "sip")
+	for _, typ := range []string{condDatapathCompatible, condGuarded, condAddressUnique, condUnderlay, condCNIEgressPolicy} {
+		assert.Equal(t, metav1.ConditionTrue, condition(t, e, typ).Status, typ)
+	}
+	assert.Equal(t, metav1.ConditionTrue, condition(t, e, condReady).Status)
+
+	// Warnings: True Ready all the same.
+	g.r.cniEgress.Store(&[]string{"ciliumegressgatewaypolicies.cilium.io"})
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Announcing: ann, Capability: cap3,
+		Conditions: []metav1.Condition{{Type: "UnderlayEncrypted", Status: metav1.ConditionFalse, Reason: "UnderlayUnencrypted"}}})
+	g.reconcile(t, "egress/voice/sip")
+	e = g.egress(t, "voice", "sip")
+	assert.Equal(t, "UnderlayUnencrypted", condition(t, e, condUnderlay).Reason)
+	assert.Equal(t, "CNIEgressPolicy", condition(t, e, condCNIEgressPolicy).Reason)
+	assert.Equal(t, metav1.ConditionTrue, condition(t, e, condReady).Status, "warnings only")
+	assert.True(t, hasEvent(g.events(), "CNIEgressPolicy", "cilium.io"))
+	g.reconcile(t, "egress/voice/sip")
+	assert.False(t, hasEvent(g.events(), "CNIEgressPolicy", ""), "the event once, when it turns False")
+	g.r.cniEgress.Store(&[]string{})
+
+	// A holder's faults and a node condition; another holder in L2.
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Announcing: ann, Capability: cap3,
+		AddressFaults: []purelbv2.EgressAddressFault{{Address: addr, Reason: "DADFailed"}},
+		Conditions: []metav1.Condition{{Type: "DatapathCompatible", Status: metav1.ConditionFalse, Reason: "KernelTooOld"},
+			{Type: "ForwardPath", Status: metav1.ConditionFalse, Reason: "TunnelPortBlocked"}}})
+	g.status(t, "n2", purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{TunnelEncapsulation: "L2"},
+		AddressFaults: []purelbv2.EgressAddressFault{{Address: addr, Reason: "GuardMapFull"}},
+		Conditions:    []metav1.Condition{{Type: "DatapathReady", Status: metav1.ConditionFalse, Reason: "NoGateway"}}})
+	g.reconcile(t, "egress/voice/sip")
+	e = g.egress(t, "voice", "sip")
+	assert.Equal(t, "DADFailed", condition(t, e, condAnnounced).Reason)
+	assert.Equal(t, "DADFailed", condition(t, e, condAddressUnique).Reason)
+	assert.Equal(t, addr+": nodes n1", condition(t, e, condAddressUnique).Message)
+	assert.Equal(t, "GuardMapFull", condition(t, e, condGuarded).Reason)
+	assert.Equal(t, "NoGateway", condition(t, e, condDatapathReady).Reason, "n2 reports a fault: a holder")
+	dc := condition(t, e, condDatapathCompatible)
+	assert.Equal(t, metav1.ConditionFalse, dc.Status)
+	assert.Equal(t, "KernelTooOld", dc.Reason, "one reason shown, the first in order")
+	assert.Equal(t, metav1.ConditionFalse, condition(t, e, condReady).Status)
+
+	// The reasons the first one hides, one at a time.
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Announcing: ann, Capability: cap3,
+		Conditions: []metav1.Condition{{Type: "ForwardPath", Status: metav1.ConditionFalse, Reason: "TunnelPortBlocked"}}})
+	g.status(t, "n2", purelbv2.EgressNodeStateStatus{Announcing: ann, Capability: cap3})
+	g.reconcile(t, "egress/voice/sip")
+	assert.Equal(t, "TunnelPortBlocked", condition(t, g.egress(t, "voice", "sip"), condDatapathCompatible).Reason)
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Announcing: ann, Capability: cap3})
+	g.status(t, "n2", purelbv2.EgressNodeStateStatus{Announcing: ann, Capability: &purelbv2.EgressCapability{TunnelEncapsulation: "L2"}})
+	g.reconcile(t, "egress/voice/sip")
+	assert.Equal(t, "TunnelModeMismatch", condition(t, g.egress(t, "voice", "sip"), condDatapathCompatible).Reason)
 }
 
 // A higher-ranked policy taking every destination of a pod outranks the

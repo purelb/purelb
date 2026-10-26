@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -126,6 +127,9 @@ type Election struct {
 
 	// renewFailures counts consecutive renewal failures
 	renewFailures atomic.Int32
+	// renewed is when this node's lease was last written successfully, in
+	// Unix nanoseconds (LastRenewal).
+	renewed atomic.Int64
 
 	// renewTicker triggers periodic lease renewal
 	renewTicker *time.Ticker
@@ -137,6 +141,10 @@ type Election struct {
 	// change detection. Observability only — nothing reads this back to make
 	// an election decision.
 	winnerCache sync.Map // map[string]string
+
+	// lkg is the last state read while this node's lease was healthy:
+	// the steering view while it isn't (D1).
+	lkg atomic.Pointer[electionState]
 
 	// ctx and cancel for managing goroutines
 	ctx    context.Context
@@ -310,6 +318,22 @@ func (e *Election) IsHealthy() bool {
 	return e.leaseHealthy.Load()
 }
 
+// LastRenewal is when this node's lease was last written successfully,
+// the zero time before the first write. Unlike IsHealthy it also falls
+// behind while every renewal fails at its Get, as during a partition from
+// the API server.
+func (e *Election) LastRenewal() time.Time {
+	if n := e.renewed.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Time{}
+}
+
+// LeaseDuration is how long a lease is valid.
+func (e *Election) LeaseDuration() time.Duration {
+	return e.config.LeaseDuration
+}
+
 // MemberCount returns the number of nodes with valid leases
 func (e *Election) MemberCount() int {
 	state := e.state.Load()
@@ -393,19 +417,7 @@ func (e *Election) Winner(key string) string {
 func (e *Election) WinnerWithPreference(key string, preferred []string) (winner string) {
 	fellBack := false
 	defer func() {
-		if winner == "" {
-			return // health-loss/no-candidates: not a real handover, don't record or cache it
-		}
-		// Every node caches every key so its next comparison is right, but
-		// only the new winner records: a handover counts exactly once
-		// cluster-wide, even when the old winner is gone and can't report.
-		if prev, loaded := e.winnerCache.Swap(key, winner); loaded {
-			if p := prev.(string); p != "" && p != winner && winner == e.config.NodeName {
-				RecordWinnerChange(key)
-				logging.Debug(e.config.Logger, "op", "election", "action", "winnerChanged",
-					"key", key, "from", p, "to", winner)
-			}
-		}
+		e.recordWinner(key, winner)
 		if fellBack && winner == e.config.NodeName {
 			RecordAffinityFallback(key)
 		}
@@ -465,6 +477,99 @@ func (e *Election) WinnerWithPreference(key string, preferred []string) (winner 
 
 	winner = election(key, candidates)[0]
 	return
+}
+
+// recordWinner caches key's winner and counts a handover. Every node
+// caches every key so its next comparison is right, but only the new
+// winner records: a handover counts exactly once cluster-wide, even when
+// the old winner is gone and can't report. An empty winner (health loss,
+// no candidates) is not a handover.
+func (e *Election) recordWinner(key, winner string) {
+	if winner == "" {
+		return
+	}
+	if prev, loaded := e.winnerCache.Swap(key, winner); loaded {
+		if p := prev.(string); p != "" && p != winner && winner == e.config.NodeName {
+			RecordWinnerChange(key)
+			logging.Debug(e.config.Logger, "op", "election", "action", "winnerChanged",
+				"key", key, "from", p, "to", winner)
+		}
+	}
+}
+
+// WinnerAmong elects key's announcer among the candidates that have the
+// address's subnet and that eligible accepts, preferring those in
+// preferred when any of them is a candidate. Unlike WinnerWithPreference
+// it never falls back outside eligible (D7a). It returns "" while this
+// node's lease is unhealthy, so a partitioned node never owns an address.
+func (e *Election) WinnerAmong(key string, eligible func(node string) bool, preferred []string) string {
+	if !e.leaseHealthy.Load() || (e.leaseInformer != nil && !e.leaseInformer.HasSynced()) {
+		return ""
+	}
+	winner := e.among(e.state.Load(), key, eligible, preferred)
+	e.recordWinner(key, winner)
+	return winner
+}
+
+// SteeringWinner is the owner a pod node steers key's traffic to (D1): as
+// WinnerAmong, but while this node's lease is unhealthy it elects from the
+// last membership seen while healthy instead of returning "", so a pod
+// node cut off from the API keeps forwarding. It records nothing.
+func (e *Election) SteeringWinner(key string, eligible func(node string) bool, preferred []string) string {
+	return e.among(e.steeringState(), key, eligible, preferred)
+}
+
+// SteeringLive is the steering view's live nodes: the current ones while
+// this node's lease is healthy, the last ones seen while healthy
+// otherwise (D1). Routed pools steer to the live advertisers (D7).
+func (e *Election) SteeringLive() []string {
+	s := e.steeringState()
+	if s == nil {
+		return nil
+	}
+	return s.liveNodes
+}
+
+// steeringState is the current state while this node's lease is healthy
+// and the informer synced, remembered as the last good one; otherwise the
+// last good one, nil before the first.
+func (e *Election) steeringState() *electionState {
+	if e.leaseHealthy.Load() && (e.leaseInformer == nil || e.leaseInformer.HasSynced()) {
+		s := e.state.Load()
+		e.lkg.Store(s)
+		return s
+	}
+	return e.lkg.Load()
+}
+
+// among runs key's election in state among the eligible candidates,
+// preferring those in preferred.
+func (e *Election) among(state *electionState, key string, eligible func(string) bool, preferred []string) string {
+	ip := net.ParseIP(key)
+	if state == nil || len(state.liveNodes) == 0 || ip == nil {
+		return ""
+	}
+	var candidates []string
+	for _, c := range e.findCandidatesForIP(state, ip) {
+		if eligible == nil || eligible(c) {
+			candidates = append(candidates, c)
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	if len(preferred) > 0 {
+		var pref []string
+		for _, c := range candidates {
+			if slices.Contains(preferred, c) {
+				pref = append(pref, c)
+			}
+		}
+		if len(pref) > 0 {
+			return election(key, pref)[0]
+		}
+	}
+	return election(key, candidates)[0]
 }
 
 // ForgetKey drops everything the election remembers about key: the cached
@@ -670,6 +775,7 @@ func (e *Election) createOrUpdateLease() error {
 			"lease", e.leaseName, "subnets", subnetsAnnotation, "msg", "lease created")
 		e.leaseHealthy.Store(true)
 		e.renewFailures.Store(0)
+		e.renewed.Store(time.Now().UnixNano())
 		RecordLeaseHealthy(true)
 		if subnetCount >= 0 {
 			RecordLocalSubnetCount(subnetCount)
@@ -701,6 +807,7 @@ func (e *Election) createOrUpdateLease() error {
 		"lease", e.leaseName, "subnets", subnetsAnnotation, "msg", "lease updated")
 	e.leaseHealthy.Store(true)
 	e.renewFailures.Store(0)
+	e.renewed.Store(time.Now().UnixNano())
 	RecordLeaseHealthy(true)
 	if subnetCount >= 0 {
 		RecordLocalSubnetCount(subnetCount)
@@ -763,6 +870,7 @@ func (e *Election) renewLease() error {
 	}
 
 	// Success - reset failures and mark healthy
+	e.renewed.Store(time.Now().UnixNano())
 	RecordLeaseRenewal()
 	if e.renewFailures.Load() > 0 {
 		logging.Info(e.config.Logger, "op", "election", "action", "renewRecovered",

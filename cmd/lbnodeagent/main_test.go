@@ -109,7 +109,7 @@ func newHarness(t *testing.T, node *corev1.Node, ret k8s.SyncState) *harness {
 		selector: &atomic.Pointer[election.InterfaceSelector]{},
 	}
 	h.deliver = newConfigChanged(log.NewNopLogger(),
-		func() nodeClient { return h.client }, h.ctrl, testNode, h.selector, &selectorReporter{})
+		func() nodeClient { return h.client }, h.ctrl, testNode, h.selector, &selectorReporter{}, nil)
 	return h
 }
 

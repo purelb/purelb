@@ -32,16 +32,24 @@ type dataplane interface {
 	delVIP(netip.Addr) error
 	putPort(netip.Addr, portSpec) error
 	delPort(netip.Addr, portSpec) error
+	putSlice(netip.Addr, sliceSpec) error
+	delSlice(netip.Addr, sliceSpec) error
 }
+
+// ErrMapFull is a write refused because ag_egress is full (design 6.10:
+// GuardMapFull, and the slice stays Pending).
+var ErrMapFull = errors.New("address guard map full")
 
 // nopDataplane stands in when the program couldn't be loaded: the guard
 // keeps its bookkeeping (so the unguarded count is right) and fails open.
 type nopDataplane struct{}
 
-func (nopDataplane) putVIP(netip.Addr) error            { return nil }
-func (nopDataplane) delVIP(netip.Addr) error            { return nil }
-func (nopDataplane) putPort(netip.Addr, portSpec) error { return nil }
-func (nopDataplane) delPort(netip.Addr, portSpec) error { return nil }
+func (nopDataplane) putVIP(netip.Addr) error              { return nil }
+func (nopDataplane) delVIP(netip.Addr) error              { return nil }
+func (nopDataplane) putPort(netip.Addr, portSpec) error   { return nil }
+func (nopDataplane) delPort(netip.Addr, portSpec) error   { return nil }
+func (nopDataplane) putSlice(netip.Addr, sliceSpec) error { return nil }
+func (nopDataplane) delSlice(netip.Addr, sliceSpec) error { return nil }
 
 // mapDataplane writes the real maps.
 type mapDataplane struct {
@@ -73,6 +81,18 @@ func (d *mapDataplane) putPort(a netip.Addr, p portSpec) error {
 
 func (d *mapDataplane) delPort(a netip.Addr, p portSpec) error {
 	return ignoreMissing(d.objs.AgPorts.Delete(portKey(a, p.proto, p.port)))
+}
+
+func (d *mapDataplane) putSlice(a netip.Addr, s sliceSpec) error {
+	err := d.objs.AgEgress.Update(egressKey(a, s), uint8(1), ebpf.UpdateAny)
+	if errors.Is(err, unix.ENOSPC) || errors.Is(err, unix.E2BIG) {
+		return fmt.Errorf("%w: %w", ErrMapFull, err)
+	}
+	return err
+}
+
+func (d *mapDataplane) delSlice(a netip.Addr, s sliceSpec) error {
+	return ignoreMissing(d.objs.AgEgress.Delete(egressKey(a, s)))
 }
 
 // putSpecial guards a kernel-generated broadcast or anycast address with no

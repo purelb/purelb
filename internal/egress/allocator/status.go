@@ -42,9 +42,14 @@ const reasonSplitBrain = "SplitBrain"
 // SingleAnnouncer address before SplitBrain, in lease durations (D1).
 const splitBrainLeases = 2
 
-// published are the conditions the allocator reports; the agents' come
-// with Phase 4. Ready is True when all of them are.
-var published = []string{condAllocated, condContained, condAnnounced, condDatapathReady, condPortCapacity, condPolicyEffective}
+// published are the conditions Ready is True with when all of them are;
+// warnings are reported but Ready ignores them (§4.8: UnderlayEncrypted;
+// user decision 2026-10-25: CNIEgressPolicy).
+var (
+	published = []string{condAllocated, condContained, condAnnounced, condDatapathReady, condDatapathCompatible,
+		condGuarded, condPortCapacity, condPolicyEffective, condAddressUnique}
+	warnings = []string{condUnderlay, condCNIEgressPolicy}
+)
 
 var (
 	slicesGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -150,6 +155,13 @@ func (r *Reconciler) syncStatus(run *run, addrs []address, eps map[string]*purel
 		if f, failed := run.conds[typ]; failed {
 			c.Status, c.Reason, c.Message = metav1.ConditionFalse, f.reason, f.message
 			ready = false
+		}
+		apimeta.SetStatusCondition(&st.Conditions, c)
+	}
+	for _, typ := range warnings {
+		c := metav1.Condition{Type: typ, Status: metav1.ConditionTrue, Reason: "AsExpected", ObservedGeneration: p.meta.Generation, LastTransitionTime: now}
+		if f, failed := run.conds[typ]; failed {
+			c.Status, c.Reason, c.Message = metav1.ConditionFalse, f.reason, f.message
 		}
 		apimeta.SetStatusCondition(&st.Conditions, c)
 	}

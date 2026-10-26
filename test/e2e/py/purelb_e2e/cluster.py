@@ -33,6 +33,8 @@ from typing import Any, Dict, Iterable, List, Optional
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
+from purelb_e2e import egress
+
 PURELB_GROUP = "purelb.io"
 PURELB_VERSION = "v2"
 
@@ -423,7 +425,9 @@ class Cluster:
         ).get("items", [])
 
     def apply_cr(self, body: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
-        """Create, or replace if it already exists."""
+        """Create, or replace if it already exists. Under --egress an
+        LBNodeAgent gets egress enabled (egress.agent_body)."""
+        body = egress.agent_body(body)
         kind = body["kind"].lower()
         ns = namespace or body.get("metadata", {}).get("namespace") or self.purelb_namespace
         name = body["metadata"]["name"]

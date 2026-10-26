@@ -27,6 +27,10 @@ import (
 // (TC ingress via bpf_link) arrived in 6.6.
 var AddressGuardMin = Version{6, 6}
 
+// EgressMin is the oldest kernel egress runs on: its programs attach with
+// tcx, as the guard's do.
+var EgressMin = Version{6, 6}
+
 // Version is a kernel major.minor.
 type Version struct{ Major, Minor int }
 

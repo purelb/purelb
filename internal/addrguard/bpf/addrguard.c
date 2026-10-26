@@ -2,7 +2,8 @@
 // Copyright 2026 Acnodal Inc.
 //
 // Address guard: drop packets addressed to a PureLB VIP unless their
-// (protocol, port) is one of that VIP's Service ports.
+// (protocol, port) is one of that VIP's Service ports or lies in one of an
+// egress address's slices (design 6.10).
 //
 // One parser, two entry points: tcx ingress (the default) and native XDP
 // (opt-in). Packets not addressed to a guarded address take the fast path:
@@ -55,6 +56,7 @@ enum reason {
 	R_PROTO_DENIED,
 	R_ICMP_DENIED,
 	R_MALFORMED,
+	R_EGRESS_SLICE, /* in an egress slice, or to a PerPod egress address */
 	REASON_MAX,
 };
 enum family { FAM_V4 = 0, FAM_V6 = 1 };
@@ -86,9 +88,24 @@ struct guard_config {
 	__u32 mode;
 };
 
+/* An egress slice (LPM): family, address and the slice's high port bits.
+ * One entry per power-of-two slice, prefixlen 32 + 128 + (16 - log2 size);
+ * a PerPod address is one entry for every port, prefixlen 160. The
+ * padding is zero in entries and lookups alike, so it only lengthens the
+ * prefix; family keeps the families from aliasing. No protocol: a slice
+ * is every protocol's. */
+struct egress_key {
+	__u32 prefixlen;
+	__u8 family;
+	__u8 pad[3];
+	__u32 addr[4];
+	__be16 port;
+	__u8 pad2[2];
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-	__uint(max_entries, 4096);
+	__uint(max_entries, 8192);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
 	__type(key, __be32);
 	__type(value, struct vip_counters);
@@ -96,7 +113,7 @@ struct {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-	__uint(max_entries, 4096);
+	__uint(max_entries, 8192);
 	__uint(map_flags, BPF_F_NO_PREALLOC);
 	__type(key, struct in6_addr);
 	__type(value, struct vip_counters);
@@ -109,6 +126,14 @@ struct {
 	__type(key, struct port_key);
 	__type(value, __u8);
 } ag_ports SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, 65536);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct egress_key);
+	__type(value, __u8);
+} ag_egress SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -145,6 +170,7 @@ struct scratch {
 	__be16 ports[2];
 	__u8 h[4];
 	__u8 type;
+	struct egress_key ek;
 };
 
 struct {
@@ -254,6 +280,24 @@ static __always_inline int icmp_error(__u8 type, __u32 fam)
 	if (fam == FAM_V4)
 		return type == 3 || type == 11 || type == 12;
 	return type >= 1 && type <= 4;
+}
+
+/* in_slice reports whether port on the address in pk is in one of its
+ * egress slices; port 0 (no transport port) matches only a PerPod
+ * address's every-port entry, since slices never cover ports below 1024. */
+static __always_inline int in_slice(struct scratch *s, const struct port_key *pk, __u32 fam, __be16 port)
+{
+	struct egress_key *ek = &s->ek;
+
+	__builtin_memset(ek, 0, sizeof(*ek));
+	ek->prefixlen = 32 + 128 + 16;
+	ek->family = fam;
+	ek->addr[0] = pk->addr[0];
+	ek->addr[1] = pk->addr[1];
+	ek->addr[2] = pk->addr[2];
+	ek->addr[3] = pk->addr[3];
+	ek->port = port;
+	return bpf_map_lookup_elem(&ag_egress, ek) != NULL;
 }
 
 /* Extension headers walked to find the transport header. The fragment
@@ -412,6 +456,8 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off, __
 		pk.family = fam;
 		if (bpf_map_lookup_elem(&ag_ports, &pk))
 			return decide(vc, 1, R_PORT_ALLOWED, fam);
+		if (in_slice(s, &pk, fam, pk.port))
+			return decide(vc, 1, R_EGRESS_SLICE, fam);
 		return decide(vc, 0, R_PORT_DENIED, fam);
 	}
 
@@ -420,6 +466,8 @@ static __always_inline int guard(void *ctx, int xdp, __be16 proto, __u32 off, __
 
 	if (allowed && *allowed)
 		return decide(vc, 1, R_PROTO_ALLOWED, fam);
+	if (in_slice(s, &pk, fam, 0))
+		return decide(vc, 1, R_EGRESS_SLICE, fam);
 	return decide(vc, 0, R_PROTO_DENIED, fam);
 }
 

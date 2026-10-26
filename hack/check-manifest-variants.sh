@@ -28,7 +28,7 @@ set -euo pipefail
 KUSTOMIZE=${KUSTOMIZE:-kustomize}
 fail=0
 
-EGRESS_CRDS="clusteregresses.purelb.io egressendpoints.purelb.io egresses.purelb.io egressmembers.purelb.io egressnodestates.purelb.io"
+EGRESS_CRDS="clusteregresses.purelb.io egressaddresses.purelb.io egressendpoints.purelb.io egresses.purelb.io egressmembers.purelb.io egressnodestates.purelb.io"
 CORE_CRDS="lbnodeagents.purelb.io servicegroups.purelb.io"
 BGP_CRDS="bgpnodestatuses.bgp.purelb.io configs.bgp.purelb.io"
 
