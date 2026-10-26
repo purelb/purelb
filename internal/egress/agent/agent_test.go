@@ -61,7 +61,8 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	var kubeObjs, purelbObjs []runtime.Object
 	for _, o := range objs {
 		switch o.(type) {
-		case *purelbv2.EgressNodeState, *purelbv2.EgressAddress, *purelbv2.EgressEndpoints:
+		case *purelbv2.EgressNodeState, *purelbv2.EgressAddress, *purelbv2.EgressEndpoints,
+			*purelbv2.Egress, *purelbv2.ClusterEgress:
 			purelbObjs = append(purelbObjs, o)
 		default:
 			kubeObjs = append(kubeObjs, o)

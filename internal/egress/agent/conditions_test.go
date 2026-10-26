@@ -42,7 +42,7 @@ func TestNodeConditions(t *testing.T) {
 		return ""
 	}
 
-	cs := a.nodeConditions(ok, nil)
+	cs := a.nodeConditions(ok, nil, nil)
 	for _, typ := range []string{condDatapathReady, condDatapathCompatible, condUnderlayEncrypted,
 		condPeersReachable, condForwardPath} {
 		assert.Equal(t, "True "+typ, get(cs, typ))
@@ -52,7 +52,7 @@ func TestNodeConditions(t *testing.T) {
 	now = now.Add(time.Minute)
 	cs = a.nodeConditions(&purelbv2.EgressCapability{Kernel: "6.1.0"}, &dpHealth{applyErr: "boom",
 		noGateway: []string{"eth1 IPv6"}, encryption: []string{"wg0"},
-		unreachable: []string{"n2 (10.0.0.2)"}, probed: 2})
+		unreachable: []string{"n2 (10.0.0.2)"}, probed: 2}, nil)
 	assert.Equal(t, "False KernelTooOld", get(cs, condDatapathCompatible))
 	assert.Equal(t, "False ApplyFailed", get(cs, condDatapathReady), "the apply's failure first")
 	assert.Equal(t, "False UnderlayUnencrypted", get(cs, condUnderlayEncrypted))
@@ -60,10 +60,12 @@ func TestNodeConditions(t *testing.T) {
 	assert.Equal(t, "True "+condForwardPath, get(cs, condForwardPath), "one peer of two answers")
 
 	cs = a.nodeConditions(ok, &dpHealth{noGateway: []string{"eth1 IPv6"}, arpAnnounce: []string{"eth1=0"},
-		unreachable: []string{"n2 (10.0.0.2)", "n3 (10.0.0.3)"}, probed: 2})
+		unreachable: []string{"n2 (10.0.0.2)", "n3 (10.0.0.3)"}, probed: 2}, nil)
 	assert.Equal(t, "False NoGateway", get(cs, condDatapathReady))
 	assert.Equal(t, "False TunnelPortBlocked", get(cs, condForwardPath), "no peer answers")
-	cs = a.nodeConditions(ok, &dpHealth{arpAnnounce: []string{"eth1=0"}})
+	cs = a.nodeConditions(ok, &dpHealth{noGateway: []string{"eth1 IPv6"}}, &podNode{short: []string{"e-a.b-1234"}})
+	assert.Equal(t, "False SlotsExhausted", get(cs, condDatapathReady), "ahead of NoGateway")
+	cs = a.nodeConditions(ok, &dpHealth{arpAnnounce: []string{"eth1=0"}}, &podNode{})
 	assert.Equal(t, "False ArpAnnounce", get(cs, condDatapathReady))
 	for _, c := range cs {
 		if c.Type == condUnderlayEncrypted {
@@ -71,6 +73,6 @@ func TestNodeConditions(t *testing.T) {
 		}
 	}
 	now = now.Add(time.Minute)
-	before := a.nodeConditions(ok, &dpHealth{arpAnnounce: []string{"eth1=0"}})
+	before := a.nodeConditions(ok, &dpHealth{arpAnnounce: []string{"eth1=0"}}, &podNode{})
 	assert.Equal(t, cs, before, "nothing changed: same conditions, same times")
 }

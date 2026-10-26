@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -169,18 +168,17 @@ func (st *allocatorState) checked(ns, name string) (Pool, error) {
 		return nil, fmt.Errorf("%w %q", ErrUnknownPool, name)
 	}
 
-	// Exclusion: a ServiceGroup serving any confined namespace refuses
-	// Services from outside the namespaces it serves.
-	if st.confinedGroups[name] && !purelbv2.ServesNamespace(st.sgByName[name], ns) {
+	switch st.bindings.Fenced(name, st.sgByName[name], ns) {
+	case purelbv2.FenceExcluded:
+		// Exclusion: a ServiceGroup serving any confined namespace refuses
+		// Services from outside the namespaces it serves.
 		return nil, fmt.Errorf("%w: ServiceGroup %q serves a confined namespace and does not serve %q",
 			ErrNamespaceDenied, name, ns)
-	}
-
-	// Confinement: a confined namespace may use only the ServiceGroups that
-	// serve it.
-	if b, bound := st.nsToPools[ns]; bound && b.enforce && !slices.Contains(b.eligible, name) {
+	case purelbv2.FenceConfined:
+		// Confinement: a confined namespace may use only the ServiceGroups
+		// that serve it.
 		return nil, fmt.Errorf("%w: namespace %q may only use %v, not ServiceGroup %q",
-			ErrNamespaceDenied, ns, b.eligible, name)
+			ErrNamespaceDenied, ns, st.nsToPools[ns].eligible, name)
 	}
 
 	return pool, nil

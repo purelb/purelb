@@ -134,9 +134,12 @@ func (r *Reconciler) syncStatus(run *run, addrs []address, eps map[string]*purel
 			as.Announcers = ep.Status.ObservedAnnouncers
 			for _, s := range ep.Spec.Slices {
 				if s.Node != "" {
-					lo := s.Index * ep.Spec.SliceSize
+					lo, hi := s.Index*ep.Spec.SliceSize, (s.Index+1)*ep.Spec.SliceSize-1
+					if ep.Spec.Identity != "" {
+						lo, hi = 1, 65535 // PerPod: the whole address
+					}
 					as.Slices = append(as.Slices, purelbv2.EgressSliceStatus{Node: s.Node, State: s.State,
-						Ports: fmt.Sprintf("%d-%d", lo, lo+ep.Spec.SliceSize-1)})
+						Ports: fmt.Sprintf("%d-%d", lo, hi)})
 				}
 			}
 		}

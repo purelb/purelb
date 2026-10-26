@@ -118,7 +118,8 @@ func TestDisallowedWithdraws(t *testing.T) {
 }
 
 // A PerPod address survives its pod's restart and is released when its
-// ordinal is scaled away (D27).
+// ordinal is scaled away (D27). Its pod's node holds the whole address as
+// slice 0, which drains before the address is retired.
 func TestPerPodOrdinals(t *testing.T) {
 	sel := map[string]string{"app": "a"}
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Namespace: "db", Name: "db"}, Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(2))}}
@@ -126,12 +127,25 @@ func TestPerPodOrdinals(t *testing.T) {
 		stsPod("db", "db-0", "n1", sel), stsPod("db", "db-1", "n1", sel),
 		egressObj("db", "perpod", func(s *purelbv2.EgressSpec) { s.Affinity = &purelbv2.EgressAffinity{Mode: "PerPod"} }))
 	g.reconcile(t, "egress/db/perpod")
+	g.reconcile(t, "egress/db/perpod")
 	require.Equal(t, map[string]string{"192.168.10.10": stateActive, "192.168.10.11": stateActive}, byState(g.endpoints(t)))
+	db1 := endpointsOf(t, g.endpoints(t), "192.168.10.11")
+	require.Equal(t, []purelbv2.EgressSlice{{Index: perPodIndex, Node: "n1", State: sliceActive}}, db1.Spec.Slices,
+		"the pod's node holds the whole address")
 
 	require.NoError(t, g.kube.CoreV1().Pods("db").Delete(context.Background(), "db-1", metav1.DeleteOptions{}))
 	time.Sleep(100 * time.Millisecond)
 	g.reconcile(t, "egress/db/perpod")
 	assert.Equal(t, map[string]string{"192.168.10.10": stateActive, "192.168.10.11": stateActive}, byState(g.endpoints(t)), "restarting")
+	assert.Equal(t, map[string]string{"n1": sliceDraining}, states(endpointsOf(t, g.endpoints(t), "192.168.10.11")),
+		"the gone pod's node drains")
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Drained: []purelbv2.EgressDrained{{
+		Endpoints: db1.Name, Index: perPodIndex}}})
+	g.reconcile(t, "egress/db/perpod")
+	g.reconcile(t, "egress/db/perpod")
+	assert.Empty(t, endpointsOf(t, g.endpoints(t), "192.168.10.11").Spec.Slices)
+	assert.Equal(t, map[string]string{"192.168.10.10": stateActive, "192.168.10.11": stateActive}, byState(g.endpoints(t)),
+		"drained, and still kept for the restarting pod")
 
 	sts.Spec.Replicas = ptr(int32(1))
 	_, err := g.kube.AppsV1().StatefulSets("db").Update(context.Background(), sts, metav1.UpdateOptions{})
@@ -139,6 +153,34 @@ func TestPerPodOrdinals(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	g.reconcile(t, "egress/db/perpod")
 	assert.Equal(t, map[string]string{"192.168.10.10": stateActive, "192.168.10.11": stateQuarantined}, byState(g.endpoints(t)), "scaled down")
+}
+
+// A PerPod pod that moves: its old node's slice drains, and the new node
+// gets the address only once that slice is freed.
+func TestPerPodMove(t *testing.T) {
+	sel := map[string]string{"app": "a"}
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Namespace: "db", Name: "db"}, Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(1))}}
+	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("db", nil), node("n1", true), node("n2", true), sts,
+		stsPod("db", "db-0", "n1", sel),
+		egressObj("db", "perpod", func(s *purelbv2.EgressSpec) { s.Affinity = &purelbv2.EgressAffinity{Mode: "PerPod"} }))
+	g.reconcile(t, "egress/db/perpod")
+	g.reconcile(t, "egress/db/perpod")
+	require.Equal(t, map[string]string{"n1": sliceActive}, states(g.ep(t)))
+
+	require.NoError(t, g.kube.CoreV1().Pods("db").Delete(context.Background(), "db-0", metav1.DeleteOptions{}))
+	_, err := g.kube.CoreV1().Pods("db").Create(context.Background(), stsPod("db", "db-0", "n2", sel), metav1.CreateOptions{})
+	require.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+	g.reconcile(t, "egress/db/perpod")
+	assert.Equal(t, map[string]string{"n1": sliceDraining}, states(g.ep(t)), "never on two nodes at once")
+	g.reconcile(t, "egress/db/perpod")
+	assert.Equal(t, map[string]string{"n1": sliceDraining}, states(g.ep(t)), "until the old node drains")
+
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Drained: []purelbv2.EgressDrained{{Endpoints: g.ep(t).Name, Index: perPodIndex}}})
+	g.reconcile(t, "egress/db/perpod")
+	assert.Equal(t, map[string]string{"n2": slicePending}, states(g.ep(t)))
+	g.reconcile(t, "egress/db/perpod")
+	assert.Equal(t, map[string]string{"n2": sliceActive}, states(g.ep(t)))
 }
 
 // A changed pin is allocated first; the old address is retired.
@@ -164,4 +206,16 @@ func TestOrphanRetired(t *testing.T) {
 	g.reconcile(t, "egress/voice/sip")
 	g.reconcile(t, "egress/voice/sip")
 	assert.Equal(t, stateQuarantined, g.ep(t).Spec.State)
+}
+
+// endpointsOf is the EgressEndpoints of addr among eps.
+func endpointsOf(t *testing.T, eps []purelbv2.EgressEndpoints, addr string) *purelbv2.EgressEndpoints {
+	t.Helper()
+	for i := range eps {
+		if eps[i].Spec.Address == addr {
+			return &eps[i]
+		}
+	}
+	t.Fatalf("no EgressEndpoints for %s", addr)
+	return nil
 }

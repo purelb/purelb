@@ -91,3 +91,29 @@ func TestServesNamespace(t *testing.T) {
 		})
 	}
 }
+
+// BindNamespaces indexes the listed namespaces; Fenced applies both
+// halves of the boundary from the namespace's side.
+func TestBindNamespacesFenced(t *testing.T) {
+	sg := func(name string, nss []string, enforce, def bool) *ServiceGroup {
+		g := sgWithNamespaces(nss, enforce)
+		g.Name, g.Spec.NamespaceDefault = name, def
+		return g
+	}
+	l2 := sg("l2", []string{"tenant", "tenant"}, true, true) // a copy-pasted entry
+	bgp := sg("bgp", []string{"tenant"}, false, false)
+	open := sg("open", nil, false, false)
+	b := BindNamespaces([]*ServiceGroup{l2, bgp, open})
+
+	assert.Equal(t, NamespaceBinding{Eligible: []string{"bgp", "l2"}, Enforce: true, Defaults: []string{"l2"}}, b.Namespaces["tenant"])
+	assert.Equal(t, map[string]bool{"bgp": true, "l2": true}, b.Confined, "enforcing on one fences every group of the namespace")
+
+	assert.Equal(t, Unfenced, b.Fenced("l2", l2, "tenant"))
+	assert.Equal(t, Unfenced, b.Fenced("bgp", bgp, "tenant"))
+	assert.Equal(t, FenceConfined, b.Fenced("open", open, "tenant"), "tenant may only use its own groups")
+	assert.Equal(t, FenceExcluded, b.Fenced("bgp", bgp, "other"), "a confined group serves only its namespaces")
+	assert.Equal(t, Unfenced, b.Fenced("open", open, "other"))
+	assert.Equal(t, Unfenced, b.Fenced("missing", nil, "other"), "a nil group is a catch-all")
+
+	assert.Equal(t, NamespaceBindings{}, BindNamespaces([]*ServiceGroup{open}), "a catch-all binds nothing")
+}

@@ -32,18 +32,28 @@ import (
 const nodePrefix = "node:"
 
 // syncNodeState writes a node's EgressNodeState spec: its slices of every
-// address, as the EgressEndpoints publish them (D6). The node acks it in
-// status.observedGeneration. A node with a claim outstanding is written on
-// the priority lane (D-conc).
+// address, with each address's slice size and PerPod identity, and the
+// reserved ports of its pods, as the EgressEndpoints publish them (D6), so
+// the node never watches an EgressEndpoints for its own pods. The node
+// acks it in status.observedGeneration. A node with a claim outstanding is
+// written on the priority lane (D-conc).
 func (r *Reconciler) syncNodeState(node string) error {
 	r.syncNodeLabel(node)
 	objs, _ := r.endpointsIdx.ByIndex(idxSliceNode, node)
 	var slices []purelbv2.EgressNodeSlice
+	var reserved []purelbv2.EgressNodeReserved
 	for _, o := range objs {
 		ep := o.(*purelbv2.EgressEndpoints)
 		for _, s := range ep.Spec.Slices {
 			if s.Node == node {
-				slices = append(slices, purelbv2.EgressNodeSlice{Endpoints: ep.Name, Address: ep.Spec.Address, Index: s.Index, State: s.State})
+				slices = append(slices, purelbv2.EgressNodeSlice{Endpoints: ep.Name, Address: ep.Spec.Address, Index: s.Index,
+					State: s.State, SliceSize: ep.Spec.SliceSize, Identity: ep.Spec.Identity})
+			}
+		}
+		for _, rp := range ep.Spec.Reserved {
+			if rp.Node == node {
+				reserved = append(reserved, purelbv2.EgressNodeReserved{Endpoints: ep.Name, Address: ep.Spec.Address,
+					Protocol: rp.Protocol, Port: rp.Port, Pod: rp.Pod})
 			}
 		}
 	}
@@ -53,13 +63,23 @@ func (r *Reconciler) syncNodeState(node string) error {
 		}
 		return slices[i].Index < slices[j].Index
 	})
-	spec := purelbv2.EgressNodeStateSpec{Slices: slices}
+	sort.Slice(reserved, func(i, j int) bool {
+		a, b := reserved[i], reserved[j]
+		if a.Endpoints != b.Endpoints {
+			return a.Endpoints < b.Endpoints
+		}
+		if a.Protocol != b.Protocol {
+			return a.Protocol < b.Protocol
+		}
+		return a.Port < b.Port
+	})
+	spec := purelbv2.EgressNodeStateSpec{Slices: slices, Reserved: reserved}
 	client := r.purelb.PurelbV2().EgressNodeStates()
 	key := nodePrefix + node
 
 	cur, err := r.nodeStates.Get(node)
 	if err != nil {
-		if len(slices) == 0 {
+		if len(slices) == 0 && len(reserved) == 0 {
 			return nil
 		}
 		obj, ok, _ := r.nodes.GetByKey(node)

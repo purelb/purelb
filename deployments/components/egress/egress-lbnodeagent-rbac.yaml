@@ -17,6 +17,16 @@ rules:
   - get
   - list
   - watch
+# The pod-node stage: the agent watches only its own node's pods (field
+# selector spec.nodeName) and namespace labels (ClusterEgress selectors).
+- apiGroups:
+  - ''
+  resources:
+  - namespaces
+  - pods
+  verbs:
+  - list
+  - watch
 - apiGroups:
   - purelb.io
   resources:

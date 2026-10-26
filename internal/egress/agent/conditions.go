@@ -103,7 +103,7 @@ func underlayEncryption(h *netlink.Handle) []string {
 // nodeConditions brings a.conds in line with the capability and the
 // datapath's health; a condition keeps its transition time while its
 // status holds. Queue goroutine only.
-func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth) []metav1.Condition {
+func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth, pn *podNode) []metav1.Condition {
 	set := func(typ, reason, msg string) {
 		st := metav1.ConditionFalse
 		if reason == "" {
@@ -123,6 +123,9 @@ func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth) []meta
 	switch {
 	case h.applyErr != "":
 		set(condDatapathReady, "ApplyFailed", h.applyErr)
+	case pn != nil && len(pn.short) > 0:
+		set(condDatapathReady, "SlotsExhausted", fmt.Sprintf("all %d slots are in use; without one: %s",
+			slotBudget, strings.Join(pn.short, ", ")))
 	case len(h.noGateway) > 0:
 		set(condDatapathReady, "NoGateway", "pool interfaces with no default route: "+strings.Join(h.noGateway, ", "))
 	case len(h.arpAnnounce) > 0:

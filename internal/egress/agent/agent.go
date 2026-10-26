@@ -54,6 +54,9 @@ const (
 	keyConfig = "agent:config"
 	// keyNode recomputes this node's EgressNodeState status.
 	keyNode = "agent:node"
+	// keyPods recomputes the pod-node state: slots, pod-sets and this
+	// node's pods.
+	keyPods = "agent:pods"
 )
 
 // Agent is the node agent's egress controller. Its state belongs to the
@@ -135,6 +138,9 @@ type Agent struct {
 	// addrFlags lists the node's addresses and their IFA flags.
 	addrFlags func() (map[netip.Addr]int, error)
 
+	// podnode is the pod-node state last planned. Queue goroutine only.
+	podnode *podNode
+
 	// faults are this node's address problems and conds its conditions,
 	// as last reported. Queue goroutine only.
 	faults map[netip.Addr]purelbv2.EgressAddressFault
@@ -171,6 +177,13 @@ type session struct {
 	// scoped EgressEndpoints watches (D6). Queue goroutine only.
 	addresses listers.EgressAddressNamespaceLister
 	watches   map[string]*eeWatch
+	// For the pod-node stage: this node's pods, the policies, namespaces
+	// and Services (serviceRef selectors).
+	pods            cache.Indexer
+	egresses        listers.EgressLister
+	clusterEgresses listers.ClusterEgressLister
+	namespaces      cache.Indexer
+	services        cache.Indexer
 }
 
 var (
@@ -200,6 +213,7 @@ func (a *Agent) Configure(cfg *purelbv2.Config) {
 	}
 	a.config.Store(d)
 	a.add(keyConfig, false)
+	a.add(keyPods, false) // groups: scope and priority ceilings
 }
 
 // add enqueues key once Start has run; Start enqueues keyConfig itself.
@@ -270,6 +284,8 @@ func (a *Agent) Sync(key string) error {
 		a.syncConfig()
 	case keyNode:
 		a.syncNode()
+	case keyPods:
+		a.syncPods()
 	case keyDatapath:
 		a.syncDatapath()
 	case keyTeardown:
@@ -279,7 +295,9 @@ func (a *Agent) Sync(key string) error {
 }
 
 // Keys returns the agent's keys, for ForceSync. It runs on the caller's
-// goroutine, so it reads no queue-goroutine state.
+// goroutine, so it reads no queue-goroutine state. ForceSync follows Lease
+// membership, which the pod-node state doesn't read: its own informers
+// and Configure queue keyPods.
 func (a *Agent) Keys() []string {
 	return []string{keyConfig, keyNode, keyDatapath}
 }
@@ -335,7 +353,10 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	pf := externalversions.NewSharedInformerFactoryWithOptions(a.purelb, resync, externalversions.WithNamespace(a.namespace))
 	eas := pf.Purelb().V2().EgressAddresses()
 	s.addresses = eas.Lister().EgressAddresses(a.namespace)
-	kickDP := func(interface{}) { a.add(keyDatapath, false) }
+	kickDP := func(interface{}) {
+		a.add(keyDatapath, false)
+		a.add(keyPods, false) // which policies are in force
+	}
 	_, _ = eas.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: kickDP, DeleteFunc: kickDP,
 		UpdateFunc: func(_, o interface{}) { kickDP(o) }})
 
@@ -350,8 +371,20 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 			a.add(keyNode, false)
 		}
 	}
-	_, _ = ens.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: mine,
-		UpdateFunc: func(_, o interface{}) { mine(o) }, DeleteFunc: mine})
+	// The spec (this node's slices) feeds the pod-node state; the status
+	// is the agent's own writes.
+	minePods := func(obj interface{}) {
+		mine(obj)
+		a.add(keyPods, false)
+	}
+	_, _ = ens.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: minePods, DeleteFunc: minePods,
+		UpdateFunc: func(o, n interface{}) {
+			if !equality.Semantic.DeepEqual(o.(*purelbv2.EgressNodeState).Spec, n.(*purelbv2.EgressNodeState).Spec) {
+				minePods(n)
+				return
+			}
+			mine(n)
+		}})
 	nodeChanged := func(obj interface{}) {
 		mine(obj)
 		a.add(keyDatapath, false)
@@ -368,9 +401,18 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 			}
 		}})
 
+	podInformers, err := a.podNodeInformers(s, kf)
+	if err != nil {
+		logging.Info(a.logger, "op", "egressStart", "error", err)
+		return
+	}
+
 	own.Start(s.stop)
 	kf.Start(s.stop)
 	pf.Start(s.stop)
+	for _, start := range podInformers.start {
+		start(s.stop)
+	}
 	kick := func() { a.add(keyDatapath, false) }
 	go watchRoutes(a.logger, s.stop, a.poolSet, kick)
 	go watchTunnel(a.logger, s.stop, kick)
@@ -390,11 +432,14 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 		}
 	}()
 	go func() {
-		if !cache.WaitForCacheSync(s.stop, ens.Informer().HasSynced, nodes.HasSynced, eas.Informer().HasSynced) {
+		synced := append([]cache.InformerSynced{ens.Informer().HasSynced, nodes.HasSynced, eas.Informer().HasSynced},
+			podInformers.synced...)
+		if !cache.WaitForCacheSync(s.stop, synced...) {
 			return
 		}
 		s.synced.Store(true)
 		a.add(keyDatapath, false)
+		a.add(keyPods, false)
 	}()
 	a.on = s
 	logging.Info(a.logger, "op", "egressEnable", "node", a.node, "msg", "egress enabled on this node")
@@ -433,7 +478,7 @@ func (a *Agent) stopSession() {
 	}
 	a.guarded = map[netip.Addr]bool{}
 	a.withdrawPlaced("egress disabled")
-	a.shared, a.faults, a.conds = nil, nil, nil
+	a.shared, a.faults, a.conds, a.podnode = nil, nil, nil, nil
 	a.installed.Store(nil)
 	a.probing.Store(nil)
 	a.acks.Store(nil)
@@ -452,8 +497,12 @@ func (a *Agent) syncNode() {
 	}
 	c = c.DeepCopy()
 	c.Underlay = underlay(s.nodes, a.node)
+	c.Slots = &purelbv2.EgressSlots{Capacity: slotBudget}
+	if pn := a.podnode; pn != nil {
+		c.Slots.Used, c.Slots.PodSets = int32(pn.used()), int32(len(pn.sets))
+	}
 	st := &purelbv2.EgressNodeStateStatus{Capability: c, AddressFaults: a.faultList(),
-		Conditions: a.nodeConditions(c, a.health.Load())}
+		Conditions: a.nodeConditions(c, a.health.Load(), a.podnode)}
 	if acks := a.acks.Load(); acks != nil {
 		// Only what this node announces now: an address it holds but
 		// couldn't place isn't announced, and gates nothing (D6).

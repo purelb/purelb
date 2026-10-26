@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
 
+	"purelb.io/internal/egress"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -213,6 +214,21 @@ func TestNodeReports(t *testing.T) {
 	assert.Equal(t, "TunnelModeMismatch", condition(t, g.egress(t, "voice", "sip"), condDatapathCompatible).Reason)
 }
 
+// A pod node out of slots fails its policies' DatapathReady, though it
+// holds no address.
+func TestPodNodeSlotsRollUp(t *testing.T) {
+	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
+		node("n1", true), pod("voice", "a-1", "n1", map[string]string{"app": "a"}), egressObj("voice", "sip", nil))
+	g.reconcile(t, "egress/voice/sip")
+	require.Equal(t, map[string]string{"n1": slicePending}, states(g.ep(t)))
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{EgressCapable: true},
+		Conditions: []metav1.Condition{{Type: "DatapathReady", Status: metav1.ConditionFalse, Reason: reasonSlotsExhausted}}})
+	g.reconcile(t, "egress/voice/sip")
+	c := condition(t, g.egress(t, "voice", "sip"), condDatapathReady)
+	assert.Equal(t, reasonSlotsExhausted, c.Reason)
+	assert.Contains(t, c.Message, "nodes n1")
+}
+
 // A higher-ranked policy taking every destination of a pod outranks the
 // lower one for that pod; one taking only some destinations leaves it
 // partially outranked.
@@ -234,7 +250,7 @@ func TestOutranking(t *testing.T) {
 	low := g.egress(t, "voice", "low")
 	assert.Equal(t, reasonOutrankedBy, condition(t, low, condPolicyEffective).Reason)
 	assert.Contains(t, condition(t, low, condPolicyEffective).Message, "egress/voice/high")
-	assert.Equal(t, []purelbv2.EgressExcludedPod{{Pod: "a-1", Namespace: "voice", Reason: excludedOutranked}}, low.Status.ExcludedPods)
+	assert.Equal(t, []purelbv2.EgressExcludedPod{{Pod: "a-1", Namespace: "voice", Reason: egress.ExcludedOutranked}}, low.Status.ExcludedPods)
 
 	// high has no IPv6 destination: lowwide keeps the pod for ::/0.
 	g.reconcile(t, "egress/voice/lowwide")

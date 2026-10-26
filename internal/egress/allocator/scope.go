@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	coreallocator "purelb.io/internal/allocator"
+	"purelb.io/internal/egress"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -113,7 +114,7 @@ func (r *Reconciler) scope(run *run) {
 		}
 		return
 	}
-	r.clampPriority(run, eg)
+	r.clampPriority(run)
 }
 
 // scopeService resolves a serviceRef's Service, reporting false when the
@@ -226,13 +227,10 @@ func (r *Reconciler) checkQuota(run *run, max int) {
 // clampPriority holds an Egress's priority to its group's ceiling. The
 // policy keeps running at the clamped priority, so this is reported but
 // revokes nothing.
-func (r *Reconciler) clampPriority(run *run, eg *purelbv2.ServiceGroupEgressSpec) {
+func (r *Reconciler) clampPriority(run *run) {
 	p := run.p
-	if p.cluster() || eg.Tenancy == nil || eg.Tenancy.PriorityCeiling == nil {
-		return
-	}
-	if ceiling := *eg.Tenancy.PriorityCeiling; p.priority > ceiling {
-		run.conds.fail(condContained, reasonPriorityClamped, "priority %d clamped to the ServiceGroup's ceiling %d", p.priority, ceiling)
-		p.priority = ceiling
+	if prio, clamped := egress.EffectivePriority(p.priority, p.cluster(), run.group); clamped {
+		run.conds.fail(condContained, reasonPriorityClamped, "priority %d clamped to the ServiceGroup's ceiling %d", p.priority, prio)
+		p.priority = prio
 	}
 }

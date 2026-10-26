@@ -716,11 +716,16 @@ type EgressNodeState struct {
 	Status EgressNodeStateStatus `json:"status,omitempty"`
 }
 
-// EgressNodeStateSpec is the node's own slices.
+// EgressNodeStateSpec is the node's own slices and reserved ports.
 type EgressNodeStateSpec struct {
 	// +kubebuilder:validation:MaxItems=4096
 	// +optional
 	Slices []EgressNodeSlice `json:"slices,omitempty"`
+
+	// Reserved are the reserved ports assigned to this node's pods (D19).
+	// +kubebuilder:validation:MaxItems=1024
+	// +optional
+	Reserved []EgressNodeReserved `json:"reserved,omitempty"`
 }
 
 // EgressNodeSlice is one of the node's slices.
@@ -734,6 +739,31 @@ type EgressNodeSlice struct {
 	Index int32 `json:"index"`
 	// +kubebuilder:validation:Enum=Pending;Active;Draining
 	State string `json:"state"`
+	// SliceSize is the address's slice size, as in its EgressEndpoints.
+	// +kubebuilder:validation:Enum=64;128;256;512;1024;2048;4096;8192;16384
+	// +optional
+	SliceSize int32 `json:"sliceSize,omitempty"`
+	// Identity is a PerPod address's identity: its pod on this node holds
+	// the whole address, as slice 0.
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	Identity string `json:"identity,omitempty"`
+}
+
+// EgressNodeReserved is a reserved port assigned to one of the node's pods.
+type EgressNodeReserved struct {
+	// +kubebuilder:validation:MaxLength=253
+	Endpoints string `json:"endpoints"`
+	// +kubebuilder:validation:MaxLength=45
+	Address string `json:"address"`
+	// +kubebuilder:validation:Enum=TCP;UDP;SCTP
+	Protocol string `json:"protocol"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
+	// Pod is the pod's name; a ClusterEgress's is "namespace.name".
+	// +kubebuilder:validation:MaxLength=253
+	Pod string `json:"pod"`
 }
 
 // EgressNodeStateStatus is the node agent's report.
@@ -838,6 +868,10 @@ type EgressCapability struct {
 type EgressSlots struct {
 	Used     int32 `json:"used"`
 	Capacity int32 `json:"capacity"`
+	// PodSets are the pod-set ids among Used; the allocator leaves them
+	// out of the slices it may give the node (D18).
+	// +optional
+	PodSets int32 `json:"podSets,omitempty"`
 }
 
 // EgressUnderlay is the node's tunnel underlay addresses.

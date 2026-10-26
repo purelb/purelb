@@ -186,8 +186,8 @@ func (r *Reconciler) nodeConditions(run *run, eps map[string]*purelbv2.EgressEnd
 				continue
 			}
 			cs := ns.Status.Conditions
-			if c := apimeta.FindStatusCondition(cs, "DatapathReady"); holders[n] && c != nil &&
-				c.Status == metav1.ConditionFalse && c.Reason == "NoGateway" {
+			if c := apimeta.FindStatusCondition(cs, "DatapathReady"); c != nil && c.Status == metav1.ConditionFalse &&
+				((holders[n] && c.Reason == "NoGateway") || c.Reason == reasonSlotsExhausted) {
 				add(condDatapathReady, c.Reason, addr, n)
 			}
 			if c := apimeta.FindStatusCondition(cs, "DatapathCompatible"); c != nil && c.Status == metav1.ConditionFalse {
