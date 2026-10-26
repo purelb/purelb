@@ -113,6 +113,9 @@ type Reconciler struct {
 	written sync.Map
 
 	recorder record.EventRecorder
+	// cniEgress are the CNI egress-gateway kinds the cluster serves
+	// (watchCNIEgress).
+	cniEgress atomic.Pointer[[]string]
 
 	egresses        listers.EgressLister
 	clusterEgresses listers.ClusterEgressLister
@@ -207,10 +210,12 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	ens := pf.Purelb().V2().EgressNodeStates()
 	lbna := pf.Purelb().V2().LBNodeAgents()
 	ee := pns.Purelb().V2().EgressEndpointses()
-	if err := ens.Informer().AddIndexers(cache.Indexers{idxAnnouncing: announcingIndex, idxClaims: claimsIndex}); err != nil {
+	if err := ens.Informer().AddIndexers(cache.Indexers{idxAnnouncing: announcingIndex, idxClaims: claimsIndex,
+		idxFault: faultIndex}); err != nil {
 		return err
 	}
-	if err := ee.Informer().AddIndexers(cache.Indexers{idxSliceNode: sliceNodeIndex, idxOwner: ownerIndex}); err != nil {
+	if err := ee.Informer().AddIndexers(cache.Indexers{idxSliceNode: sliceNodeIndex, idxOwner: ownerIndex,
+		idxAddress: addressIndex}); err != nil {
 		return err
 	}
 	ea := pns.Purelb().V2().EgressAddresses()
@@ -265,6 +270,7 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	r.handle(stss, r.statefulSetPolicies)
 	r.handleLeases(leases)
 
+	go r.watchCNIEgress(stop, kube.Discovery())
 	pf.Start(stop)
 	pns.Start(stop)
 	kf.Start(stop)
@@ -584,6 +590,7 @@ func (r *Reconciler) reconcile(ref egress.PolicyRef) error {
 				r.enqueue(addressPrefix+name, false)
 			}
 		}
+		r.nodeConditions(run, eps)
 	}
 	if !run.retained {
 		r.syncFinalizer(run, r.retire(run, addrs), deleting || run.disallowed)

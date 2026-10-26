@@ -147,6 +147,7 @@ func (a *Agent) syncPlacement(h holdings) {
 		}
 		delete(a.placed, addr)
 		delete(a.dadFailed, addr)
+		a.dadLost.Delete(addr)
 		changed = true
 	}
 	var installed map[netip.Addr]bool
@@ -160,9 +161,32 @@ func (a *Agent) syncPlacement(h holdings) {
 	}
 	for addr, w := range h.place {
 		f, present := flags[addr]
+		if d := a.dadFailed[addr]; d != nil {
+			h.fault(addr, "DADFailed", "duplicate address detection failed: another host on the link has it; trying again in %s",
+				d.retry.Sub(a.now()).Round(time.Second))
+			if a.now().Before(d.retry) {
+				continue // backing off (user decision 2026-10-26)
+			}
+		}
 		if _, ok := a.placed[addr]; ok {
-			if err != nil || present {
-				a.checkDAD(addr, f)
+			_, lost := a.dadLost.LoadAndDelete(addr)
+			switch {
+			case err == nil && present && f&unix.IFA_F_DADFAILED != 0, !present && err == nil && lost:
+				// DAD failed: the kernel deletes a finite-lifetime address
+				// that does, and flags a permanent one. Not fought.
+				a.failDAD(addr, w.key)
+				delete(a.placed, addr)
+				changed = true
+				h.fault(addr, "DADFailed", "duplicate address detection failed: another host on the link has it; trying again in %s",
+					a.dadFailed[addr].retry.Sub(a.now()).Round(time.Second))
+				continue
+			case err != nil || present:
+				if present && f&unix.IFA_F_TENTATIVE == 0 && a.dadFailed[addr] != nil {
+					logging.Info(a.logger, "op", "egressPlace", "node", a.node, "address", addr,
+						"msg", "duplicate address detection passed")
+					delete(a.dadFailed, addr)
+					delete(h.faults, addr)
+				}
 				continue
 			}
 			logging.Info(a.logger, "op", "egressPlace", "node", a.node, "address", addr,
@@ -172,6 +196,7 @@ func (a *Agent) syncPlacement(h holdings) {
 		}
 		if err := a.placer.PlaceEgress(w.key, addr.AsSlice(), w.p); err != nil {
 			logging.Info(a.logger, "op", "egressPlace", "node", a.node, "address", addr, "error", err)
+			h.fault(addr, "AddressAddFailed", "%v", err)
 			if _, ok := a.placed[addr]; ok {
 				delete(a.placed, addr)
 				changed = true
@@ -179,7 +204,6 @@ func (a *Agent) syncPlacement(h holdings) {
 			continue
 		}
 		a.placed[addr] = w.placement
-		delete(a.dadFailed, addr)
 		changed = true
 	}
 	// A dedicated address on the node that this node doesn't hold and this
@@ -214,16 +238,36 @@ func (a *Agent) publishPlaced() {
 	a.placedSet.Store(&set)
 }
 
-// checkDAD logs a placed IPv6 address that failed duplicate address
-// detection, once (D31: observed after placement; reported as a condition
-// in step 10's detection).
-func (a *Agent) checkDAD(addr netip.Addr, flags int) {
-	if flags&unix.IFA_F_DADFAILED == 0 || a.dadFailed[addr] {
-		return
+// dadBackoff is how a DAD-failed address is retried: after backoff, from
+// dadRetryMin doubling to dadRetryMax (user decision 2026-10-26).
+type dadBackoff struct {
+	backoff time.Duration
+	retry   time.Time
+}
+
+const (
+	dadRetryMin = 30 * time.Second
+	dadRetryMax = 5 * time.Minute
+)
+
+// failDAD records that addr failed DAD and schedules the retry: no
+// placing again until then, since every attempt runs DAD against a host
+// that has the address. A flagged (permanent) one is removed first.
+func (a *Agent) failDAD(addr netip.Addr, key string) {
+	d := a.dadFailed[addr]
+	if d == nil {
+		d = &dadBackoff{backoff: dadRetryMin}
+		a.dadFailed[addr] = d
+	} else if d.backoff *= 2; d.backoff > dadRetryMax {
+		d.backoff = dadRetryMax
 	}
-	a.dadFailed[addr] = true
-	logging.Info(a.logger, "op", "egressPlace", "node", a.node, "address", addr,
+	d.retry = a.now().Add(d.backoff)
+	if err := a.placer.WithdrawEgress(key, addr.AsSlice()); err != nil {
+		logging.Info(a.logger, "op", "egressPlace", "node", a.node, "address", addr, "error", err)
+	}
+	logging.Info(a.logger, "op", "egressPlace", "node", a.node, "address", addr, "retry", d.backoff,
 		"msg", "duplicate address detection failed: another host on the link has this address")
+	time.AfterFunc(d.backoff, func() { a.add(keyDatapath, false) })
 }
 
 // withdrawPlaced withdraws every address this node placed: on disable and

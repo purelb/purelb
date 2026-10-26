@@ -758,6 +758,12 @@ type EgressNodeStateStatus struct {
 	// +optional
 	Drained []EgressDrained `json:"drained,omitempty"`
 
+	// AddressFaults lists this node's problems with egress addresses it
+	// holds or should hold, which the allocator reports on the policies.
+	// +kubebuilder:validation:MaxItems=4096
+	// +optional
+	AddressFaults []EgressAddressFault `json:"addressFaults,omitempty"`
+
 	// +optional
 	Capability *EgressCapability `json:"capability,omitempty"`
 
@@ -775,6 +781,21 @@ type EgressAnnouncing struct {
 	// +kubebuilder:validation:MaxLength=45
 	Address    string `json:"address"`
 	Generation int64  `json:"generation"`
+}
+
+// EgressAddressFault is a node's problem with one egress address.
+type EgressAddressFault struct {
+	// +kubebuilder:validation:MaxLength=45
+	Address string `json:"address"`
+	// Reason: DADFailed (another host has the address), AddressAddFailed
+	// (it couldn't be placed), GuardMapFull (the address guard has no
+	// room for its entries), GuardStandingDown (the fail-closed guard
+	// isn't working, so a routed address isn't advertised here).
+	// +kubebuilder:validation:Enum=DADFailed;AddressAddFailed;GuardMapFull;GuardStandingDown
+	Reason string `json:"reason"`
+	// +kubebuilder:validation:MaxLength=1024
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // EgressClaim asks for a slice of one address.

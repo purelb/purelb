@@ -153,7 +153,7 @@ func (w *statusWriter) writeOff() error {
 	}
 	w.written = nil
 	capable := cur.Status.Capability != nil && cur.Status.Capability.EgressCapable
-	if !capable && len(cur.Status.Announcing) == 0 {
+	if !capable && len(cur.Status.Announcing) == 0 && len(cur.Status.Conditions) == 0 && len(cur.Status.AddressFaults) == 0 {
 		return nil
 	}
 	st := cur.Status.DeepCopy()
@@ -161,8 +161,9 @@ func (w *statusWriter) writeOff() error {
 		st.Capability.EgressCapable = false
 	}
 	// A node with egress off holds nothing: an ack left behind would keep
-	// it in the allocator's gating (D6).
-	st.Announcing = nil
+	// it in the allocator's gating (D6), and a condition or fault left
+	// behind would go on failing its policies.
+	st.Announcing, st.Conditions, st.AddressFaults = nil, nil, nil
 	if err := w.patch(st); err != nil {
 		return err
 	}

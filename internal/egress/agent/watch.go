@@ -112,9 +112,11 @@ func watchTunnel(logger log.Logger, stop <-chan struct{}, kick func()) {
 }
 
 // watchAddrs kicks when an address egress placed is deleted, as an IPv6
-// address is when its interface goes down (D31: placed again at once).
+// address is when its interface goes down (D31: placed again at once), or
+// when the kernel deletes one that failed DAD, which it tells by lost.
 // placed is read on this goroutine; the queue goroutine publishes it.
-func watchAddrs(logger log.Logger, stop <-chan struct{}, placed func() map[netip.Addr]bool, kick func()) {
+func watchAddrs(logger log.Logger, stop <-chan struct{}, placed func() map[netip.Addr]bool,
+	lost func(netip.Addr), kick func()) {
 	watch(logger, "addresses", stop, func(done <-chan struct{}) (<-chan netlink.AddrUpdate, error) {
 		ch := make(chan netlink.AddrUpdate, 256)
 		return ch, netlink.AddrSubscribeWithOptions(ch, done, netlink.AddrSubscribeOptions{
@@ -123,6 +125,9 @@ func watchAddrs(logger log.Logger, stop <-chan struct{}, placed func() map[netip
 			}})
 	}, func(u netlink.AddrUpdate) {
 		if addr, ok := netip.AddrFromSlice(u.LinkAddress.IP); ok && !u.NewAddr && placed()[addr.Unmap()] {
+			if u.Flags&unix.IFA_F_TENTATIVE != 0 {
+				lost(addr.Unmap()) // deleted in DAD: it failed
+			}
 			kick()
 		}
 	}, kick)

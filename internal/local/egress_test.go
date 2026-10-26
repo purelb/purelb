@@ -18,9 +18,12 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-kit/log"
+	ptu "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
@@ -154,4 +157,40 @@ func TestNetnsPlaceEgress(t *testing.T) {
 	n := 0
 	a.addressRenewals.Range(func(any, any) bool { n++; return true })
 	assert.Zero(t, n, "no renewal left")
+}
+
+// With DAD on, an egress IPv6 address is announced only once it has
+// passed DAD, never while tentative, and not at all if it leaves first
+// (DAD failed): a duplicate is never claimed.
+func TestAnnounceAfterDAD(t *testing.T) {
+	enabled, count := true, 1
+	cfg := &announcerConfig{spec: &purelbv2.LBNodeAgentLocalSpec{GARPConfig: &purelbv2.GARPConfig{
+		Enabled: &enabled, Count: &count, InitialDelay: "0s"}}}
+	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "purelb-test-nonexistent"}}
+	sent := func() float64 { return ptu.ToFloat64(naSent) + ptu.ToFloat64(naErrors) }
+
+	var state atomic.Int32 // 0 tentative, 1 passed, 2 gone
+	a := &announcer{logger: log.NewNopLogger(), myNode: "n1", tentative: func(netlink.Link, net.IP) (bool, bool) {
+		switch state.Load() {
+		case 0:
+			return true, true
+		case 1:
+			return true, false
+		}
+		return false, false
+	}}
+	before := sent()
+	a.announceAfterDAD(cfg, net.ParseIP("2001:db8::10"), link, func() (bool, string) { return true, "" })
+	time.Sleep(300 * time.Millisecond)
+	assert.Equal(t, before, sent(), "nothing while tentative")
+	state.Store(1)
+	assert.Eventually(t, func() bool { return sent() > before }, 5*time.Second, 20*time.Millisecond, "sent once DAD passed")
+
+	state.Store(0)
+	before = sent()
+	a.announceAfterDAD(cfg, net.ParseIP("2001:db8::11"), link, func() (bool, string) { return true, "" })
+	time.Sleep(200 * time.Millisecond)
+	state.Store(2) // DAD failed: the kernel deleted it
+	time.Sleep(300 * time.Millisecond)
+	assert.Equal(t, before, sent(), "never for an address that failed DAD")
 }

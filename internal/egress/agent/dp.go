@@ -87,7 +87,9 @@ type dpState struct {
 	linkIfs map[string]int // each link's interface
 	// unparsed are the uplinks pl_announce can't parse, as last logged.
 	unparsed map[string]bool
-	nodes    map[uint64]datapath.Node
+	// encryption is the node-to-node encryption last found (D30).
+	encryption []string
+	nodes      map[uint64]datapath.Node
 	// nft is the nftables connection (tests make their own); hardening
 	// what was last written through it.
 	nft       *nftables.Conn
@@ -118,6 +120,10 @@ func (a *Agent) syncDatapath() {
 	w.pools = w.hold.pools
 	a.shared = w.hold.shared
 	a.syncPlacement(w.hold)
+	if !maps.Equal(a.faults, w.hold.faults) {
+		a.faults = w.hold.faults
+		a.add(keyNode, false)
+	}
 	if a.guard != nil {
 		w.guardLinks, w.guardProgs = a.guard.Interfaces(), a.guard.ProgramIDs()
 	}
@@ -143,6 +149,9 @@ func (a *Agent) syncDatapath() {
 	})
 	a.runner.submit(func() {
 		c, err := a.apply(w)
+		h := health(a.dp, w, err)
+		h.unreachable, h.probed = a.unreachable(a.dp)
+		a.health.Store(h)
 		if err != nil {
 			logging.Info(a.logger, "op", "egressDatapath", "node", a.node, "error", err,
 				"msg", "the egress datapath is not ready; retrying")
@@ -288,6 +297,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		}
 		st.nodes[id] = n
 	}
+	st.encryption = underlayEncryption(st.nl)
 	errs = append(errs, datapath.SyncThrows(st.nl, underlay))
 	errs = append(errs, a.syncPools(st, w))
 	// A local address forwards transit in its pool interface's table.

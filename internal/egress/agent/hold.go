@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -90,6 +91,25 @@ type holdings struct {
 	// hold, with their placement keys. One it holds but hasn't read in
 	// full yet is in neither place nor unheld.
 	unheld map[netip.Addr]string
+	// faults are this node's problems with addresses (addressFaults).
+	faults map[netip.Addr]purelbv2.EgressAddressFault
+}
+
+// fault records reason for addr, keeping the first.
+func (h holdings) fault(addr netip.Addr, reason, format string, args ...any) {
+	if _, ok := h.faults[addr]; ok {
+		return
+	}
+	h.faults[addr] = purelbv2.EgressAddressFault{Address: addr.String(), Reason: reason,
+		Message: truncate(fmt.Sprintf(format, args...), 1024)}
+}
+
+// truncate cuts s to at most n bytes.
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
 }
 
 // syncHoldings decides which egress addresses this node holds (§5.5),
@@ -100,7 +120,7 @@ type holdings struct {
 func (a *Agent) syncHoldings(s *session) holdings {
 	h := holdings{addrs: map[netip.Addr]*datapath.AddressEntries{}, ifaces: map[netip.Addr]int{},
 		pools: map[int]dpPool{}, place: map[netip.Addr]placeWant{}, shared: map[netip.Addr]bool{},
-		unheld: map[netip.Addr]string{}}
+		unheld: map[netip.Addr]string{}, faults: map[netip.Addr]purelbv2.EgressAddressFault{}}
 	d := a.config.Load()
 	if d == nil {
 		return h
@@ -128,6 +148,10 @@ func (a *Agent) syncHoldings(s *session) holdings {
 		if !a.holds(s, ea, g, addr) {
 			if ea.Spec.SharedWith == nil {
 				h.unheld[addr] = placementKey(ea)
+			}
+			if ea.Spec.PoolType == "Routed" && ea.Spec.SharedWith == nil && g != nil &&
+				a.guard != nil && a.guard.StandingDown() && eligibility(s.nodes, g)(a.node) {
+				h.fault(addr, "GuardStandingDown", "the fail-closed address guard isn't working: not advertising it")
 			}
 			continue
 		}
@@ -169,6 +193,7 @@ func (a *Agent) syncHoldings(s *session) holdings {
 			// can't be placed. Retried at the next sync.
 			logging.Info(a.logger, "op", "egressHold", "node", a.node, "address", x.addr, "error", err,
 				"msg", "no interface to place the address on; not holding it")
+			h.fault(x.addr, "AddressAddFailed", "no interface to place it on: %v", err)
 			continue
 		}
 		if a.guard != nil {
@@ -177,6 +202,9 @@ func (a *Agent) syncHoldings(s *session) holdings {
 				// (GuardMapFull, §6.10); retried at the next sync.
 				logging.Info(a.logger, "op", "egressHold", "node", a.node, "address", x.addr, "error", err,
 					"msg", "the address guard refused the address's entries; not acknowledging it")
+				if errors.Is(err, addrguard.ErrMapFull) {
+					h.fault(x.addr, "GuardMapFull", "%v", err)
+				}
 				continue
 			}
 			guarded[x.addr] = true

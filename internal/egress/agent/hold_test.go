@@ -131,7 +131,7 @@ func (p *fakePlacer) next(t *testing.T) string {
 func (g *fakeGuard) UpdateEgress(a netip.Addr, present bool, ports []addrguard.EgressPort, sl []addrguard.EgressSlice) error {
 	g.calls <- fmt.Sprintf("%s %v ports=%v slices=%v", a, present, ports, sl)
 	if g.fail[a] {
-		return errors.New("map full")
+		return fmt.Errorf("ag_egress: %w", addrguard.ErrMapFull)
 	}
 	return nil
 }
@@ -179,7 +179,12 @@ func holding(t *testing.T, w *winners, g *fakeGuard, objs ...runtime.Object) *fi
 func holdingWith(t *testing.T, w *winners, g *fakeGuard, p *fakePlacer, hook func(dpWant) error,
 	objs ...runtime.Object) *fixture {
 	t.Helper()
-	f := newFixture(t, true, objs...)
+	return holdingOn(t, newFixture(t, true, objs...), w, g, p, hook)
+}
+
+// holdingOn is holdingWith on a fixture the test made.
+func holdingOn(t *testing.T, f *fixture, w *winners, g *fakeGuard, p *fakePlacer, hook func(dpWant) error) *fixture {
+	t.Helper()
 	if hook != nil {
 		apply := f.a.apply
 		f.a.apply = func(dw dpWant) (*purelbv2.EgressCapability, error) {
@@ -302,12 +307,15 @@ func TestDisableClearsAcks(t *testing.T) {
 		endpoints("ee1", "192.0.2.10", "Local", 3, purelbv2.EgressSlice{Index: 9, Node: "n2", State: "Active"}))
 	require.Eventually(t, func() bool {
 		ens := f.nodeState()
-		return ens != nil && len(ens.Status.Announcing) == 1
+		return ens != nil && len(ens.Status.Announcing) == 1 && len(ens.Status.Conditions) > 0
 	}, 5*time.Second, 20*time.Millisecond)
 	f.a.Configure(agentWith(&purelbv2.LBNodeAgentEgressSpec{Enabled: false}))
+	// Off holds nothing: no ack, and no condition or fault left to go on
+	// failing its policies.
 	require.Eventually(t, func() bool {
 		ens := f.nodeState()
-		return ens != nil && !ens.Status.Capability.EgressCapable && len(ens.Status.Announcing) == 0
+		return ens != nil && !ens.Status.Capability.EgressCapable && len(ens.Status.Announcing) == 0 &&
+			len(ens.Status.Conditions) == 0 && len(ens.Status.AddressFaults) == 0
 	}, 5*time.Second, 20*time.Millisecond)
 	assert.Contains(t, g.drain(), "192.0.2.10 false ports=[] slices=[]", "out of the guard")
 }
@@ -370,8 +378,10 @@ func TestHoldGuardRefuses(t *testing.T) {
 	got := f.until(t, func(dpWant) bool { return true })
 	assert.Empty(t, got.hold.acks)
 	assert.False(t, got.hold.addrs[a1].Held)
-	ens, _ := f.purelb.PurelbV2().EgressNodeStates().Get(context.Background(), testNode, metav1.GetOptions{})
-	if ens != nil {
-		assert.Empty(t, ens.Status.Announcing)
-	}
+	// Reported for the policy (Guarded=False GuardMapFull), not acked.
+	require.Eventually(t, func() bool {
+		ens, err := f.purelb.PurelbV2().EgressNodeStates().Get(context.Background(), testNode, metav1.GetOptions{})
+		return err == nil && len(ens.Status.AddressFaults) == 1 && ens.Status.AddressFaults[0].Reason == "GuardMapFull"
+	}, 5*time.Second, 20*time.Millisecond)
+	assert.Empty(t, f.announcing())
 }

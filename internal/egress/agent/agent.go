@@ -22,6 +22,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -91,6 +92,8 @@ type Agent struct {
 	// a desired state (tests replace it).
 	dp    *dpState
 	apply func(dpWant) (*purelbv2.EgressCapability, error)
+	// tear removes the datapath (D26; tests replace it).
+	tear func() error
 	// capability is the datapath's last probe, nil before the first.
 	// Written by the datapath goroutine, read by the queue goroutine.
 	capability atomic.Pointer[purelbv2.EgressCapability]
@@ -118,7 +121,7 @@ type Agent struct {
 	placer         egresshook.Placer
 	placed         map[netip.Addr]placement
 	shared         map[netip.Addr]bool
-	dadFailed      map[netip.Addr]bool
+	dadFailed      map[netip.Addr]*dadBackoff
 	partitionTimer *time.Timer
 	// installed are the addresses the datapath last installed held.
 	// Written by the datapath goroutine.
@@ -126,8 +129,23 @@ type Agent struct {
 	// placedSet is placed's addresses, for the address watcher. Written
 	// by the queue goroutine.
 	placedSet atomic.Pointer[map[netip.Addr]bool]
+	// dadLost are placed addresses the kernel deleted while tentative:
+	// DAD failed. Stored by the address watcher.
+	dadLost sync.Map // netip.Addr: true
 	// addrFlags lists the node's addresses and their IFA flags.
 	addrFlags func() (map[netip.Addr]int, error)
+
+	// faults are this node's address problems and conds its conditions,
+	// as last reported. Queue goroutine only.
+	faults map[netip.Addr]purelbv2.EgressAddressFault
+	conds  []metav1.Condition
+	// health is what the datapath last found. Written by the datapath
+	// goroutine.
+	health atomic.Pointer[dpHealth]
+	// probing are the tunnel peers being probed (runProbes); sendProbe
+	// sends one probe (tests replace it).
+	probing   atomic.Pointer[map[netip.Addr]probeTarget]
+	sendProbe func(from, to netip.Addr, port int, pkt []byte) error
 
 	now func() time.Time
 	// statusInterval is the status writer's interval; tests shorten it.
@@ -165,8 +183,9 @@ func New(logger log.Logger, node, namespace string) *Agent {
 	a := &Agent{logger: logger, node: node, namespace: namespace, runner: newRunner(), now: time.Now,
 		statusInterval: statusInterval, dp: &dpState{pinRoot: bpfpin.Dir},
 		guarded: map[netip.Addr]bool{}, services: map[netip.Addr]map[string]bool{},
-		placed: map[netip.Addr]placement{}, dadFailed: map[netip.Addr]bool{}, addrFlags: listAddrFlags}
-	a.apply = a.applyDatapath
+		placed: map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
+		sendProbe: sendUDPProbe}
+	a.apply, a.tear = a.applyDatapath, a.teardown
 	return a
 }
 
@@ -253,6 +272,8 @@ func (a *Agent) Sync(key string) error {
 		a.syncNode()
 	case keyDatapath:
 		a.syncDatapath()
+	case keyTeardown:
+		a.syncTeardown()
 	}
 	return nil
 }
@@ -287,10 +308,11 @@ func (a *Agent) syncConfig() {
 		a.syncDatapath()
 	case !want && a.on != nil:
 		a.stopSession()
-		a.status.disable()
+		a.endDatapath()
 	case !want && first:
-		// Egress may have been on before this agent started.
-		a.status.disable()
+		// Egress may have been on before this agent started: remove
+		// what an earlier agent left (D26), if anything.
+		a.endDatapath()
 	}
 }
 
@@ -353,7 +375,8 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	go watchRoutes(a.logger, s.stop, a.poolSet, kick)
 	go watchTunnel(a.logger, s.stop, kick)
 	go watchNft(a.logger, s.stop, kick)
-	go watchAddrs(a.logger, s.stop, a.placedAddrs, kick)
+	go watchAddrs(a.logger, s.stop, a.placedAddrs, func(addr netip.Addr) { a.dadLost.Store(addr, true) }, kick)
+	go a.runProbes(s)
 	go func() {
 		t := time.NewTicker(reconcileInterval)
 		defer t.Stop()
@@ -410,8 +433,9 @@ func (a *Agent) stopSession() {
 	}
 	a.guarded = map[netip.Addr]bool{}
 	a.withdrawPlaced("egress disabled")
-	a.shared = nil
+	a.shared, a.faults, a.conds = nil, nil, nil
 	a.installed.Store(nil)
+	a.probing.Store(nil)
 	a.acks.Store(nil)
 	logging.Info(a.logger, "op", "egressDisable", "node", a.node, "msg", "egress disabled on this node")
 }
@@ -428,7 +452,8 @@ func (a *Agent) syncNode() {
 	}
 	c = c.DeepCopy()
 	c.Underlay = underlay(s.nodes, a.node)
-	st := &purelbv2.EgressNodeStateStatus{Capability: c}
+	st := &purelbv2.EgressNodeStateStatus{Capability: c, AddressFaults: a.faultList(),
+		Conditions: a.nodeConditions(c, a.health.Load())}
 	if acks := a.acks.Load(); acks != nil {
 		// Only what this node announces now: an address it holds but
 		// couldn't place isn't announced, and gates nothing (D6).

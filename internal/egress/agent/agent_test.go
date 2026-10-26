@@ -84,6 +84,8 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 		c.TunnelEncapsulation = "L3"
 		return c, nil
 	}
+	a.tear = func() error { return nil }
+	a.sendProbe = func(netip.Addr, netip.Addr, int, []byte) error { return nil }
 	keys := make(chan string, 1000)
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })

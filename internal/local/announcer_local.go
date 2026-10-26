@@ -156,6 +156,10 @@ type announcer struct {
 	// the other there and both decline to withdraw, stranding the address on
 	// a node that lost.
 	announced sync.Map // map[string]struct{}
+
+	// tentative replaces the netlink lookup of an address's DAD state
+	// (tests); nil means netlink.
+	tentative func(netlink.Link, net.IP) (present, inDAD bool)
 }
 
 // addressRenewal holds the state needed to periodically refresh an address

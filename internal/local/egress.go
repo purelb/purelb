@@ -17,6 +17,10 @@ package local
 import (
 	"errors"
 	"net"
+	"time"
+
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"purelb.io/internal/egresshook"
 	"purelb.io/internal/logging"
@@ -93,8 +97,61 @@ func (a *announcer) PlaceEgress(key string, ip net.IP, p egresshook.EgressPlacem
 	if p.Still != nil {
 		still = func() (bool, string) { return p.Still(), "" }
 	}
+	if ip.To4() == nil && !opts.SkipDAD {
+		a.announceAfterDAD(cfg, ip, link, still)
+		return nil
+	}
 	a.sendAnnouncements(cfg, ip, link.Attrs().Name, still)
 	return nil
+}
+
+// dadWait bounds announceAfterDAD's wait: DAD takes dad_transmits
+// retransmit intervals after a random delay of up to a second.
+const dadWait = 10 * time.Second
+
+// tentative reports whether ip is on link and whether it is still in DAD
+// (announcer.tentative, which tests set, replaces it).
+func tentative(link netlink.Link, ip net.IP) (present, inDAD bool) {
+	list, err := netlink.AddrList(link, netlink.FAMILY_V6)
+	if err != nil {
+		return true, true // unknown: keep waiting
+	}
+	for _, a := range list {
+		if a.IP.Equal(ip) {
+			return true, a.Flags&unix.IFA_F_TENTATIVE != 0
+		}
+	}
+	return false, false
+}
+
+// announceAfterDAD sends the unsolicited NAs once ip has passed DAD, so a
+// duplicate address is never claimed (user decision 2026-10-26); an address
+// that leaves instead (DAD failed, or withdrawn) is never announced.
+func (a *announcer) announceAfterDAD(cfg *announcerConfig, ip net.IP, link netlink.Link,
+	still func() (bool, string)) {
+	if cfg.spec.GARPConfig == nil {
+		return // nothing to send
+	}
+	look := tentative
+	if a.tentative != nil {
+		look = a.tentative
+	}
+	go func() {
+		deadline := time.Now().Add(dadWait)
+		for time.Now().Before(deadline) {
+			present, inDAD := look(link, ip)
+			if !present {
+				logging.Debug(a.logger, "op", "placeEgress", "ip", ip, "msg", "gone before passing DAD: not announced")
+				return
+			}
+			if !inDAD {
+				a.sendAnnouncements(cfg, ip, link.Attrs().Name, still)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		logging.Debug(a.logger, "op", "placeEgress", "ip", ip, "msg", "still in DAD: not announced")
+	}()
 }
 
 // WithdrawEgress implements egresshook.Placer.

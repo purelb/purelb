@@ -107,6 +107,7 @@ const (
 	egressMapFrags          = "frags"
 	egressMapNodeByUnderlay = "node_by_underlay"
 	egressMapNodes          = "nodes"
+	egressMapPeerSeen       = "peer_seen"
 	egressMapPoolIfs        = "pool_ifs"
 	egressMapReserved       = "reserved"
 	egressMapSlices         = "slices"
@@ -177,6 +178,7 @@ type egressMapSpecs struct {
 	Frags          *ebpf.MapSpec `ebpf:"frags"`
 	NodeByUnderlay *ebpf.MapSpec `ebpf:"node_by_underlay"`
 	Nodes          *ebpf.MapSpec `ebpf:"nodes"`
+	PeerSeen       *ebpf.MapSpec `ebpf:"peer_seen"`
 	PoolIfs        *ebpf.MapSpec `ebpf:"pool_ifs"`
 	Reserved       *ebpf.MapSpec `ebpf:"reserved"`
 	Slices         *ebpf.MapSpec `ebpf:"slices"`
@@ -217,6 +219,7 @@ type egressMaps struct {
 	Frags          *ebpf.Map `ebpf:"frags"`
 	NodeByUnderlay *ebpf.Map `ebpf:"node_by_underlay"`
 	Nodes          *ebpf.Map `ebpf:"nodes"`
+	PeerSeen       *ebpf.Map `ebpf:"peer_seen"`
 	PoolIfs        *ebpf.Map `ebpf:"pool_ifs"`
 	Reserved       *ebpf.Map `ebpf:"reserved"`
 	Slices         *ebpf.Map `ebpf:"slices"`
@@ -233,6 +236,7 @@ func (m *egressMaps) Close() error {
 		m.Frags,
 		m.NodeByUnderlay,
 		m.Nodes,
+		m.PeerSeen,
 		m.PoolIfs,
 		m.Reserved,
 		m.Slices,

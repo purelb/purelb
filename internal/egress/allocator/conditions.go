@@ -28,6 +28,11 @@ const (
 	condPolicyEffective = "PolicyEffective"
 	condUnderlay        = "UnderlayEncrypted"
 	condReady           = "Ready"
+	// From the nodes' reports (nodeConditions).
+	condDatapathCompatible = "DatapathCompatible"
+	condGuarded            = "Guarded"
+	condAddressUnique      = "AddressUnique"
+	condCNIEgressPolicy    = "CNIEgressPolicy"
 )
 
 // DatapathReady and PortCapacity reasons (§4.8).

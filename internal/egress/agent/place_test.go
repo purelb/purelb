@@ -27,7 +27,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sys/unix"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -60,6 +59,40 @@ func (p *fakePlacer) await(t *testing.T, prefix string) []string {
 			return seen
 		}
 	}
+}
+
+// faults is this node's status.addressFaults, as "address reason".
+func (f *fixture) faults() []string {
+	ens, err := f.purelb.PurelbV2().EgressNodeStates().Get(context.Background(), testNode, metav1.GetOptions{})
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, x := range ens.Status.AddressFaults {
+		out = append(out, x.Address+" "+x.Reason)
+	}
+	return out
+}
+
+// condition is this node's condition typ, as "status reason".
+func (f *fixture) condition(typ string) string {
+	ens, err := f.purelb.PurelbV2().EgressNodeStates().Get(context.Background(), testNode, metav1.GetOptions{})
+	if err != nil {
+		return ""
+	}
+	for _, c := range ens.Status.Conditions {
+		if c.Type == typ {
+			return string(c.Status) + " " + c.Reason
+		}
+	}
+	return ""
+}
+
+// eventually waits until got returns want.
+func eventually[T comparable](t *testing.T, want T, got func() T, msg string) {
+	t.Helper()
+	require.Eventually(t, func() bool { return got() == want }, 5*time.Second, 20*time.Millisecond,
+		"%s: want %v, last %v", msg, want, got())
 }
 
 // announcing is this node's status.announcing addresses.
@@ -96,6 +129,7 @@ func TestPlaceLocal(t *testing.T) {
 	got := f.until(t, func(w dpWant) bool { return len(w.hold.ifaces) > 0 })
 	assert.Equal(t, map[netip.Addr]int{a1: 7}, got.hold.ifaces, "the pool interface, for its table")
 	assert.Equal(t, map[int]dpPool{7: {name: "eth1", v4: true}}, got.pools)
+	eventually(t, "False ApplyFailed", func() string { return f.condition(condDatapathReady) }, "a failing apply")
 	time.Sleep(200 * time.Millisecond)
 	for len(p.calls) > 0 {
 		assert.NotContains(t, <-p.calls, "place", "not placed while its held flag isn't installed")
@@ -109,16 +143,14 @@ func TestPlaceLocal(t *testing.T) {
 	assert.Contains(t, seen, "apply 192.0.2.10 held=true", "the held flag first")
 	require.Eventually(t, func() bool { return slices.Equal(f.announcing(), []string{"192.0.2.10"}) },
 		5*time.Second, 20*time.Millisecond, "acked once placed")
+	for _, typ := range []string{condDatapathReady, condDatapathCompatible, condUnderlayEncrypted} {
+		eventually(t, "True "+typ, func() string { return f.condition(typ) }, typ)
+	}
 
 	// Removed outside the agent (an interface flap): placed again.
 	p.present.Delete(a1)
 	f.a.add(keyDatapath, false)
 	assert.Equal(t, placeA1, last(p.await(t, "place")))
-
-	// Failing DAD is reported, not fought: no placing again.
-	p.present.Store(a1, unix.IFA_F_DADFAILED)
-	f.a.add(keyDatapath, false)
-	assert.NotContains(t, strings.Join(p.await(t, "apply"), "\n"), "place")
 
 	// Lost: withdrawn before the datapath stops holding it.
 	w.set(map[string]string{"192.0.2.10": "n2"})
@@ -127,6 +159,67 @@ func TestPlaceLocal(t *testing.T) {
 	require.Contains(t, seen, "withdraw egress/uid-a1 192.0.2.10")
 	assert.Less(t, slices.Index(seen, "withdraw egress/uid-a1 192.0.2.10"), len(seen)-1)
 	require.Eventually(t, func() bool { return len(f.announcing()) == 0 }, 5*time.Second, 20*time.Millisecond)
+}
+
+// An address that fails DAD (the kernel deletes it in DAD) is reported and
+// not fought: placed again only after a backoff, 30 s doubling, and the
+// fault clears once DAD passes (user decision 2026-10-26).
+func TestPlaceDADFailure(t *testing.T) {
+	a6 := netip.MustParseAddr("2001:db8::10")
+	w := &winners{}
+	w.set(map[string]string{"2001:db8::10": testNode})
+	p := &fakePlacer{calls: make(chan string, 200)}
+	var clock atomic.Int64
+	clock.Store(time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC).UnixNano())
+	ea := address("a6", "2001:db8::10", "Local", "ee6")
+	ea.UID, ea.Spec.Family = "uid-a6", "IPv6"
+	ee := endpoints("ee6", "2001:db8::10", "Local", 1, purelbv2.EgressSlice{Index: 9, Node: "n2", State: "Active"})
+	ee.Spec.Family = "IPv6"
+	var fail atomic.Bool
+	f := newFixture(t, true, testNodeObj, ea, ee)
+	f.a.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	f = holdingOn(t, f, w, &fakeGuard{calls: make(chan string, 100)}, p, recordApplies(p, a6, &fail))
+	place := "place egress/uid-a6 2001:db8::10 routed=false  skipDAD=false"
+	assert.Equal(t, place, last(p.await(t, "place")))
+	faults := func() string { return strings.Join(f.faults(), ",") }
+
+	// DAD fails: the kernel deletes the address while tentative.
+	lose := func() {
+		p.present.Delete(a6)
+		f.a.dadLost.Store(a6, true)
+		f.a.add(keyDatapath, false)
+	}
+	lose()
+	assert.Equal(t, "withdraw egress/uid-a6 2001:db8::10", last(p.await(t, "withdraw")), "its renewal stops")
+	eventually(t, "2001:db8::10 DADFailed", faults, "reported")
+	f.a.add(keyDatapath, false)
+	assert.NotContains(t, strings.Join(p.await(t, "apply"), "\n"), "place", "not fought")
+
+	// After the backoff it is placed again; passing DAD clears the fault.
+	clock.Add(int64(31 * time.Second))
+	f.a.add(keyDatapath, false)
+	assert.Equal(t, place, last(p.await(t, "place")))
+	f.a.add(keyDatapath, false)
+	eventually(t, "", faults, "DAD passed")
+
+	// Failing again, the next wait doubles.
+	lose()
+	p.await(t, "withdraw")
+	f.a.add(keyDatapath, false)
+	require.Eventually(t, func() bool {
+		ens, err := f.purelb.PurelbV2().EgressNodeStates().Get(context.Background(), testNode, metav1.GetOptions{})
+		return err == nil && len(ens.Status.AddressFaults) == 1 && strings.HasSuffix(ens.Status.AddressFaults[0].Message, "in 30s")
+	}, 5*time.Second, 20*time.Millisecond, "a fresh failure after passing starts at 30 s")
+	clock.Add(int64(31 * time.Second))
+	f.a.add(keyDatapath, false)
+	p.await(t, "place")
+	lose()
+	p.await(t, "withdraw")
+	f.a.add(keyDatapath, false)
+	require.Eventually(t, func() bool {
+		ens, err := f.purelb.PurelbV2().EgressNodeStates().Get(context.Background(), testNode, metav1.GetOptions{})
+		return err == nil && len(ens.Status.AddressFaults) == 1 && strings.HasSuffix(ens.Status.AddressFaults[0].Message, "in 1m0s")
+	}, 5*time.Second, 20*time.Millisecond, "failing again without passing doubles it")
 }
 
 // An address held but not placed (no interface for it) is not announced,
@@ -146,11 +239,13 @@ func TestPlaceFailedNotAcked(t *testing.T) {
 		return err == nil && ens.Status.Capability != nil
 	}, 5*time.Second, 20*time.Millisecond)
 	assert.Empty(t, f.announcing())
+	eventually(t, "192.0.2.10 AddressAddFailed", func() string { return strings.Join(f.faults(), ",") }, "reported")
 
 	p.fail.Store(false)
 	f.a.add(keyDatapath, false)
 	p.await(t, "place egress/")
 	require.Eventually(t, func() bool { return len(f.announcing()) == 1 }, 5*time.Second, 20*time.Millisecond)
+	eventually(t, "", func() string { return strings.Join(f.faults(), ",") }, "cleared")
 }
 
 // A routed address goes on the dummy interface with its pool's prefix;
@@ -177,6 +272,7 @@ func TestPlaceRouted(t *testing.T) {
 	f.a.add(keyDatapath, false)
 	seen := p.await(t, "apply 198.51.100.5 held=false")
 	assert.Contains(t, seen, "withdraw egress/uid-r1 198.51.100.5", "the guard stood down")
+	eventually(t, "198.51.100.5 GuardStandingDown", func() string { return strings.Join(f.faults(), ",") }, "Guarded")
 	g.down.Store(false)
 	f.a.add(keyDatapath, false)
 	assert.Equal(t, placeR1, last(p.await(t, "place")))

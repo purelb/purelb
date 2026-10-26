@@ -356,6 +356,38 @@ func tunnelCase(t *testing.T, c tunCase) {
 	assert.NotZero(t, cb["transit"][fam], "B forwarded the transit")
 	assert.NotZero(t, cb["to_tunnel"][fam], "B tunnelled the replies")
 	assert.NotZero(t, ca["reply_local"][fam], "A admitted the replies")
+
+	// A probes B (design 6.8): a Geneve datagram from A's underlay address
+	// to B's tunnel port; B reflects it, A records the reply.
+	selfU, peerU := underA.V4, underB.V4
+	if c.under6 {
+		selfU, peerU = underA.V6, underB.V6
+	}
+	pkt := ProbePacket(mode, selfU, peerU, TunnelMAC(nodeA), TunnelMAC(nodeB))
+	require.NoError(t, a.in(func() error {
+		conn, err := net.DialUDP("udp", &net.UDPAddr{IP: selfU.AsSlice()}, &net.UDPAddr{IP: peerU.AsSlice(), Port: 6082})
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		_, err = conn.Write(pkt)
+		return err
+	}))
+	ok := assert.Eventually(t, func() bool {
+		seen, err := objA.ProbeReplies()
+		return err == nil && seen[peerU] != 0
+	}, 5*time.Second, 50*time.Millisecond, "%s: B answered A's probe", c)
+	ca, _ = objA.Counts()
+	cb, _ = objB.Counts()
+	require.True(t, ok, "%s: A: %v\n  B: %v", c, nonzero(ca), nonzero(cb))
+	ca, _ = objA.Counts()
+	cb, _ = objB.Counts()
+	pfam := 0
+	if c.under6 {
+		pfam = 1
+	}
+	assert.NotZero(t, cb["probe_reflected"][pfam], "B reflected the probe")
+	assert.NotZero(t, ca["probe_reply"][pfam], "A recorded the reply")
 }
 
 func nonzero(c map[string][2]uint64) map[string][2]uint64 {

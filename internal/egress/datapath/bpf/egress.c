@@ -75,6 +75,14 @@
 #define PTB4_QUOTE  548  // 576 - 20 - 8 (RFC 1812 4.3.2.3)
 #define PTB_MIN_MTU 1280
 
+// Tunnel peer probes (design 6.8): a UDP datagram from a node's underlay
+// address to a peer's, through the tunnel, to PROBE_PORT, carrying
+// "PLPB" and a type. The peer reflects a request; a reply records when
+// the peer answered.
+#define PROBE_PORT  65534
+#define PROBE_REQ   1
+#define PROBE_REPLY 2
+
 // Counters: reason * 2 + family (0 IPv4, 1 IPv6).
 enum reason {
 	R_TO_TUNNEL = 0,    // uplink: a reply sent to its owner through the tunnel
@@ -96,6 +104,8 @@ enum reason {
 	R_NO_ROUTE,         // tunnel: no route in the pool interface's table
 	R_STEERED,          // steering: a slot's packet keyed to a holder
 	R_NO_HOLDER,        // steering: a slot with no holder (dropped)
+	R_PROBE_REFLECTED,  // tunnel: a peer's probe sent back to it
+	R_PROBE_REPLY,      // tunnel: a peer answered this node's probe
 	R_MAX,
 };
 
@@ -313,6 +323,16 @@ struct {
 	__type(key, __u32);
 	__type(value, struct egress_config);
 } egress_cfg SEC(".maps");
+
+// When each peer last answered a probe, by the underlay address it
+// answered from (bpf_ktime_get_ns); the agent reads it.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 16384);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct underlay_key);
+	__type(value, __u64);
+} peer_seen SEC(".maps");
 
 // Sized, not typed: bpf2go can't express bpf_fib_lookup's anonymous
 // unions, and only the programs read it.
@@ -1012,6 +1032,83 @@ static __always_inline int forward(struct __sk_buff *skb, struct scratch *s, con
 	return bpf_redirect_neigh(fib->ifindex, nh, sizeof(*nh), 0);
 }
 
+// is_probe reports whether the inner packet is a peer probe: UDP to
+// PROBE_PORT from the address the tunnel packet came from. Transit and
+// replies never qualify: one end of theirs is always an egress address.
+static __always_inline int is_probe(const struct scratch *s)
+{
+	const struct flow *f = &s->f;
+
+	return f->proto == IPPROTO_UDP && f->ported && !f->frag && f->dport == PROBE_PORT &&
+	       f->src.family == (s->uk.v6 ? AF_INET6_ : AF_INET_) &&
+	       f->src.addr[0] == s->uk.addr[0] && f->src.addr[1] == s->uk.addr[1] &&
+	       f->src.addr[2] == s->uk.addr[2] && f->src.addr[3] == s->uk.addr[3];
+}
+
+// probe answers a peer probe: a request goes back to its sender through
+// the tunnel, its addresses swapped and its type now reply; a reply
+// records when the peer answered.
+static __always_inline int probe(struct __sk_buff *skb, struct egress_config *c, struct scratch *s, __u32 l3)
+{
+	struct bpf_tunnel_key *k = &s->key;
+	struct underlay_key *uk = &s->uk;
+	__u32 off = s->f.l4 + 8, v6 = uk->v6, mask;
+
+	if (bpf_skb_load_bytes(skb, off, s->l4b, 8) < 0 || s->l4b[0] != 'P' || s->l4b[1] != 'L' ||
+	    s->l4b[2] != 'P' || s->l4b[3] != 'B') {
+		count(R_MALFORMED, s->f.dst.family);
+		return TCX_DROP;
+	}
+	if (s->l4b[4] == PROBE_REPLY) {
+		// In the scratch map, not on the stack (design 6.6, rule 2).
+		s->owner = bpf_ktime_get_ns();
+		bpf_map_update_elem(&peer_seen, uk, &s->owner, BPF_ANY);
+		count(R_PROBE_REPLY, s->f.dst.family);
+		return TCX_DROP;
+	}
+	if (s->l4b[4] != PROBE_REQ) {
+		count(R_MALFORMED, s->f.dst.family);
+		return TCX_DROP;
+	}
+	// The type byte leads its 16-bit word: fix the UDP checksum (left 0
+	// when the IPv4 sender sent none).
+	if (bpf_l4_csum_replace(skb, s->f.l4 + 6, bpf_htons(PROBE_REQ << 8), bpf_htons(PROBE_REPLY << 8),
+				2 | BPF_F_MARK_MANGLED_0) < 0)
+		return TCX_DROP;
+	s->l4b[4] = PROBE_REPLY;
+	if (bpf_skb_store_bytes(skb, off + 4, &s->l4b[4], 1, 0) < 0)
+		return TCX_DROP;
+	// L2: from this node's tunnel MAC; the sender's geneve drops a frame
+	// carrying its own as the source.
+	if (c->l2 && bpf_skb_store_bytes(skb, 6, c->tun_mac, 6, 0) < 0)
+		return TCX_DROP;
+	// From the peer to the sender, as is_probe wants at the sender. A swap
+	// leaves the IPv4 header and UDP pseudo header sums as they were.
+	if (s->f.dst.family == AF_INET_) {
+		if (bpf_skb_store_bytes(skb, l3 + 12, &s->f.dst.addr[0], 4, 0) < 0 ||
+		    bpf_skb_store_bytes(skb, l3 + 16, &s->f.src.addr[0], 4, 0) < 0)
+			return TCX_DROP;
+	} else if (bpf_skb_store_bytes(skb, l3 + 8, s->f.dst.addr, 16, 0) < 0 ||
+		   bpf_skb_store_bytes(skb, l3 + 24, s->f.src.addr, 16, 0) < 0) {
+		return TCX_DROP;
+	}
+	// Back the way it came: the sender's underlay address, both families
+	// stored unconditionally (see set_key).
+	mask = 0 - v6;
+	asm volatile("" : "+r"(mask));
+	__builtin_memset(k, 0, sizeof(*k));
+	k->tunnel_id = GENEVE_VNI;
+	k->tunnel_ttl = 64;
+	k->remote_ipv6[0] = (uk->addr[0] & mask) | (bpf_ntohl(uk->addr[0]) & ~mask);
+	k->remote_ipv6[1] = uk->addr[1] & mask;
+	k->remote_ipv6[2] = uk->addr[2] & mask;
+	k->remote_ipv6[3] = uk->addr[3] & mask;
+	if (bpf_skb_set_tunnel_key(skb, k, sizeof(*k), (__u64)(v6 & 1) * BPF_F_TUNINFO_IPV6) < 0)
+		return TCX_DROP;
+	count(R_PROBE_REFLECTED, s->f.dst.family);
+	return bpf_redirect(c->tun_ifindex, 0);
+}
+
 SEC("tcx/ingress")
 int pl_announce_tun(struct __sk_buff *skb)
 {
@@ -1062,6 +1159,8 @@ int pl_announce_tun(struct __sk_buff *skb)
 		count(R_FORGED_INNER_DST, f->dst.family);
 		return TCX_DROP;
 	}
+	if (is_probe(s))
+		return probe(skb, c, s, l3);
 
 	// Transit: the inner source is an egress address this node holds, and
 	// its port lies in the sender's slice or reserved port.

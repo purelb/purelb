@@ -700,7 +700,6 @@ func TestNetnsApplyDatapathUplinks(t *testing.T) {
 	// A restart takes the pinned link over in place.
 	closeAgent(a)
 	b := newNetnsAgent(dir)
-	defer closeAgent(b)
 	apply(t, b, w)
 	assert.Equal(t, []ebpf.ProgramID{progID(t, guard), progID(t, b.dp.objs.PlAnnounceEth)}, chain(t, e0, ebpf.AttachTCXIngress))
 
@@ -710,4 +709,49 @@ func TestNetnsApplyDatapathUplinks(t *testing.T) {
 	assert.Equal(t, []ebpf.ProgramID{progID(t, guard)}, chain(t, e0, ebpf.AttachTCXIngress))
 	assert.False(t, pinned("pl_announce-eth0"))
 	assert.True(t, pinned("pl_announce-"+datapath.TunnelName))
+
+	// Egress disabled (D26): links and pins, the hardening table, the
+	// routing tables and the tunnel all go; the guard's link stays.
+	w.hold.addrs[a4] = held
+	apply(t, b, w)
+	var err2 error
+	asAgent(t, func() { err2 = b.teardown() })
+	require.NoError(t, err2)
+	noEgress(t, dir)
+	assert.Equal(t, []ebpf.ProgramID{progID(t, guard)}, chain(t, e0, ebpf.AttachTCXIngress))
+
+	// Enabled again, from nothing; then disabled while no agent runs: the
+	// next agent removes what the last one left, and a second teardown
+	// finds nothing to do.
+	apply(t, b, w)
+	assert.True(t, pinned("pl_announce-eth0"))
+	closeAgent(b)
+	c := newNetnsAgent(dir)
+	asAgent(t, func() { err2 = c.teardown() })
+	require.NoError(t, err2)
+	noEgress(t, dir)
+	asAgent(t, func() { err2 = c.teardown() })
+	require.NoError(t, err2)
+}
+
+// noEgress asserts that nothing of egress's datapath is left (D26).
+func noEgress(t *testing.T, dir string) {
+	t.Helper()
+	_, err := netlink.LinkByName(datapath.TunnelName)
+	assert.Error(t, err, "the tunnel is gone")
+	assert.False(t, datapath.Pinned(dir), "no egress pins")
+	c, err := nftables.New()
+	require.NoError(t, err)
+	tables, err := c.ListTables()
+	require.NoError(t, err)
+	for _, tb := range tables {
+		assert.NotEqual(t, datapath.NftTable, tb.Name, "the hardening table is gone")
+	}
+	for _, table := range []int{datapath.TunnelTable, datapath.ProhibitTable, datapath.PoolTableBase} {
+		for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+			routes, err := netlink.RouteListFiltered(fam, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
+			require.NoError(t, err)
+			assert.Empty(t, routes, "table %d", table)
+		}
+	}
 }
