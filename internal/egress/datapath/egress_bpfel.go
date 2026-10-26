@@ -40,6 +40,9 @@ type egressEgressConfig struct {
 	HasV4      uint8
 	HasV6      uint8
 	Pad        [6]uint8
+	SelfV4     uint32
+	SelfV6     [4]uint32
+	_          [4]byte
 }
 
 type egressFragKey struct {

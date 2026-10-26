@@ -190,6 +190,12 @@ struct egress_config {
 	__u8 has_v4;       // this node's underlay families
 	__u8 has_v6;
 	__u8 pad[6];
+	// This node's underlay addresses (network order), the tunnel's outer
+	// source: a node whose route to a peer leaves another interface would
+	// otherwise send from an address that isn't its InternalIP, which the
+	// peer drops as forged (forged_tunnel).
+	__u32 self_v4;
+	__u32 self_v6[4];
 };
 
 // ICMP and ICMPv6 echo share this layout.
@@ -649,6 +655,17 @@ static __always_inline __u32 key_v6(struct egress_config *c, struct scratch *s, 
 	return !(s->f.dst.family == AF_INET_ && c->has_v4 && n->has_v4) && c->has_v6 && n->has_v6;
 }
 
+// The key's outer source: this node's underlay address of the family mask
+// selects (all ones: IPv6), stored as the remote is. 0 leaves it to the
+// route lookup.
+static __always_inline void set_local(struct bpf_tunnel_key *k, const struct egress_config *c, __u32 mask)
+{
+	k->local_ipv6[0] = (c->self_v6[0] & mask) | (bpf_ntohl(c->self_v4) & ~mask);
+	k->local_ipv6[1] = c->self_v6[1] & mask;
+	k->local_ipv6[2] = c->self_v6[2] & mask;
+	k->local_ipv6[3] = c->self_v6[3] & mask;
+}
+
 // Fill and set the tunnel key toward node n. The outer family is the inner
 // family when both ends have it, else the one they share (D3).
 // remote_ipv4 and remote_ipv6[0] share one word. Without CAP_PERFMON a
@@ -678,6 +695,7 @@ static __always_inline int set_key(struct __sk_buff *skb, struct egress_config *
 	k->remote_ipv6[1] = w1;
 	k->remote_ipv6[2] = w2;
 	k->remote_ipv6[3] = w3;
+	set_local(k, c, mask);
 	return bpf_skb_set_tunnel_key(skb, k, sizeof(*k), (__u64)(v6 & 1) * BPF_F_TUNINFO_IPV6);
 }
 
@@ -1103,6 +1121,7 @@ static __always_inline int probe(struct __sk_buff *skb, struct egress_config *c,
 	k->remote_ipv6[1] = uk->addr[1] & mask;
 	k->remote_ipv6[2] = uk->addr[2] & mask;
 	k->remote_ipv6[3] = uk->addr[3] & mask;
+	set_local(k, c, mask);
 	if (bpf_skb_set_tunnel_key(skb, k, sizeof(*k), (__u64)(v6 & 1) * BPF_F_TUNINFO_IPV6) < 0)
 		return TCX_DROP;
 	count(R_PROBE_REFLECTED, s->f.dst.family);

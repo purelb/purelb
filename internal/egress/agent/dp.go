@@ -313,6 +313,12 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		e.Table = datapath.PoolTableBase + n
 		addrs[addr] = &e
 	}
+	// One whose EgressEndpoints aren't read yet keeps what it has (D12).
+	for addr := range w.hold.pending {
+		if e, ok := st.addrs[addr]; ok {
+			addrs[addr] = e
+		}
+	}
 	errs = append(errs, syncAddresses(st, addrs))
 
 	shift := uint8(0)
@@ -327,7 +333,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	errs = append(errs, st.objs.SetConfig(datapath.Config{Self: self, TunIfindex: tun.Attrs().Index,
 		TunMTU: uint32(datapath.TunnelMTU(st.nl, mode, peers6)), TunMAC: datapath.TunnelMAC(self),
 		L2: mode == datapath.ModeL2, MarkShift: shift,
-		Underlay4: selfNode.V4.IsValid(), Underlay6: selfNode.V6.IsValid()}))
+		Underlay4: selfNode.V4.IsValid(), Underlay6: selfNode.V6.IsValid(), Self4: selfNode.V4, Self6: selfNode.V6}))
 	if err := errors.Join(errs...); err != nil {
 		return c, err
 	}

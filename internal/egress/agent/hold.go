@@ -93,6 +93,11 @@ type holdings struct {
 	unheld map[netip.Addr]string
 	// faults are this node's problems with addresses (addressFaults).
 	faults map[netip.Addr]purelbv2.EgressAddressFault
+	// pending are the addresses this node holds whose EgressEndpoints it
+	// hasn't read in full yet: the datapath keeps what it has for them, as
+	// an earlier agent left it (D12: compute the desired state, add before
+	// delete, then prune), rather than dropping their held entries.
+	pending map[netip.Addr]bool
 }
 
 // fault records reason for addr, keeping the first.
@@ -120,7 +125,8 @@ func truncate(s string, n int) string {
 func (a *Agent) syncHoldings(s *session) holdings {
 	h := holdings{addrs: map[netip.Addr]*datapath.AddressEntries{}, ifaces: map[netip.Addr]int{},
 		pools: map[int]dpPool{}, place: map[netip.Addr]placeWant{}, shared: map[netip.Addr]bool{},
-		unheld: map[netip.Addr]string{}, faults: map[netip.Addr]purelbv2.EgressAddressFault{}}
+		unheld: map[netip.Addr]string{}, faults: map[netip.Addr]purelbv2.EgressAddressFault{},
+		pending: map[netip.Addr]bool{}}
 	d := a.config.Load()
 	if d == nil {
 		return h
@@ -179,7 +185,19 @@ func (a *Agent) syncHoldings(s *session) holdings {
 	guarded := map[netip.Addr]bool{}
 	for _, x := range held {
 		eps, ready := a.endpointsOf(s, x.addr, x.names, routedGroups)
-		if !ready || len(eps) == 0 {
+		if !ready {
+			h.pending[x.addr] = true
+			// Its pool interface's table stays, for the entries kept.
+			if ifindex, pw, err := a.placing(s, x.ea, x.g, x.addr); err == nil && ifindex != 0 {
+				pool := h.pools[ifindex]
+				pool.name = pw.iface
+				pool.v4 = pool.v4 || x.addr.Is4()
+				pool.v6 = pool.v6 || x.addr.Is6()
+				h.pools[ifindex] = pool
+			}
+			continue
+		}
+		if len(eps) == 0 {
 			continue
 		}
 		e, ports, gslices, err := entriesFor(x.ea, eps)

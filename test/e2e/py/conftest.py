@@ -35,7 +35,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 import pytest
 
-from purelb_e2e import backend, guard, metrics, topology
+from purelb_e2e import backend, egress, guard, metrics, topology
 from purelb_e2e.cluster import Cluster, utcnow
 from purelb_e2e import nodes as nodes_mod
 from purelb_e2e.nodes import Router, ssh
@@ -70,6 +70,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                      choices=["tcx", "xdp"], metavar="HOOK",
                      help="with --address-guard: the hook the guard attaches with "
                           "(tcx, the guard's default, or xdp)")
+    parser.addoption("--egress", action="store_true", default=False,
+                     help="run the whole suite with egress enabled on every node, so every "
+                          "flow doubles as a check that egress leaves load balancing alone")
     parser.addoption("--report", action="store", default=None, metavar="PATH",
                      help="write a plain-text report of every test, its result "
                           "and any failure detail, to PATH")
@@ -85,6 +88,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if hook and not mode:
         raise pytest.UsageError("--address-guard-hook needs --address-guard")
     guard.configure({"mode": mode, **({"hook": hook} if hook else {})} if mode else None)
+    egress.configure(config.getoption("--egress"))
     if config.getoption("--show-tests") and config.option.verbose < 1:
         config.option.verbose = 1
     config.addinivalue_line(
@@ -256,6 +260,7 @@ def lbnodeagent(cluster: Cluster, node_ips: Dict[str, str], agent_metrics) -> It
     local = {"localInterface": "default", "dummyInterface": "kube-lb0"}
     before = cluster.get_cr("lbnodeagent", "default", cluster.purelb_namespace) or {}
     prior_guard = ((before.get("spec") or {}).get("local") or {}).get("addressGuard")
+    prior_egress = (before.get("spec") or {}).get("egress")
     cluster.apply_cr(
         {
             "apiVersion": "purelb.io/v2",
@@ -267,15 +272,23 @@ def lbnodeagent(cluster: Cluster, node_ips: Dict[str, str], agent_metrics) -> It
     session = guard.session_spec()
     if session is not None:
         settle_guard(cluster, node_ips, agent_metrics, session.get("hook", "tcx"))
+    if egress.enabled():
+        # A run that says --egress and doesn't have it proves nothing.
+        wait_until(lambda: all(egress.capable_nodes(cluster).get(n) for n in node_ips), timeout=180,
+                   description="egress to be up (egressCapable) on every node under --egress")
     yield "default"
 
     body_local = {**local, "addressGuard": prior_guard} if prior_guard is not None else local
-    cluster.apply_cr({
-        "apiVersion": "purelb.io/v2",
-        "kind": "LBNodeAgent",
-        "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
-        "spec": {"local": body_local},
-    })
+    spec: Dict[str, Any] = {"local": body_local}
+    if prior_egress is not None:
+        spec["egress"] = prior_egress
+    with egress.suspended():  # egress as it was before the run
+        cluster.apply_cr({
+            "apiVersion": "purelb.io/v2",
+            "kind": "LBNodeAgent",
+            "metadata": {"name": "default", "namespace": cluster.purelb_namespace},
+            "spec": spec,
+        })
     hook = (prior_guard or {}).get("hook", "tcx") if prior_guard is not None else None
     settle_guard(cluster, node_ips, agent_metrics, hook)
     if any(guard.restart_required(agent_metrics(n)) for n in node_ips):

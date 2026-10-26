@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import pytest
 
-from purelb_e2e import announcing, metrics
+from purelb_e2e import announcing, egress, metrics
 from purelb_e2e.wait import WaitTimeout, wait_until
 
 SAMPLE = """\
@@ -400,3 +400,26 @@ def test_router_reachable_and_faces_the_pool_subnet(router, cluster):
     assert router is not None
     iface = router.interface_for_subnet(cluster.node_ip(cluster.node_names()[0]))
     assert iface and iface != "lo"
+
+
+def test_egress_session_enables_egress_on_every_agent_written():
+    """--egress: every LBNodeAgent the suite writes gets egress enabled,
+    unless it sets egress itself, without changing the caller's body; other
+    kinds, and writes under suspended(), are left alone."""
+    body = {"kind": "LBNodeAgent", "spec": {"local": {"localInterface": "default"}}}
+    session = egress.enabled()  # put back afterwards: --egress runs this too
+    egress.configure(False)
+    try:
+        assert egress.agent_body(body) is body, "off: untouched"
+        egress.configure(True)
+        got = egress.agent_body(body)
+        assert got["spec"] == {"local": {"localInterface": "default"}, "egress": {"enabled": True}}
+        assert "egress" not in body["spec"], "the caller's body is not changed"
+        off = {"kind": "LBNodeAgent", "spec": {"egress": {"enabled": False}}}
+        assert egress.agent_body(off) == off, "an agent that sets egress keeps it"
+        sg = {"kind": "ServiceGroup", "spec": {}}
+        assert egress.agent_body(sg) is sg
+        with egress.suspended():
+            assert egress.agent_body(body) is body
+    finally:
+        egress.configure(session)

@@ -697,9 +697,20 @@ func TestNetnsApplyDatapathUplinks(t *testing.T) {
 	assert.Empty(t, chain(t, e1, ebpf.AttachTCXIngress), "not one of the guard's")
 	assert.False(t, pinned("pl_announce-eth1"))
 
-	// A restart takes the pinned link over in place.
+	// A restart takes the pinned link over in place. The new agent's first
+	// apply comes before it has read the EgressEndpoints: what the last one
+	// left stays, the held entry and the uplink (D12).
 	closeAgent(a)
 	b := newNetnsAgent(dir)
+	pend := w
+	pend.hold.addrs = map[netip.Addr]*datapath.AddressEntries{a4: {}}
+	pend.hold.pending = map[netip.Addr]bool{a4: true}
+	apply(t, b, pend)
+	kept, err := b.dp.objs.RecoverAddresses()
+	require.NoError(t, err)
+	assert.True(t, kept[a4].Held, "still held while its EgressEndpoints are read")
+	assert.Equal(t, []ebpf.ProgramID{progID(t, guard), progID(t, b.dp.objs.PlAnnounceEth)}, chain(t, e0, ebpf.AttachTCXIngress),
+		"the uplink kept: taken over in place, not detached")
 	apply(t, b, w)
 	assert.Equal(t, []ebpf.ProgramID{progID(t, guard), progID(t, b.dp.objs.PlAnnounceEth)}, chain(t, e0, ebpf.AttachTCXIngress))
 

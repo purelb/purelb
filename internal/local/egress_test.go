@@ -15,6 +15,7 @@
 package local
 
 import (
+	"errors"
 	"net"
 	"os"
 	"runtime"
@@ -83,7 +84,15 @@ func placeSandbox(t *testing.T) (*announcer, netlink.Link, netlink.Link) {
 // addrOn is ip's address on link, nil if it has none.
 func addrOn(t *testing.T, link netlink.Link, ip string) *netlink.Addr {
 	t.Helper()
-	list, err := netlink.AddrList(link, netlink.FAMILY_ALL)
+	// A dump that the kernel interrupts (addresses changing meanwhile, as
+	// IPv6 DAD and link-locals do) is simply run again.
+	var list []netlink.Addr
+	var err error
+	for range 5 {
+		if list, err = netlink.AddrList(link, netlink.FAMILY_ALL); !errors.Is(err, netlink.ErrDumpInterrupted) {
+			break
+		}
+	}
 	require.NoError(t, err)
 	for i := range list {
 		if list[i].IP.Equal(net.ParseIP(ip)) {

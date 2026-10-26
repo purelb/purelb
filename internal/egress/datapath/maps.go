@@ -34,6 +34,9 @@ type Config struct {
 	MarkShift  uint8 // 0, 8, 16 or 24: the byte of the mark (D18)
 	Underlay4  bool  // this node has an IPv4 underlay
 	Underlay6  bool  // and an IPv6 one
+	// Self4 and Self6 are this node's underlay addresses (InternalIPs),
+	// the tunnel's outer source; invalid where it has none.
+	Self4, Self6 netip.Addr
 }
 
 // SetConfig writes the node-wide configuration.
@@ -41,6 +44,13 @@ func (o *Objects) SetConfig(c Config) error {
 	v := egressEgressConfig{Self: c.Self, TunIfindex: uint32(c.TunIfindex), TunMtu: c.TunMTU,
 		MarkShift: c.MarkShift, HasV4: b2u(c.Underlay4), HasV6: b2u(c.Underlay6), L2: b2u(c.L2)}
 	copy(v.TunMac[:], c.TunMAC)
+	if c.Self4.IsValid() {
+		w, _ := words(c.Self4)
+		v.SelfV4 = w[0]
+	}
+	if c.Self6.IsValid() {
+		v.SelfV6, _ = words(c.Self6)
+	}
 	return o.EgressCfg.Put(uint32(0), &v)
 }
 

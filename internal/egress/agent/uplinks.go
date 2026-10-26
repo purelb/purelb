@@ -47,7 +47,7 @@ const uplinkPrefix = "pl_announce-"
 // parse is skipped and logged when that changes. Datapath goroutine only.
 func (a *Agent) syncUplinks(st *dpState, w dpWant) error {
 	want := map[string]netlink.Link{}
-	if holdsAny(w.hold.addrs) {
+	if holdsAny(st.addrs) { // as installed: kept entries count (D12)
 		idxs := w.guardLinks
 		if len(idxs) == 0 {
 			var err error

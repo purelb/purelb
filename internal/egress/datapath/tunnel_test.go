@@ -234,6 +234,16 @@ func tunnelCase(t *testing.T, c tunCase) {
 	a.addr(t, "ul", "fd00::1/64")
 	b.addr(t, "ul", "10.0.0.2/24")
 	b.addr(t, "ul", "fd00::2/64")
+	// B is dual-homed in effect: its route to A prefers a source that
+	// isn't its underlay address (as on a node whose route to a peer
+	// leaves another interface). The tunnel must still send from the
+	// underlay address, or A drops it as forged.
+	b.addr(t, "ul", "10.0.0.12/24")
+	b.addr(t, "ul", "fd00::12/64")
+	b.route(t, &netlink.Route{Dst: cidr("10.0.0.1/32"), LinkIndex: b.link(t, "ul").Attrs().Index,
+		Src: net.ParseIP("10.0.0.12")})
+	b.route(t, &netlink.Route{Dst: cidr("fd00::1/128"), LinkIndex: b.link(t, "ul").Attrs().Index,
+		Src: net.ParseIP("fd00::12")})
 	b.addr(t, "pool", "172.30.10.2/24")
 	b.addr(t, "pool", "fdaa::2/64")
 	b.addr(t, "pool", egress4+"/32") // B holds the egress address
@@ -289,9 +299,9 @@ func tunnelCase(t *testing.T, c tunCase) {
 	}
 	underA.MAC, underB.MAC = TunnelMAC(nodeA), TunnelMAC(nodeB)
 	require.NoError(t, objA.SetConfig(Config{Self: nodeA, TunIfindex: tunA.Attrs().Index, L2: c.l2,
-		TunMAC: TunnelMAC(nodeA), Underlay4: !c.under6, Underlay6: c.under6}))
+		TunMAC: TunnelMAC(nodeA), Underlay4: !c.under6, Underlay6: c.under6, Self4: underA.V4, Self6: underA.V6}))
 	require.NoError(t, objB.SetConfig(Config{Self: nodeB, TunIfindex: tunB.Attrs().Index, L2: c.l2,
-		TunMAC: TunnelMAC(nodeB), Underlay4: !c.under6, Underlay6: c.under6}))
+		TunMAC: TunnelMAC(nodeB), Underlay4: !c.under6, Underlay6: c.under6, Self4: underB.V4, Self6: underB.V6}))
 	require.NoError(t, objA.SetNode(nodeB, underB))
 	require.NoError(t, objB.SetNode(nodeA, underA))
 	require.NoError(t, objA.SetSteer(slot, []uint64{nodeB}))
