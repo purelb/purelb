@@ -38,7 +38,7 @@ var Reasons = []string{
 	"to_tunnel", "owner_local", "service_port", "not_announcer", "no_owner", "frag_missing",
 	"ptb_sent", "ptb_failed", "no_node", "malformed", "transit", "reply_local", "forged_tunnel",
 	"forged_inner", "forged_inner_destination", "ttl_expired", "no_route", "steered", "no_holder",
-	"probe_reflected", "probe_reply",
+	"probe_reflected", "probe_reply", "source_check", "fail_closed",
 }
 
 // Objects are egress's loaded programs and maps.

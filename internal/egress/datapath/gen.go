@@ -19,4 +19,4 @@ package datapath
 // Regenerate with `make bpf`, which runs this inside the pinned builder
 // image (hack/bpf-builder). The generated object is committed; CI rebuilds
 // it and fails on any byte difference.
-//go:generate go tool bpf2go -target bpfel -type addr_key -type addr_entry -type slice_key -type port_key -type frag_key -type node -type underlay_key -type pool_if -type holders -type egress_config egress bpf/egress.c -- -I/usr/include/x86_64-linux-gnu -Wall -Werror
+//go:generate go tool bpf2go -target bpfel -type addr_key -type addr_entry -type slice_key -type port_key -type frag_key -type node -type underlay_key -type pool_if -type holders -type egress_config -type pod_dev -type lpm4 -type lpm6 egress bpf/egress.c -- -I/usr/include/x86_64-linux-gnu -Wall -Werror

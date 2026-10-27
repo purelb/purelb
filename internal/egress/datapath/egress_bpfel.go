@@ -62,6 +62,18 @@ type egressHolders struct {
 	Holders [32]uint64
 }
 
+type egressLpm4 struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Addr      uint32
+}
+
+type egressLpm6 struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Addr      [4]uint32
+}
+
 type egressNode struct {
 	_     structs.HostLayout
 	V4    uint32
@@ -69,6 +81,16 @@ type egressNode struct {
 	Mac   [6]uint8
 	HasV4 uint8
 	HasV6 uint8
+}
+
+type egressPodDev struct {
+	_      structs.HostLayout
+	V4     uint32
+	V6     [4]uint32
+	HasV4  uint8
+	HasV6  uint8
+	PodSet uint8
+	Hold   uint8
 }
 
 type egressPoolIf struct {
@@ -104,6 +126,8 @@ type egressUnderlayKey struct {
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
 	egressMapAddrCfg        = "addr_cfg"
+	egressMapCluster4       = "cluster4"
+	egressMapCluster6       = "cluster6"
 	egressMapEgressCfg      = "egress_cfg"
 	egressMapEgressReasons  = "egress_reasons"
 	egressMapEgressScratch  = "egress_scratch"
@@ -111,6 +135,7 @@ const (
 	egressMapNodeByUnderlay = "node_by_underlay"
 	egressMapNodes          = "nodes"
 	egressMapPeerSeen       = "peer_seen"
+	egressMapPodDevs        = "pod_devs"
 	egressMapPoolIfs        = "pool_ifs"
 	egressMapReserved       = "reserved"
 	egressMapSlices         = "slices"
@@ -119,6 +144,7 @@ const (
 	egressProgPlAnnounceEth = "pl_announce_eth"
 	egressProgPlAnnounceL3  = "pl_announce_l3"
 	egressProgPlAnnounceTun = "pl_announce_tun"
+	egressProgPlPodTag      = "pl_pod_tag"
 	egressProgPlSteer       = "pl_steer"
 )
 
@@ -167,6 +193,7 @@ type egressProgramSpecs struct {
 	PlAnnounceEth *ebpf.ProgramSpec `ebpf:"pl_announce_eth"`
 	PlAnnounceL3  *ebpf.ProgramSpec `ebpf:"pl_announce_l3"`
 	PlAnnounceTun *ebpf.ProgramSpec `ebpf:"pl_announce_tun"`
+	PlPodTag      *ebpf.ProgramSpec `ebpf:"pl_pod_tag"`
 	PlSteer       *ebpf.ProgramSpec `ebpf:"pl_steer"`
 }
 
@@ -175,6 +202,8 @@ type egressProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type egressMapSpecs struct {
 	AddrCfg        *ebpf.MapSpec `ebpf:"addr_cfg"`
+	Cluster4       *ebpf.MapSpec `ebpf:"cluster4"`
+	Cluster6       *ebpf.MapSpec `ebpf:"cluster6"`
 	EgressCfg      *ebpf.MapSpec `ebpf:"egress_cfg"`
 	EgressReasons  *ebpf.MapSpec `ebpf:"egress_reasons"`
 	EgressScratch  *ebpf.MapSpec `ebpf:"egress_scratch"`
@@ -182,6 +211,7 @@ type egressMapSpecs struct {
 	NodeByUnderlay *ebpf.MapSpec `ebpf:"node_by_underlay"`
 	Nodes          *ebpf.MapSpec `ebpf:"nodes"`
 	PeerSeen       *ebpf.MapSpec `ebpf:"peer_seen"`
+	PodDevs        *ebpf.MapSpec `ebpf:"pod_devs"`
 	PoolIfs        *ebpf.MapSpec `ebpf:"pool_ifs"`
 	Reserved       *ebpf.MapSpec `ebpf:"reserved"`
 	Slices         *ebpf.MapSpec `ebpf:"slices"`
@@ -216,6 +246,8 @@ func (o *egressObjects) Close() error {
 // It can be passed to loadEgressObjects or ebpf.CollectionSpec.LoadAndAssign.
 type egressMaps struct {
 	AddrCfg        *ebpf.Map `ebpf:"addr_cfg"`
+	Cluster4       *ebpf.Map `ebpf:"cluster4"`
+	Cluster6       *ebpf.Map `ebpf:"cluster6"`
 	EgressCfg      *ebpf.Map `ebpf:"egress_cfg"`
 	EgressReasons  *ebpf.Map `ebpf:"egress_reasons"`
 	EgressScratch  *ebpf.Map `ebpf:"egress_scratch"`
@@ -223,6 +255,7 @@ type egressMaps struct {
 	NodeByUnderlay *ebpf.Map `ebpf:"node_by_underlay"`
 	Nodes          *ebpf.Map `ebpf:"nodes"`
 	PeerSeen       *ebpf.Map `ebpf:"peer_seen"`
+	PodDevs        *ebpf.Map `ebpf:"pod_devs"`
 	PoolIfs        *ebpf.Map `ebpf:"pool_ifs"`
 	Reserved       *ebpf.Map `ebpf:"reserved"`
 	Slices         *ebpf.Map `ebpf:"slices"`
@@ -233,6 +266,8 @@ type egressMaps struct {
 func (m *egressMaps) Close() error {
 	return _EgressClose(
 		m.AddrCfg,
+		m.Cluster4,
+		m.Cluster6,
 		m.EgressCfg,
 		m.EgressReasons,
 		m.EgressScratch,
@@ -240,6 +275,7 @@ func (m *egressMaps) Close() error {
 		m.NodeByUnderlay,
 		m.Nodes,
 		m.PeerSeen,
+		m.PodDevs,
 		m.PoolIfs,
 		m.Reserved,
 		m.Slices,
@@ -261,6 +297,7 @@ type egressPrograms struct {
 	PlAnnounceEth *ebpf.Program `ebpf:"pl_announce_eth"`
 	PlAnnounceL3  *ebpf.Program `ebpf:"pl_announce_l3"`
 	PlAnnounceTun *ebpf.Program `ebpf:"pl_announce_tun"`
+	PlPodTag      *ebpf.Program `ebpf:"pl_pod_tag"`
 	PlSteer       *ebpf.Program `ebpf:"pl_steer"`
 }
 
@@ -269,6 +306,7 @@ func (p *egressPrograms) Close() error {
 		p.PlAnnounceEth,
 		p.PlAnnounceL3,
 		p.PlAnnounceTun,
+		p.PlPodTag,
 		p.PlSteer,
 	)
 }

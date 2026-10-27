@@ -90,13 +90,21 @@ func watchRoutes(logger log.Logger, stop <-chan struct{}, pools func() map[int]b
 				logging.Info(logger, "op", "egressWatch", "watch", "routes", "error", err, "msg", "watch failed; resubscribing")
 			}})
 	}, func(u netlink.RouteUpdate) {
-		if poolRoute(u.Route, pools()) || (u.Type == unix.RTM_DELROUTE && ownTable(u.Route.Table)) {
+		if poolRoute(u.Route, pools()) || (u.Type == unix.RTM_DELROUTE && ownTable(u.Route.Table)) || clusterRoute(u.Route) {
 			kick()
 		}
 	}, kick)
 }
 
-// watchTunnel kicks when the tunnel device is deleted or set down.
+// clusterRoute reports whether a route change can change the cluster
+// networks (design 6.3): any route outside the local table and egress's
+// own.
+func clusterRoute(r netlink.Route) bool {
+	return r.Table != unix.RT_TABLE_LOCAL && !ownTable(r.Table)
+}
+
+// watchTunnel kicks when the tunnel device is deleted or set down, and
+// when a pod device (a veth or netkit with a peer namespace) comes or goes.
 func watchTunnel(logger log.Logger, stop <-chan struct{}, kick func()) {
 	watch(logger, "links", stop, func(done <-chan struct{}) (<-chan netlink.LinkUpdate, error) {
 		ch := make(chan netlink.LinkUpdate, 64)
@@ -106,6 +114,10 @@ func watchTunnel(logger log.Logger, stop <-chan struct{}, kick func()) {
 			}})
 	}, func(u netlink.LinkUpdate) {
 		if u.Link.Attrs().Name == datapath.TunnelName && (u.Header.Type == unix.RTM_DELLINK || u.IfInfomsg.Flags&unix.IFF_UP == 0) {
+			kick()
+		}
+		// A deletion carries no peer namespace: the peer went with it.
+		if t := u.Link.Type(); (t == "veth" || t == "netkit") && (u.Link.Attrs().NetNsID >= 0 || u.Header.Type == unix.RTM_DELLINK) {
 			kick()
 		}
 	}, kick)

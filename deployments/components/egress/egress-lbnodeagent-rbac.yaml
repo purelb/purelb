@@ -27,6 +27,15 @@ rules:
   verbs:
   - list
   - watch
+# The cluster networks pl_pod_tag lets a held pod reach include the
+# Service CIDRs.
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - servicecidrs
+  verbs:
+  - list
+  - watch
 - apiGroups:
   - purelb.io
   resources:

@@ -460,8 +460,10 @@ func settle(kicked func(time.Duration) bool) {
 }
 
 // TestNetnsWatchRoutes wakes the datapath for main-table routes out of a
-// pool interface and for routes deleted from the agent's own tables, and
-// for nothing else.
+// pool interface, for routes deleted from the agent's own tables, and for
+// any other route outside the local table, which may change the cluster
+// networks (design 6.3); not for routes added to its own tables or the
+// local table.
 func TestNetnsWatchRoutes(t *testing.T) {
 	sandbox(t)
 	pool0 := dummy(t, "pool0", "192.0.2.1/24", "2001:db8:1::1/64")
@@ -474,9 +476,11 @@ func TestNetnsWatchRoutes(t *testing.T) {
 	for _, r := range []*netlink.Route{
 		{Dst: cidrNet("203.0.113.0/24"), Gw: net.ParseIP("192.0.2.254"), LinkIndex: pool0},
 		{Dst: cidrNet("2001:db8:9::/64"), Gw: net.ParseIP("2001:db8:1::fe"), LinkIndex: pool0},
+		{Dst: cidrNet("203.0.113.0/24"), LinkIndex: eth0.Attrs().Index, Table: 100},
+		{Dst: cidrNet("198.18.0.0/24"), Gw: net.ParseIP("10.0.0.254"), LinkIndex: eth0.Attrs().Index},
 	} {
 		require.NoError(t, netlink.RouteAdd(r))
-		assert.True(t, kicked(2*time.Second), "a main-table route out of a pool interface: %s", r.Dst)
+		assert.True(t, kicked(2*time.Second), "%v", r)
 		settle(kicked)
 	}
 	own := []*netlink.Route{
@@ -485,11 +489,10 @@ func TestNetnsWatchRoutes(t *testing.T) {
 		{Dst: cidrNet("fd00::9/128"), Type: unix.RTN_THROW, Table: datapath.ProhibitTable},
 	}
 	for _, r := range append([]*netlink.Route{
-		{Dst: cidrNet("203.0.113.0/24"), LinkIndex: eth0.Attrs().Index, Table: 100},
-		{Dst: cidrNet("198.18.0.0/24"), Gw: net.ParseIP("10.0.0.254"), LinkIndex: eth0.Attrs().Index},
+		{Dst: cidrNet("192.0.2.77/32"), LinkIndex: pool0, Table: unix.RT_TABLE_LOCAL, Type: unix.RTN_LOCAL, Scope: netlink.SCOPE_HOST},
 	}, own...) {
 		require.NoError(t, netlink.RouteAdd(r))
-		assert.False(t, kicked(300*time.Millisecond), "added outside main, or not a pool interface: %v", r)
+		assert.False(t, kicked(300*time.Millisecond), "added to the local table or the agent's own: %v", r)
 	}
 	for _, r := range own {
 		require.NoError(t, netlink.RouteDel(r))
@@ -499,7 +502,8 @@ func TestNetnsWatchRoutes(t *testing.T) {
 }
 
 // TestNetnsWatchTunnel wakes the datapath when the tunnel device goes
-// down or away, and for no other device.
+// down or away, and when a pod device comes or goes, and for no other
+// device.
 func TestNetnsWatchTunnel(t *testing.T) {
 	sandbox(t)
 	tun := dummy(t, datapath.TunnelName)
@@ -518,6 +522,19 @@ func TestNetnsWatchTunnel(t *testing.T) {
 	settle(kicked)
 	require.NoError(t, netlink.LinkDel(l))
 	assert.True(t, kicked(2*time.Second), "the tunnel deleted")
+	settle(kicked)
+
+	// A pod device: a veth whose peer is in another namespace.
+	require.NoError(t, netlink.LinkAdd(&netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: "vlocal0"}, PeerName: "vlocal1"}))
+	assert.False(t, kicked(300*time.Millisecond), "a veth pair in this namespace isn't a pod's")
+	settle(kicked)
+	podNetns(t, "vpod0", "10.244.1.5/24")
+	assert.True(t, kicked(2*time.Second), "a pod device came")
+	settle(kicked)
+	v, err := netlink.LinkByName("vpod0")
+	require.NoError(t, err)
+	require.NoError(t, netlink.LinkDel(v))
+	assert.True(t, kicked(2*time.Second), "a pod device went")
 }
 
 // TestNetnsWatchNft wakes the datapath when something in the hardening

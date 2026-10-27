@@ -181,6 +181,7 @@ jobs:
           grep -q -- '--- PASS: TestNetnsTunnelEndToEnd' tunnel.out
           grep -q -- '--- PASS: TestNetnsHardening' tunnel.out
           grep -q -- '--- PASS: TestNetnsPoolTables' tunnel.out
+          grep -q -- '--- PASS: TestNetnsPodDevices' tunnel.out
 
       # The agent's own datapath apply, run without CAP_SYS_ADMIN as the
       # agent runs it: first apply, repeat, node changes, the tunnel deleted
@@ -199,6 +200,7 @@ jobs:
           grep -q -- '--- PASS: TestNetnsApplyDatapathHeals' agent.out
           grep -q -- '--- PASS: TestNetnsApplyDatapathAddresses' agent.out
           grep -q -- '--- PASS: TestNetnsApplyDatapathUplinks' agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapathPods' agent.out
 
       # Egress's addresses placed through the announcer's VIP path (D31).
       - name: Run the egress address placement test in a network namespace

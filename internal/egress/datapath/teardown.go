@@ -63,7 +63,7 @@ func RemovePins(pinDir string) error {
 		return nil
 	}
 	var errs []error
-	for _, prefix := range []string{"pl_announce-", "pl_steer-"} {
+	for _, prefix := range []string{"pl_announce-", "pl_steer-", "pl_pod_tag-"} {
 		if _, err := bpfpin.Sweep(pinDir, prefix, func(string) bool { return false }); err != nil {
 			errs = append(errs, err)
 		}

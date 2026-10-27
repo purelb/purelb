@@ -57,6 +57,14 @@ type dpWant struct {
 	// guardProgs its programs: pl_announce's uplinks, right behind it.
 	guardLinks []int
 	guardProgs []ebpf.ProgramID
+	// cluster are the cluster networks the API shows, nodeAddrs every
+	// Node's addresses (for the route rule, design 6.3).
+	cluster   []netip.Prefix
+	nodeAddrs map[netip.Addr]bool
+	// pods are this node's pods for pl_pod_tag; podsKnown is false until
+	// the pod-node state is planned, which keeps what the kernel has (D12).
+	pods      []dpPod
+	podsKnown bool
 }
 
 // dpPool is one pool interface and the families placed on it.
@@ -100,6 +108,8 @@ type dpState struct {
 	reports map[int]poolReport
 	// addrs are the address entries in the maps.
 	addrs map[netip.Addr]*datapath.AddressEntries
+	// netkit are the netkit pod devices pl_pod_tag skips, as last logged.
+	netkit map[string]bool
 }
 
 // poolReport is what a pool interface lacks: a default route in a family
@@ -126,6 +136,10 @@ func (a *Agent) syncDatapath() {
 	}
 	if a.guard != nil {
 		w.guardLinks, w.guardProgs = a.guard.Interfaces(), a.guard.ProgramIDs()
+	}
+	w.cluster, w.nodeAddrs = a.clusterAPI(s), nodeAddrs(s)
+	if a.podnode != nil {
+		w.pods, w.podsKnown = a.podsWant, true
 	}
 	for _, obj := range s.nodes.List() {
 		n := obj.(*corev1.Node)
@@ -356,6 +370,9 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		st.links[x.name], st.linkIfs[x.name] = l, tun.Attrs().Index
 	}
 	if err := a.syncUplinks(st, w); err != nil {
+		return c, err
+	}
+	if err := a.syncPodDevs(st, w); err != nil {
 		return c, err
 	}
 	c.EgressCapable = true

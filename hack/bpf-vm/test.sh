@@ -74,7 +74,9 @@ for k in $KERNELS; do
 		TestNetnsApplyDatapath TestNetnsApplyDatapathL2 TestNetnsApplyDatapathPools TestNetnsWatchRoutes \
 		TestNetnsWatchTunnel TestNetnsWatchNft TestNetnsApplyDatapathHeals TestNetnsApplyDatapathAddresses \
 		TestRecoverAddresses TestNetnsPlaceEgress TestNetnsApplyDatapathUplinks \
-		TestNetnsHardening TestNetnsAnnounceInTunnel TestNetnsPoolTables; do
+		TestNetnsHardening TestNetnsAnnounceInTunnel TestNetnsPoolTables \
+		TestPodTagSourceCheck TestPodTagNeighbourDiscovery TestPodTagHold TestNetnsPodDevices \
+		TestNetnsApplyDatapathPods; do
 		if ! grep -q -- "--- PASS: $t" "$log"; then
 			result=FAIL
 		fi

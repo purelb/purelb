@@ -138,8 +138,10 @@ type Agent struct {
 	// addrFlags lists the node's addresses and their IFA flags.
 	addrFlags func() (map[netip.Addr]int, error)
 
-	// podnode is the pod-node state last planned. Queue goroutine only.
-	podnode *podNode
+	// podnode is the pod-node state last planned, and podsWant its pods
+	// as the datapath last got them. Queue goroutine only.
+	podnode  *podNode
+	podsWant []dpPod
 
 	// faults are this node's address problems and conds its conditions,
 	// as last reported. Queue goroutine only.
@@ -184,6 +186,10 @@ type session struct {
 	clusterEgresses listers.ClusterEgressLister
 	namespaces      cache.Indexer
 	services        cache.Indexer
+	// For the cluster networks: the Service CIDRs (nil where the API
+	// doesn't serve them) and the API server's EndpointSlices.
+	serviceCIDRs cache.Indexer
+	apiServer    cache.Indexer
 }
 
 var (
@@ -396,7 +402,8 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 		UpdateFunc: func(o, n interface{}) {
 			on, nn := o.(*corev1.Node), n.(*corev1.Node)
 			if !equality.Semantic.DeepEqual(on.Status.Addresses, nn.Status.Addresses) ||
-				!equality.Semantic.DeepEqual(on.Labels, nn.Labels) {
+				!equality.Semantic.DeepEqual(on.Labels, nn.Labels) ||
+				!equality.Semantic.DeepEqual(on.Spec.PodCIDRs, nn.Spec.PodCIDRs) {
 				nodeChanged(n)
 			}
 		}})
@@ -478,7 +485,7 @@ func (a *Agent) stopSession() {
 	}
 	a.guarded = map[netip.Addr]bool{}
 	a.withdrawPlaced("egress disabled")
-	a.shared, a.faults, a.conds, a.podnode = nil, nil, nil, nil
+	a.shared, a.faults, a.conds, a.podnode, a.podsWant = nil, nil, nil, nil, nil
 	a.installed.Store(nil)
 	a.probing.Store(nil)
 	a.acks.Store(nil)
@@ -541,7 +548,7 @@ func underlay(nodes cache.Indexer, name string) *purelbv2.EgressUnderlay {
 }
 
 // slimNode is a Node informer transform keeping what egress reads: name,
-// UID, labels and addresses.
+// UID, labels, podCIDRs and addresses.
 func slimNode(obj interface{}) (interface{}, error) {
 	n, ok := obj.(*corev1.Node)
 	if !ok {
@@ -549,6 +556,7 @@ func slimNode(obj interface{}) (interface{}, error) {
 	}
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: n.Name, UID: n.UID, Labels: n.Labels, ResourceVersion: n.ResourceVersion},
+		Spec:       corev1.NodeSpec{PodCIDRs: n.Spec.PodCIDRs},
 		Status:     corev1.NodeStatus{Addresses: n.Status.Addresses},
 	}, nil
 }

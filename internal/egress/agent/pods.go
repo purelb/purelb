@@ -18,11 +18,14 @@ import (
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	kubeinformers "k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 
 	"purelb.io/internal/egress"
@@ -91,10 +94,52 @@ func (a *Agent) podNodeInformers(s *session, kf kubeinformers.SharedInformerFact
 	}
 	s.pods, s.namespaces, s.services = pods.GetIndexer(), nss.GetIndexer(), svcs.GetIndexer()
 	s.egresses, s.clusterEgresses = egs.Lister(), cegs.Lister()
-	return podNodeInformers{
+	inf := podNodeInformers{
 		start:  []func(<-chan struct{}){pf.Start, ef.Start},
 		synced: []cache.InformerSynced{pods.HasSynced, nss.HasSynced, svcs.HasSynced, egs.Informer().HasSynced, cegs.Informer().HasSynced},
-	}, nil
+	}
+
+	// The cluster networks (design 6.3): the Service CIDRs, and the API
+	// server's addresses, which may lie outside every cluster CIDR.
+	kickDP := cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(interface{}) { a.add(keyDatapath, false) },
+		UpdateFunc: func(_, _ interface{}) { a.add(keyDatapath, false) },
+		DeleteFunc: func(interface{}) { a.add(keyDatapath, false) },
+	}
+	af := kubeinformers.NewSharedInformerFactoryWithOptions(a.kube, resync, kubeinformers.WithNamespace(corev1.NamespaceDefault),
+		kubeinformers.WithTweakListOptions(func(o *metav1.ListOptions) {
+			o.LabelSelector = discoveryv1.LabelServiceName + "=kubernetes"
+		}))
+	eps := af.Discovery().V1().EndpointSlices().Informer()
+	_, _ = eps.AddEventHandler(kickDP)
+	s.apiServer = eps.GetIndexer()
+	inf.start = append(inf.start, af.Start)
+	inf.synced = append(inf.synced, eps.HasSynced)
+	if serviceCIDRsServed(a.kube) {
+		cidrs := kf.Networking().V1().ServiceCIDRs().Informer()
+		_, _ = cidrs.AddEventHandler(kickDP)
+		s.serviceCIDRs = cidrs.GetIndexer()
+		inf.synced = append(inf.synced, cidrs.HasSynced)
+	} else {
+		logging.Info(a.logger, "op", "egressStart", "node", a.node,
+			"msg", "the API serves no ServiceCIDRs (networking.k8s.io/v1): list the Service CIDRs in the LBNodeAgent's excludedNetworks")
+	}
+	return inf, nil
+}
+
+// serviceCIDRsServed reports whether the API serves networking.k8s.io/v1
+// ServiceCIDRs (Kubernetes 1.33 and later).
+func serviceCIDRsServed(kube kubernetes.Interface) bool {
+	res, err := kube.Discovery().ServerResourcesForGroupVersion(networkingv1.SchemeGroupVersion.String())
+	if err != nil {
+		return false
+	}
+	for _, r := range res.APIResources {
+		if r.Name == "servicecidrs" {
+			return true
+		}
+	}
+	return false
 }
 
 // syncPods recomputes the pod-node state.
@@ -103,7 +148,14 @@ func (a *Agent) syncPods() {
 	if s == nil || !s.synced.Load() {
 		return
 	}
-	pn := planPodNode(a.podNodeInput(s), a.podnode)
+	in := a.podNodeInput(s)
+	prev := a.podnode
+	if prev == nil {
+		// The session's first plan: keep the pod-set ids an earlier
+		// agent left in the pinned maps (D12).
+		prev = seedPodSets(in, recoveredPodSets(a.dp.pinRoot))
+	}
+	pn := planPodNode(in, prev)
 	if len(pn.short) > 0 && (a.podnode == nil || !slices.Equal(a.podnode.short, pn.short)) {
 		logging.Info(a.logger, "op", "egressPods", "node", a.node, "used", pn.used(), "capacity", slotBudget,
 			"short", pn.short, "msg", "slot budget exhausted: these get no slot")
@@ -112,6 +164,10 @@ func (a *Agent) syncPods() {
 	logging.Debug(a.logger, "op", "egressPods", "node", a.node, "slots", len(pn.slots), "podSets", len(pn.sets),
 		"pods", len(pn.pods), "retired", len(pn.retired))
 	a.add(keyNode, false) // capability.slots and SlotsExhausted
+	if pods := dpPods(pn); !slices.Equal(pods, a.podsWant) || a.podsWant == nil {
+		a.podsWant = pods
+		a.add(keyDatapath, false)
+	}
 }
 
 // podNodeInput gathers planPodNode's input from the session's caches.
