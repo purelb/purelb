@@ -37,6 +37,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"purelb.io/internal/bpfpin"
+	"purelb.io/internal/egress/datapath"
 	"purelb.io/internal/egresshook"
 	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -139,9 +140,11 @@ type Agent struct {
 	addrFlags func() (map[netip.Addr]int, error)
 
 	// podnode is the pod-node state last planned, and podsWant its pods
-	// as the datapath last got them. Queue goroutine only.
-	podnode  *podNode
-	podsWant []dpPod
+	// and stageWant its nft program as the datapath last got them. Queue
+	// goroutine only.
+	podnode   *podNode
+	podsWant  []dpPod
+	stageWant *datapath.PodStage
 
 	// faults are this node's address problems and conds its conditions,
 	// as last reported. Queue goroutine only.
@@ -485,7 +488,7 @@ func (a *Agent) stopSession() {
 	}
 	a.guarded = map[netip.Addr]bool{}
 	a.withdrawPlaced("egress disabled")
-	a.shared, a.faults, a.conds, a.podnode, a.podsWant = nil, nil, nil, nil, nil
+	a.shared, a.faults, a.conds, a.podnode, a.podsWant, a.stageWant = nil, nil, nil, nil, nil, nil
 	a.installed.Store(nil)
 	a.probing.Store(nil)
 	a.acks.Store(nil)
@@ -508,8 +511,9 @@ func (a *Agent) syncNode() {
 	if pn := a.podnode; pn != nil {
 		c.Slots.Used, c.Slots.PodSets = int32(pn.used()), int32(len(pn.sets))
 	}
-	st := &purelbv2.EgressNodeStateStatus{Capability: c, AddressFaults: a.faultList(),
-		Conditions: a.nodeConditions(c, a.health.Load(), a.podnode)}
+	h := a.health.Load()
+	st := &purelbv2.EgressNodeStateStatus{Capability: c, AddressFaults: a.faultList(h),
+		Conditions: a.nodeConditions(c, h, a.podnode)}
 	if acks := a.acks.Load(); acks != nil {
 		// Only what this node announces now: an address it holds but
 		// couldn't place isn't announced, and gates nothing (D6).

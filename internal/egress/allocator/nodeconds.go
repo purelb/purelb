@@ -159,7 +159,6 @@ func (r *Reconciler) nodeConditions(run *run, eps map[string]*purelbv2.EgressEnd
 		objs, _ := r.nodeStateIdx.ByIndex(idxFault, addr)
 		for _, o := range objs {
 			ns := o.(*purelbv2.EgressNodeState)
-			holders[ns.Name] = true
 			for _, f := range ns.Status.AddressFaults {
 				if f.Address != addr {
 					continue
@@ -172,7 +171,12 @@ func (r *Reconciler) nodeConditions(run *run, eps map[string]*purelbv2.EgressEnd
 					add(condAnnounced, f.Reason, addr, ns.Name)
 				case "GuardMapFull", "GuardStandingDown":
 					add(condGuarded, f.Reason, addr, ns.Name)
+				case "ProtocolUnsupported", "HelpersUnsupported":
+					// A pod node's, not a holder's.
+					add(condDatapathCompatible, f.Reason, addr, ns.Name)
+					continue
 				}
+				holders[ns.Name] = true
 			}
 		}
 		nodes := maps.Clone(holders)

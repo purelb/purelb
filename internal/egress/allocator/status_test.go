@@ -229,6 +229,26 @@ func TestPodNodeSlotsRollUp(t *testing.T) {
 	assert.Contains(t, c.Message, "nodes n1")
 }
 
+// A pod node's faults with an address fail DatapathCompatible, and don't
+// make it a holder: its NoGateway, a holder's problem, isn't reported.
+func TestPodNodeFaultsRollUp(t *testing.T) {
+	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
+		node("n1", true), pod("voice", "a-1", "n1", map[string]string{"app": "a"}), egressObj("voice", "sip", nil))
+	g.reconcile(t, "egress/voice/sip")
+	addr := g.ep(t).Spec.Address
+	for _, reason := range []string{"ProtocolUnsupported", "HelpersUnsupported"} {
+		g.status(t, "n1", purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{EgressCapable: true},
+			AddressFaults: []purelbv2.EgressAddressFault{{Address: addr, Reason: reason}},
+			Conditions:    []metav1.Condition{{Type: "DatapathReady", Status: metav1.ConditionFalse, Reason: "NoGateway"}}})
+		g.reconcile(t, "egress/voice/sip")
+		e := g.egress(t, "voice", "sip")
+		c := condition(t, e, condDatapathCompatible)
+		assert.Equal(t, reason, c.Reason)
+		assert.Equal(t, addr+": nodes n1", c.Message)
+		assert.NotEqual(t, "NoGateway", condition(t, e, condDatapathReady).Reason, "n1 is a pod node, not a holder")
+	}
+}
+
 // A higher-ranked policy taking every destination of a pod outranks the
 // lower one for that pod; one taking only some destinations leaves it
 // partially outranked.

@@ -195,7 +195,7 @@ func TestNetnsHardening(t *testing.T) {
 		Egress: []netip.Addr{netip.MustParseAddr("10.9.9.9"), netip.MustParseAddr("fd09::9")},
 		ServicePorts: []ServicePort{{Addr: netip.MustParseAddr("10.9.9.9"), Proto: unix.IPPROTO_TCP, Port: 8080},
 			{Addr: netip.MustParseAddr("fd09::9"), Proto: unix.IPPROTO_TCP, Port: 8080}}}
-	require.NoError(t, SyncHardening(nft, h))
+	require.NoError(t, SyncTable(nft, Table{Hardening: h}))
 
 	tbl := &nftables.Table{Family: nftables.TableFamilyINet, Name: NftTable}
 	chains, err := nft.ListChainsOfTableFamily(nftables.TableFamilyINet)
@@ -209,7 +209,7 @@ func TestNetnsHardening(t *testing.T) {
 		require.NoError(t, err)
 		rules[ch.Name] = len(r)
 	}
-	assert.Equal(t, map[string]int{"announce_in": 5, "tun_fwd": 2, "tun_in": 2, "tun_raw": 2, "tun_raw_out": 2}, rules,
+	assert.Equal(t, map[string]int{"announce_in": 5, "out_src": 5, "tun_fwd": 2, "tun_in": 2, "tun_raw": 2, "tun_raw_out": 2}, rules,
 		"the stale chain is gone; each family has its rules")
 
 	for _, f := range []struct {
@@ -237,17 +237,17 @@ func TestNetnsHardening(t *testing.T) {
 		})
 	}
 
-	// HardeningIntact: true as written, false for other inputs and after a
+	// TableIntact: true as written, false for other inputs and after a
 	// rule, an element or the whole table is deleted.
 	intact := func() bool {
-		ok, err := HardeningIntact(nft, h)
+		ok, err := TableIntact(nft, Table{Hardening: h})
 		require.NoError(t, err)
 		return ok
 	}
 	assert.True(t, intact())
 	other := h
 	other.Nodes = h.Nodes[:2]
-	ok, err := HardeningIntact(nft, other)
+	ok, err := TableIntact(nft, Table{Hardening: other})
 	require.NoError(t, err)
 	assert.False(t, ok, "another node set")
 	in, err := nft.ListChain(tbl, "tun_in")
@@ -257,7 +257,7 @@ func TestNetnsHardening(t *testing.T) {
 	require.NoError(t, nft.DelRule(r[0]))
 	require.NoError(t, nft.Flush())
 	assert.False(t, intact(), "a rule deleted")
-	require.NoError(t, SyncHardening(nft, h))
+	require.NoError(t, SyncTable(nft, Table{Hardening: h}))
 	assert.True(t, intact())
 	nodes4, err := nft.GetSetByName(tbl, "nodes4")
 	require.NoError(t, err)
@@ -270,10 +270,65 @@ func TestNetnsHardening(t *testing.T) {
 
 	// Replaced whole: an address no longer egress takes connections.
 	h.Egress, h.ServicePorts = nil, nil
-	require.NoError(t, SyncHardening(nft, h))
+	require.NoError(t, SyncTable(nft, Table{Hardening: h}))
 	assert.True(t, intact())
 	assert.NoError(t, dialable(c, "10.9.9.9", 8081))
 	assert.NoError(t, dialable(c, "fd09::9", 8081))
+}
+
+// tcpDialFrom is tcpDial from source address src.
+func tcpDialFrom(h *host, src, dst string, port int) error {
+	return h.in(func() error {
+		d := net.Dialer{Timeout: 300 * time.Millisecond, LocalAddr: &net.TCPAddr{IP: net.ParseIP(src)}}
+		c, err := d.Dial("tcp", net.JoinHostPort(dst, strconv.Itoa(port)))
+		if err == nil {
+			_ = c.Close()
+		}
+		return err
+	})
+}
+
+// TestNetnsOutSrc: the host never sources an egress address (D20), but for
+// its own NA and a Service's replies on a shared one. The egress addresses
+// are on the link, so c resolves them, the IPv6 one by ND under the rule.
+func TestNetnsOutSrc(t *testing.T) {
+	netnsOrSkip(t)
+	b, c := newHost(t, "b"), newHost(t, "c")
+	wire(t, c, "c0", b, "b1")
+	for _, x := range []struct {
+		h         *host
+		dev, cidr string
+	}{
+		{b, "b1", "10.0.2.2/24"}, {b, "b1", "fd02::2/64"}, {b, "b1", "10.0.2.9/32"}, {b, "b1", "fd02::9/128"},
+		{c, "c0", "10.0.2.3/24"}, {c, "c0", "fd02::3/64"},
+	} {
+		x.h.addr(t, x.dev, x.cidr)
+	}
+	tcpListen(t, b, 8080)
+	tcpListen(t, c, 8081)
+	for _, f := range []struct{ eg, own, c string }{{"10.0.2.9", "10.0.2.2", "10.0.2.3"}, {"fd02::9", "fd02::2", "fd02::3"}} {
+		require.NoError(t, dialable(c, f.c, 8081), "baseline")
+		require.NoError(t, tcpDialFrom(b, f.eg, f.c, 8081), "baseline: from the egress address")
+	}
+
+	nft, err := nftables.New(nftables.WithNetNSFd(int(b.ns)))
+	require.NoError(t, err)
+	eg4, eg6 := netip.MustParseAddr("10.0.2.9"), netip.MustParseAddr("fd02::9")
+	require.NoError(t, SyncTable(nft, Table{Hardening: Hardening{TunnelPort: 6082, Egress: []netip.Addr{eg4, eg6},
+		ServicePorts: []ServicePort{{Addr: eg4, Proto: unix.IPPROTO_TCP, Port: 8080}, {Addr: eg6, Proto: unix.IPPROTO_TCP, Port: 8080}}}}))
+	// c forgets b's addresses: it has to resolve them again.
+	neigh, err := c.nl.NeighList(c.link(t, "c0").Attrs().Index, netlink.FAMILY_ALL)
+	require.NoError(t, err)
+	for _, n := range neigh {
+		_ = c.nl.NeighDel(&n)
+	}
+	for _, f := range []struct{ name, eg, own, c string }{{"IPv4", "10.0.2.9", "10.0.2.2", "10.0.2.3"}, {"IPv6", "fd02::9", "fd02::2", "fd02::3"}} {
+		t.Run(f.name, func(t *testing.T) {
+			assert.NoError(t, dialable(c, f.eg, 8080), "a Service port of a shared address: resolved, and its replies leave")
+			assert.Error(t, tcpDialFrom(b, f.eg, f.c, 8081), "a connection from the egress address")
+			assert.NoError(t, tcpDialFrom(b, f.own, f.c, 8081), "from the node's own address")
+		})
+	}
 }
 
 // TestNetnsAnnounceInTunnel drops new connections arriving through the
@@ -292,7 +347,7 @@ func TestNetnsAnnounceInTunnel(t *testing.T) {
 	require.NoError(t, dialable(c, "fd02::2", 8081), "before the chains")
 	nft, err := nftables.New(nftables.WithNetNSFd(int(b.ns)))
 	require.NoError(t, err)
-	require.NoError(t, SyncHardening(nft, Hardening{TunnelPort: 6082}))
+	require.NoError(t, SyncTable(nft, Table{Hardening: Hardening{TunnelPort: 6082}}))
 	assert.Error(t, tcpDial(c, "10.0.2.2", 8081))
 	assert.Error(t, tcpDial(c, "fd02::2", 8081))
 }

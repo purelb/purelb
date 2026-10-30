@@ -543,7 +543,7 @@ func TestNetnsWatchNft(t *testing.T) {
 	sandbox(t)
 	c, err := nftables.New()
 	require.NoError(t, err)
-	require.NoError(t, datapath.SyncHardening(c, datapath.Hardening{TunnelPort: 6082}))
+	require.NoError(t, datapath.SyncTable(c, datapath.Table{Hardening: datapath.Hardening{TunnelPort: 6082}}))
 	kicked := runWatcher(t, func(stop <-chan struct{}, kick func()) { watchNft(log.NewNopLogger(), stop, kick) })
 
 	other := c.AddTable(&nftables.Table{Family: nftables.TableFamilyINet, Name: "other"})

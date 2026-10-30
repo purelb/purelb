@@ -16,6 +16,7 @@ package agent
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -52,12 +53,15 @@ type dpHealth struct {
 	// unreachable are the tunnel peers not answering probes, of probed.
 	unreachable []string
 	probed      int
+	// podFaults are the pod-node stage's address faults: port-less
+	// traffic on a slice (D4), missing helpers (D23).
+	podFaults map[netip.Addr]purelbv2.EgressAddressFault
 }
 
 // health builds the datapath's health from its last apply. Datapath
 // goroutine only.
 func health(st *dpState, w dpWant, err error) *dpHealth {
-	h := &dpHealth{encryption: st.encryption}
+	h := &dpHealth{encryption: st.encryption, podFaults: maps.Clone(st.podFaults)}
 	if err != nil {
 		h.applyErr = err.Error()
 	}
@@ -155,16 +159,20 @@ func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth, pn *po
 	return slices.Clone(a.conds)
 }
 
-// faultList is a.faults in address order.
-func (a *Agent) faultList() []purelbv2.EgressAddressFault {
-	addrs := make([]netip.Addr, 0, len(a.faults))
-	for addr := range a.faults {
-		addrs = append(addrs, addr)
+// faultList is a.faults and the datapath's pod-node faults (h), in
+// address order: an address can have one of each.
+func (a *Agent) faultList(h *dpHealth) []purelbv2.EgressAddressFault {
+	out := slices.Collect(maps.Values(a.faults))
+	if h != nil {
+		out = append(out, slices.Collect(maps.Values(h.podFaults))...)
 	}
-	slices.SortFunc(addrs, func(x, y netip.Addr) int { return x.Compare(y) })
-	out := make([]purelbv2.EgressAddressFault, 0, len(addrs))
-	for _, addr := range addrs {
-		out = append(out, a.faults[addr])
-	}
+	slices.SortFunc(out, func(x, y purelbv2.EgressAddressFault) int {
+		ax, _ := netip.ParseAddr(x.Address)
+		ay, _ := netip.ParseAddr(y.Address)
+		if c := ax.Compare(ay); c != 0 {
+			return c
+		}
+		return strings.Compare(x.Reason, y.Reason)
+	})
 	return out
 }

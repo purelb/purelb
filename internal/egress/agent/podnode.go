@@ -52,7 +52,10 @@ type slot struct {
 type podSet struct {
 	key      string
 	policies []egress.PolicyRef // in rank order
-	reserved string             // the pod holding reserved ports, or ""
+	// identities are the pods' PerPod identity under each policy, "" for
+	// the others.
+	identities []string
+	reserved   string // the pod holding reserved ports, or ""
 }
 
 // podState is what a pod node does with one of its pods.
@@ -95,6 +98,8 @@ type pnPolicy struct {
 	// pods selects the policy's pods: its podSelector, or its serviceRef
 	// Service's selector.
 	pods labels.Selector
+	// addrs are its Active addresses: the families it covers.
+	addrs []netip.Addr
 	// ClusterEgress only: the namespaces it selects from, and its group.
 	namespaces   labels.Selector
 	admittedOnly bool
@@ -176,7 +181,7 @@ func planPodNode(in pnInput, prev *podNode) *podNode {
 		}
 		name := pod.Namespace + "/" + pod.Name
 		st := podState{ips: podIPs(pod)}
-		var parts []string
+		var parts, ids []string
 		var refs []egress.PolicyRef
 		reserved := ""
 		for _, p := range policies {
@@ -194,22 +199,24 @@ func planPodNode(in pnInput, prev *podNode) *podNode {
 			if !ready && p.failClosed() {
 				st.hold = true
 			}
-			part := p.ref.String()
+			part, id := p.ref.String(), ""
 			if p.perPod() {
-				part += "#" + p.identity(pod)
+				id = p.identity(pod)
+				part += "#" + id
 			}
 			if reservedBy[p.ref.String()+"/"+p.identity(pod)] {
 				reserved = name
 			}
 			parts = append(parts, part)
 			refs = append(refs, p.ref)
+			ids = append(ids, id)
 		}
 		if len(parts) > 0 {
 			key := strings.Join(parts, ",")
 			if reserved != "" {
 				key += "|" + reserved
 			}
-			wantSets[key] = podSet{key: key, policies: refs, reserved: reserved}
+			wantSets[key] = podSet{key: key, policies: refs, identities: ids, reserved: reserved}
 			podSetKey[name] = key
 		}
 		pn.pods[name] = st
@@ -301,9 +308,18 @@ func planPodNode(in pnInput, prev *podNode) *podNode {
 		pn.setIDs[ps.key], pn.sets[id], taken[id] = id, ps, true
 	}
 
+	failClosed := map[egress.PolicyRef]bool{}
+	for _, p := range policies {
+		failClosed[p.ref] = p.failClosed()
+	}
 	for name, key := range podSetKey {
 		st := pn.pods[name]
 		st.podSet = pn.setIDs[key]
+		// Without a pod-set id its traffic isn't classified at all: held,
+		// if a FailClosed policy selects it.
+		if st.podSet == 0 && slices.ContainsFunc(wantSets[key].policies, func(r egress.PolicyRef) bool { return failClosed[r] }) {
+			st.hold = true
+		}
 		pn.pods[name] = st
 	}
 	sort.Strings(pn.short)

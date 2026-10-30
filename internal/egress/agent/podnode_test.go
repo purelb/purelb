@@ -242,6 +242,27 @@ func TestPlanPodNodeBudget(t *testing.T) {
 	pn := planPodNode(in, nil)
 	assert.Equal(t, 127, pn.used())
 	assert.Len(t, pn.short, 1, "64 slots + 64 pod-sets is one more than 127")
+	// The pod left without a pod-set isn't classified at all: held, as
+	// its policy is FailClosed.
+	unclassified := func(pn *podNode) (n int, held bool) {
+		for _, st := range pn.pods {
+			if st.podSet == 0 {
+				n, held = n+1, st.hold
+			}
+		}
+		return n, held
+	}
+	n, held := unclassified(pn)
+	assert.Equal(t, 1, n)
+	assert.True(t, held, "FailClosed, without a pod-set")
+	for _, p := range policies {
+		p.spec.FailurePolicy = "FailOpen"
+	}
+	_, held = unclassified(planPodNode(in, nil))
+	assert.False(t, held, "FailOpen, without a pod-set")
+	for _, p := range policies {
+		p.spec.FailurePolicy = ""
+	}
 
 	in.reservedCluster = 10
 	pn = planPodNode(in, nil)

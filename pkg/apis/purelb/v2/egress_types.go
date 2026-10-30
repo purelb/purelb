@@ -789,7 +789,8 @@ type EgressNodeStateStatus struct {
 	Drained []EgressDrained `json:"drained,omitempty"`
 
 	// AddressFaults lists this node's problems with egress addresses it
-	// holds or should hold, which the allocator reports on the policies.
+	// holds or should hold, or its pods' traffic takes, which the
+	// allocator reports on the policies.
 	// +kubebuilder:validation:MaxItems=4096
 	// +optional
 	AddressFaults []EgressAddressFault `json:"addressFaults,omitempty"`
@@ -820,8 +821,11 @@ type EgressAddressFault struct {
 	// Reason: DADFailed (another host has the address), AddressAddFailed
 	// (it couldn't be placed), GuardMapFull (the address guard has no
 	// room for its entries), GuardStandingDown (the fail-closed guard
-	// isn't working, so a routed address isn't advertised here).
-	// +kubebuilder:validation:Enum=DADFailed;AddressAddFailed;GuardMapFull;GuardStandingDown
+	// isn't working, so a routed address isn't advertised here);
+	// ProtocolUnsupported (this node's pods sent protocols without ports
+	// to the address's slice) and HelpersUnsupported (a helper its pods'
+	// policy asks for can't run here), as a pod node.
+	// +kubebuilder:validation:Enum=DADFailed;AddressAddFailed;GuardMapFull;GuardStandingDown;ProtocolUnsupported;HelpersUnsupported
 	Reason string `json:"reason"`
 	// +kubebuilder:validation:MaxLength=1024
 	// +optional

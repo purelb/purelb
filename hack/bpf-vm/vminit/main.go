@@ -146,7 +146,7 @@ func runInit() {
 			cmd.Dir = "/tmp"
 			cmd.Env = append(os.Environ(), "HOME=/tmp", "TMPDIR=/tmp",
 				"ADDRGUARD_BPF_TESTS=required", "ADDRGUARD_NETNS_TESTS=required",
-				"EGRESS_BPF_TESTS=required", "PURELB_NETNS_TESTS=required")
+				"EGRESS_BPF_TESTS=required", "PURELB_NETNS_TESTS=required", "EGRESS_HELPER_TESTS=required")
 			rc := 0
 			if err := cmd.Run(); err != nil {
 				rc = 1

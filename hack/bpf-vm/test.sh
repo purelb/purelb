@@ -52,7 +52,7 @@ bpf,net_admin,sys_admin,net_raw /t/addrguard.test -test.v -test.run ^TestAttache
 bpf,net_admin,sys_admin /t/bpfpin.test -test.v
 bpf,net_admin /t/datapath.test -test.v -test.skip ^TestNetns
 bpf,net_admin,sys_admin,net_raw /t/datapath.test -test.v -test.run ^TestNetns
-bpf,net_admin,sys_admin /t/agent.test -test.v -test.run ^TestNetns
+bpf,net_admin,sys_admin,net_raw /t/agent.test -test.v -test.run ^TestNetns
 net_admin,sys_admin /t/local.test -test.v -test.run ^TestNetns
 CMDS
 
@@ -76,7 +76,7 @@ for k in $KERNELS; do
 		TestRecoverAddresses TestNetnsPlaceEgress TestNetnsApplyDatapathUplinks \
 		TestNetnsHardening TestNetnsAnnounceInTunnel TestNetnsPoolTables \
 		TestPodTagSourceCheck TestPodTagNeighbourDiscovery TestPodTagHold TestNetnsPodDevices \
-		TestNetnsApplyDatapathPods; do
+		TestNetnsApplyDatapathPods TestIntervals TestNetnsPodStage TestNetnsPodStageHelper TestNetnsOutSrc; do
 		if ! grep -q -- "--- PASS: $t" "$log"; then
 			result=FAIL
 		fi

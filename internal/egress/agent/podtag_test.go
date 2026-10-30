@@ -19,6 +19,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -34,12 +35,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"purelb.io/internal/egress"
+	"purelb.io/internal/egress/datapath"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
 // podNetns makes a pod: a network namespace with eth0 holding addrs, its
 // host side vethName in this one. It returns the host side's ifindex.
 func podNetns(t *testing.T, vethName string, addrs ...string) int {
+	t.Helper()
+	ifindex, _ := podNetnsAt(t, vethName, addrs...)
+	return ifindex
+}
+
+// podNetnsAt is podNetns, also returning the pod's namespace.
+func podNetnsAt(t *testing.T, vethName string, addrs ...string) (int, netns.NsHandle) {
 	t.Helper()
 	here, err := netns.Get()
 	require.NoError(t, err)
@@ -65,7 +74,7 @@ func podNetns(t *testing.T, vethName string, addrs ...string) int {
 	host, err := netlink.LinkByName(vethName)
 	require.NoError(t, err)
 	require.NoError(t, netlink.LinkSetUp(host))
-	return host.Attrs().Index
+	return host.Attrs().Index, pod
 }
 
 // The real apply tags a pod's host-side device: its pod_devs entry and
@@ -79,12 +88,23 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	require.NoError(t, netlink.RouteAdd(&netlink.Route{LinkIndex: eth0.Attrs().Index, Gw: net.ParseIP("10.0.0.254")}))
 	flannel := dummy(t, "flannel.1")
 	require.NoError(t, netlink.RouteAdd(&netlink.Route{LinkIndex: flannel, Dst: cidrNet("10.244.2.0/24")}))
-	veth := podNetns(t, "vpod0", "10.244.1.5/24", "fd04:0:0:1::5/64")
+	veth, podNS := podNetnsAt(t, "vpod0", "10.244.1.5/24", "fd04:0:0:1::5/64")
 	pod4, pod6 := netip.MustParseAddr("10.244.1.5"), netip.MustParseAddr("fd04:0:0:1::5")
 	pinned := func() bool {
 		_, err := os.Stat(filepath.Join(dir, "pl_pod_tag-vpod0"))
 		return err == nil
 	}
+
+	// The pod stage: pod-set 3, a slice of 192.0.2.1 with FTP's helper,
+	// whose NAT module isn't loaded here.
+	defer func(m string) { sysModule = m }(sysModule)
+	sysModule = t.TempDir()
+	eg := netip.MustParseAddr("192.0.2.1")
+	stage := &datapath.PodStage{SourceIP: true, Pods: map[netip.Addr]uint8{pod4: 3, pod6: 3}, PodSets: map[uint8][]string{3: {"p0"}},
+		Policies: map[string]datapath.Policy{"p0": {V4: &datapath.PolicyFamily{
+			Include: []datapath.Destination{{Prefixes: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}}}, Slot: 4, Address: eg}}},
+		Slots: map[uint8]datapath.Slot{4: {Addr: eg, First: 20480, Last: 24575,
+			Helpers: []datapath.Helper{{Name: "ftp", Proto: unix.IPPROTO_TCP, Port: 21}}}}}
 
 	a := newNetnsAgent(dir)
 	w := want(node("node-b", "10.0.0.2", "fd00::2"))
@@ -92,7 +112,23 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	w.podsKnown = true
 	w.pods = []dpPod{{name: "voice/a", v4: pod4, v6: pod6, podSet: 3, hold: true},
 		{name: "voice/unwired", v4: netip.MustParseAddr("10.244.1.9")}}
+	w.stage = stage
 	apply(t, a, w)
+	// The table: the stage with the cluster networks, the slot's MSS from
+	// the tunnel to node-b (a 1500-byte eth0, less L3 Geneve over IPv4,
+	// less 40), and no helper, which is reported instead.
+	written := a.dp.table.Pods
+	require.NotNil(t, written)
+	assert.Contains(t, written.Cluster, netip.MustParsePrefix("10.96.0.0/12"))
+	assert.Contains(t, written.Cluster, netip.MustParsePrefix("10.244.2.0/24"))
+	assert.Equal(t, uint16(1500-36-40), written.Slots[4].MSS)
+	assert.Empty(t, written.Slots[4].Helpers)
+	assert.Equal(t, "HelpersUnsupported", a.dp.podFaults[eg].Reason)
+	assert.NotEmpty(t, a.dp.podFaults[eg].Message, "why it can't run")
+	assert.Len(t, stage.Slots[4].Helpers, 1, "the queue goroutine's plan is untouched")
+	intact, err := datapath.TableIntact(a.dp.nft, *a.dp.table)
+	require.NoError(t, err)
+	assert.True(t, intact)
 	tag := progID(t, a.dp.objs.PlPodTag)
 	assert.Equal(t, []ebpf.ProgramID{tag}, chain(t, veth, ebpf.AttachTCXIngress))
 	assert.True(t, pinned())
@@ -115,17 +151,62 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	b := newNetnsAgent(dir)
 	early := w
 	early.pods, early.podsKnown = nil, false
+	early.stage = nil
 	apply(t, b, early)
 	assert.Equal(t, []ebpf.ProgramID{tag}, chain(t, veth, ebpf.AttachTCXIngress),
 		"the earlier agent's program, on the shared pinned maps")
+	intact, err = datapath.TableIntact(b.dp.nft, *a.dp.table)
+	require.NoError(t, err)
+	assert.True(t, intact, "the earlier agent's table, pod stage and all")
 	devs, err = b.dp.objs.RecoverPodDevs()
 	require.NoError(t, err)
 	assert.Len(t, devs, 1, "kept")
 	apply(t, b, w)
+	require.NotNil(t, b.dp.table.Pods, "rewritten once planned")
 	again, _ := pinnedLink(t, filepath.Join(dir, "pl_pod_tag-vpod0"))
 	assert.Equal(t, id, again, "the same link")
 	assert.Equal(t, []ebpf.ProgramID{progID(t, b.dp.objs.PlPodTag)}, chain(t, veth, ebpf.AttachTCXIngress),
 		"now running this agent's program")
+
+	// A protocol without ports from the pod to the slice's destinations is
+	// dropped and reported (D4): ProtocolUnsupported on the address.
+	w.pods[0].hold = false
+	apply(t, b, w)
+	gw, err := netlink.ParseAddr("10.244.1.1/24")
+	require.NoError(t, err)
+	require.NoError(t, netlink.AddrAdd(&netlink.Veth{LinkAttrs: netlink.LinkAttrs{Index: veth}}, gw))
+	ph, err := netlink.NewHandleAt(podNS, unix.NETLINK_ROUTE)
+	require.NoError(t, err)
+	defer ph.Close()
+	require.NoError(t, ph.RouteAdd(&netlink.Route{Gw: net.ParseIP("10.244.1.1")}))
+	sent := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread() // discarded with the goroutine
+		if err := netns.Set(podNS); err != nil {
+			sent <- err
+			return
+		}
+		c, err := net.Dial("ip4:253", "203.0.113.7")
+		if err == nil {
+			for i := 0; i < 3 && err == nil; i++ {
+				_, err = c.Write([]byte("portless"))
+			}
+			_ = c.Close()
+		}
+		sent <- err
+	}()
+	require.NoError(t, <-sent)
+	// Polled here, not in require.Eventually: its condition runs on another
+	// goroutine, outside this thread's namespace, and the agent's nft calls
+	// would reach the host's.
+	for end := time.Now().Add(5 * time.Second); b.dp.podFaults[eg].Reason != "ProtocolUnsupported" && time.Now().Before(end); {
+		time.Sleep(100 * time.Millisecond)
+		apply(t, b, w)
+	}
+	require.Equal(t, "ProtocolUnsupported", b.dp.podFaults[eg].Reason)
+	faults := b.faultList(health(b.dp, w, nil))
+	assert.Contains(t, faults, purelbv2.EgressAddressFault{Address: "192.0.2.1", Reason: "ProtocolUnsupported",
+		Message: b.dp.podFaults[eg].Message})
 
 	// Gone: entry, link and pin.
 	w.pods = nil

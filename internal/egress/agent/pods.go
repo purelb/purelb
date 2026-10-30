@@ -15,6 +15,8 @@
 package agent
 
 import (
+	"net/netip"
+	"reflect"
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
@@ -164,8 +166,9 @@ func (a *Agent) syncPods() {
 	logging.Debug(a.logger, "op", "egressPods", "node", a.node, "slots", len(pn.slots), "podSets", len(pn.sets),
 		"pods", len(pn.pods), "retired", len(pn.retired))
 	a.add(keyNode, false) // capability.slots and SlotsExhausted
-	if pods := dpPods(pn); !slices.Equal(pods, a.podsWant) || a.podsWant == nil {
-		a.podsWant = pods
+	pods, stage := dpPods(pn), stagePlan(pn, in, markShift(s.spec))
+	if !slices.Equal(pods, a.podsWant) || a.podsWant == nil || !reflect.DeepEqual(stage, a.stageWant) {
+		a.podsWant, a.stageWant = pods, stage
 		a.add(keyDatapath, false)
 	}
 }
@@ -199,12 +202,16 @@ func (a *Agent) podNodeInput(s *session) pnInput {
 	// each address names its policy and resolved group.
 	eas, _ := s.addresses.List(labels.Everything())
 	groupOf := map[egress.PolicyRef]string{}
+	addrs := map[egress.PolicyRef][]netip.Addr{}
 	for _, ea := range eas {
 		ref := egress.PolicyRef{Kind: ea.Labels[egress.LabelKind], Namespace: ea.Labels[egress.LabelNamespace],
 			Name: ea.Labels[egress.LabelName]}
 		in.owners[ea.Name] = ref
 		if ea.Spec.State == "Active" {
 			groupOf[ref] = ea.Spec.ServiceGroup
+			if addr, err := netip.ParseAddr(ea.Spec.Address); err == nil {
+				addrs[ref] = append(addrs[ref], addr)
+			}
 		}
 	}
 	for ref, group := range groupOf {
@@ -213,6 +220,8 @@ func (a *Agent) podNodeInput(s *session) pnInput {
 			sg = d.groups[group]
 		}
 		if p := a.pnPolicy(s, ref, group, sg); p != nil {
+			p.addrs = addrs[ref]
+			slices.SortFunc(p.addrs, netip.Addr.Compare)
 			in.policies = append(in.policies, p)
 		}
 	}
