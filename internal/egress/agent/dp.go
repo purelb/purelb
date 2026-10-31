@@ -67,6 +67,8 @@ type dpWant struct {
 	pods      []dpPod
 	stage     *datapath.PodStage
 	podsKnown bool
+	// steer is where each of stage's slots goes (D1, design 6.8).
+	steer map[uint8]dpSteer
 }
 
 // dpPool is one pool interface and the families placed on it.
@@ -148,7 +150,8 @@ func (a *Agent) syncDatapath() {
 	}
 	w.cluster, w.nodeAddrs = a.clusterAPI(s), nodeAddrs(s)
 	if a.podnode != nil {
-		w.pods, w.stage, w.podsKnown = a.podsWant, a.stageWant, true
+		w.steer = a.steering(s, a.stageWant)
+		w.pods, w.stage, w.podsKnown = a.podsWant, steeredStage(a.stageWant, w.steer), true
 	}
 	for _, obj := range s.nodes.List() {
 		n := obj.(*corev1.Node)
@@ -182,7 +185,10 @@ func (a *Agent) syncDatapath() {
 		} else {
 			// Installed: the generations it covers may be acked, and the
 			// addresses it holds placed.
-			acks := w.hold.acks
+			acks := slices.Clone(w.hold.acks)
+			for i := range acks {
+				acks[i].MTU = int32(holderMTU(a.dp, acks[i].Address))
+			}
 			a.acks.Store(&acks)
 			a.installedHeld(w)
 		}
@@ -246,10 +252,17 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	if w.spec.TunnelPort != 0 {
 		port = uint16(w.spec.TunnelPort)
 	}
+	// The cluster networks: the stage's sets and the target tables'
+	// throws (design 6.3).
+	routes, err := datapath.ClusterRoutes(st.nl, w.nodeAddrs)
+	if err != nil {
+		return c, fmt.Errorf("reading the routes: %w", err)
+	}
+	cluster := append(slices.Clone(w.cluster), routes...)
 	// The hardening chains before the tunnel opens its port (design 6.12),
 	// the stage's MSS from the mode last resolved; again once the tunnel
 	// resolves another.
-	if err := a.syncTable(st, w, port, st.mode); err != nil {
+	if err := a.syncTable(st, w, port, st.mode, cluster); err != nil {
 		return c, err
 	}
 	mode, tun, err := datapath.EnsureTunnel(st.nl, w.spec.TunnelEncapsulation, port, datapath.TunnelMAC(self))
@@ -257,7 +270,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		return c, err
 	}
 	if mode != st.tableMode {
-		if err := a.syncTable(st, w, port, mode); err != nil {
+		if err := a.syncTable(st, w, port, mode, cluster); err != nil {
 			return c, err
 		}
 	}
@@ -286,7 +299,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 
 	// Every node first, so no tunnel packet from a node is taken for a
 	// forged one once pl_announce_tun is attached (design 6.5).
-	var peers6, underlay []netip.Addr
+	var peers6 []netip.Addr
 	want := map[uint64]datapath.Node{}
 	selfNode := datapath.Node{}
 	for _, n := range w.nodes {
@@ -297,11 +310,6 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 			continue
 		}
 		want[id] = dn
-		for _, ip := range []netip.Addr{n.v4, n.v6} {
-			if ip.IsValid() {
-				underlay = append(underlay, ip)
-			}
-		}
 		if n.v6.IsValid() {
 			peers6 = append(peers6, n.v6)
 		}
@@ -328,8 +336,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		st.nodes[id] = n
 	}
 	st.encryption = underlayEncryption(st.nl)
-	errs = append(errs, datapath.SyncThrows(st.nl, underlay))
-	errs = append(errs, a.syncPools(st, w))
+	errs = append(errs, a.syncPools(st, w, cluster))
 	// A local address forwards transit in its pool interface's table.
 	addrs := maps.Clone(w.hold.addrs)
 	for addr, ifindex := range w.hold.ifaces {
@@ -382,6 +389,13 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	if err := a.syncPodDevs(st, w); err != nil {
 		return c, err
 	}
+	// Until the pod-node state is planned (an agent restart), the rules,
+	// tables and steering an earlier agent left are kept (D12).
+	if w.podsKnown {
+		if err := a.syncSteering(st, w, addrs, cluster, mode, tun); err != nil {
+			return c, err
+		}
+	}
 	c.EgressCapable = true
 	logging.Debug(a.logger, "op", "egressDatapath", "node", a.node, "tunnel", mode, "port", port,
 		"nodes", len(st.nodes), "pinned", st.pinDir != "", "msg", "datapath applied")
@@ -429,7 +443,7 @@ var sysModule = "/sys/module"
 // firewall flushing the ruleset), which is logged. Until the pod-node
 // state is planned (an agent restart), a table the kernel holds is kept
 // (D12). The port-less counts are read first: a rewrite resets them.
-func (a *Agent) syncTable(st *dpState, w dpWant, port uint16, mode string) error {
+func (a *Agent) syncTable(st *dpState, w dpWant, port uint16, mode string, cluster []netip.Prefix) error {
 	if st.nft == nil {
 		c, err := datapath.NftConn()
 		if err != nil {
@@ -458,11 +472,7 @@ func (a *Agent) syncTable(st *dpState, w dpWant, port uint16, mode string) error
 			}
 		}
 	} else if w.stage != nil {
-		stage, err := a.tableStage(st, w, mode, faults)
-		if err != nil {
-			return err
-		}
-		t.Pods = stage
+		t.Pods = a.tableStage(st, w, mode, cluster, faults)
 	}
 
 	write := st.table == nil || !reflect.DeepEqual(*st.table, t)
@@ -547,37 +557,27 @@ func (a *Agent) readPortless(st *dpState, stage datapath.PodStage) error {
 // tableStage is w's pod-node stage as the kernel can run it: with the
 // cluster networks (as pl_pod_tag has them), each slot's MSS, and only the
 // helpers that are usable, the others reported in faults.
-func (a *Agent) tableStage(st *dpState, w dpWant, mode string, faults map[netip.Addr]purelbv2.EgressAddressFault) (*datapath.PodStage, error) {
+func (a *Agent) tableStage(st *dpState, w dpWant, mode string, cluster []netip.Prefix,
+	faults map[netip.Addr]purelbv2.EgressAddressFault) *datapath.PodStage {
 	stage := *w.stage
-	routes, err := datapath.ClusterRoutes(st.nl, w.nodeAddrs)
-	if err != nil {
-		return nil, fmt.Errorf("reading the routes: %w", err)
-	}
-	stage.Cluster = append(slices.Clone(w.cluster), routes...)
-
-	var self datapath.Node
-	var peers []datapath.Node
-	for _, n := range w.nodes {
-		if n.name == w.self {
-			self = datapath.Node{V4: n.v4, V6: n.v6}
-		} else {
-			peers = append(peers, datapath.Node{V4: n.v4, V6: n.v6})
-		}
-	}
-	if mode == "" {
-		mode = datapath.ModeL3
-	}
-	mtu4, mtu6 := datapath.PathMTU(st.nl, mode, self, peers)
+	stage.Cluster = cluster
+	mtu4, mtu6 := pathMTU(st, w, mode)
 	if st.helpers == nil {
 		st.helpers = map[helperKey]bool{}
 	}
 	stage.Slots = map[uint8]datapath.Slot{}
 	for id, s := range w.stage.Slots {
+		mtu := slotMTU(s.Addr, mtu4, mtu6, w.steer[id].mtu)
+		if s.Addr.Is6() && mtu > 0 && mtu < minMTU6 {
+			faults[s.Addr] = purelbv2.EgressAddressFault{Address: s.Addr.String(), Reason: "PathMTUTooSmall",
+				Message: fmt.Sprintf("the path MTU is %d, below IPv6's minimum of %d", mtu, minMTU6)}
+			mtu = minMTU6
+		}
 		switch {
-		case s.Addr.Is4() && mtu4 > 40:
-			s.MSS = uint16(mtu4 - 40)
-		case s.Addr.Is6() && mtu6 > 60:
-			s.MSS = uint16(mtu6 - 60)
+		case s.Addr.Is4() && mtu > 40:
+			s.MSS = uint16(mtu - 40)
+		case s.Addr.Is6() && mtu > 60:
+			s.MSS = uint16(mtu - 60)
 		}
 		var usable []datapath.Helper
 		for _, h := range s.Helpers {
@@ -595,15 +595,49 @@ func (a *Agent) tableStage(st *dpState, w dpWant, mode string, faults map[netip.
 		s.Helpers = usable
 		stage.Slots[id] = s
 	}
-	return &stage, nil
+	return &stage
+}
+
+// minMTU6 is the smallest MTU IPv6 allows.
+const minMTU6 = 1280
+
+// pathMTU is the tunnel's path MTU to every peer in mode, per inner
+// family (D13); 0 with no peer.
+func pathMTU(st *dpState, w dpWant, mode string) (int, int) {
+	var self datapath.Node
+	var peers []datapath.Node
+	for _, n := range w.nodes {
+		if n.name == w.self {
+			self = datapath.Node{V4: n.v4, V6: n.v6}
+		} else {
+			peers = append(peers, datapath.Node{V4: n.v4, V6: n.v6})
+		}
+	}
+	if mode == "" {
+		mode = datapath.ModeL3
+	}
+	return datapath.PathMTU(st.nl, mode, self, peers)
+}
+
+// slotMTU is a slot's path MTU (D13): the tunnel's in its family, capped
+// by its address's pool MTU when known; 0 when neither is.
+func slotMTU(addr netip.Addr, mtu4, mtu6, pool int) int {
+	mtu := mtu4
+	if addr.Is6() {
+		mtu = mtu6
+	}
+	if pool > 0 && (mtu == 0 || pool < mtu) {
+		mtu = pool
+	}
+	return mtu
 }
 
 // syncPools numbers w's pool interfaces, keeping the numbers they have,
-// mirrors their tables, and reports what each lacks when that changes.
-// The numbering changes table-first: a new interface's table is filled
-// before pool_ifs names it, a removed one leaves pool_ifs before its
-// table is emptied.
-func (a *Agent) syncPools(st *dpState, w dpWant) error {
+// mirrors their tables with the cluster networks thrown, and reports what
+// each lacks when that changes. The numbering changes table-first: a new
+// interface's table is filled before pool_ifs names it, a removed one
+// leaves pool_ifs before its table is emptied.
+func (a *Agent) syncPools(st *dpState, w dpWant, cluster []netip.Prefix) error {
 	var errs []error
 	next := map[int]uint32{}
 	used := map[uint32]bool{}
@@ -635,7 +669,7 @@ func (a *Agent) syncPools(st *dpState, w dpWant) error {
 		}
 		next[ifindex], used[n] = n, true
 	}
-	status, err := datapath.SyncPoolTables(st.nl, next)
+	status, err := datapath.SyncPoolTables(st.nl, next, cluster)
 	errs = append(errs, err)
 	for _, ifindex := range added {
 		if n, ok := next[ifindex]; ok {

@@ -77,6 +77,7 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	}
 	purelb := purelbfake.NewSimpleClientset(purelbObjs...)
 	a := New(log.NewNopLogger(), testNode, "purelb-system")
+	a.SetElection(&fakeElector{}) // the agent always runs with one
 	a.statusInterval = 50 * time.Millisecond
 	wants := make(chan dpWant, 100)
 	a.apply = func(w dpWant) (*purelbv2.EgressCapability, error) {

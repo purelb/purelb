@@ -366,6 +366,9 @@ func tableRoutes(t *testing.T, h *host, table int) []string {
 			if r.Gw != nil {
 				dst += " via " + r.Gw.String()
 			}
+			if r.Type == unix.RTN_THROW {
+				dst += " throw"
+			}
 			out = append(out, dst)
 		}
 	}
@@ -394,22 +397,29 @@ func TestNetnsPoolTables(t *testing.T) {
 	// A table an earlier agent left with no interface now.
 	h.route(t, &netlink.Route{Dst: cidr("203.0.113.0/24"), LinkIndex: eth2, Table: PoolTable(5)})
 
-	status, err := SyncPoolTables(h.nl, map[int]uint32{eth1: 0, eth2: 1})
+	// The cluster networks are thrown, except one the mirror routes.
+	throws := []netip.Prefix{netip.MustParsePrefix("10.244.0.0/16"), netip.MustParsePrefix("fd44::/48"),
+		netip.MustParsePrefix("192.0.2.0/24")}
+	status, err := SyncPoolTables(h.nl, map[int]uint32{eth1: 0, eth2: 1}, throws)
 	require.NoError(t, err)
 	assert.Equal(t, map[int]PoolStatus{eth1: {Gateway4: true, Gateway6: true}, eth2: {}}, status)
-	assert.Equal(t, []string{"192.0.2.0/24", "2001:db8:1::/64", "default via 192.0.2.254", "default via 2001:db8:1::fe", "fe80::/64"},
-		tableRoutes(t, h, PoolTable(0)))
-	assert.Equal(t, []string{"198.51.100.0/24", "fe80::/64"}, tableRoutes(t, h, PoolTable(1)), "eth2 has no default: NoGateway")
+	assert.Equal(t, []string{"10.244.0.0/16 throw", "192.0.2.0/24", "2001:db8:1::/64", "default via 192.0.2.254",
+		"default via 2001:db8:1::fe", "fd44::/48 throw", "fe80::/64"}, tableRoutes(t, h, PoolTable(0)))
+	assert.Equal(t, []string{"10.244.0.0/16 throw", "192.0.2.0/24 throw", "198.51.100.0/24", "fd44::/48 throw", "fe80::/64"},
+		tableRoutes(t, h, PoolTable(1)), "eth2 has no default: NoGateway; it doesn't route eth1's subnet")
 	assert.Empty(t, tableRoutes(t, h, PoolTable(5)), "a table no interface owns is emptied")
 
 	// A second sync changes nothing; a main-table change is mirrored.
-	_, err = SyncPoolTables(h.nl, map[int]uint32{eth1: 0, eth2: 1})
-	require.NoError(t, err)
+	deleted := routeDeletes(t, h, func() {
+		_, err = SyncPoolTables(h.nl, map[int]uint32{eth1: 0, eth2: 1}, throws)
+		require.NoError(t, err)
+	})
+	assert.Zero(t, deleted, "an unchanged sync deletes nothing")
 	require.NoError(t, h.nl.RouteDel(ra))
-	status, err = SyncPoolTables(h.nl, map[int]uint32{eth1: 0})
+	status, err = SyncPoolTables(h.nl, map[int]uint32{eth1: 0}, throws[:1])
 	require.NoError(t, err)
 	assert.Equal(t, map[int]PoolStatus{eth1: {Gateway4: true}}, status)
-	assert.Equal(t, []string{"192.0.2.0/24", "2001:db8:1::/64", "default via 192.0.2.254", "fe80::/64"},
+	assert.Equal(t, []string{"10.244.0.0/16 throw", "192.0.2.0/24", "2001:db8:1::/64", "default via 192.0.2.254", "fe80::/64"},
 		tableRoutes(t, h, PoolTable(0)))
 	assert.Empty(t, tableRoutes(t, h, PoolTable(1)), "eth2 is no longer a pool interface")
 

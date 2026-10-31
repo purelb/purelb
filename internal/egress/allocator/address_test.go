@@ -115,6 +115,37 @@ func TestEgressAddressPreferredNodes(t *testing.T) {
 	assert.Equal(t, []string{"n7"}, f2.address(t, perPod.Name).Spec.PreferredNodes)
 }
 
+// The address carries the smallest MTU its announcers report (D13); an
+// ack whose MTU changes queues it again.
+func TestEgressAddressPoolMTU(t *testing.T) {
+	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
+		node("n1", true), pod("voice", "a-1", "n1", map[string]string{"app": "a"}), egressObj("voice", "sip", nil))
+	g.reconcile(t, "egress/voice/sip")
+	ep := g.ep(t)
+	g.reconcile(t, addressPrefix+ep.Name)
+	assert.Zero(t, g.address(t, ep.Name).Spec.PoolMTU, "no announcer has reported")
+
+	ack := func(mtu int32) purelbv2.EgressNodeStateStatus {
+		return purelbv2.EgressNodeStateStatus{Announcing: []purelbv2.EgressAnnouncing{
+			{Endpoints: ep.Name, Address: ep.Spec.Address, Generation: ep.Generation, MTU: mtu}}}
+	}
+	g.status(t, "n2", ack(1500))
+	g.status(t, "n3", ack(1400))
+	g.status(t, "n4", purelbv2.EgressNodeStateStatus{Announcing: []purelbv2.EgressAnnouncing{
+		{Endpoints: "e-other", Address: "192.0.2.99", MTU: 1200}}})
+	assert.True(t, g.q.has(addressPrefix+ep.Name), "an announcer's ack queues the address")
+	g.reconcile(t, addressPrefix+ep.Name)
+	assert.Equal(t, int32(1400), g.address(t, ep.Name).Spec.PoolMTU, "the smallest of its own announcers'")
+
+	g.q.mu.Lock()
+	g.q.keys = nil
+	g.q.mu.Unlock()
+	g.status(t, "n3", ack(1300))
+	assert.True(t, g.q.has(addressPrefix+ep.Name), "an MTU change queues it")
+	g.reconcile(t, addressPrefix+ep.Name)
+	assert.Equal(t, int32(1300), g.address(t, ep.Name).Spec.PoolMTU)
+}
+
 // Every EgressEndpoints event queues its address, and ForceSync covers
 // every address.
 func TestEgressAddressKeys(t *testing.T) {

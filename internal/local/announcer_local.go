@@ -399,6 +399,7 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 		}
 		a.clearOwnAnnounceSlot(svc, oldIP)
 		delete(a.quietWithdrawn, renewalKey(nsName, oldIP.String()))
+		a.egressHook().ServicePlacement(nsName, oldIP, nil)
 		dropped = append(dropped, oldIP)
 	}
 
@@ -422,6 +423,9 @@ func (a *announcer) SetBalancer(svc *v1.Service, epSlices []*discoveryv1.Endpoin
 			logging.Info(l, "op", "setBalancer", "error", "invalid LoadBalancer IP", "ip", ingress.IP)
 			continue
 		}
+		// Every node reports where the address goes, whether or not it
+		// announces it: pod nodes steer a shared egress address there.
+		a.egressHook().ServicePlacement(nsName, lbIP, egressPlacement(svc, epSlices, preferred, a.isRemotePool(cfg, lbIP)))
 
 		// The fail-closed address guard couldn't write this address's
 		// rules (the guard logs why): it can't be filtered, so it isn't
@@ -799,6 +803,7 @@ func (a *announcer) DeleteBalancer(nsName, reason string, _ net.IP) error {
 		if err := a.deleteAddress(nsName, reason, lbIP); err != nil {
 			errs = append(errs, err)
 		}
+		a.egressHook().ServicePlacement(nsName, lbIP, nil)
 		// Not on the way out: the process is exiting, and forgetting
 		// each address would rescan svcIngresses per Service.
 		if reason != reasonWithdrawAll {
@@ -979,6 +984,38 @@ func buildPreferredNodes(svc *v1.Service, epSlices []*discoveryv1.EndpointSlice)
 		}
 	}
 	return preferred
+}
+
+// egressPlacement is how the LB path places a Service's address, for
+// egress's Inherit steering: a remote pool's on every node, or under ETP
+// Local on the nodes with a healthy endpoint; a local pool's by the
+// election, preferring preferred.
+func egressPlacement(svc *v1.Service, epSlices []*discoveryv1.EndpointSlice, preferred []string, remote bool) *egresshook.ServicePlacement {
+	if !remote {
+		return &egresshook.ServicePlacement{Preferred: preferred}
+	}
+	p := &egresshook.ServicePlacement{Remote: true,
+		ETPLocal: svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal}
+	if !p.ETPLocal {
+		return p
+	}
+	seen := map[string]bool{}
+	for _, slice := range epSlices {
+		if slice == nil {
+			continue
+		}
+		for _, ep := range slice.Endpoints {
+			if ep.NodeName == nil || seen[*ep.NodeName] {
+				continue
+			}
+			seen[*ep.NodeName] = true
+			if nodeHasHealthyEndpoint(epSlices, *ep.NodeName) {
+				p.EndpointNodes = append(p.EndpointNodes, *ep.NodeName)
+			}
+		}
+	}
+	slices.Sort(p.EndpointNodes)
+	return p
 }
 
 // nodeHasHealthyEndpoint returns true if node has at least one

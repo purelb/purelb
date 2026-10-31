@@ -25,7 +25,6 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
 
 	"purelb.io/internal/bpfpin"
 )
@@ -40,10 +39,10 @@ const (
 	ModeL2   = "L2"
 )
 
-// The pod-node target tables (design 6.11): the tunnel and prohibit
-// targets. Each carries a throw route for every node's underlay address, a
-// backstop that keeps a tunnel's outer packets out of the slot tables
-// should the mark ever survive steering.
+// The pod-node target tables (design 6.3): the tunnel and prohibit
+// targets (SyncTargets). Each carries a throw route for every node's
+// underlay address, a backstop that keeps a tunnel's outer packets out of
+// the slot tables should the mark ever survive steering.
 const (
 	TunnelTable   = 7700
 	ProhibitTable = 7799
@@ -157,51 +156,6 @@ func l3Supported(h *netlink.Handle, port uint16) bool {
 	defer func() { _ = h.LinkDel(g) }()
 	l, err := h.LinkByName(probe)
 	return err == nil && l.(*netlink.Geneve).InnerProtoInherit
-}
-
-// SyncThrows makes the throw routes in TunnelTable and ProhibitTable
-// exactly one per underlay address, both families.
-func SyncThrows(h *netlink.Handle, underlay []netip.Addr) error {
-	want := map[string]bool{}
-	for _, a := range underlay {
-		want[netip.PrefixFrom(a, a.BitLen()).String()] = true
-	}
-	var errs []error
-	for _, table := range []int{TunnelTable, ProhibitTable} {
-		have := map[string]bool{}
-		for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-			routes, err := h.RouteListFiltered(fam, &netlink.Route{Table: table, Type: unix.RTN_THROW},
-				netlink.RT_FILTER_TABLE|netlink.RT_FILTER_TYPE)
-			if err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			for _, r := range routes {
-				if r.Dst == nil {
-					continue
-				}
-				p := r.Dst.String()
-				if !want[p] {
-					if err := h.RouteDel(&r); err != nil {
-						errs = append(errs, err)
-					}
-					continue
-				}
-				have[p] = true
-			}
-		}
-		for p := range want {
-			if have[p] {
-				continue
-			}
-			_, dst, _ := net.ParseCIDR(p)
-			r := &netlink.Route{Dst: dst, Table: table, Type: unix.RTN_THROW}
-			if err := h.RouteAdd(r); err != nil && !errors.Is(err, unix.EEXIST) {
-				errs = append(errs, fmt.Errorf("throw %s table %d: %w", p, table, err))
-			}
-		}
-	}
-	return errors.Join(errs...)
 }
 
 // TunnelMTU is the largest inner packet the tunnel carries to every peer

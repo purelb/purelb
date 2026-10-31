@@ -1722,11 +1722,62 @@ type fakeEgress struct {
 	egresshook.Noop
 	referenced map[string]bool
 	reports    []string
+	placements map[string]*egresshook.ServicePlacement // by address
 }
 
 func (f *fakeEgress) Referenced(ip net.IP) bool { return f.referenced[ip.String()] }
+func (f *fakeEgress) ServicePlacement(key string, ip net.IP, p *egresshook.ServicePlacement) {
+	if f.placements == nil {
+		f.placements = map[string]*egresshook.ServicePlacement{}
+	}
+	if p == nil {
+		delete(f.placements, ip.String())
+		return
+	}
+	f.placements[ip.String()] = p
+}
 func (f *fakeEgress) ServiceAddress(key string, ip net.IP, announced bool) {
 	f.reports = append(f.reports, fmt.Sprintf("%s %s %v", key, ip, announced))
+}
+
+// Every node reports to egress how the LB path places each Service
+// address, whether or not it announces it: a local pool's by the election
+// with the Service's node-affinity preference, a remote pool's by every
+// node or, under ETP Local, the nodes with a healthy endpoint. A dropped
+// address and a deleted Service report nil.
+func TestEgressPlacementReports(t *testing.T) {
+	a := withdrawalTestAnnouncer(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "^purelb-nomatch$"})
+	a.election = &fakeElection{}
+	a.cfg.Load().remoteGroups["routed"] = &purelbv2.ServiceGroupRemoteSpec{
+		V4Pool: &purelbv2.AddressPool{Pool: "198.51.100.0/24", Subnet: "198.51.100.0/24"}}
+	eg := &fakeEgress{}
+	a.egress = eg
+
+	svc := lbSvc("192.0.2.1", "198.51.100.5")
+	svc.Namespace, svc.Name = "default", "web"
+	svc.Annotations = map[string]string{purelbv2.NodeAffinityAnnotation: purelbv2.NodeAffinityServiceEndpoints}
+	svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeLocal
+	ep := func(node, addr string, ok bool) discoveryv1.Endpoint {
+		return discoveryv1.Endpoint{NodeName: ptrStr(node), Addresses: []string{addr},
+			Conditions: discoveryv1.EndpointConditions{Ready: ptrBool(ok), Serving: ptrBool(ok)}}
+	}
+	eps := []*discoveryv1.EndpointSlice{{Endpoints: []discoveryv1.Endpoint{
+		ep("node-c", "10.1.0.3", true), ep("node-b", "10.1.0.2", true), ep("node-d", "10.1.0.4", false)}}}
+	_ = a.SetBalancer(svc, eps)
+	assert.Equal(t, map[string]*egresshook.ServicePlacement{
+		"192.0.2.1":    {Preferred: []string{"node-c", "node-b"}},
+		"198.51.100.5": {Remote: true, ETPLocal: true, EndpointNodes: []string{"node-b", "node-c"}},
+	}, eg.placements, "node-a announces neither, and reports both")
+
+	cluster := svc.DeepCopy()
+	cluster.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
+	assert.Equal(t, &egresshook.ServicePlacement{Remote: true}, egressPlacement(cluster, eps, nil, true), "every node")
+
+	svc.Status.LoadBalancer.Ingress = svc.Status.LoadBalancer.Ingress[:1]
+	_ = a.SetBalancer(svc, eps)
+	assert.NotContains(t, eg.placements, "198.51.100.5", "dropped")
+	_ = a.DeleteBalancer("default/web", "test", nil)
+	assert.Empty(t, eg.placements, "deleted")
 }
 
 // A Service's withdrawal leaves an address egress still uses, and tells

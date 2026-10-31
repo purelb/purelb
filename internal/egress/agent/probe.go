@@ -129,24 +129,39 @@ func sendUDPProbe(from, to netip.Addr, port int, pkt []byte) error {
 // many are probed. Datapath goroutine only.
 func (a *Agent) unreachable(st *dpState) ([]string, int) {
 	p := a.probing.Load()
-	if p == nil || st.objs == nil {
+	if p == nil {
 		return nil, 0
+	}
+	var out []string
+	for addr := range a.lostPeers(st) {
+		out = append(out, fmt.Sprintf("%s (%s)", (*p)[addr].node, addr))
+	}
+	slices.Sort(out)
+	return out, len(*p)
+}
+
+// lostPeers are the probed peer addresses that haven't answered for
+// probeLost intervals, after being probed that long. Datapath goroutine
+// only.
+func (a *Agent) lostPeers(st *dpState) map[netip.Addr]bool {
+	out := map[netip.Addr]bool{}
+	p := a.probing.Load()
+	if p == nil || st.objs == nil {
+		return out
 	}
 	seen, err := st.objs.ProbeReplies()
 	if err != nil {
-		return nil, 0
+		return out
 	}
 	lost := uint64(probeLost * probeInterval)
 	now := monotonic()
-	var out []string
 	for addr, tg := range *p {
 		if now-tg.since < lost {
 			continue // not probed long enough to judge
 		}
 		if last := seen[addr]; last == 0 || now-last > lost {
-			out = append(out, fmt.Sprintf("%s (%s)", tg.node, addr))
+			out[addr] = true
 		}
 	}
-	slices.Sort(out)
-	return out, len(*p)
+	return out
 }

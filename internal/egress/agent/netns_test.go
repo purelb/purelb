@@ -15,12 +15,14 @@
 package agent
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -249,6 +251,9 @@ func tableDsts(t *testing.T, table int) []string {
 		routes, err := netlink.RouteListFiltered(fam, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
 		require.NoError(t, err)
 		for _, r := range routes {
+			if r.Type == unix.RTN_THROW {
+				continue // the cluster networks (throws)
+			}
 			d := "default"
 			if r.Dst != nil {
 				if ones, _ := r.Dst.Mask.Size(); ones != 0 {
@@ -288,7 +293,7 @@ func TestNetnsApplyDatapath(t *testing.T) {
 
 	// First apply: the tunnel, every other node, both programs, pinned.
 	a := newNetnsAgent(dir)
-	c := apply(t, a, want(node("node-b", "10.0.0.2", "fd00::2"), node("node-c", "10.0.0.3", "")))
+	c := apply(t, a, planned(want(node("node-b", "10.0.0.2", "fd00::2"), node("node-c", "10.0.0.3", ""))))
 	assert.Equal(t, datapath.ModeL3, c.TunnelEncapsulation, "Auto resolves to L3 where the kernel supports it")
 	assert.Equal(t, dir, a.dp.pinDir)
 	tun, err := netlink.LinkByName(datapath.TunnelName)
@@ -305,13 +310,15 @@ func TestNetnsApplyDatapath(t *testing.T) {
 	assert.FileExists(t, filepath.Join(dir, "nodes"), "state maps are pinned")
 	assert.Equal(t, ids("node-b", "node-c"), nodeIDs(t, a), "every node but this one")
 	allThrows := []string{"10.0.0.2/32", "10.0.0.3/32", "fd00::2/128"}
-	assert.Equal(t, allThrows, throws(t, datapath.TunnelTable))
-	assert.Equal(t, allThrows, throws(t, datapath.ProhibitTable))
+	assert.Subset(t, throws(t, datapath.TunnelTable), allThrows)
+	assert.Subset(t, throws(t, datapath.ProhibitTable), allThrows)
+	assert.Subset(t, throws(t, datapath.ReplyTable), allThrows)
+	assert.Equal(t, []string{"80 0x80 7800", "80 0x80 7800"}, egressRules(t), "no slot yet: the reply rule, both families")
 	assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "fd00::1", "fd00::2"}, setElems(t, "nodes4", "nodes6"),
 		"the hardening chains admit every node's underlay, this one's included")
 
 	// The same state again changes nothing.
-	apply(t, a, want(node("node-b", "10.0.0.2", "fd00::2"), node("node-c", "10.0.0.3", "")))
+	apply(t, a, planned(want(node("node-b", "10.0.0.2", "fd00::2"), node("node-c", "10.0.0.3", ""))))
 	tun2, err := netlink.LinkByName(datapath.TunnelName)
 	require.NoError(t, err)
 	assert.Equal(t, tun.Attrs().Index, tun2.Attrs().Index, "the tunnel is kept")
@@ -321,9 +328,10 @@ func TestNetnsApplyDatapath(t *testing.T) {
 	assert.Len(t, chain(t, tun.Attrs().Index, ebpf.AttachTCXEgress), 1)
 
 	// A node leaves: its entry and throw routes go.
-	apply(t, a, want(node("node-b", "10.0.0.2", "fd00::2")))
+	apply(t, a, planned(want(node("node-b", "10.0.0.2", "fd00::2"))))
 	assert.Equal(t, ids("node-b"), nodeIDs(t, a))
-	assert.Equal(t, []string{"10.0.0.2/32", "fd00::2/128"}, throws(t, datapath.TunnelTable))
+	assert.Subset(t, throws(t, datapath.TunnelTable), []string{"10.0.0.2/32", "fd00::2/128"})
+	assert.NotContains(t, throws(t, datapath.TunnelTable), "10.0.0.3/32")
 	assert.Equal(t, []string{"10.0.0.1", "10.0.0.2", "fd00::1", "fd00::2"}, setElems(t, "nodes4", "nodes6"))
 
 	// The tunnel device deleted under the agent: a new one, programs
@@ -346,7 +354,7 @@ func TestNetnsApplyDatapath(t *testing.T) {
 	closeAgent(a)
 	assert.Len(t, chain(t, tun.Attrs().Index, ebpf.AttachTCXIngress), 1, "pinned links outlive the agent")
 	b := newNetnsAgent(dir)
-	apply(t, b, want(node("node-b", "10.0.0.2", "fd00::2")))
+	apply(t, b, planned(want(node("node-b", "10.0.0.2", "fd00::2"))))
 	tun2, err = netlink.LinkByName(datapath.TunnelName)
 	require.NoError(t, err)
 	assert.Equal(t, tun.Attrs().Index, tun2.Attrs().Index, "the tunnel is kept across the restart")
@@ -357,7 +365,7 @@ func TestNetnsApplyDatapath(t *testing.T) {
 	assert.Equal(t, []ebpf.ProgramID{progID(t, b.dp.objs.PlAnnounceTun)}, chain(t, tun.Attrs().Index, ebpf.AttachTCXIngress))
 	assert.Equal(t, []ebpf.ProgramID{progID(t, b.dp.objs.PlSteer)}, chain(t, tun.Attrs().Index, ebpf.AttachTCXEgress))
 	assert.Equal(t, ids("node-b"), nodeIDs(t, b), "a node that left while the agent was down is dropped")
-	assert.Equal(t, []string{"10.0.0.2/32", "fd00::2/128"}, throws(t, datapath.TunnelTable))
+	assert.NotContains(t, throws(t, datapath.TunnelTable), "10.0.0.3/32")
 	closeAgent(b)
 }
 
@@ -397,6 +405,8 @@ func TestNetnsApplyDatapathPools(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[int]uint32{pool0: 0}, recovered, "pool_ifs names it")
 	assert.Equal(t, []string{"192.0.2.0/24", "2001:db8:1::/64", "default", "fe80::/64"}, tableDsts(t, datapath.PoolTable(0)))
+	assert.Contains(t, throws(t, datapath.PoolTable(0)), "198.51.100.0/24",
+		"the cluster networks are thrown (here pool1's subnet: no default route leaves it)")
 	assert.Equal(t, poolReport{noGateway6: true}, a.dp.reports[pool0], "no IPv6 default, arp_announce 0")
 	assert.Equal(t, map[int]bool{pool0: true}, a.poolSet(), "the route watcher follows it")
 
@@ -567,14 +577,37 @@ func TestNetnsWatchNft(t *testing.T) {
 	assert.True(t, kicked(2*time.Second), "the table deleted (a flushed ruleset)")
 }
 
+// TestNetnsWatchRules kicks on a deleted rule, either family, and not on
+// an added one.
+func TestNetnsWatchRules(t *testing.T) {
+	sandbox(t)
+	kicked := runWatcher(t, func(stop <-chan struct{}, kick func()) { watchRules(log.NewNopLogger(), stop, kick) })
+	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		r := netlink.NewRule()
+		r.Family, r.Priority, r.Table, r.Mark = fam, 90, datapath.TunnelTable, 3
+		require.NoError(t, netlink.RuleAdd(r))
+		assert.False(t, kicked(300*time.Millisecond), "added")
+		require.NoError(t, netlink.RuleDel(r))
+		assert.True(t, kicked(2*time.Second), "deleted, family %d", fam)
+	}
+}
+
 // TestNetnsApplyDatapathHeals restores what something else removed: the
-// hardening table, an element of it, a detached link.
+// hardening table, an element of it, a detached link, a rule.
 func TestNetnsApplyDatapathHeals(t *testing.T) {
 	dir := sandbox(t)
 	a := newNetnsAgent(dir)
 	defer closeAgent(a)
-	w := want(node("node-b", "10.0.0.2", "fd00::2"))
+	w := planned(want(node("node-b", "10.0.0.2", "fd00::2")))
 	apply(t, a, w)
+	rules := egressRules(t)
+	r := netlink.NewRule()
+	r.Family, r.Priority, r.Table = netlink.FAMILY_V6, 80, datapath.ReplyTable
+	r.Mark, r.Mask = 0x80, func(v uint32) *uint32 { return &v }(0xff)
+	require.NoError(t, netlink.RuleDel(r))
+	assert.NotEqual(t, rules, egressRules(t))
+	apply(t, a, w)
+	assert.Equal(t, rules, egressRules(t), "the rule is back")
 	nodes := setElems(t, "nodes4", "nodes6")
 	c, err := nftables.New()
 	require.NoError(t, err)
@@ -738,10 +771,34 @@ func TestNetnsApplyDatapathUplinks(t *testing.T) {
 	assert.False(t, pinned("pl_announce-eth0"))
 	assert.True(t, pinned("pl_announce-"+datapath.TunnelName))
 
-	// Egress disabled (D26): links and pins, the hardening table, the
-	// routing tables and the tunnel all go; the guard's link stays.
+	// A pod here in a slot of the address this node holds: the slot goes
+	// direct, in the routed address's table (main); the tunnel's and pool
+	// interface's replies have their rules, eth1 its src_valid_mark.
 	w.hold.addrs[a4] = held
+	w = planned(w)
+	w.stage = &datapath.PodStage{Pods: map[netip.Addr]uint8{}, PodSets: map[uint8][]string{},
+		Policies: map[string]datapath.Policy{}, Slots: map[uint8]datapath.Slot{5: {Addr: a4, First: 4096, Last: 8191}}}
+	w.steer = map[uint8]dpSteer{5: {addr: a4, holders: []string{"node-a", "node-b"}, routed: true}}
 	apply(t, b, w)
+	assert.Equal(t, []string{"80 0x80 7800", "81 0x81 7900", "90 0x5 254", "80 0x80 7800", "81 0x81 7900", "90 0x5 254"},
+		egressRules(t))
+	assert.Equal(t, "1", sysctlIn(t, "net/ipv4/conf/eth1/src_valid_mark"))
+	assert.Equal(t, "1", sysctlIn(t, "net/ipv4/conf/"+datapath.TunnelName+"/src_valid_mark"))
+	// What its acks report as its MTU (D13): a routed address's, the main
+	// table's default route's interface's; a local one's, its pool
+	// interface's.
+	assert.Equal(t, eth0.Attrs().MTU, holderMTU(b.dp, "192.0.2.10"))
+	require.NoError(t, netlink.LinkSetMTU(eth1, 1400))
+	w.hold.ifaces = map[netip.Addr]int{a4: e1}
+	apply(t, b, w)
+	assert.Equal(t, 1400, holderMTU(b.dp, "192.0.2.10"))
+	assert.Contains(t, egressRules(t), "90 0x5 7900", "now direct in the pool interface's table")
+	assert.Zero(t, holderMTU(b.dp, "192.0.2.99"), "not held here")
+	w.hold.ifaces = nil
+
+	// Egress disabled (D26): links and pins, the hardening table, the
+	// rules and routing tables and the tunnel all go; the guard's link
+	// stays.
 	var err2 error
 	asAgent(t, func() { err2 = b.teardown() })
 	require.NoError(t, err2)
@@ -775,11 +832,47 @@ func noEgress(t *testing.T, dir string) {
 	for _, tb := range tables {
 		assert.NotEqual(t, datapath.NftTable, tb.Name, "the hardening table is gone")
 	}
-	for _, table := range []int{datapath.TunnelTable, datapath.ProhibitTable, datapath.PoolTableBase} {
+	for _, table := range []int{datapath.TunnelTable, datapath.ProhibitTable, datapath.ReplyTable, datapath.PoolTableBase} {
 		for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
 			routes, err := netlink.RouteListFiltered(fam, &netlink.Route{Table: table}, netlink.RT_FILTER_TABLE)
 			require.NoError(t, err)
 			assert.Empty(t, routes, "table %d", table)
 		}
 	}
+	assert.Empty(t, egressRules(t), "no rules at egress's preferences")
+}
+
+// egressRules lists the rules at preferences 80-99 as "pref mark table",
+// IPv4 then IPv6.
+func egressRules(t *testing.T) []string {
+	t.Helper()
+	var out []string
+	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
+		rules, err := netlink.RuleList(fam)
+		require.NoError(t, err)
+		var fr []string
+		for _, r := range rules {
+			if r.Priority >= 80 && r.Priority <= 99 {
+				fr = append(fr, fmt.Sprintf("%d %#x %d", r.Priority, r.Mark, r.Table))
+			}
+		}
+		sort.Strings(fr)
+		out = append(out, fr...)
+	}
+	return out
+}
+
+// sysctlIn reads a sysctl in the sandbox's namespace.
+func sysctlIn(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile("/proc/sys/" + path)
+	require.NoError(t, err)
+	return strings.TrimSpace(string(b))
+}
+
+// planned is w once the pod-node state is planned: its rules, target
+// tables and steering are the agent's to write.
+func planned(w dpWant) dpWant {
+	w.podsKnown = true
+	return w
 }

@@ -247,6 +247,13 @@ func TestPodNodeFaultsRollUp(t *testing.T) {
 		assert.Equal(t, addr+": nodes n1", c.Message)
 		assert.NotEqual(t, "NoGateway", condition(t, e, condDatapathReady).Reason, "n1 is a pod node, not a holder")
 	}
+	// A pod node's IPv6 path MTU below 1280: DatapathReady.
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{EgressCapable: true},
+		AddressFaults: []purelbv2.EgressAddressFault{{Address: addr, Reason: "PathMTUTooSmall"}}})
+	g.reconcile(t, "egress/voice/sip")
+	e := g.egress(t, "voice", "sip")
+	assert.Equal(t, "PathMTUTooSmall", condition(t, e, condDatapathReady).Reason)
+	assert.Equal(t, addr+": nodes n1", condition(t, e, condDatapathReady).Message)
 }
 
 // A higher-ranked policy taking every destination of a pod outranks the

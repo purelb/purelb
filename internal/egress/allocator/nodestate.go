@@ -172,6 +172,12 @@ func (r *Reconciler) handleNodeStates(inf cache.SharedIndexInformer) {
 			}
 		}
 	}
+	// The addresses carry their announcers' MTU (D13).
+	addresses := func(ees map[string]bool) {
+		for ee := range ees {
+			r.enqueue(addressPrefix+ee, false)
+		}
+	}
 	all := func(obj interface{}) {
 		ns, ok := unwrap(obj).(*purelbv2.EgressNodeState)
 		if !ok {
@@ -179,6 +185,7 @@ func (r *Reconciler) handleNodeStates(inf cache.SharedIndexInformer) {
 		}
 		r.enqueue(nodePrefix+ns.Name, false)
 		owners(statusRefs(ns), false)
+		addresses(statusRefs(ns))
 	}
 	_, _ = inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: all,
@@ -188,7 +195,9 @@ func (r *Reconciler) handleNodeStates(inf cache.SharedIndexInformer) {
 			if !ok1 || !ok2 {
 				return
 			}
-			owners(claimsAndAcksChanged(o, n), true)
+			changed := claimsAndAcksChanged(o, n)
+			owners(changed, true)
+			addresses(changed)
 			owners(drainedChanged(o, n), false)
 			capChanged := !apiequality.Semantic.DeepEqual(o.Status.Capability, n.Status.Capability)
 			if capChanged {

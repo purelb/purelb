@@ -175,6 +175,9 @@ func (r *Reconciler) nodeConditions(run *run, eps map[string]*purelbv2.EgressEnd
 					// A pod node's, not a holder's.
 					add(condDatapathCompatible, f.Reason, addr, ns.Name)
 					continue
+				case "PathMTUTooSmall":
+					add(condDatapathReady, f.Reason, addr, ns.Name)
+					continue
 				}
 				holders[ns.Name] = true
 			}

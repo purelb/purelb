@@ -114,8 +114,11 @@ type Agent struct {
 	guard   Guard
 	guarded map[netip.Addr]bool
 	// services are the Service addresses this node announces, with the
-	// Services announcing each (Inherit). Queue goroutine only.
-	services map[netip.Addr]map[string]bool
+	// Services announcing each (Inherit); placements how the LB path
+	// places every Service address, by Service, for steering to a shared
+	// address's holders. Queue goroutine only.
+	services   map[netip.Addr]map[string]bool
+	placements map[netip.Addr]map[string]egresshook.ServicePlacement
 
 	// placer places dedicated addresses (the announcer). placed are the
 	// ones placed, shared the held shared ones (placed by their Service),
@@ -205,7 +208,8 @@ func New(logger log.Logger, node, namespace string) *Agent {
 	a := &Agent{logger: logger, node: node, namespace: namespace, runner: newRunner(), now: time.Now,
 		statusInterval: statusInterval, dp: &dpState{pinRoot: bpfpin.Dir},
 		guarded: map[netip.Addr]bool{}, services: map[netip.Addr]map[string]bool{},
-		placed: map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
+		placements: map[netip.Addr]map[string]egresshook.ServicePlacement{},
+		placed:     map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
 		sendProbe: sendUDPProbe}
 	a.apply, a.tear = a.applyDatapath, a.teardown
 	return a
@@ -427,6 +431,7 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	go watchRoutes(a.logger, s.stop, a.poolSet, kick)
 	go watchTunnel(a.logger, s.stop, kick)
 	go watchNft(a.logger, s.stop, kick)
+	go watchRules(a.logger, s.stop, kick)
 	go watchAddrs(a.logger, s.stop, a.placedAddrs, func(addr netip.Addr) { a.dadLost.Store(addr, true) }, kick)
 	go a.runProbes(s)
 	go func() {

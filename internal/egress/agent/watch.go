@@ -21,6 +21,7 @@ import (
 	"github.com/go-kit/log"
 	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 
 	"purelb.io/internal/egress/datapath"
@@ -145,6 +146,45 @@ func watchAddrs(logger log.Logger, stop <-chan struct{}, placed func() map[netip
 	}, kick)
 }
 
+// watchRules kicks when an RPDB rule is deleted, either family: it may be
+// one of egress's slot or reply rules (design 6.11). The netlink library
+// has no rule subscription, so this one is raw.
+func watchRules(logger log.Logger, stop <-chan struct{}, kick func()) {
+	watch(logger, "rules", stop, func(done <-chan struct{}) (<-chan uint16, error) {
+		s, err := nl.Subscribe(unix.NETLINK_ROUTE, unix.RTNLGRP_IPV4_RULE, unix.RTNLGRP_IPV6_RULE)
+		if err != nil {
+			return nil, err
+		}
+		go func() {
+			<-done
+			s.Close()
+		}()
+		ch := make(chan uint16, 64)
+		go func() {
+			defer close(ch)
+			for {
+				msgs, _, err := s.Receive()
+				if err != nil {
+					select {
+					case <-done:
+					default:
+						logging.Info(logger, "op", "egressWatch", "watch", "rules", "error", err, "msg", "watch failed; resubscribing")
+					}
+					return
+				}
+				for _, m := range msgs {
+					ch <- m.Header.Type
+				}
+			}
+		}()
+		return ch, nil
+	}, func(t uint16) {
+		if t == unix.RTM_DELRULE {
+			kick()
+		}
+	}, kick)
+}
+
 // watchNft kicks when anything in the hardening table is deleted.
 func watchNft(logger log.Logger, stop <-chan struct{}, kick func()) {
 	watch(logger, "nftables", stop, func(done <-chan struct{}) (<-chan *nftables.MonitorEvent, error) {
@@ -227,10 +267,10 @@ func poolRoute(r netlink.Route, pools map[int]bool) bool {
 	return false
 }
 
-// ownTable reports whether table is one the agent fills: the tunnel and
-// prohibit targets, or a pool interface's.
+// ownTable reports whether table is one the agent fills: the tunnel,
+// prohibit and reply targets, or a pool interface's.
 func ownTable(table int) bool {
-	return table == datapath.TunnelTable || table == datapath.ProhibitTable ||
+	return table == datapath.TunnelTable || table == datapath.ProhibitTable || table == datapath.ReplyTable ||
 		(table >= datapath.PoolTableBase && table < datapath.PoolTableBase+datapath.MaxPoolInterfaces)
 }
 

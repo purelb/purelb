@@ -627,6 +627,14 @@ type EgressAddressSpec struct {
 	// (D31). Absent, the pool's setting applies.
 	// +optional
 	SkipIPv6DAD *bool `json:"skipIPv6DAD,omitempty"`
+
+	// PoolMTU is the smallest MTU its holders report for the interfaces
+	// it leaves them by: pod nodes keep their path MTU and MSS within it
+	// (D13). Absent until a holder reports one.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	PoolMTU int32 `json:"poolMTU,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -812,6 +820,12 @@ type EgressAnnouncing struct {
 	// +kubebuilder:validation:MaxLength=45
 	Address    string `json:"address"`
 	Generation int64  `json:"generation"`
+	// MTU is that of the interface the address's traffic leaves this
+	// node by (D13).
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	MTU int32 `json:"mtu,omitempty"`
 }
 
 // EgressAddressFault is a node's problem with one egress address.
@@ -823,9 +837,10 @@ type EgressAddressFault struct {
 	// room for its entries), GuardStandingDown (the fail-closed guard
 	// isn't working, so a routed address isn't advertised here);
 	// ProtocolUnsupported (this node's pods sent protocols without ports
-	// to the address's slice) and HelpersUnsupported (a helper its pods'
-	// policy asks for can't run here), as a pod node.
-	// +kubebuilder:validation:Enum=DADFailed;AddressAddFailed;GuardMapFull;GuardStandingDown;ProtocolUnsupported;HelpersUnsupported
+	// to the address's slice), HelpersUnsupported (a helper its pods'
+	// policy asks for can't run here) and PathMTUTooSmall (its IPv6 path
+	// MTU is below 1280), as a pod node.
+	// +kubebuilder:validation:Enum=DADFailed;AddressAddFailed;GuardMapFull;GuardStandingDown;ProtocolUnsupported;HelpersUnsupported;PathMTUTooSmall
 	Reason string `json:"reason"`
 	// +kubebuilder:validation:MaxLength=1024
 	// +optional

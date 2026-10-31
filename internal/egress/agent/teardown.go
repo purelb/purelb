@@ -112,8 +112,9 @@ func (a *Agent) teardown() error {
 	if st.nft != nil {
 		errs = append(errs, datapath.DeleteHardening(st.nft))
 	}
-	errs = append(errs, datapath.SyncThrows(st.nl, nil))
-	if _, err := datapath.SyncPoolTables(st.nl, nil); err != nil {
+	errs = append(errs, datapath.SyncRules(st.nl, 0, nil))
+	errs = append(errs, datapath.SyncTargets(st.nl, datapath.Targets{}))
+	if _, err := datapath.SyncPoolTables(st.nl, nil, nil); err != nil {
 		errs = append(errs, err)
 	}
 	errs = append(errs, datapath.DeleteTunnel(st.nl))

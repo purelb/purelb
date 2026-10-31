@@ -111,7 +111,7 @@ func clusterRoutes(routes []netlink.Route, names map[int]string, nodes map[netip
 
 // ownTable reports whether a routing table is egress's own.
 func ownTable(t int) bool {
-	return t == TunnelTable || t == ProhibitTable || (t >= PoolTableBase && t < PoolTableBase+MaxPoolInterfaces)
+	return t == TunnelTable || t == ProhibitTable || t == ReplyTable || (t >= PoolTableBase && t < PoolTableBase+MaxPoolInterfaces)
 }
 
 // defaultDst reports whether a route is a default route; netlink gives some
