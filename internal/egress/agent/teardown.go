@@ -98,6 +98,18 @@ func (a *Agent) teardown() error {
 	for ifindex := range pools {
 		errs = append(errs, a.resetSrcValidMark(st.nl, ifindex))
 	}
+	// The mark field's byte, read before the pins go: egress's flows are
+	// deleted from conntrack once nothing marks them (user, 2026-10-31).
+	shift, shiftKnown := uint8(0), false
+	if st.objs != nil {
+		var err error
+		shift, err = st.objs.MarkShift()
+		errs, shiftKnown = append(errs, err), err == nil
+	} else {
+		var err error
+		shift, shiftKnown, err = datapath.PinnedMarkShift(st.pinRoot)
+		errs = append(errs, err)
+	}
 	ours := progIDs(st.objs)
 	ifs := map[int]bool{}
 	for name, l := range st.links {
@@ -124,6 +136,12 @@ func (a *Agent) teardown() error {
 	if st.nft != nil {
 		errs = append(errs, datapath.DeleteHardening(st.nft))
 	}
+	if shiftKnown {
+		errs = append(errs, a.flushSlots(shift))
+	} else {
+		logging.Info(a.logger, "op", "egressTeardown", "node", a.node,
+			"msg", "no record of the mark field (nothing pinned): egress's conntrack entries are left to expire")
+	}
 	errs = append(errs, datapath.SyncRules(st.nl, 0, nil))
 	errs = append(errs, datapath.SyncTargets(st.nl, datapath.Targets{}))
 	if _, err := datapath.SyncPoolTables(st.nl, nil, nil); err != nil {
@@ -141,6 +159,32 @@ func (a *Agent) teardown() error {
 	a.pools.Store(nil)
 	logging.Info(a.logger, "op", "egressTeardown", "node", a.node, "msg", "egress datapath removed")
 	return nil
+}
+
+// flushSlots deletes, at teardown, the conntrack entries of every slot
+// value (1-127) in the mark field at shift: egress's flows, which would
+// otherwise keep their SNAT. Entries classified not egress, and other
+// bytes' marks, stay.
+func (a *Agent) flushSlots(shift uint8) error {
+	var errs []error
+	n := 0
+	for v := uint8(1); v <= slotBudget; v++ {
+		flows, err := datapath.CtFlows(shift, v)
+		if err == nil && len(flows) > 0 {
+			err = datapath.CtFlush(shift, v)
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		n += len(flows)
+	}
+	if n > 0 {
+		ctDeleted.WithLabelValues("teardown").Add(float64(n))
+		logging.Info(a.logger, "op", "egressTeardown", "node", a.node, "flows", n,
+			"msg", "reset egress's flows: deleted their conntrack entries")
+	}
+	return errors.Join(errs...)
 }
 
 // progIDs are the ids of egress's programs, none before they load.

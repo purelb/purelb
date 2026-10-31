@@ -31,6 +31,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/go-kit/log"
 	"github.com/google/nftables"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
@@ -808,17 +809,32 @@ func TestNetnsApplyDatapathUplinks(t *testing.T) {
 
 	// Egress disabled (D26): links and pins, the hardening table, the
 	// rules and routing tables and the tunnel all go, and the pool
-	// interfaces' src_valid_mark; the guard's link stays.
+	// interfaces' src_valid_mark, and egress's flows in conntrack (user,
+	// 2026-10-31): those in a slot; one classified not egress (0xff), and
+	// another byte's mark, stay. The guard's link stays.
+	ctFlow(t, "10.244.1.5", 1000, 5)
+	ctFlow(t, "fd04::5", 1001, 0x7f)
+	ctFlow(t, "10.244.1.5", 1002, 0xff)
+	ctFlow(t, "10.244.1.5", 1003, 0x500)
+	reset := testutil.ToFloat64(ctDeleted.WithLabelValues("teardown"))
 	var err2 error
 	asAgent(t, func() { err2 = b.teardown() })
 	require.NoError(t, err2)
 	noEgress(t, dir)
 	assert.Equal(t, "0", sysctlIn(t, "net/ipv4/conf/eth1/src_valid_mark"))
+	assert.Empty(t, ctMarked(t, 0, 5))
+	assert.Empty(t, ctMarked(t, 0, 0x7f))
+	assert.Equal(t, []string{"10.244.1.5"}, ctMarked(t, 0, 0xff), "not egress")
+	assert.Equal(t, []string{"10.244.1.5"}, ctMarked(t, 8, 5), "another byte")
+	assert.Equal(t, 2.0, testutil.ToFloat64(ctDeleted.WithLabelValues("teardown"))-reset)
 	assert.Equal(t, []ebpf.ProgramID{progID(t, guard)}, chain(t, e0, ebpf.AttachTCXIngress))
 
-	// Enabled again, from nothing; then disabled while no agent runs: the
-	// next agent removes what the last one left, the src_valid_mark its
-	// pins record included, and a second teardown finds nothing to do.
+	// Enabled again, from nothing, with the mark field in the second byte;
+	// then disabled while no agent runs: the next agent removes what the
+	// last one left, the src_valid_mark its pins record and the flows in
+	// the byte they record included, and a second teardown finds nothing
+	// to do.
+	w.spec.MarkField = "0x0000ff00"
 	apply(t, b, w)
 	assert.True(t, pinned("pl_announce-eth0"))
 	assert.Equal(t, "1", sysctlIn(t, "net/ipv4/conf/eth1/src_valid_mark"))
@@ -828,6 +844,8 @@ func TestNetnsApplyDatapathUplinks(t *testing.T) {
 	require.NoError(t, err2)
 	noEgress(t, dir)
 	assert.Equal(t, "0", sysctlIn(t, "net/ipv4/conf/eth1/src_valid_mark"))
+	assert.Empty(t, ctMarked(t, 8, 5), "the second byte's slot flows")
+	assert.Equal(t, []string{"10.244.1.5"}, ctMarked(t, 0, 0xff), "the first byte isn't egress's now")
 	asAgent(t, func() { err2 = c.teardown() })
 	require.NoError(t, err2)
 }
@@ -881,6 +899,36 @@ func sysctlIn(t *testing.T, path string) string {
 	b, err := os.ReadFile("/proc/sys/" + path)
 	require.NoError(t, err)
 	return strings.TrimSpace(string(b))
+}
+
+// ctFlow adds a UDP conntrack entry from src carrying mark, in this
+// thread's namespace.
+func ctFlow(t *testing.T, src string, sport uint16, mark uint32) {
+	t.Helper()
+	s := net.ParseIP(src)
+	fam, d := netlink.InetFamily(unix.AF_INET6), net.ParseIP("2001:db8:9::9")
+	if s.To4() != nil {
+		// The library sends a 16-byte IPv4 address as it is.
+		fam, s, d = unix.AF_INET, s.To4(), net.ParseIP("203.0.113.9").To4()
+	}
+	require.NoError(t, netlink.ConntrackCreate(netlink.ConntrackTable, fam, &netlink.ConntrackFlow{FamilyType: uint8(fam),
+		Forward: netlink.IPTuple{SrcIP: s, DstIP: d, Protocol: unix.IPPROTO_UDP, SrcPort: sport, DstPort: 53},
+		Reverse: netlink.IPTuple{SrcIP: d, DstIP: s, Protocol: unix.IPPROTO_UDP, SrcPort: 53, DstPort: sport},
+		Mark:    mark, TimeOut: 300}))
+}
+
+// ctMarked lists the sources of the conntrack entries whose mark field at
+// shift is v, sorted.
+func ctMarked(t *testing.T, shift, v uint8) []string {
+	t.Helper()
+	flows, err := datapath.CtFlows(shift, v)
+	require.NoError(t, err)
+	var out []string
+	for _, f := range flows {
+		out = append(out, f.Src.String())
+	}
+	sort.Strings(out)
+	return out
 }
 
 // planned is w once the pod-node state is planned: its rules, target

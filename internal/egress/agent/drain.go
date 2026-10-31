@@ -32,7 +32,7 @@ import (
 var ctDeleted = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Namespace: purelbv2.MetricsNamespace, Subsystem: "egress", Name: "conntrack_deleted_total",
 	Help: "Egress flows whose conntrack entries the agent deleted: those left on a slot it retired " +
-		"(its drain reached the maximum, or it was removed), and a deleted pod's (§5.6).",
+		"(its drain reached the maximum, or it was removed), a deleted pod's (§5.6), and every one at teardown.",
 }, []string{"reason"})
 
 func init() {
@@ -142,7 +142,7 @@ func (a *Agent) syncConntrack(st *dpState, w dpWant) {
 		}
 		if n > 0 {
 			ctDeleted.WithLabelValues("podDeleted").Add(float64(n))
-			logging.Info(a.logger, "op", "egressConntrack", "node", a.node, "pods", len(st.gone), "flows", n,
+			logging.Info(a.logger, "op", "egressConntrack", "node", a.node, "addresses", len(st.gone), "flows", n,
 				"msg", "deleted the flows of pods gone from this node")
 		}
 		if !failed {

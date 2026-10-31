@@ -20,6 +20,8 @@ import (
 	"math/bits"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 
 	"github.com/cilium/ebpf"
 )
@@ -342,4 +344,30 @@ func (o *Objects) SetSteer(slot uint8, holders []uint64) error {
 // DeleteSteer removes slot's holders: its traffic is dropped.
 func (o *Objects) DeleteSteer(slot uint8) error {
 	return ignoreNotExist(o.Steer.Delete(uint32(slot)))
+}
+
+// MarkShift is the mark field's byte the configuration holds (D18).
+func (o *Objects) MarkShift() (uint8, error) {
+	var v egressEgressConfig
+	if err := o.EgressCfg.Lookup(uint32(0), &v); err != nil {
+		return 0, err
+	}
+	return v.MarkShift, nil
+}
+
+// PinnedMarkShift reads the mark field's byte from the configuration
+// pinned in pinDir, as an earlier agent left it; ok is false without one.
+func PinnedMarkShift(pinDir string) (shift uint8, ok bool, err error) {
+	m, err := ebpf.LoadPinnedMap(filepath.Join(pinDir, "egress_cfg"), &ebpf.LoadPinOptions{ReadOnly: true})
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	defer m.Close()
+	o := &Objects{}
+	o.EgressCfg = m
+	shift, err = o.MarkShift()
+	return shift, err == nil, err
 }

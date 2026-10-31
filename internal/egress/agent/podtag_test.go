@@ -23,7 +23,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"testing"
 	"time"
 
@@ -244,27 +243,8 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	// Conntrack (§5.6, D18): a retired mark value's flows are reset, after
 	// which it may be used again; a Draining slot with flows isn't
 	// drained, one without a slot is.
-	ct := func(src string, sport uint16, mark uint32) {
-		s := net.ParseIP(src)
-		fam, d := netlink.InetFamily(unix.AF_INET6), net.ParseIP("2001:db8:9::9")
-		if s.To4() != nil {
-			fam, s, d = unix.AF_INET, s.To4(), net.ParseIP("203.0.113.9").To4()
-		}
-		require.NoError(t, netlink.ConntrackCreate(netlink.ConntrackTable, fam, &netlink.ConntrackFlow{FamilyType: uint8(fam),
-			Forward: netlink.IPTuple{SrcIP: s, DstIP: d, Protocol: unix.IPPROTO_UDP, SrcPort: sport, DstPort: 53},
-			Reverse: netlink.IPTuple{SrcIP: d, DstIP: s, Protocol: unix.IPPROTO_UDP, SrcPort: 53, DstPort: sport},
-			Mark:    mark, TimeOut: 300}))
-	}
-	marked := func(v uint8) []string {
-		flows, err := datapath.CtFlows(0, v)
-		require.NoError(t, err)
-		var out []string
-		for _, f := range flows {
-			out = append(out, f.Src.String())
-		}
-		sort.Strings(out)
-		return out
-	}
+	ct := func(src string, sport uint16, mark uint32) { ctFlow(t, src, sport, mark) }
+	marked := func(v uint8) []string { return ctMarked(t, 0, v) }
 	ct("10.244.1.5", 1000, 4)
 	ct("10.244.1.9", 1001, 4)
 	ct("fd04:0:0:1::5", 1002, 6)
