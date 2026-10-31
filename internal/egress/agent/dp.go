@@ -643,7 +643,13 @@ func (a *Agent) syncPools(st *dpState, w dpWant, cluster []netip.Prefix) error {
 	used := map[uint32]bool{}
 	for ifindex, n := range st.pools {
 		if _, ok := w.pools[ifindex]; !ok {
-			if err := st.objs.DeletePoolInterface(ifindex); err != nil {
+			// Its src_valid_mark goes first: pool_ifs is the record of
+			// where egress turned it on.
+			err := a.resetSrcValidMark(st.nl, ifindex)
+			if err == nil {
+				err = st.objs.DeletePoolInterface(ifindex)
+			}
+			if err != nil {
 				errs = append(errs, err)
 			} else {
 				continue

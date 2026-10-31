@@ -19,10 +19,12 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/cilium/ebpf"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -228,4 +230,21 @@ func (o *Objects) RecoverPoolInterfaces() (map[int]uint32, error) {
 		pools[int(ifindex)] = v.N
 	}
 	return pools, it.Err()
+}
+
+// PinnedPoolInterfaces reads the pool interface numbering from the map
+// pinned in pinDir, as an earlier agent left it; none when there is no
+// such map.
+func PinnedPoolInterfaces(pinDir string) (map[int]uint32, error) {
+	m, err := ebpf.LoadPinnedMap(filepath.Join(pinDir, "pool_ifs"), &ebpf.LoadPinOptions{ReadOnly: true})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer m.Close()
+	o := &Objects{}
+	o.PoolIfs = m
+	return o.RecoverPoolInterfaces()
 }

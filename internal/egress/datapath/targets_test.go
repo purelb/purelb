@@ -192,7 +192,8 @@ func TestNetnsSyncRules(t *testing.T) {
 	assert.Equal(t, []string{"10 100 0x500/0xff00 100", "2 100 0x500/0xff00 100"}, ruleDump(t, h))
 }
 
-// EnsureSrcValidMark turns src_valid_mark on through rtnetlink, once.
+// EnsureSrcValidMark turns src_valid_mark on through rtnetlink, once;
+// ResetSrcValidMark turns it off, once.
 func TestNetnsSrcValidMark(t *testing.T) {
 	netnsOrSkip(t)
 	h := newHost(t, "node")
@@ -208,15 +209,20 @@ func TestNetnsSrcValidMark(t *testing.T) {
 		return v
 	}
 	require.Equal(t, "0", read())
-	for _, wantSet := range []bool{true, false} {
+	for _, step := range []struct {
+		fn    func(int, string) (bool, error)
+		wrote bool
+		value string
+	}{{EnsureSrcValidMark, true, "1"}, {EnsureSrcValidMark, false, "1"},
+		{ResetSrcValidMark, true, "0"}, {ResetSrcValidMark, false, "0"}} {
 		require.NoError(t, h.in(func() error {
-			set, err := EnsureSrcValidMark(idx, "eth9")
-			if err == nil && set != wantSet {
-				err = fmt.Errorf("set %v, want %v", set, wantSet)
+			wrote, err := step.fn(idx, "eth9")
+			if err == nil && wrote != step.wrote {
+				err = fmt.Errorf("wrote %v, want %v", wrote, step.wrote)
 			}
 			return err
 		}))
-		assert.Equal(t, "1", read())
+		assert.Equal(t, step.value, read())
 	}
 }
 

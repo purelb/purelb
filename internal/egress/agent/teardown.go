@@ -86,6 +86,18 @@ func (a *Agent) teardown() error {
 		st.nl = h
 	}
 	var errs []error
+	// src_valid_mark off on the pool interfaces, before the pins that
+	// record them go (an earlier agent's are in its pins); the tunnel's
+	// goes with the device.
+	pools := st.pools
+	if st.objs == nil {
+		p, err := datapath.PinnedPoolInterfaces(st.pinRoot)
+		errs = append(errs, err)
+		pools = p
+	}
+	for ifindex := range pools {
+		errs = append(errs, a.resetSrcValidMark(st.nl, ifindex))
+	}
 	ours := progIDs(st.objs)
 	ifs := map[int]bool{}
 	for name, l := range st.links {

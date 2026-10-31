@@ -281,6 +281,25 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 	return errors.Join(errs...)
 }
 
+// resetSrcValidMark turns src_valid_mark off on ifindex once it is no
+// longer a pool interface (user, 2026-10-31): whoever turned it on, since
+// its value before egress isn't known. Nothing when the interface is gone.
+func (a *Agent) resetSrcValidMark(h *netlink.Handle, ifindex int) error {
+	l, err := h.LinkByIndex(ifindex)
+	if err != nil {
+		if errors.As(err, new(netlink.LinkNotFoundError)) {
+			return nil
+		}
+		return err
+	}
+	reset, err := datapath.ResetSrcValidMark(ifindex, l.Attrs().Name)
+	if reset {
+		logging.Info(a.logger, "op", "egressSteer", "node", a.node, "interface", l.Attrs().Name,
+			"msg", "reset src_valid_mark: no longer an egress pool interface")
+	}
+	return err
+}
+
 // replyFlag is the mark field's reply flag (D18): 0x80 for a reply the
 // tunnel brought, 0x81 + n for one pool interface n did.
 const replyFlag = 0x80

@@ -796,25 +796,38 @@ func TestNetnsApplyDatapathUplinks(t *testing.T) {
 	assert.Zero(t, holderMTU(b.dp, "192.0.2.99"), "not held here")
 	w.hold.ifaces = nil
 
+	// eth1 stops being a pool interface: its src_valid_mark is reset
+	// (user, 2026-10-31); the tunnel's stays.
+	w.pools = nil
+	apply(t, b, w)
+	assert.Equal(t, "0", sysctlIn(t, "net/ipv4/conf/eth1/src_valid_mark"))
+	assert.Equal(t, "1", sysctlIn(t, "net/ipv4/conf/"+datapath.TunnelName+"/src_valid_mark"))
+	w.pools = map[int]dpPool{e1: {name: "eth1", v4: true}}
+	apply(t, b, w)
+	assert.Equal(t, "1", sysctlIn(t, "net/ipv4/conf/eth1/src_valid_mark"))
+
 	// Egress disabled (D26): links and pins, the hardening table, the
-	// rules and routing tables and the tunnel all go; the guard's link
-	// stays.
+	// rules and routing tables and the tunnel all go, and the pool
+	// interfaces' src_valid_mark; the guard's link stays.
 	var err2 error
 	asAgent(t, func() { err2 = b.teardown() })
 	require.NoError(t, err2)
 	noEgress(t, dir)
+	assert.Equal(t, "0", sysctlIn(t, "net/ipv4/conf/eth1/src_valid_mark"))
 	assert.Equal(t, []ebpf.ProgramID{progID(t, guard)}, chain(t, e0, ebpf.AttachTCXIngress))
 
 	// Enabled again, from nothing; then disabled while no agent runs: the
-	// next agent removes what the last one left, and a second teardown
-	// finds nothing to do.
+	// next agent removes what the last one left, the src_valid_mark its
+	// pins record included, and a second teardown finds nothing to do.
 	apply(t, b, w)
 	assert.True(t, pinned("pl_announce-eth0"))
+	assert.Equal(t, "1", sysctlIn(t, "net/ipv4/conf/eth1/src_valid_mark"))
 	closeAgent(b)
 	c := newNetnsAgent(dir)
 	asAgent(t, func() { err2 = c.teardown() })
 	require.NoError(t, err2)
 	noEgress(t, dir)
+	assert.Equal(t, "0", sysctlIn(t, "net/ipv4/conf/eth1/src_valid_mark"))
 	asAgent(t, func() { err2 = c.teardown() })
 	require.NoError(t, err2)
 }

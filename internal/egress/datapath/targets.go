@@ -231,12 +231,27 @@ const ipv4DevconfSrcVmark = 24
 // read-only in the agent's container, and only when it is off. It
 // reports whether it wrote it.
 func EnsureSrcValidMark(ifindex int, ifname string) (bool, error) {
+	return setSrcValidMark(ifindex, ifname, true)
+}
+
+// ResetSrcValidMark turns IPv4 src_valid_mark off on ifname, when it is
+// on, once egress no longer needs it there. It reports whether it wrote
+// it.
+func ResetSrcValidMark(ifindex int, ifname string) (bool, error) {
+	return setSrcValidMark(ifindex, ifname, false)
+}
+
+func setSrcValidMark(ifindex int, ifname string, on bool) (bool, error) {
 	b, err := os.ReadFile("/proc/sys/net/ipv4/conf/" + ifname + "/src_valid_mark")
 	if err != nil {
 		return false, err
 	}
-	if strings.TrimSpace(string(b)) != "0" {
+	if (strings.TrimSpace(string(b)) != "0") == on {
 		return false, nil
+	}
+	v := uint32(0)
+	if on {
+		v = 1
 	}
 	req := nl.NewNetlinkRequest(unix.RTM_SETLINK, unix.NLM_F_ACK)
 	msg := nl.NewIfInfomsg(unix.AF_UNSPEC)
@@ -244,10 +259,10 @@ func EnsureSrcValidMark(ifindex int, ifname string) (bool, error) {
 	req.AddData(msg)
 	spec := nl.NewRtAttr(unix.IFLA_AF_SPEC, nil)
 	conf := spec.AddRtAttr(unix.AF_INET, nil).AddRtAttr(unix.IFLA_INET_CONF, nil)
-	conf.AddRtAttr(ipv4DevconfSrcVmark, nl.Uint32Attr(1))
+	conf.AddRtAttr(ipv4DevconfSrcVmark, nl.Uint32Attr(v))
 	req.AddData(spec)
 	if _, err := req.Execute(unix.NETLINK_ROUTE, 0); err != nil {
-		return false, fmt.Errorf("setting src_valid_mark on %s: %w", ifname, err)
+		return false, fmt.Errorf("setting src_valid_mark on %s to %d: %w", ifname, v, err)
 	}
 	return true, nil
 }
