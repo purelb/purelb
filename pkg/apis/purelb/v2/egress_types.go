@@ -1047,9 +1047,10 @@ type LBNodeAgentEgressSpec struct {
 	TunnelPort int32 `json:"tunnelPort,omitempty"`
 
 	// MarkField is the byte of the packet and conntrack marks egress
-	// uses.
+	// uses. Unset, each node starts at 0x000000ff and moves to a free
+	// byte if its other netfilter rules use that one; set, it is never
+	// moved, and a node whose rules use it reports MarkConflict.
 	// +kubebuilder:validation:Enum="0x000000ff";"0x0000ff00";"0x00ff0000";"0xff000000"
-	// +kubebuilder:default="0x000000ff"
 	// +optional
 	MarkField string `json:"markField,omitempty"`
 

@@ -85,7 +85,7 @@ func drainWant(spec purelbv2.EgressNodeStateSpec, pn *podNode) (map[uint8]purelb
 // periodic reconcile tries again. Datapath goroutine only, once the
 // pod-node state is planned.
 func (a *Agent) syncConntrack(st *dpState, w dpWant) {
-	shift := markShift(w.spec)
+	shift := st.shift
 	var errs []error
 	flushed := map[uint8]bool{}
 	for _, id := range w.retired {

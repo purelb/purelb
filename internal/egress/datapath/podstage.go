@@ -155,9 +155,16 @@ func (b *builder) podStage(p PodStage) error {
 	for _, id := range sortedKeys(p.Slots) {
 		s := p.Slots[id]
 		rs, sl, sn := fmt.Sprintf("rs_%d", id), fmt.Sprintf("slot_%d", id), fmt.Sprintf("sn_%d", id)
+		// fi_ and fo_ count the slot's new flows as marked and as they
+		// reach its SNAT, which a forward filter between them would stop
+		// (ForwardBlocked, D25).
+		fi, fo := fmt.Sprintf("fi_%d", id), fmt.Sprintf("fo_%d", id)
+		b.obj(&nftables.NamedObj{Name: fi, Type: nftables.ObjTypeCounter, Obj: &expr.Counter{}})
+		b.obj(&nftables.NamedObj{Name: fo, Type: nftables.ObjTypeCounter, Obj: &expr.Counter{}})
 		b.rule(b.chain(rs, nil), m.set(id)...)
-		b.rule(b.chain(sl, nil), cat(m.set(id), m.setCt(id), verdict(expr.VerdictAccept))...)
+		b.rule(b.chain(sl, nil), cat(objref(fi), m.set(id), m.setCt(id), verdict(expr.VerdictAccept))...)
 		ch := b.chain(sn, nil)
+		b.rule(ch, objref(fo)...)
 		f := familyOf(s.Addr)
 		for _, r := range s.Reserved {
 			b.rule(ch, cat(f.match(), f.saddr(1), []expr.Any{&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: r.Pod.AsSlice()}},
@@ -311,7 +318,7 @@ func (b *builder) policy(m markField, n string, f nftFamily, pf PolicyFamily) er
 		b.rule(hit, goTo(fmt.Sprintf("slot_%d", pf.Slot))...)
 	default:
 		b.obj(&nftables.NamedObj{Name: "pf_" + n, Type: nftables.ObjTypeCounter, Obj: &expr.Counter{}})
-		b.rule(b.chain("pf_"+n, nil), cat([]expr.Any{&expr.Objref{Type: int(nftables.ObjTypeCounter), Name: "pf_" + n}}, fail)...)
+		b.rule(b.chain("pf_"+n, nil), cat(objref("pf_"+n), fail)...)
 		slot := goTo(fmt.Sprintf("slot_%d", pf.Slot))
 		for _, proto := range []byte{unix.IPPROTO_TCP, unix.IPPROTO_UDP, unix.IPPROTO_SCTP} {
 			b.rule(hit, cat(l4protoIs(proto), slot)...)
@@ -643,9 +650,13 @@ func portIntervals(ranges []PortRange) []nftables.SetElement {
 	return out
 }
 
-// PortlessDrops reads the port-less counters of p's policies (D4): the
-// packets counted under each address since the table was written.
-func PortlessDrops(c *nftables.Conn, p PodStage) (map[netip.Addr]uint64, error) {
+// objref is a statement counting under the named counter.
+func objref(name string) []expr.Any {
+	return []expr.Any{&expr.Objref{Type: int(nftables.ObjTypeCounter), Name: name}}
+}
+
+// stageCounters reads the table's named counters, in packets.
+func stageCounters(c *nftables.Conn) (map[string]uint64, error) {
 	objs, err := c.GetNamedObjects(&nftables.Table{Family: nftables.TableFamilyINet, Name: NftTable})
 	if err != nil {
 		return nil, err
@@ -657,6 +668,33 @@ func PortlessDrops(c *nftables.Conn, p PodStage) (map[netip.Addr]uint64, error) 
 				counts[n.Name] = ctr.Packets
 			}
 		}
+	}
+	return counts, nil
+}
+
+// SlotFlows are a slot's new flows since the table was written: marked
+// with it, and reaching its SNAT.
+type SlotFlows struct{ Marked, Translated uint64 }
+
+// ForwardCounts reads each of p's slots' flow counters (D25).
+func ForwardCounts(c *nftables.Conn, p PodStage) (map[uint8]SlotFlows, error) {
+	counts, err := stageCounters(c)
+	if err != nil {
+		return nil, err
+	}
+	out := map[uint8]SlotFlows{}
+	for id := range p.Slots {
+		out[id] = SlotFlows{Marked: counts[fmt.Sprintf("fi_%d", id)], Translated: counts[fmt.Sprintf("fo_%d", id)]}
+	}
+	return out, nil
+}
+
+// PortlessDrops reads the port-less counters of p's policies (D4): the
+// packets counted under each address since the table was written.
+func PortlessDrops(c *nftables.Conn, p PodStage) (map[netip.Addr]uint64, error) {
+	counts, err := stageCounters(c)
+	if err != nil {
+		return nil, err
 	}
 	out := map[netip.Addr]uint64{}
 	for name, pol := range p.Policies {

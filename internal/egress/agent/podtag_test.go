@@ -28,6 +28,9 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/go-kit/log"
+	"github.com/google/nftables"
+	"github.com/google/nftables/binaryutil"
+	"github.com/google/nftables/expr"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,6 +40,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"purelb.io/internal/egress"
@@ -82,10 +86,58 @@ func podNetnsAt(t *testing.T, vethName string, addrs ...string) (int, netns.NsHa
 	return host.Attrs().Index, pod
 }
 
+// podDial opens n TCP connections from the pod to addr, each a new flow;
+// none needs an answer.
+func podDial(t *testing.T, podNS netns.NsHandle, addr string, n int) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread() // discarded with the goroutine
+		if err := netns.Set(podNS); err != nil {
+			done <- err
+			return
+		}
+		for range n {
+			if c, err := net.DialTimeout("tcp4", addr, 50*time.Millisecond); err == nil {
+				_ = c.Close()
+			}
+		}
+		done <- nil
+	}()
+	require.NoError(t, <-done)
+}
+
+// foreignChain adds, in this thread's namespace, another program's table
+// ip <name> with one base chain at hook and prio, holding a rule of exprs
+// when given.
+func foreignChain(t *testing.T, name string, hook *nftables.ChainHook, prio nftables.ChainPriority,
+	policy nftables.ChainPolicy, exprs ...expr.Any) *nftables.Table {
+	t.Helper()
+	c, err := nftables.New()
+	require.NoError(t, err)
+	tb := c.AddTable(&nftables.Table{Family: nftables.TableFamilyIPv4, Name: name})
+	ch := c.AddChain(&nftables.Chain{Name: "post", Table: tb, Type: nftables.ChainTypeFilter, Hooknum: hook,
+		Priority: nftables.ChainPriorityRef(prio), Policy: &policy})
+	if len(exprs) > 0 {
+		c.AddRule(&nftables.Rule{Table: tb, Chain: ch, Exprs: exprs})
+	}
+	require.NoError(t, c.Flush())
+	return tb
+}
+
+func dropForeign(t *testing.T, tb *nftables.Table) {
+	t.Helper()
+	c, err := nftables.New()
+	require.NoError(t, err)
+	c.DelTable(tb)
+	require.NoError(t, c.Flush())
+}
+
 // The real apply tags a pod's host-side device: its pod_devs entry and
 // pl_pod_tag, pinned; the cluster networks from the API and the routes; a
 // restart keeps both until the pods are planned, then takes the link over
-// in place; a pod gone loses both.
+// in place; a pod gone loses both. Also ForwardBlocked (D25) and the mark
+// byte's move and conflict (D18).
 func TestNetnsApplyDatapathPods(t *testing.T) {
 	dir := sandbox(t)
 	eth0, err := netlink.LinkByName("eth0")
@@ -232,6 +284,88 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	assert.Contains(t, faults, purelbv2.EgressAddressFault{Address: "192.0.2.1", Reason: "ProtocolUnsupported",
 		Message: b.dp.podFaults[eg].Message})
 
+	// ForwardBlocked (D25), over windows of the agent's clock: the pod's new
+	// flows marked with slot 4 and reaching its SNAT, until a foreign
+	// forward drop stops them for two windows in a row.
+	clock := time.Now()
+	b.now = func() time.Time { return clock }
+	window := func() {
+		podDial(t, podNS, "203.0.113.7:80", 3)
+		clock = clock.Add(forwardWindow + time.Second)
+		apply(t, b, w)
+	}
+	forwardCond := func(c *purelbv2.EgressCapability) *metav1.Condition {
+		return apimeta.FindStatusCondition(b.nodeConditions(c, health(b.dp, w, nil), nil), condForwardPath)
+	}
+	require.NoError(t, os.WriteFile("/proc/sys/net/ipv4/conf/all/forwarding", []byte("1"), 0o644))
+	c4 := apply(t, b, w)
+	window()
+	window()
+	assert.Empty(t, b.dp.forwardBlocked, "the flows reach their SNAT")
+	fw := foreignChain(t, "fw", nftables.ChainHookForward, 0, nftables.ChainPolicyDrop)
+	window()
+	assert.Empty(t, b.dp.forwardBlocked, "one window isn't enough")
+	window()
+	assert.Equal(t, []string{"IPv4"}, b.dp.forwardBlocked)
+	assert.Equal(t, 1.0, testutil.ToFloat64(forwardBlocked.WithLabelValues("IPv4")))
+	assert.Equal(t, 0.0, testutil.ToFloat64(forwardBlocked.WithLabelValues("IPv6")))
+	assert.Equal(t, "ForwardBlocked", forwardCond(c4).Reason)
+	assert.Contains(t, forwardCond(c4).Message, "IPv4: ")
+	dropForeign(t, fw)
+	window()
+	assert.Empty(t, b.dp.forwardBlocked, "one reached its SNAT")
+	assert.Equal(t, 0.0, testutil.ToFloat64(forwardBlocked.WithLabelValues("IPv4")))
+	assert.Equal(t, metav1.ConditionTrue, forwardCond(c4).Status)
+
+	// The mark byte (D18): another rule setting a bit of an unset field's
+	// byte after classify moves it to the next free one; rules, BPF config
+	// and table follow, and the pod's flows marked in the old byte are
+	// reset, another source's stay.
+	cni := foreignChain(t, "cni", nftables.ChainHookPostrouting, 0, nftables.ChainPolicyAccept,
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: binaryutil.NativeEndian.PutUint32(^uint32(1)), Xor: binaryutil.NativeEndian.PutUint32(1)},
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1, SourceRegister: true})
+	require.NoError(t, netlink.ConntrackTableFlush(netlink.ConntrackTable))
+	ctFlow(t, "10.244.1.5", 2000, 4)
+	ctFlow(t, "10.0.0.99", 2001, 4)
+	moves, moved := testutil.ToFloat64(markMoves), testutil.ToFloat64(ctDeleted.WithLabelValues("markMoved"))
+	clock = clock.Add(markReread)
+	capa := apply(t, b, w)
+	assert.Equal(t, "0x00ff0000", capa.MarkField)
+	assert.Equal(t, []string{"80 0x800000 7800", "90 0x40000 7700", "90 0x60000 7700",
+		"80 0x800000 7800", "90 0x40000 7700", "90 0x60000 7700"}, egressRules(t))
+	shift, err := b.dp.objs.MarkShift()
+	require.NoError(t, err)
+	assert.Equal(t, uint8(16), shift)
+	assert.Equal(t, uint8(16), b.dp.table.Pods.MarkShift)
+	assert.Equal(t, []string{"10.0.0.99"}, ctMarked(t, 0, 4))
+	assert.Equal(t, 1.0, testutil.ToFloat64(markMoves)-moves)
+	assert.Equal(t, 1.0, testutil.ToFloat64(ctDeleted.WithLabelValues("markMoved"))-moved)
+	assert.Empty(t, b.dp.markConflict)
+	assert.Nil(t, b.dp.movedFrom)
+	// Set explicitly to that byte: never moved, MarkConflict instead.
+	compat := func(c *purelbv2.EgressCapability) *metav1.Condition {
+		return apimeta.FindStatusCondition(b.nodeConditions(c, health(b.dp, w, nil), nil), condDatapathCompatible)
+	}
+	w.spec.MarkField = "0x000000ff"
+	clock = clock.Add(markReread)
+	capa = apply(t, b, w)
+	assert.Equal(t, "0x000000ff", capa.MarkField)
+	assert.Equal(t, "markField 0x000000ff is used by other rules: ip cni post (sets mark 0x1)", b.dp.markConflict)
+	assert.Equal(t, 1.0, testutil.ToFloat64(markConflict))
+	assert.Equal(t, "MarkConflict", compat(capa).Reason)
+	dropForeign(t, cni)
+	clock = clock.Add(markReread)
+	capa = apply(t, b, w)
+	assert.Empty(t, b.dp.markConflict)
+	assert.Equal(t, 0.0, testutil.ToFloat64(markConflict))
+	assert.Equal(t, metav1.ConditionTrue, compat(capa).Status)
+	// Unset again: the byte in use stays while it is free.
+	w.spec.MarkField = ""
+	clock = clock.Add(markReread)
+	assert.Equal(t, "0x000000ff", apply(t, b, w).MarkField)
+
 	// Slot 4's holder gone: FailClosed, its rule sends it to prohibit,
 	// and its steering is pruned.
 	w.steer = map[uint8]dpSteer{4: {addr: eg, mtu: 1400}}
@@ -239,6 +373,12 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	assert.Equal(t, []string{"80 0x80 7800", "90 0x4 7799", "90 0x6 7799", "80 0x80 7800", "90 0x4 7799", "90 0x6 7799"},
 		egressRules(t))
 	assert.Nil(t, steerOf(t, b, 4))
+	// Its flows are dropped by design, never reported ForwardBlocked.
+	window()
+	window()
+	window()
+	assert.Empty(t, b.dp.forwardBlocked)
+	require.NoError(t, netlink.ConntrackTableFlush(netlink.ConntrackTable))
 
 	// Conntrack (§5.6, D18): a retired mark value's flows are reset, after
 	// which it may be used again; a Draining slot with flows isn't

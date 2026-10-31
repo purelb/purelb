@@ -136,6 +136,20 @@ type dpState struct {
 	// since gone whose flows aren't deleted yet.
 	podIPs map[netip.Addr]bool
 	gone   map[netip.Addr]bool
+	// shift is the mark byte in use (D18), from the pins until the
+	// pod-node state is planned; movedFrom the one it left, whose flows
+	// aren't reset yet; marks the other rules' mark uses as last read, and
+	// markConflict their conflict with it.
+	shift        uint8
+	movedFrom    *uint8
+	marks        *markRead
+	markConflict string
+	// prohibited are the slots routed to prohibit; fwd each family's
+	// flow window, IPv4 then IPv6, and forwardBlocked the families
+	// reported (D25).
+	prohibited     map[uint8]bool
+	fwd            [2]fwdWindow
+	forwardBlocked []string
 }
 
 // poolReport is what a pool interface lacks: a default route in a family
@@ -266,6 +280,13 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 			_ = objs.Close()
 			return c, fmt.Errorf("reading the address maps: %w", err)
 		}
+		// And its mark byte: its table and flows use it.
+		shift, err := objs.MarkShift()
+		if err != nil {
+			_ = objs.Close()
+			return c, fmt.Errorf("reading the mark byte: %w", err)
+		}
+		st.shift = shift
 		st.objs, st.links, st.nodes, st.pools, st.addrs = objs, map[string]link.Link{}, nodes, pools, addrs
 		st.linkIfs = map[string]int{}
 		st.reports = map[int]poolReport{}
@@ -298,6 +319,8 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	if w.podsKnown {
 		a.unflushLive(w)
 	}
+	a.syncMarkByte(st, w)
+	c.MarkField = fieldName(st.shift)
 	// The hardening chains before the tunnel opens its port (design 6.12),
 	// the stage's MSS from the mode last resolved; again once the tunnel
 	// resolves another.
@@ -399,7 +422,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 
 	errs = append(errs, st.objs.SetConfig(datapath.Config{Self: self, TunIfindex: tun.Attrs().Index,
 		TunMTU: uint32(datapath.TunnelMTU(st.nl, mode, peers6)), TunMAC: datapath.TunnelMAC(self),
-		L2: mode == datapath.ModeL2, MarkShift: markShift(w.spec),
+		L2: mode == datapath.ModeL2, MarkShift: st.shift,
 		Underlay4: selfNode.V4.IsValid(), Underlay6: selfNode.V6.IsValid(), Self4: selfNode.V4, Self6: selfNode.V6}))
 	if err := errors.Join(errs...); err != nil {
 		return c, err
@@ -435,6 +458,8 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 			return c, err
 		}
 		a.syncConntrack(st, w)
+		a.resetMoved(st)
+		a.syncForward(st)
 	}
 	c.EgressCapable = true
 	logging.Debug(a.logger, "op", "egressDatapath", "node", a.node, "tunnel", mode, "port", port,
@@ -601,6 +626,7 @@ func (a *Agent) tableStage(st *dpState, w dpWant, mode string, cluster []netip.P
 	faults map[netip.Addr]purelbv2.EgressAddressFault) *datapath.PodStage {
 	stage := *w.stage
 	stage.Cluster = cluster
+	stage.MarkShift = st.shift
 	mtu4, mtu6 := pathMTU(st, w, mode)
 	if st.helpers == nil {
 		st.helpers = map[helperKey]bool{}

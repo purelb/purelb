@@ -156,6 +156,8 @@ func (a *Agent) teardown() error {
 	}
 	st.nl.Close()
 	*st = dpState{pinRoot: st.pinRoot}
+	markConflict.Set(0)
+	a.setForwardBlocked(st, nil)
 	a.pools.Store(nil)
 	logging.Info(a.logger, "op", "egressTeardown", "node", a.node, "msg", "egress datapath removed")
 	return nil

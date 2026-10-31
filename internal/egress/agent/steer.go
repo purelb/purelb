@@ -215,6 +215,7 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 	// Every slot the stage marks has a rule: one steering doesn't cover
 	// goes to prohibit, never by main with its SNAT.
 	steer := map[uint8][]uint64{}
+	prohibited := map[uint8]bool{}
 	var slots []uint8
 	if w.stage != nil {
 		slots = slices.Sorted(maps.Keys(w.stage.Slots))
@@ -241,6 +242,7 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 			}
 		}
 		rules = append(rules, datapath.MarkRule{Pref: datapath.PrefSlot, Mark: id, Table: table})
+		prohibited[id] = table == datapath.ProhibitTable
 	}
 	if t.MTU4 == 0 {
 		t.MTU4 = mtu4
@@ -255,9 +257,10 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 	if err := errors.Join(errs...); err != nil {
 		return err
 	}
-	if err := datapath.SyncRules(st.nl, markShift(w.spec), rules); err != nil {
+	if err := datapath.SyncRules(st.nl, st.shift, rules); err != nil {
 		return err
 	}
+	st.prohibited = prohibited
 	if err := st.objs.SyncSteer(steer, true); err != nil {
 		return err
 	}

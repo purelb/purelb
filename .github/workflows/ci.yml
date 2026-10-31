@@ -176,7 +176,12 @@ jobs:
           sudo modprobe geneve
           sudo modprobe nft_ct
           sudo modprobe nf_nat_ftp
+          # The iptables tools' table modules, which the tools can't load
+          # from inside the test's capability set.
+          sudo modprobe iptable_mangle
+          sudo modprobe ip6table_mangle
           sudo env EGRESS_BPF_TESTS=required PURELB_NETNS_TESTS=required EGRESS_HELPER_TESTS=required \
+            EGRESS_XTABLES_TESTS=required \
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
             ./datapath.test -test.v -test.run '^TestNetns' | tee tunnel.out
           grep -q -- '--- PASS: TestNetnsTunnelEndToEnd' tunnel.out
@@ -190,6 +195,8 @@ jobs:
           grep -q -- '--- PASS: TestNetnsSyncRules' tunnel.out
           grep -q -- '--- PASS: TestNetnsSrcValidMark' tunnel.out
           grep -q -- '--- PASS: TestNetnsConntrack' tunnel.out
+          grep -q -- '--- PASS: TestNetnsForeignMarks' tunnel.out
+          grep -q -- '--- PASS: TestNetnsXtablesMarks' tunnel.out
 
       # The agent's own datapath apply, run without CAP_SYS_ADMIN as the
       # agent runs it: first apply, repeat, node changes, the tunnel deleted

@@ -56,12 +56,18 @@ type dpHealth struct {
 	// podFaults are the pod-node stage's address faults: port-less
 	// traffic on a slice (D4), missing helpers (D23).
 	podFaults map[netip.Addr]purelbv2.EgressAddressFault
+	// markConflict names the other rules using the mark byte (D18);
+	// forwardBlocked are the families whose flows don't reach their SNAT
+	// (D25).
+	markConflict   string
+	forwardBlocked []string
 }
 
 // health builds the datapath's health from its last apply. Datapath
 // goroutine only.
 func health(st *dpState, w dpWant, err error) *dpHealth {
-	h := &dpHealth{encryption: st.encryption, podFaults: maps.Clone(st.podFaults)}
+	h := &dpHealth{encryption: st.encryption, podFaults: maps.Clone(st.podFaults),
+		markConflict: st.markConflict, forwardBlocked: slices.Clone(st.forwardBlocked)}
 	if err != nil {
 		h.applyErr = err.Error()
 	}
@@ -116,13 +122,15 @@ func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth, pn *po
 		meta.SetStatusCondition(&a.conds, metav1.Condition{Type: typ, Status: st, Reason: reason,
 			Message: truncate(msg, 1024), LastTransitionTime: metav1.NewTime(a.now())})
 	}
-	if v, err := kernelversion.Parse(c.Kernel); err != nil || !v.AtLeast(kernelversion.EgressMin) {
-		set(condDatapathCompatible, "KernelTooOld", fmt.Sprintf("kernel %s is older than egress needs", c.Kernel))
-	} else {
-		set(condDatapathCompatible, "", "")
-	}
 	if h == nil {
 		h = &dpHealth{}
+	}
+	if v, err := kernelversion.Parse(c.Kernel); err != nil || !v.AtLeast(kernelversion.EgressMin) {
+		set(condDatapathCompatible, "KernelTooOld", fmt.Sprintf("kernel %s is older than egress needs", c.Kernel))
+	} else if h.markConflict != "" {
+		set(condDatapathCompatible, "MarkConflict", h.markConflict)
+	} else {
+		set(condDatapathCompatible, "", "")
 	}
 	switch {
 	case h.applyErr != "":
@@ -142,6 +150,13 @@ func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth, pn *po
 		// No peer answers: this node's tunnel port, or its path to every
 		// peer, is blocked (a firewall: D25).
 		set(condForwardPath, "TunnelPortBlocked", "no tunnel peer answers probes: "+strings.Join(h.unreachable, ", "))
+	case len(h.forwardBlocked) > 0:
+		// The pods' new egress flows are marked but none reaches its SNAT:
+		// a forward filter (Docker, firewalld), rp_filter, or a
+		// NetworkPolicy denying every selected pod drops them (D25).
+		set(condForwardPath, "ForwardBlocked", strings.Join(h.forwardBlocked, ", ")+
+			": pods' new egress flows are marked but none reached its SNAT; a forward filter (Docker, firewalld), "+
+			"rp_filter, or a NetworkPolicy denying the selected pods drops them")
 	default:
 		set(condForwardPath, "", "")
 	}
