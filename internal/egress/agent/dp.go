@@ -69,6 +69,17 @@ type dpWant struct {
 	podsKnown bool
 	// steer is where each of stage's slots goes (D1, design 6.8).
 	steer map[uint8]dpSteer
+	// retired are the mark values no longer used that conntrack may
+	// carry; draining this node's Draining slices by slot id, and
+	// drainedNoSlot those with no slot, which have no flows (§5.6).
+	retired       []uint8
+	draining      map[uint8]purelbv2.EgressDrained
+	drainedNoSlot []purelbv2.EgressDrained
+	// specGen is the EgressNodeState spec generation the pod-node state
+	// and the holdings were both computed from; 0 when they differ or the
+	// state isn't whole (a slot left without an id). Installed, it is
+	// acked (D6).
+	specGen int64
 }
 
 // dpPool is one pool interface and the families placed on it.
@@ -121,6 +132,10 @@ type dpState struct {
 	addrs map[netip.Addr]*datapath.AddressEntries
 	// netkit are the netkit pod devices pl_pod_tag skips, as last logged.
 	netkit map[string]bool
+	// podIPs are the pods' addresses last applied; gone those of pods
+	// since gone whose flows aren't deleted yet.
+	podIPs map[netip.Addr]bool
+	gone   map[netip.Addr]bool
 }
 
 // poolReport is what a pool interface lacks: a default route in a family
@@ -149,9 +164,15 @@ func (a *Agent) syncDatapath() {
 		w.guardLinks, w.guardProgs = a.guard.Interfaces(), a.guard.ProgramIDs()
 	}
 	w.cluster, w.nodeAddrs = a.clusterAPI(s), nodeAddrs(s)
-	if a.podnode != nil {
+	if pn := a.podnode; pn != nil {
 		w.steer = a.steering(s, a.stageWant)
 		w.pods, w.stage, w.podsKnown = a.podsWant, steeredStage(a.stageWant, w.steer), true
+		w.retired = slices.Sorted(maps.Keys(pn.retired))
+		if ns, err := s.nodeStates.Get(a.node); err == nil {
+			// The holdings above read this same spec.
+			w.draining, w.drainedNoSlot = drainWant(ns.Spec, pn)
+			w.specGen = ackable(ns.Generation, pn)
+		}
 	}
 	for _, obj := range s.nodes.List() {
 		n := obj.(*corev1.Node)
@@ -190,6 +211,9 @@ func (a *Agent) syncDatapath() {
 				acks[i].MTU = int32(holderMTU(a.dp, acks[i].Address))
 			}
 			a.acks.Store(&acks)
+			if w.specGen != 0 {
+				a.specAck.Store(w.specGen)
+			}
 			a.installedHeld(w)
 		}
 		a.capability.Store(c)
@@ -245,6 +269,18 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		st.objs, st.links, st.nodes, st.pools, st.addrs = objs, map[string]link.Link{}, nodes, pools, addrs
 		st.linkIfs = map[string]int{}
 		st.reports = map[int]poolReport{}
+		// And its pods' addresses: a pod gone while no agent ran still has
+		// its flows deleted.
+		st.podIPs, st.gone = map[netip.Addr]bool{}, map[netip.Addr]bool{}
+		if devs, err := objs.RecoverPodDevs(); err == nil {
+			for _, d := range devs {
+				for _, ip := range []netip.Addr{d.V4, d.V6} {
+					if ip.IsValid() {
+						st.podIPs[ip] = true
+					}
+				}
+			}
+		}
 	}
 
 	self := datapath.NodeID(w.self)
@@ -259,6 +295,9 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		return c, fmt.Errorf("reading the routes: %w", err)
 	}
 	cluster := append(slices.Clone(w.cluster), routes...)
+	if w.podsKnown {
+		a.unflushLive(w)
+	}
 	// The hardening chains before the tunnel opens its port (design 6.12),
 	// the stage's MSS from the mode last resolved; again once the tunnel
 	// resolves another.
@@ -395,6 +434,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		if err := a.syncSteering(st, w, addrs, cluster, mode, tun); err != nil {
 			return c, err
 		}
+		a.syncConntrack(st, w)
 	}
 	c.EgressCapable = true
 	logging.Debug(a.logger, "op", "egressDatapath", "node", a.node, "tunnel", mode, "port", port,

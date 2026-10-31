@@ -108,6 +108,17 @@ type Agent struct {
 	// installed, for status.announcing (D6). Written by the datapath
 	// goroutine.
 	acks atomic.Pointer[[]purelbv2.EgressAnnouncing]
+	// specAck is the EgressNodeState spec generation the datapath last
+	// installed whole (status.observedGeneration, D6); drained the
+	// Draining slices it found no flows of; ctFlushed the retired mark
+	// values whose flows it deleted, free to be used again (D18). Written
+	// by the datapath goroutine.
+	specAck   atomic.Int64
+	drained   atomic.Pointer[[]purelbv2.EgressDrained]
+	ctFlushed atomic.Pointer[map[uint8]bool]
+	// tableSlots reads the slots an earlier agent left in the nft table
+	// (tests replace it).
+	tableSlots func() (map[uint8]datapath.SlotNAT, error)
 
 	// guard is the node's address guard, nil without one; guarded the
 	// addresses egress has put in it. Queue goroutine only.
@@ -210,7 +221,7 @@ func New(logger log.Logger, node, namespace string) *Agent {
 		guarded: map[netip.Addr]bool{}, services: map[netip.Addr]map[string]bool{},
 		placements: map[netip.Addr]map[string]egresshook.ServicePlacement{},
 		placed:     map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
-		sendProbe: sendUDPProbe}
+		sendProbe: sendUDPProbe, tableSlots: tableSlots}
 	a.apply, a.tear = a.applyDatapath, a.teardown
 	return a
 }
@@ -497,6 +508,9 @@ func (a *Agent) stopSession() {
 	a.installed.Store(nil)
 	a.probing.Store(nil)
 	a.acks.Store(nil)
+	a.specAck.Store(0)
+	a.drained.Store(nil)
+	a.ctFlushed.Store(nil)
 	logging.Info(a.logger, "op", "egressDisable", "node", a.node, "msg", "egress disabled on this node")
 }
 
@@ -518,7 +532,24 @@ func (a *Agent) syncNode() {
 	}
 	h := a.health.Load()
 	st := &purelbv2.EgressNodeStateStatus{Capability: c, AddressFaults: a.faultList(h),
-		Conditions: a.nodeConditions(c, h, a.podnode)}
+		Conditions: a.nodeConditions(c, h, a.podnode), ObservedGeneration: a.specAck.Load()}
+	if d := a.drained.Load(); d != nil {
+		// Only slices Draining now: a report the datapath made before the
+		// slice changed is stale.
+		draining := map[purelbv2.EgressDrained]bool{}
+		if ns, err := s.nodeStates.Get(a.node); err == nil {
+			for _, sl := range ns.Spec.Slices {
+				if sl.State == "Draining" {
+					draining[purelbv2.EgressDrained{Endpoints: sl.Endpoints, Index: sl.Index}] = true
+				}
+			}
+		}
+		for _, x := range *d {
+			if draining[x] {
+				st.Drained = append(st.Drained, x)
+			}
+		}
+	}
 	if acks := a.acks.Load(); acks != nil {
 		// Only what this node announces now: an address it holds but
 		// couldn't place isn't announced, and gates nothing (D6).

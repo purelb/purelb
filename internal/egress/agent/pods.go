@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"maps"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -154,8 +155,15 @@ func (a *Agent) syncPods() {
 	prev := a.podnode
 	if prev == nil {
 		// The session's first plan: keep the pod-set ids an earlier
-		// agent left in the pinned maps (D12).
+		// agent left in the pinned maps, and the slot ids in its table
+		// (D12), which conntrack carries.
 		prev = seedPodSets(in, recoveredPodSets(a.dp.pinRoot))
+		recovered, err := a.tableSlots()
+		if err != nil {
+			logging.Info(a.logger, "op", "egressPods", "node", a.node, "error", err,
+				"msg", "reading the slots an earlier agent left; numbering them afresh")
+		}
+		seedSlots(prev, in, recovered)
 	}
 	pn := planPodNode(in, prev)
 	if len(pn.short) > 0 && (a.podnode == nil || !slices.Equal(a.podnode.short, pn.short)) {
@@ -167,7 +175,9 @@ func (a *Agent) syncPods() {
 		"pods", len(pn.pods), "retired", len(pn.retired))
 	a.add(keyNode, false) // capability.slots and SlotsExhausted
 	pods, stage := dpPods(pn), stagePlan(pn, in, markShift(s.spec))
-	if !slices.Equal(pods, a.podsWant) || a.podsWant == nil || !reflect.DeepEqual(stage, a.stageWant) {
+	// A new spec generation is acked once installed, changed or not.
+	if !slices.Equal(pods, a.podsWant) || a.podsWant == nil || !reflect.DeepEqual(stage, a.stageWant) ||
+		prev.generation != pn.generation || !maps.Equal(prev.retired, pn.retired) {
 		a.podsWant, a.stageWant = pods, stage
 		a.add(keyDatapath, false)
 	}
@@ -177,7 +187,7 @@ func (a *Agent) syncPods() {
 func (a *Agent) podNodeInput(s *session) pnInput {
 	d := a.config.Load()
 	in := pnInput{namespaces: map[string]*corev1.Namespace{}, owners: map[string]egress.PolicyRef{},
-		reservedCluster: int(s.spec.ReservedClusterSlots)}
+		reservedCluster: int(s.spec.ReservedClusterSlots), inUse: a.ctInUse}
 	var groups []*purelbv2.ServiceGroup
 	if d != nil {
 		for _, g := range d.groups {
@@ -186,7 +196,7 @@ func (a *Agent) podNodeInput(s *session) pnInput {
 	}
 	in.bindings = purelbv2.BindNamespaces(groups)
 	if ns, err := s.nodeStates.Get(a.node); err == nil {
-		in.spec = ns.Spec
+		in.spec, in.generation = ns.Spec, ns.Generation
 	}
 	for _, o := range s.pods.List() {
 		if pod := o.(*corev1.Pod); pod.Spec.NodeName == a.node {

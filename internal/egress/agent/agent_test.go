@@ -29,6 +29,7 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"purelb.io/internal/egress/datapath"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	purelbfake "purelb.io/pkg/generated/clientset/versioned/fake"
 )
@@ -88,6 +89,7 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	}
 	a.tear = func() error { return nil }
 	a.sendProbe = func(netip.Addr, netip.Addr, int, []byte) error { return nil }
+	a.tableSlots = func() (map[uint8]datapath.SlotNAT, error) { return nil, nil }
 	keys := make(chan string, 1000)
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })

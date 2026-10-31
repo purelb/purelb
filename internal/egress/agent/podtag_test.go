@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -22,10 +23,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/go-kit/log"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
@@ -237,15 +241,79 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 		egressRules(t))
 	assert.Nil(t, steerOf(t, b, 4))
 
-	// Gone: entry, link and pin.
-	w.pods = nil
+	// Conntrack (§5.6, D18): a retired mark value's flows are reset, after
+	// which it may be used again; a Draining slot with flows isn't
+	// drained, one without a slot is.
+	ct := func(src string, sport uint16, mark uint32) {
+		s := net.ParseIP(src)
+		fam, d := netlink.InetFamily(unix.AF_INET6), net.ParseIP("2001:db8:9::9")
+		if s.To4() != nil {
+			fam, s, d = unix.AF_INET, s.To4(), net.ParseIP("203.0.113.9").To4()
+		}
+		require.NoError(t, netlink.ConntrackCreate(netlink.ConntrackTable, fam, &netlink.ConntrackFlow{FamilyType: uint8(fam),
+			Forward: netlink.IPTuple{SrcIP: s, DstIP: d, Protocol: unix.IPPROTO_UDP, SrcPort: sport, DstPort: 53},
+			Reverse: netlink.IPTuple{SrcIP: d, DstIP: s, Protocol: unix.IPPROTO_UDP, SrcPort: 53, DstPort: sport},
+			Mark:    mark, TimeOut: 300}))
+	}
+	marked := func(v uint8) []string {
+		flows, err := datapath.CtFlows(0, v)
+		require.NoError(t, err)
+		var out []string
+		for _, f := range flows {
+			out = append(out, f.Src.String())
+		}
+		sort.Strings(out)
+		return out
+	}
+	ct("10.244.1.5", 1000, 4)
+	ct("10.244.1.9", 1001, 4)
+	ct("fd04:0:0:1::5", 1002, 6)
+	ct("10.244.1.5", 1003, 9)
+	ct("10.244.1.5", 1004, 0x109)
+	reset := testutil.ToFloat64(ctDeleted.WithLabelValues("slotRetired"))
+	w.retired = []uint8{9}
+	w.draining = map[uint8]purelbv2.EgressDrained{6: {Endpoints: "e6", Index: 1}}
+	w.drainedNoSlot = []purelbv2.EgressDrained{{Endpoints: "e0", Index: 2}}
+	assert.True(t, b.ctInUse(9), "not known to be free")
 	apply(t, b, w)
+	assert.Empty(t, marked(9), "the retired value's flows")
+	assert.Equal(t, 2.0, testutil.ToFloat64(ctDeleted.WithLabelValues("slotRetired"))-reset,
+		"both: bits outside the field don't count")
+	assert.False(t, b.ctInUse(9), "free to use again")
+	assert.Equal(t, []purelbv2.EgressDrained{{Endpoints: "e0", Index: 2}}, *b.drained.Load(), "slot 6 has a flow")
+	require.NoError(t, netlink.ConntrackTableFlush(netlink.ConntrackTable))
+	ct("10.244.1.5", 1000, 4)
+	ct("10.244.1.9", 1001, 4)
+	apply(t, b, w)
+	assert.Equal(t, []purelbv2.EgressDrained{{Endpoints: "e0", Index: 2}, {Endpoints: "e6", Index: 1}}, *b.drained.Load())
+	// A value used again may carry flows again.
+	w.retired, w.stage.Slots[9] = nil, datapath.Slot{Addr: eg, First: 4096, Last: 8191}
+	apply(t, b, w)
+	assert.True(t, b.ctInUse(9))
+	delete(w.stage.Slots, 9)
+
+	// A pod gone from the node: its flows go, the others' stay.
+	gone := testutil.ToFloat64(ctDeleted.WithLabelValues("podDeleted"))
+	w.pods = w.pods[:1]
+	apply(t, b, w)
+	assert.Equal(t, []string{"10.244.1.5"}, marked(4))
+	assert.Equal(t, 1.0, testutil.ToFloat64(ctDeleted.WithLabelValues("podDeleted"))-gone)
+
+	// The pod gone while no agent ran: the next deletes its flows too,
+	// knowing its addresses from the pinned map. And entry, link and pin
+	// go.
+	ct("10.244.1.5", 1005, 4)
+	closeAgent(b)
+	c := newNetnsAgent(dir)
+	w.pods = nil
+	apply(t, c, w)
+	assert.Empty(t, marked(4))
 	assert.Empty(t, chain(t, veth, ebpf.AttachTCXIngress))
 	assert.False(t, pinned())
-	devs, err = b.dp.objs.RecoverPodDevs()
+	devs, err = c.dp.objs.RecoverPodDevs()
 	require.NoError(t, err)
 	assert.Empty(t, devs)
-	closeAgent(b)
+	closeAgent(c)
 }
 
 // The datapath's desired state carries this node's pods, planned, and the
@@ -323,6 +391,141 @@ func TestSeedPodSets(t *testing.T) {
 	assert.Equal(t, uint8(9), pn.pods["voice/a"].podSet)
 	_, slotOn9 := pn.slots[9]
 	assert.False(t, slotOn9, "the slot takes another id")
+}
+
+// A restarted agent's first plan keeps the slot ids its table holds,
+// matched by address and ports, so conntrack's marks keep naming their
+// slots; one matching no slice is retired until its flows are deleted.
+func TestSeedSlots(t *testing.T) {
+	p := pnEgress("voice", "p", 100, nil)
+	pp := pnEgress("voice", "pp", 50, func(p *pnPolicy) { p.spec.Affinity = &purelbv2.EgressAffinity{Mode: "PerPod"} })
+	in := pnIn("Active", []*corev1.Pod{pnPod("voice", "a", appA, "10.1.0.5")}, p, pp)
+	in.spec.Slices[1].Identity, in.spec.Slices[1].Index = "a", 0
+	in.inUse = func(uint8) bool { return true }
+	prev := seedPodSets(in, nil)
+	seedSlots(prev, in, map[uint8]datapath.SlotNAT{
+		7: {Addr: netip.MustParseAddr("192.0.2.1"), First: 8192, Last: 12287}, // e-p's slice 2 of 4096
+		4: {Addr: netip.MustParseAddr("192.0.2.2")},                           // e-pp's PerPod address
+		5: {Addr: netip.MustParseAddr("192.0.2.1"), First: 4096, Last: 8191},  // a slice no longer here
+	})
+	pn := planPodNode(in, prev)
+	assert.Equal(t, map[slotKey]uint8{{endpoints: "e-p", index: 2}: 7, {endpoints: "e-pp", index: 0}: 4}, pn.slotIDs)
+	assert.Equal(t, map[uint8]bool{5: true}, pn.retired)
+	assert.Equal(t, uint8(1), pn.pods["voice/a"].podSet, "the pod-set takes the lowest free id")
+}
+
+// A retired mark value is in use until the datapath reports its flows
+// deleted (D18).
+func TestCtInUse(t *testing.T) {
+	a := New(log.NewNopLogger(), "a", "purelb-system")
+	assert.True(t, a.ctInUse(5), "nothing known")
+	a.ctFlushed.Store(&map[uint8]bool{5: true})
+	assert.False(t, a.ctInUse(5))
+	assert.True(t, a.ctInUse(6))
+	a.unflushLive(dpWant{stage: &datapath.PodStage{Slots: map[uint8]datapath.Slot{5: {}}}})
+	assert.True(t, a.ctInUse(5), "used again")
+}
+
+// A spec generation is acked only when the plan came from it too, and
+// gave every slot an id.
+func TestAckable(t *testing.T) {
+	assert.Equal(t, int64(3), ackable(3, &podNode{generation: 3}))
+	assert.Zero(t, ackable(4, &podNode{generation: 3}), "planned from another generation")
+	assert.Zero(t, ackable(3, &podNode{generation: 3, short: []string{"e-x"}}), "a slot without an id")
+}
+
+// The datapath gets this node's Draining slices and the spec generation
+// its plan and holdings came from; installed, the status acks it
+// (observedGeneration) and lists the slices drained, only those Draining
+// now (§5.6, D6).
+func TestSpecAckAndDrained(t *testing.T) {
+	const ep = "e-voice.sip-0a0b0c0d"
+	ens := &purelbv2.EgressNodeState{ObjectMeta: metav1.ObjectMeta{Name: testNode, Generation: 3},
+		Spec: purelbv2.EgressNodeStateSpec{Slices: []purelbv2.EgressNodeSlice{
+			{Endpoints: ep, Address: "192.0.2.1", Index: 2, State: "Active", SliceSize: 4096},
+			{Endpoints: ep, Address: "192.0.2.1", Index: 3, State: "Draining", SliceSize: 4096},
+			{Endpoints: "e-gone", Address: "192.0.2.9", Index: 0, State: "Draining", SliceSize: 4096}}}}
+	ea := &purelbv2.EgressAddress{ObjectMeta: metav1.ObjectMeta{Namespace: "purelb-system", Name: ep,
+		Labels: map[string]string{egress.LabelKind: egress.KindEgress, egress.LabelNamespace: "voice", egress.LabelName: "sip"}},
+		Spec: purelbv2.EgressAddressSpec{State: "Active", Address: "192.0.2.1", Family: "IPv4", ServiceGroup: "default",
+			PoolType: "Local", Placement: "SingleAnnouncer"}}
+	eg := &purelbv2.Egress{ObjectMeta: metav1.ObjectMeta{Namespace: "voice", Name: "sip", UID: "uid-sip"},
+		Spec: purelbv2.EgressSpec{PodSelector: &metav1.LabelSelector{MatchLabels: appA}}}
+	f := newFixture(t, true, testNodeObj, ens, ea, eg, pnPod("voice", "a-1", appA, "10.1.0.5"))
+	// An earlier agent's table gave the Active slice slot 9.
+	f.a.tableSlots = func() (map[uint8]datapath.SlotNAT, error) {
+		return map[uint8]datapath.SlotNAT{9: {Addr: netip.MustParseAddr("192.0.2.1"), First: 8192, Last: 12287}}, nil
+	}
+	f.a.Configure(agentWith(&purelbv2.LBNodeAgentEgressSpec{Enabled: true}))
+
+	var w dpWant
+	require.Eventually(t, func() bool {
+		select {
+		case w = <-f.wants:
+		default:
+		}
+		return w.specGen == 3
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, uint16(8192), w.stage.Slots[9].First, "the slot keeps the id the table gave it")
+	require.Len(t, w.draining, 1)
+	for id, d := range w.draining {
+		assert.Equal(t, purelbv2.EgressDrained{Endpoints: ep, Index: 3}, d)
+		assert.Contains(t, w.stage.Slots, id, "its slot")
+	}
+	assert.Equal(t, []purelbv2.EgressDrained{{Endpoints: "e-gone", Index: 0}}, w.drainedNoSlot, "no slot: no flows of its own")
+
+	// What the datapath found drained, one of them no longer Draining.
+	f.a.drained.Store(&[]purelbv2.EgressDrained{{Endpoints: ep, Index: 3}, {Endpoints: "e-gone", Index: 0}, {Endpoints: ep, Index: 2}})
+	f.a.add(keyNode, false)
+	var st purelbv2.EgressNodeStateStatus
+	require.Eventually(t, func() bool {
+		ns, err := f.purelb.PurelbV2().EgressNodeStates().Get(context.Background(), testNode, metav1.GetOptions{})
+		if err == nil {
+			st = ns.Status
+		}
+		return err == nil && st.ObservedGeneration == 3 && len(st.Drained) > 0
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, []purelbv2.EgressDrained{{Endpoints: ep, Index: 3}, {Endpoints: "e-gone", Index: 0}}, st.Drained)
+
+	// Slot 9's slice goes: its id is retired until the datapath reports
+	// its flows deleted (D18).
+	ens = f.nodeState()
+	ens.Spec.Slices, ens.Generation = ens.Spec.Slices[1:], 4
+	_, err := f.purelb.PurelbV2().EgressNodeStates().Update(context.Background(), ens, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		select {
+		case w = <-f.wants:
+		default:
+		}
+		return w.specGen == 4
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, []uint8{9}, w.retired)
+	assert.NotContains(t, w.stage.Slots, uint8(9))
+	f.a.ctFlushed.Store(&map[uint8]bool{9: true})
+	f.a.add(keyPods, false)
+	require.Eventually(t, func() bool {
+		select {
+		case w = <-f.wants:
+		default:
+		}
+		return w.specGen == 4 && len(w.retired) == 0
+	}, 5*time.Second, 10*time.Millisecond, "free once flushed")
+
+	// A new generation that changes no slot (a reserved port for a pod
+	// not here) is installed and acked all the same.
+	ens = f.nodeState()
+	ens.Spec.Reserved, ens.Generation = []purelbv2.EgressNodeReserved{{Endpoints: ep, Address: "192.0.2.1",
+		Protocol: "TCP", Port: 99, Pod: "elsewhere"}}, 5
+	_, err = f.purelb.PurelbV2().EgressNodeStates().Update(context.Background(), ens, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		select {
+		case w = <-f.wants:
+		default:
+		}
+		return w.specGen == 5
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 // steerOf is slot's holders in the steer map, nil without an entry.

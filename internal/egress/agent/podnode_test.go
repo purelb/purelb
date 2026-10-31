@@ -197,7 +197,8 @@ func TestPlanPodNodeIDs(t *testing.T) {
 	assert.Equal(t, first.slotIDs, again.slotIDs)
 	assert.Equal(t, first.setIDs, again.setIDs)
 
-	// p2 goes: its slot and pod-set ids retire while conntrack has them.
+	// p2 goes: its slot id retires while conntrack may carry it; its
+	// pod-set id, which conntrack never carries, is free at once.
 	carried := map[uint8]bool{}
 	for id := range first.slots {
 		if first.slots[id].policy == p2.ref {
@@ -205,7 +206,7 @@ func TestPlanPodNodeIDs(t *testing.T) {
 		}
 	}
 	in := pnIn("Active", pods[:1], p1)
-	in.inUse = func(id uint8) bool { return carried[id] }
+	in.inUse = func(uint8) bool { return true }
 	gone := planPodNode(in, again)
 	assert.Equal(t, carried, gone.retired)
 	assert.Equal(t, 3, gone.used(), "1 slot, 1 pod-set, 1 retired")

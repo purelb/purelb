@@ -77,7 +77,7 @@ for k in $KERNELS; do
 		TestNetnsHardening TestNetnsAnnounceInTunnel TestNetnsPoolTables \
 		TestPodTagSourceCheck TestPodTagNeighbourDiscovery TestPodTagHold TestNetnsPodDevices \
 		TestNetnsApplyDatapathPods TestIntervals TestNetnsPodStage TestNetnsPodStageHelper TestNetnsOutSrc \
-		TestNetnsSyncTargets TestNetnsSyncRules TestNetnsSrcValidMark TestSyncSteer TestNetnsWatchRules; do
+		TestNetnsSyncTargets TestNetnsSyncRules TestNetnsSrcValidMark TestSyncSteer TestNetnsWatchRules TestNetnsConntrack; do
 		if ! grep -q -- "--- PASS: $t" "$log"; then
 			result=FAIL
 		fi

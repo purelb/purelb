@@ -437,6 +437,12 @@ func TestNetnsPodStage(t *testing.T) {
 	ok, err := TableIntact(x.nft, tbl)
 	require.NoError(t, err)
 	assert.True(t, ok, "intact as written")
+	// Each slot's SNAT reads back, as a restarted agent recovers its id.
+	back, err := TableSlots(x.nft)
+	require.NoError(t, err)
+	assert.Equal(t, map[uint8]SlotNAT{1: {netip.MustParseAddr("10.9.9.9"), 20480, 24575},
+		2: {netip.MustParseAddr("fd09::9"), 20480, 24575}, 3: {Addr: netip.MustParseAddr("10.9.9.10")},
+		4: {Addr: netip.MustParseAddr("fd09::10")}}, back, "the slice rule, not the reserved port's")
 
 	for _, f := range []struct {
 		name, s, cluster, p, q, r, eg, whole string

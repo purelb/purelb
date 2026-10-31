@@ -15,6 +15,7 @@
 package datapath
 
 import (
+	"encoding/binary"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -506,6 +507,63 @@ func snatTo(addr netip.Addr, first, last uint16) []expr.Any {
 		nat.RegProtoMin, nat.RegProtoMax, nat.Specified = 2, 3, true
 	}
 	return append(out, nat)
+}
+
+// SlotNAT is a slot's SNAT: its address and its slice's ports; no ports
+// for a PerPod address, which is its pod's whole.
+type SlotNAT struct {
+	Addr        netip.Addr
+	First, Last uint16
+}
+
+// TableSlots reads each slot's SNAT back from the table, the last rule
+// of its sn_ chain, as an earlier agent left it: a restarted agent gives
+// its slots back the ids conntrack carries (D12, D18). None without the
+// table.
+func TableSlots(c *nftables.Conn) (map[uint8]SlotNAT, error) {
+	out := map[uint8]SlotNAT{}
+	tbl, err := c.ListTableOfFamily(NftTable, nftables.TableFamilyINet)
+	if err != nil || tbl == nil {
+		// A missing table is an error from the kernel (ENOENT).
+		return out, nil
+	}
+	chains, err := c.ListChainsOfTableFamily(nftables.TableFamilyINet)
+	if err != nil {
+		return nil, err
+	}
+	for _, ch := range chains {
+		var id uint8
+		if ch.Table.Name != NftTable {
+			continue
+		}
+		if _, err := fmt.Sscanf(ch.Name, "sn_%d", &id); err != nil || ch.Name != fmt.Sprintf("sn_%d", id) {
+			continue
+		}
+		rules, err := c.GetRules(tbl, ch)
+		if err != nil {
+			return nil, err
+		}
+		if len(rules) == 0 {
+			continue
+		}
+		var s SlotNAT
+		for _, e := range rules[len(rules)-1].Exprs {
+			if e, ok := e.(*expr.Immediate); ok {
+				switch {
+				case e.Register == 1:
+					s.Addr, _ = netip.AddrFromSlice(e.Data)
+				case e.Register == 2 && len(e.Data) == 2:
+					s.First = binary.BigEndian.Uint16(e.Data)
+				case e.Register == 3 && len(e.Data) == 2:
+					s.Last = binary.BigEndian.Uint16(e.Data)
+				}
+			}
+		}
+		if s.Addr.IsValid() {
+			out[id] = s
+		}
+	}
+	return out, nil
 }
 
 func addrType(f nftFamily) nftables.SetDatatype {

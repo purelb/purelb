@@ -15,7 +15,9 @@
 package datapath
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"sort"
@@ -244,4 +246,60 @@ func TestSyncSteer(t *testing.T) {
 	require.NoError(t, o.SyncSteer(map[uint8][]uint64{3: {2}, 6: {7}}, true))
 	assert.Nil(t, get(4), "pruned")
 	assert.Equal(t, []uint64{2}, get(3))
+}
+
+// CtFlows lists only the entries of one mark field value, both families,
+// each with its original source; CtDelete removes one, CtFlush the rest,
+// and entries of other values, or outside the field, stay.
+func TestNetnsConntrack(t *testing.T) {
+	netnsOrSkip(t)
+	h := newHost(t, "node")
+	flow := func(src, dst string, sport uint16, mark uint32) error {
+		s, d := net.ParseIP(src), net.ParseIP(dst)
+		fam := netlink.InetFamily(unix.AF_INET)
+		if s.To4() == nil {
+			fam = unix.AF_INET6
+		} else {
+			s, d = s.To4(), d.To4() // the library sends a 16-byte IPv4 address as it is
+		}
+		return netlink.ConntrackCreate(netlink.ConntrackTable, fam, &netlink.ConntrackFlow{FamilyType: uint8(fam),
+			Forward: netlink.IPTuple{SrcIP: s, DstIP: d, Protocol: unix.IPPROTO_UDP, SrcPort: sport, DstPort: 53},
+			Reverse: netlink.IPTuple{SrcIP: d, DstIP: s, Protocol: unix.IPPROTO_UDP, SrcPort: 53, DstPort: sport},
+			Mark:    mark, TimeOut: 300})
+	}
+	srcs := func(shift, v uint8) []string {
+		var out []string
+		require.NoError(t, h.in(func() error {
+			fs, err := CtFlows(shift, v)
+			for _, f := range fs {
+				out = append(out, f.Src.String())
+			}
+			return err
+		}))
+		sort.Strings(out)
+		return out
+	}
+	require.NoError(t, h.in(func() error {
+		return errors.Join(flow("10.0.0.5", "192.0.2.1", 1000, 0x0300), flow("10.0.0.6", "192.0.2.1", 1001, 0x0300),
+			flow("fd00::5", "2001:db8::1", 1002, 0x0300), flow("10.0.0.7", "192.0.2.1", 1003, 0x0400),
+			flow("10.0.0.8", "192.0.2.1", 1004, 0x0003), flow("10.0.0.9", "192.0.2.1", 1005, 0x10300))
+	}))
+
+	assert.Equal(t, []string{"10.0.0.5", "10.0.0.6", "10.0.0.9", "fd00::5"}, srcs(8, 3),
+		"the field's value 3, whatever is outside the field")
+	assert.Equal(t, []string{"10.0.0.8"}, srcs(0, 3), "the field at another byte")
+	require.NoError(t, h.in(func() error {
+		fs, err := CtFlows(8, 3)
+		for _, f := range fs {
+			if f.Src == netip.MustParseAddr("fd00::5") {
+				err = errors.Join(err, CtDelete(f), CtDelete(f))
+			}
+		}
+		return err
+	}), "a second delete of the same entry is no error")
+	assert.Equal(t, []string{"10.0.0.5", "10.0.0.6", "10.0.0.9"}, srcs(8, 3))
+	require.NoError(t, h.in(func() error { return errors.Join(CtFlush(8, 3), CtFlush(8, 3)) }))
+	assert.Empty(t, srcs(8, 3))
+	assert.Equal(t, []string{"10.0.0.7"}, srcs(8, 4), "another value stays")
+	assert.Equal(t, []string{"10.0.0.8"}, srcs(0, 3))
 }

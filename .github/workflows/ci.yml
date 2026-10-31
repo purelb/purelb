@@ -189,6 +189,7 @@ jobs:
           grep -q -- '--- PASS: TestNetnsSyncTargets' tunnel.out
           grep -q -- '--- PASS: TestNetnsSyncRules' tunnel.out
           grep -q -- '--- PASS: TestNetnsSrcValidMark' tunnel.out
+          grep -q -- '--- PASS: TestNetnsConntrack' tunnel.out
 
       # The agent's own datapath apply, run without CAP_SYS_ADMIN as the
       # agent runs it: first apply, repeat, node changes, the tunnel deleted

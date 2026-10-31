@@ -76,12 +76,15 @@ type podNode struct {
 	sets    map[uint8]podSet
 	setIDs  map[string]uint8
 	pods    map[string]podState // namespace/name
-	// retired are ids no longer used that conntrack may still carry, kept
-	// out of use until it doesn't (D18).
+	// retired are slot ids no longer used that conntrack may still carry,
+	// kept out of use until it doesn't (D18).
 	retired map[uint8]bool
 	// short are the slots and pod-sets left without an id: the budget is
 	// exhausted.
 	short []string
+	// generation is the EgressNodeState spec generation it was planned
+	// from.
+	generation int64
 }
 
 // used is how many mark values the node holds.
@@ -131,8 +134,9 @@ type pnInput struct {
 	bindings   purelbv2.NamespaceBindings
 	// spec is this node's EgressNodeState spec; owners maps each of its
 	// EgressEndpoints to its policy.
-	spec   purelbv2.EgressNodeStateSpec
-	owners map[string]egress.PolicyRef
+	spec       purelbv2.EgressNodeStateSpec
+	generation int64
+	owners     map[string]egress.PolicyRef
 	// reservedCluster are the ids only pod-sets led by a ClusterEgress may
 	// take (§5.10).
 	reservedCluster int
@@ -145,7 +149,7 @@ type pnInput struct {
 // pod-set.
 func planPodNode(in pnInput, prev *podNode) *podNode {
 	pn := &podNode{slots: map[uint8]slot{}, slotIDs: map[slotKey]uint8{}, sets: map[uint8]podSet{},
-		setIDs: map[string]uint8{}, pods: map[string]podState{}, retired: map[uint8]bool{}}
+		setIDs: map[string]uint8{}, pods: map[string]podState{}, retired: map[uint8]bool{}, generation: in.generation}
 	if prev == nil {
 		prev = &podNode{}
 	}
@@ -222,9 +226,10 @@ func planPodNode(in pnInput, prev *podNode) *podNode {
 		pn.pods[name] = st
 	}
 
-	// Ids: what keeps its key keeps its id; ids freed stay retired while
-	// conntrack carries them; new keys take the lowest free id, slots
-	// first (the allocator budgeted them), then pod-sets by rank.
+	// Ids: what keeps its key keeps its id; slot ids freed stay retired
+	// while conntrack carries them (a pod-set id never reaches it: the ct
+	// mark holds slots); new keys take the lowest free id, slots first
+	// (the allocator budgeted them), then pod-sets by rank.
 	taken := map[uint8]bool{}
 	for k := range want {
 		if id, ok := prev.slotIDs[k]; ok {
@@ -245,9 +250,6 @@ func planPodNode(in pnInput, prev *podNode) *podNode {
 		retire(id)
 	}
 	for id := range prev.slots {
-		retire(id)
-	}
-	for id := range prev.sets {
 		retire(id)
 	}
 	next := func(limit int) (uint8, bool) {
