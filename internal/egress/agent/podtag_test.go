@@ -136,8 +136,8 @@ func dropForeign(t *testing.T, tb *nftables.Table) {
 // The real apply tags a pod's host-side device: its pod_devs entry and
 // pl_pod_tag, pinned; the cluster networks from the API and the routes; a
 // restart keeps both until the pods are planned, then takes the link over
-// in place; a pod gone loses both. Also ForwardBlocked (D25) and the mark
-// byte's move and conflict (D18).
+// in place; a pod gone loses both. Also ForwardBlocked (D25), the mark
+// byte's move and conflict (D18), and the shutdown repoint (D7).
 func TestNetnsApplyDatapathPods(t *testing.T) {
 	dir := sandbox(t)
 	eth0, err := netlink.LinkByName("eth0")
@@ -365,6 +365,38 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	w.spec.MarkField = ""
 	clock = clock.Add(markReread)
 	assert.Equal(t, "0x000000ff", apply(t, b, w).MarkField)
+
+	// Shutting down (D7): slot 4's routed address, held here too, goes
+	// direct by main until the slot is repointed through the tunnel to the
+	// advertiser that remains; with none it stays direct; slot 6, held
+	// elsewhere, is left; the next apply takes the direct path back.
+	w.hold.addrs = map[netip.Addr]*datapath.AddressEntries{eg: {
+		Address: datapath.Address{Held: true, SliceSize: 4096, Table: mainTable}}}
+	w.steer[4] = dpSteer{addr: eg, holders: []string{"node-a", "node-b"}, routed: true, mtu: 1400}
+	apply(t, b, w)
+	assert.Equal(t, []string{"80 0x80 7800", "90 0x4 254", "90 0x6 7700", "80 0x80 7800", "90 0x4 254", "90 0x6 7700"},
+		egressRules(t))
+	repointed := testutil.ToFloat64(repointedSlots)
+	without := map[uint8]dpSteer{4: {addr: eg, holders: []string{"node-b"}, routed: true, mtu: 1400}, 6: w.steer[6]}
+	asAgent(t, func() { require.NoError(t, b.repointSlots(without)) })
+	assert.Equal(t, []string{"80 0x80 7800", "90 0x4 7700", "90 0x6 7700", "80 0x80 7800", "90 0x4 7700", "90 0x6 7700"},
+		egressRules(t))
+	assert.Equal(t, []uint64{datapath.NodeID("node-b")}, steerOf(t, b, 4))
+	assert.Contains(t, throws(t, datapath.TunnelTable), "10.96.0.0/12", "the cluster networks stay out of it")
+	assert.Equal(t, map[uint8][]string{4: {"node-b"}}, b.dp.repointed)
+	assert.Equal(t, 1.0, testutil.ToFloat64(repointedSlots)-repointed)
+	apply(t, b, w)
+	asAgent(t, func() {
+		require.NoError(t, b.repointSlots(map[uint8]dpSteer{4: {addr: eg, routed: true}, 6: w.steer[6]}))
+	})
+	assert.Equal(t, []string{"80 0x80 7800", "90 0x4 254", "90 0x6 7700", "80 0x80 7800", "90 0x4 254", "90 0x6 7700"},
+		egressRules(t), "no other advertiser: direct")
+	assert.Empty(t, b.dp.repointed)
+	w.hold.addrs = nil
+	w.steer[4] = dpSteer{addr: eg, holders: []string{"node-b"}, mtu: 1400}
+	apply(t, b, w)
+	assert.Equal(t, []string{"80 0x80 7800", "90 0x4 7700", "90 0x6 7700", "80 0x80 7800", "90 0x4 7700", "90 0x6 7700"},
+		egressRules(t))
 
 	// Slot 4's holder gone: FailClosed, its rule sends it to prohibit,
 	// and its steering is pruned.

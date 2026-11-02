@@ -319,6 +319,29 @@ func TestDatapath(t *testing.T) {
 	require.Eventually(t, func() bool { return d.live(time.Now().Add(time.Hour)) == nil }, time.Second, time.Millisecond)
 }
 
+// The datapath goroutine signals its exit once stopped, after the item it
+// was running: what it owned is then the shutdown's (D7's repoint).
+func TestDatapathExits(t *testing.T) {
+	d := newRunner()
+	release := make(chan struct{})
+	d.submit(func() { <-release })
+	stop := make(chan struct{})
+	go d.run(stop)
+	require.Eventually(t, func() bool { return d.started.Load() != 0 }, time.Second, time.Millisecond)
+	close(stop)
+	select {
+	case <-d.exited:
+		t.Fatal("exited with an item running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-d.exited:
+	case <-time.After(time.Second):
+		t.Fatal("never exited")
+	}
+}
+
 // The datapath gets every node's underlay addresses, and again when one
 // changes, but not for an unrelated Node update (status heartbeats).
 func TestDatapathWant(t *testing.T) {

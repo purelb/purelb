@@ -20,7 +20,9 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/vishvananda/netlink"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -83,6 +85,12 @@ func samePlacement(x, y egresshook.ServicePlacement) bool {
 // steering is where each of stage's slots goes, in this node's steering
 // view. Queue goroutine only.
 func (a *Agent) steering(s *session, stage *datapath.PodStage) map[uint8]dpSteer {
+	return a.steeringWithout(s, stage, "")
+}
+
+// steeringWithout is steering with node without left out of every
+// address's holders: where the slots go once it has gone (D7's repoint).
+func (a *Agent) steeringWithout(s *session, stage *datapath.PodStage, without string) map[uint8]dpSteer {
 	out := map[uint8]dpSteer{}
 	if stage == nil {
 		return out
@@ -99,7 +107,7 @@ func (a *Agent) steering(s *session, stage *datapath.PodStage) map[uint8]dpSteer
 	for id, sl := range stage.Slots {
 		st := dpSteer{addr: sl.Addr}
 		if ea := byAddr[sl.Addr]; ea != nil && d != nil {
-			st.holders = a.holdersOf(s, ea, d.groups[ea.Spec.ServiceGroup], sl.Addr, live)
+			st.holders = a.holdersOf(s, ea, d.groups[ea.Spec.ServiceGroup], sl.Addr, live, without)
 			st.routed = ea.Spec.PoolType == "Routed"
 			st.mtu = int(ea.Spec.PoolMTU)
 		}
@@ -112,12 +120,18 @@ func (a *Agent) steering(s *session, stage *datapath.PodStage) map[uint8]dpSteer
 // node's steering view (§5.5, D1): a dedicated local address's election
 // winner; a dedicated routed address's live advertisers (D7); a shared
 // address's nodes as its Services' LB path places it (Inherit). Only
-// egress-capable nodes can hold one.
+// egress-capable nodes can hold one, and never node without.
 func (a *Agent) holdersOf(s *session, ea *purelbv2.EgressAddress, g *purelbv2.ServiceGroup, addr netip.Addr,
-	live []string) []string {
+	live []string, without string) []string {
 	capable := func(name string) bool {
 		obj, ok, _ := s.nodes.GetByKey(name)
-		return ok && obj.(*corev1.Node).Labels[purelbv2.EgressCapableLabel] == "true"
+		return ok && name != without && obj.(*corev1.Node).Labels[purelbv2.EgressCapableLabel] == "true"
+	}
+	// The Service's own election, which egress-capability doesn't enter:
+	// unfiltered, or without that node.
+	var notWithout func(string) bool
+	if without != "" {
+		notWithout = func(n string) bool { return n != without }
 	}
 	set := map[string]bool{}
 	switch {
@@ -125,9 +139,7 @@ func (a *Agent) holdersOf(s *session, ea *purelbv2.EgressAddress, g *purelbv2.Se
 	case ea.Spec.SharedWith != nil:
 		for _, p := range a.placements[addr] {
 			if !p.Remote {
-				// The Service's own election, which egress-capability
-				// doesn't enter.
-				if w := a.elect.SteeringWinner(addr.String(), nil, p.Preferred); w != "" && capable(w) {
+				if w := a.elect.SteeringWinner(addr.String(), notWithout, p.Preferred); w != "" && capable(w) {
 					set[w] = true
 				}
 				continue
@@ -141,12 +153,12 @@ func (a *Agent) holdersOf(s *session, ea *purelbv2.EgressAddress, g *purelbv2.Se
 	case ea.Spec.PoolType == "Routed":
 		eligible := eligibility(s.nodes, g)
 		for _, n := range live {
-			if eligible(n) {
+			if n != without && eligible(n) {
 				set[n] = true
 			}
 		}
 	default:
-		if w := a.steeringOwner(s, ea.Spec.Address, g, ea.Spec.PreferredNodes); w != "" {
+		if w := a.steeringOwner(s, ea.Spec.Address, g, ea.Spec.PreferredNodes, without); w != "" {
 			set[w] = true
 		}
 	}
@@ -216,6 +228,7 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 	// goes to prohibit, never by main with its SNAT.
 	steer := map[uint8][]uint64{}
 	prohibited := map[uint8]bool{}
+	repointed := map[uint8][]string{}
 	var slots []uint8
 	if w.stage != nil {
 		slots = slices.Sorted(maps.Keys(w.stage.Slots))
@@ -224,9 +237,18 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 		sl := w.steer[id]
 		sl.addr = w.stage.Slots[id].Addr
 		table := datapath.ProhibitTable
-		if e := addrs[sl.addr]; e != nil && e.Held && e.Table != 0 {
+		e := addrs[sl.addr]
+		held := e != nil && e.Held && e.Table != 0
+		ids := steerTo(sl, w.self, self, nodes, lost)
+		// Leaving, a held address's slot goes through the tunnel to the
+		// holders that remain (D7); with none, it stays direct.
+		away := held && w.leaving && len(ids) > 0
+		if away {
+			repointed[id] = sl.holders
+		}
+		if held && !away {
 			table = int(e.Table)
-		} else if ids := steerTo(sl, w.self, self, nodes, lost); len(ids) > 0 {
+		} else if len(ids) > 0 {
 			table, steer[id] = datapath.TunnelTable, ids
 			// The tunnel route's MTU is the smallest of its slots'.
 			m := slotMTU(sl.addr, mtu4, mtu6, sl.mtu)
@@ -260,7 +282,7 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 	if err := datapath.SyncRules(st.nl, st.shift, rules); err != nil {
 		return err
 	}
-	st.prohibited = prohibited
+	st.prohibited, st.repointed = prohibited, repointed
 	if err := st.objs.SyncSteer(steer, true); err != nil {
 		return err
 	}
@@ -282,6 +304,67 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 	logging.Debug(a.logger, "op", "egressSteer", "node", a.node, "slots", len(slots), "tunnelled", len(steer),
 		"mtu4", t.MTU4, "mtu6", t.MTU6, "msg", "slots routed")
 	return errors.Join(errs...)
+}
+
+var repointedSlots = prometheus.NewCounter(prometheus.CounterOpts{
+	Namespace: purelbv2.MetricsNamespace, Subsystem: "egress", Name: "repointed_slots_total",
+	Help: "Slots of addresses this node held that a graceful shutdown sent through the tunnel to the holders that remain (D7).",
+})
+
+func init() {
+	prometheus.MustRegister(repointedSlots)
+}
+
+// repointWait bounds the wait for the datapath goroutine to finish its
+// last item at shutdown.
+const repointWait = 5 * time.Second
+
+// repoint sends this node's pods' slots of the addresses it holds through
+// the tunnel to the holders that remain once it has gone (D7), before
+// they are withdrawn: their flows keep their source and port, out and
+// back through one holder. Shutdown goroutine only, once the queue
+// goroutine has stopped; the datapath goroutine has stopped too, and what
+// it owned is this one's once it has exited.
+func (a *Agent) repoint() {
+	if a.podnode == nil || a.stageWant == nil {
+		return
+	}
+	steer := a.steeringWithout(a.on, a.stageWant, a.node)
+	select {
+	case <-a.runner.exited:
+	case <-time.After(repointWait):
+		logging.Info(a.logger, "op", "egressRepoint", "node", a.node,
+			"msg", "the datapath is still busy; this node's slots aren't repointed before withdrawing")
+		return
+	}
+	if err := a.repointSlots(steer); err != nil {
+		logging.Info(a.logger, "op", "egressRepoint", "node", a.node, "error", err,
+			"msg", "repointing this node's slots before withdrawing")
+	}
+}
+
+// repointSlots applies steering steer to the desired state last applied,
+// as a leaving node: slots of the addresses it holds go through the
+// tunnel. Datapath-owner goroutine only.
+func (a *Agent) repointSlots(steer map[uint8]dpSteer) error {
+	st := a.dp
+	if st.applied == nil || st.tun == nil {
+		return nil
+	}
+	w := *st.applied
+	w.steer, w.leaving = steer, true
+	if err := a.syncSteering(st, w, st.addrs, st.cluster, st.mode, st.tun); err != nil {
+		return err
+	}
+	if len(st.repointed) > 0 {
+		repointedSlots.Add(float64(len(st.repointed)))
+		for _, id := range slices.Sorted(maps.Keys(st.repointed)) {
+			logging.Info(a.logger, "op", "egressRepoint", "node", a.node, "slot", id,
+				"address", w.stage.Slots[id].Addr, "holders", st.repointed[id],
+				"msg", "shutting down: the slot goes through the tunnel to the holders that remain")
+		}
+	}
+	return nil
 }
 
 // resetSrcValidMark turns src_valid_mark off on ifindex once it is no

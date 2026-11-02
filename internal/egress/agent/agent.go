@@ -602,13 +602,14 @@ func slimNode(obj interface{}) (interface{}, error) {
 }
 
 // PrepareShutdown runs at the start of a graceful shutdown, after the
-// work-queue goroutine has stopped: egress withdraws the addresses it
-// placed while the lease still stands (design 5.5; the repoint ahead of it
-// is Phase 5's).
+// work-queue goroutine has stopped, while the lease still stands: egress
+// repoints this node's pods' slots off the addresses it holds (D7), then
+// withdraws the addresses it placed (design 5.5).
 func (a *Agent) PrepareShutdown() {
 	if a.on == nil {
 		return
 	}
+	a.repoint()
 	a.withdrawPlaced("shutdown")
 }
 

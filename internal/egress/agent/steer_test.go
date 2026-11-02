@@ -35,19 +35,21 @@ import (
 
 // steerElector answers the steering view: live nodes, and a winner per
 // preferred set, recording for each preferred set whether it was asked
-// with an eligibility test.
+// with an eligibility test, and the test.
 type steerElector struct {
 	live     []string
 	winner   func(preferred []string) string
 	eligible map[string]bool
+	filters  map[string]func(string) bool
 }
 
 func (e *steerElector) WinnerAmong(string, func(string) bool, []string) string { return "" }
 func (e *steerElector) SteeringWinner(_ string, eligible func(string) bool, preferred []string) string {
 	if e.eligible == nil {
-		e.eligible = map[string]bool{}
+		e.eligible, e.filters = map[string]bool{}, map[string]func(string) bool{}
 	}
 	e.eligible[strings.Join(preferred, ",")] = eligible != nil
+	e.filters[strings.Join(preferred, ",")] = eligible
 	return e.winner(preferred)
 }
 func (e *steerElector) SteeringLive() []string       { return e.live }
@@ -126,6 +128,35 @@ func TestSteering(t *testing.T) {
 	assert.Equal(t, []string{"c"}, got[3].holders)
 	assert.Equal(t, []string{"a"}, got[2].holders)
 	assert.Empty(t, got[4].holders, "no live endpoint node")
+}
+
+// Without a node (D7's repoint), it holds nothing: each election is asked
+// without it, and the routed and shared nodes leave it out.
+func TestSteeringWithout(t *testing.T) {
+	sharedLocal, sharedRemote := netip.MustParseAddr("192.0.2.3"), netip.MustParseAddr("2001:db8::4")
+	e := &steerElector{live: []string{"a", "b", "c", "d"}, winner: func([]string) string { return "c" }}
+	a, s, _ := steerAgent(t, e,
+		steerAddress("l", "192.0.2.1", "Local", false, "b"),
+		steerAddress("r", "192.0.2.2", "Routed", false),
+		steerAddress("sl", "192.0.2.3", "Local", true),
+		steerAddress("sr", "2001:db8::4", "Routed", true))
+	a.ServicePlacement("app/web", sharedLocal.AsSlice(), &egresshook.ServicePlacement{Preferred: []string{"d"}})
+	a.ServicePlacement("app/web", net.IP(sharedRemote.AsSlice()), &egresshook.ServicePlacement{Remote: true, ETPLocal: true,
+		EndpointNodes: []string{"b", "c"}})
+	stage := &datapath.PodStage{Slots: map[uint8]datapath.Slot{1: {Addr: netip.MustParseAddr("192.0.2.1")},
+		2: {Addr: netip.MustParseAddr("192.0.2.2")}, 3: {Addr: sharedLocal}, 4: {Addr: sharedRemote}}}
+
+	got := a.steeringWithout(s, stage, "b")
+	assert.Equal(t, []string{"c"}, got[1].holders)
+	local := e.filters["b"]
+	assert.False(t, local("b"), "the local election without b")
+	assert.True(t, local("a"))
+	assert.False(t, local("d"), "and still with egress eligibility")
+	assert.Equal(t, []string{"a"}, got[2].holders, "the live advertisers but b")
+	service := e.filters["d"]
+	assert.False(t, service("b"), "the Service's election without b")
+	assert.True(t, service("d"), "and no egress eligibility")
+	assert.Equal(t, []string{"c"}, got[4].holders, "the endpoint nodes but b")
 }
 
 // A placement report kicks the datapath only when it changes; nil drops

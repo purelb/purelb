@@ -110,7 +110,7 @@ func TestOwnerLookups(t *testing.T) {
 	assert.True(t, e.eligible("a"))
 	assert.False(t, e.eligible("c"))
 
-	assert.Equal(t, "steer", a.steeringOwner(s, "10.0.0.9", g, nil))
+	assert.Equal(t, "steer", a.steeringOwner(s, "10.0.0.9", g, nil, ""))
 	assert.True(t, e.steering)
 	assert.False(t, e.eligible("c"))
 }

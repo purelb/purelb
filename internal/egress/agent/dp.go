@@ -80,6 +80,9 @@ type dpWant struct {
 	// state isn't whole (a slot left without an id). Installed, it is
 	// acked (D6).
 	specGen int64
+	// leaving: the node is shutting down, and the slots of the addresses
+	// it holds go through the tunnel to the holders that remain (D7).
+	leaving bool
 }
 
 // dpPool is one pool interface and the families placed on it.
@@ -150,6 +153,12 @@ type dpState struct {
 	prohibited     map[uint8]bool
 	fwd            [2]fwdWindow
 	forwardBlocked []string
+	// applied is the desired state last applied whole, and cluster its
+	// cluster networks; repointed the slots a leaving apply sent to the
+	// tunnel, with their holders.
+	applied   *dpWant
+	cluster   []netip.Prefix
+	repointed map[uint8][]string
 }
 
 // poolReport is what a pool interface lacks: a default route in a family
@@ -461,6 +470,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		a.resetMoved(st)
 		a.syncForward(st)
 	}
+	st.applied, st.cluster = &w, cluster
 	c.EgressCapable = true
 	logging.Debug(a.logger, "op", "egressDatapath", "node", a.node, "tunnel", mode, "port", port,
 		"nodes", len(st.nodes), "pinned", st.pinDir != "", "msg", "datapath applied")
