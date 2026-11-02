@@ -160,6 +160,13 @@ type Agent struct {
 	podsWant  []dpPod
 	stageWant *datapath.PodStage
 
+	// flows is the running flow log (queue goroutine only); it names
+	// flows by flowView (from the queue goroutine) and the mark byte in
+	// use (from the datapath goroutine).
+	flows    *flowLog
+	flowView atomic.Pointer[flowView]
+	markByte atomic.Uint32
+
 	// faults are this node's address problems and conds its conditions,
 	// as last reported. Queue goroutine only.
 	faults map[netip.Addr]purelbv2.EgressAddressFault
@@ -356,6 +363,7 @@ func (a *Agent) syncConfig() {
 		// what an earlier agent left (D26), if anything.
 		a.endDatapath()
 	}
+	a.syncFlowLog()
 }
 
 // startSession starts egress's informers and its first capability probe.
@@ -495,6 +503,8 @@ func (a *Agent) stopSession() {
 	}
 	close(a.on.stop)
 	a.on = nil
+	a.syncFlowLog()
+	a.flowView.Store(nil)
 	if a.guard != nil {
 		for addr := range a.guarded {
 			if err := a.guard.UpdateEgress(addr, false, nil, nil); err != nil {

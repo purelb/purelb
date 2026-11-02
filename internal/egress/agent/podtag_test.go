@@ -339,6 +339,7 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, uint8(16), shift)
 	assert.Equal(t, uint8(16), b.dp.table.Pods.MarkShift)
+	assert.Equal(t, uint32(16), b.markByte.Load(), "the flow log reads the byte in use")
 	assert.Equal(t, []string{"10.0.0.99"}, ctMarked(t, 0, 4))
 	assert.Equal(t, 1.0, testutil.ToFloat64(markMoves)-moves)
 	assert.Equal(t, 1.0, testutil.ToFloat64(ctDeleted.WithLabelValues("markMoved"))-moved)
@@ -513,6 +514,14 @@ func TestDatapathGetsPodsAndCluster(t *testing.T) {
 	assert.Equal(t, netip.MustParseAddr("fd01::5"), w.pods[0].v6)
 	assert.NotZero(t, w.pods[0].podSet)
 	assert.True(t, w.pods[0].hold, "FailClosed, its slot Pending")
+	// The flow log names flows by the plan's pods and slots' policies.
+	fv := f.a.flowView.Load()
+	require.NotNil(t, fv)
+	assert.Equal(t, "voice/a-1", fv.pods[netip.MustParseAddr("fd01::5")])
+	require.NotEmpty(t, fv.slots)
+	for _, s := range fv.slots {
+		assert.Contains(t, s.policy, "voice/")
+	}
 	for _, p := range []string{"10.244.2.0/24", "fd04:0:0:2::/64", "10.0.0.1/32", "10.0.0.2/32", "198.51.100.2/32", "fd00::1/128",
 		"10.96.0.0/12", "fd05::/112", "192.0.2.200/32", "203.0.113.0/24", "fd99::/64", "169.254.0.0/16", "ff00::/8"} {
 		assert.Contains(t, w.cluster, netip.MustParsePrefix(p))

@@ -175,6 +175,7 @@ func (a *Agent) syncPods() {
 		"pods", len(pn.pods), "retired", len(pn.retired))
 	a.add(keyNode, false) // capability.slots and SlotsExhausted
 	pods, stage := dpPods(pn), stagePlan(pn, in, markShift(s.spec))
+	a.flowView.Store(newFlowView(pn, pods))
 	// A new spec generation is acked once installed, changed or not.
 	if !slices.Equal(pods, a.podsWant) || a.podsWant == nil || !reflect.DeepEqual(stage, a.stageWant) ||
 		prev.generation != pn.generation || !maps.Equal(prev.retired, pn.retired) {

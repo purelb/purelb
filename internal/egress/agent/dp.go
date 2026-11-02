@@ -329,6 +329,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		a.unflushLive(w)
 	}
 	a.syncMarkByte(st, w)
+	a.markByte.Store(uint32(st.shift))
 	c.MarkField = fieldName(st.shift)
 	// The hardening chains before the tunnel opens its port (design 6.12),
 	// the stage's MSS from the mode last resolved; again once the tunnel
