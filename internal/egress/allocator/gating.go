@@ -279,21 +279,25 @@ func (r *Reconciler) slotsUsed(node string) int {
 }
 
 // slotLimit is how many slices a policy may hold on node: the slot
-// budget, less the node's reservedClusterSlots for a namespaced Egress
-// (§5.10).
+// budget, less the pod-set ids the node reports (one budget, D18), and
+// less the node's reservedClusterSlots for a namespaced Egress (§5.10).
 func (r *Reconciler) slotLimit(node string, kind string) int {
+	limit := slotBudget
+	if ns, err := r.nodeStates.Get(node); err == nil && ns.Status.Capability != nil && ns.Status.Capability.Slots != nil {
+		limit -= int(ns.Status.Capability.Slots.PodSets)
+	}
 	if kind == egress.KindClusterEgress {
-		return slotBudget
+		return limit
 	}
 	obj, ok, _ := r.nodes.GetByKey(node)
 	if !ok {
-		return slotBudget
+		return limit
 	}
 	agents, _ := r.agents.List(labels.Everything())
 	if spec := purelbv2.EgressSpecFor(purelbv2.AgentsForNode(agents, obj.(*corev1.Node).Labels)); spec != nil {
-		return slotBudget - int(spec.ReservedClusterSlots)
+		return limit - int(spec.ReservedClusterSlots)
 	}
-	return slotBudget
+	return limit
 }
 
 // requeueAfter enqueues key after d, once per deadline: a later request

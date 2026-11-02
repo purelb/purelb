@@ -70,8 +70,8 @@ func (r *Reconciler) syncAddress(name string) error {
 	return nil
 }
 
-// addressSpec is an EgressEndpoints' address as every node sees it. The
-// preferred nodes (§5.5) are a PerPod address's pod node, and with the
+// addressSpec is an EgressEndpoints' address as every node sees it, with
+// its announcers' smallest MTU (D13). The preferred nodes (§5.5) are a PerPod address's pod node, and with the
 // group's preferPodNodes the nodes holding an Active or Draining slice (a
 // Draining slice lasts at most drainMax, which damps churn); otherwise
 // none.
@@ -87,6 +87,7 @@ func (r *Reconciler) addressSpec(ep *purelbv2.EgressEndpoints) purelbv2.EgressAd
 		skip := *p.spec.SkipIPv6DAD
 		spec.SkipIPv6DAD = &skip
 	}
+	spec.PoolMTU = r.poolMTU(ep.Name)
 	prefer := s.Identity != ""
 	if g, _, ok := r.alloc.ServiceGroup(s.ServiceGroup); ok && g.Spec.Egress != nil && g.Spec.Egress.PreferPodNodes {
 		prefer = true
@@ -104,6 +105,21 @@ func (r *Reconciler) addressSpec(ep *purelbv2.EgressEndpoints) purelbv2.EgressAd
 	}
 	slices.Sort(spec.PreferredNodes)
 	return spec
+}
+
+// poolMTU is the smallest MTU the announcers of an EgressEndpoints report
+// for its address (D13), 0 when none does.
+func (r *Reconciler) poolMTU(ee string) int32 {
+	mtu := int32(0)
+	objs, _ := r.nodeStateIdx.ByIndex(idxAnnouncing, ee)
+	for _, o := range objs {
+		for _, a := range o.(*purelbv2.EgressNodeState).Status.Announcing {
+			if a.Endpoints == ee && a.MTU > 0 && (mtu == 0 || a.MTU < mtu) {
+				mtu = a.MTU
+			}
+		}
+	}
+	return mtu
 }
 
 // addressKeys are the queue keys of every EgressEndpoints' address, for

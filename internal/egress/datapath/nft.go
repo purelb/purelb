@@ -15,16 +15,47 @@
 package datapath
 
 import (
+	"cmp"
 	"encoding/binary"
+	"fmt"
+	"maps"
 	"net/netip"
+	"slices"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
+	"github.com/mdlayher/netlink"
 	"golang.org/x/sys/unix"
 )
 
 // NftTable is egress's nftables table, inet family (design 6.11).
 const NftTable = "purelb_egress"
+
+// nftBuffer is the netlink socket buffer the table is written through: a
+// full table doesn't fit the defaults, 1 MiB fits 127 slots in both
+// families (RESULTS, "The nft table does not fit one default netlink
+// transaction").
+const nftBuffer = 1 << 20
+
+// NftConn opens an nftables connection whose socket buffers fit the whole
+// table in one transaction (SO_RCVBUFFORCE / SO_SNDBUFFORCE, under
+// CAP_NET_ADMIN).
+func NftConn(opts ...nftables.ConnOption) (*nftables.Conn, error) {
+	return nftables.New(append(opts, nftables.WithSockOptions(func(c *netlink.Conn) error {
+		if err := c.SetReadBuffer(nftBuffer); err != nil {
+			return err
+		}
+		return c.SetWriteBuffer(nftBuffer)
+	}))...)
+}
+
+// Table is egress's whole table: the host hardening chains on every egress
+// node, and the pod-node stage where it runs.
+type Table struct {
+	Hardening Hardening
+	// Pods is the pod-node stage; nil: none.
+	Pods *PodStage
+}
 
 // Hardening is what the host hardening chains are built from (design
 // 6.12).
@@ -51,73 +82,205 @@ var (
 	svcPortType6 = nftables.MustConcatSetType(nftables.TypeIP6Addr, nftables.TypeInetProto, nftables.TypeInetService)
 )
 
-// SyncHardening replaces egress's table with h's chains in one
-// transaction, so the host is never without them and never sees half a
-// table:
+// SyncTable replaces egress's table with t in one transaction, so the host
+// is never without the hardening chains and never sees half a table.
+func SyncTable(c *nftables.Conn, t Table) error {
+	if _, err := build(c, t); err != nil {
+		return err
+	}
+	return c.Flush()
+}
+
+// TableIntact reports whether the table SyncTable writes for t is in the
+// kernel as written: every chain with its rule count, every set with
+// exactly t's elements, every object. Something else can remove part of it:
+// another firewall flushing the ruleset, for one.
+func TableIntact(c *nftables.Conn, t Table) (bool, error) {
+	// Built on a connection that is never flushed: only its shape is used.
+	want, err := build(&nftables.Conn{}, t)
+	if err != nil {
+		return false, err
+	}
+	tbl, err := c.ListTableOfFamily(NftTable, nftables.TableFamilyINet)
+	if err != nil || tbl == nil {
+		// A missing table is an error from the kernel (ENOENT).
+		return false, nil
+	}
+	chains, err := c.ListChainsOfTableFamily(nftables.TableFamilyINet)
+	if err != nil {
+		return false, err
+	}
+	seen := 0
+	for _, ch := range chains {
+		if ch.Table.Name != NftTable {
+			continue
+		}
+		n, ok := want.chains[ch.Name]
+		if !ok {
+			return false, nil
+		}
+		rules, err := c.GetRules(tbl, ch)
+		if err != nil {
+			return false, err
+		}
+		if len(rules) != n {
+			return false, nil
+		}
+		seen++
+	}
+	if seen != len(want.chains) {
+		return false, nil
+	}
+	sets, err := c.GetSets(tbl)
+	if err != nil {
+		return false, err
+	}
+	named := 0
+	for _, s := range sets {
+		if s.Anonymous {
+			continue
+		}
+		elems, ok := want.sets[s.Name]
+		if !ok {
+			return false, nil
+		}
+		have, err := c.GetSetElements(s)
+		if err != nil {
+			return false, err
+		}
+		if !sameElements(have, elems) {
+			return false, nil
+		}
+		named++
+	}
+	if named != len(want.sets) {
+		return false, nil
+	}
+	objs, err := c.GetNamedObjects(tbl)
+	if err != nil {
+		return false, err
+	}
+	have := map[string]bool{}
+	for _, o := range objs {
+		if n, ok := o.(*nftables.NamedObj); ok {
+			have[n.Name] = true
+		}
+	}
+	for _, name := range want.objs {
+		if !have[name] {
+			return false, nil
+		}
+	}
+	return len(have) == len(want.objs), nil
+}
+
+// shape is what a table holds: each chain's rule count, each named set's
+// elements, each object's name.
+type shape struct {
+	chains map[string]int
+	sets   map[string][]nftables.SetElement
+	objs   []string
+}
+
+// builder adds a table to a connection and records its shape.
+type builder struct {
+	c     *nftables.Conn
+	t     *nftables.Table
+	sets  map[string]*nftables.Set
+	shape shape
+}
+
+// build adds t to c, replacing what the kernel holds, and returns its
+// shape.
+func build(c *nftables.Conn, t Table) (shape, error) {
+	tbl := &nftables.Table{Family: nftables.TableFamilyINet, Name: NftTable}
+	// Adding first makes the delete valid when the table doesn't exist.
+	c.AddTable(tbl)
+	c.DelTable(tbl)
+	c.AddTable(tbl)
+	b := &builder{c: c, t: tbl, sets: map[string]*nftables.Set{},
+		shape: shape{chains: map[string]int{}, sets: map[string][]nftables.SetElement{}}}
+	if err := b.hardening(t.Hardening); err != nil {
+		return shape{}, err
+	}
+	if t.Pods != nil {
+		if err := b.podStage(*t.Pods); err != nil {
+			return shape{}, err
+		}
+	}
+	return b.shape, nil
+}
+
+// baseChain is a chain's hook, priority and type; regular chains have none.
+type baseChain struct {
+	hook *nftables.ChainHook
+	prio *nftables.ChainPriority
+	typ  nftables.ChainType
+}
+
+func filterHook(hook *nftables.ChainHook, prio int32) *baseChain {
+	return &baseChain{hook: hook, prio: nftables.ChainPriorityRef(nftables.ChainPriority(prio)), typ: nftables.ChainTypeFilter}
+}
+
+func (b *builder) chain(name string, base *baseChain) *nftables.Chain {
+	ch := &nftables.Chain{Name: name, Table: b.t}
+	if base != nil {
+		accept := nftables.ChainPolicyAccept
+		ch.Hooknum, ch.Priority, ch.Type, ch.Policy = base.hook, base.prio, base.typ, &accept
+	}
+	b.shape.chains[name] = 0
+	return b.c.AddChain(ch)
+}
+
+func (b *builder) rule(ch *nftables.Chain, e ...expr.Any) {
+	b.c.AddRule(&nftables.Rule{Table: b.t, Chain: ch, Exprs: e})
+	b.shape.chains[ch.Name]++
+}
+
+// set adds a named set (or map) with its elements.
+func (b *builder) set(s *nftables.Set, elems []nftables.SetElement) error {
+	s.Table = b.t
+	if err := b.c.AddSet(s, elems); err != nil {
+		return fmt.Errorf("set %s: %w", s.Name, err)
+	}
+	b.sets[s.Name] = s
+	b.shape.sets[s.Name] = elems
+	return nil
+}
+
+func (b *builder) obj(o *nftables.NamedObj) {
+	o.Table = b.t
+	b.c.AddObj(o)
+	b.shape.objs = append(b.shape.objs, o.Name)
+}
+
+// lookup matches register 1 against the named set.
+func (b *builder) lookup(name string, invert bool) []expr.Any {
+	s := b.sets[name]
+	return []expr.Any{&expr.Lookup{SourceRegister: 1, SetName: s.Name, SetID: s.ID, Invert: invert}}
+}
+
+// vmap jumps or goes to the verdict register 1 maps to in the named map.
+func (b *builder) vmap(name string) []expr.Any {
+	s := b.sets[name]
+	return []expr.Any{&expr.Lookup{SourceRegister: 1, SetName: s.Name, SetID: s.ID, IsDestRegSet: true}}
+}
+
+// hardening adds the host hardening chains (design 6.12):
 //
 //	announce_in  prerouting -150 (D32): new or invalid packets to an
 //	             egress address, other than to a Service port of a shared
 //	             one, and from the tunnel are dropped, every protocol
+//	out_src      output (D20): the host never sources an egress address,
+//	             but for its own NS/NA and replies
 //	tun_fwd      forward (D20): no forwarded packet reaches a node's
 //	             tunnel port
 //	tun_in       input (D20): the tunnel port accepts nodes only
 //	tun_raw,     raw (prerouting, output): node-to-node tunnel packets
 //	tun_raw_out  skip conntrack
-func SyncHardening(c *nftables.Conn, h Hardening) error {
-	t := &nftables.Table{Family: nftables.TableFamilyINet, Name: NftTable}
-	// Adding first makes the delete valid when the table doesn't exist.
-	c.AddTable(t)
-	c.DelTable(t)
-	c.AddTable(t)
-
-	sets := map[string]*nftables.Set{}
+func (b *builder) hardening(h Hardening) error {
 	elems := hardeningElems(h)
-	for _, s := range hardeningSets {
-		set := &nftables.Set{Table: t, Name: s.name, KeyType: s.typ, Concatenation: s.concat}
-		if err := c.AddSet(set, elems[s.name]); err != nil {
-			return err
-		}
-		sets[s.name] = set
-	}
-
-	accept := nftables.ChainPolicyAccept
-	chain := func(name string, hook *nftables.ChainHook, prio *nftables.ChainPriority) *nftables.Chain {
-		return c.AddChain(&nftables.Chain{Name: name, Table: t, Type: nftables.ChainTypeFilter,
-			Hooknum: hook, Priority: prio, Policy: &accept})
-	}
-	rule := func(ch *nftables.Chain, e ...expr.Any) {
-		c.AddRule(&nftables.Rule{Table: t, Chain: ch, Exprs: e})
-	}
-	port := h.TunnelPort
-
-	in := chain("announce_in", nftables.ChainHookPrerouting, nftables.ChainPriorityRef(-150))
-	for _, f := range nftFamilies {
-		rule(in, cat(f.match(), f.daddr(1), l4proto(f.next(1)), dport(f.next(1)+1),
-			lookup(sets["svcports"+f.n], false), verdict(expr.VerdictAccept))...)
-	}
-	for _, f := range nftFamilies {
-		rule(in, cat(newOrInvalid(), f.match(), f.daddr(1), lookup(sets["egress"+f.n], false),
-			verdict(expr.VerdictDrop))...)
-	}
-	rule(in, cat(newOrInvalid(), iifname(TunnelName), verdict(expr.VerdictDrop))...)
-
-	fwd := chain("tun_fwd", nftables.ChainHookForward, nftables.ChainPriorityFilter)
-	tin := chain("tun_in", nftables.ChainHookInput, nftables.ChainPriorityFilter)
-	raw := chain("tun_raw", nftables.ChainHookPrerouting, nftables.ChainPriorityRaw)
-	rawOut := chain("tun_raw_out", nftables.ChainHookOutput, nftables.ChainPriorityRaw)
-	for _, f := range nftFamilies {
-		nodes := sets["nodes"+f.n]
-		rule(fwd, cat(f.match(), udpPort(port), f.daddr(1), lookup(nodes, false), verdict(expr.VerdictDrop))...)
-		rule(tin, cat(f.match(), udpPort(port), f.saddr(1), lookup(nodes, true), verdict(expr.VerdictDrop))...)
-		rule(raw, cat(f.match(), udpPort(port), f.saddr(1), lookup(nodes, false), []expr.Any{&expr.Notrack{}})...)
-		rule(rawOut, cat(f.match(), udpPort(port), f.daddr(1), lookup(nodes, false), []expr.Any{&expr.Notrack{}})...)
-	}
-	return c.Flush()
-}
-
-// The hardening table's sets, and its chains with their rule counts.
-var (
-	hardeningSets = []struct {
+	for _, s := range []struct {
 		name   string
 		typ    nftables.SetDatatype
 		concat bool
@@ -128,19 +291,53 @@ var (
 		{"nodes6", nftables.TypeIP6Addr, false},
 		{"svcports4", svcPortType4, true},
 		{"svcports6", svcPortType6, true},
+	} {
+		if err := b.set(&nftables.Set{Name: s.name, KeyType: s.typ, Concatenation: s.concat}, elems[s.name]); err != nil {
+			return err
+		}
 	}
-	hardeningChains = map[string]int{"announce_in": 5, "tun_fwd": 2, "tun_in": 2, "tun_raw": 2, "tun_raw_out": 2}
-)
+	port := h.TunnelPort
+
+	in := b.chain("announce_in", filterHook(nftables.ChainHookPrerouting, -150))
+	for _, f := range nftFamilies {
+		b.rule(in, cat(f.match(), f.daddr(1), l4proto(f.next(1)), dport(f.next(1)+1),
+			b.lookup("svcports"+f.n, false), verdict(expr.VerdictAccept))...)
+	}
+	for _, f := range nftFamilies {
+		b.rule(in, cat(newOrInvalid(), f.match(), f.daddr(1), b.lookup("egress"+f.n, false),
+			verdict(expr.VerdictDrop))...)
+	}
+	b.rule(in, cat(newOrInvalid(), iifname(TunnelName), verdict(expr.VerdictDrop))...)
+
+	out := b.chain("out_src", filterHook(nftables.ChainHookOutput, 0))
+	for _, typ := range []byte{135, 136} { // the node's own NS and NA
+		b.rule(out, cat(nftFamilies[1].match(), l4protoIs(unix.IPPROTO_ICMPV6), icmpType(typ),
+			hopLimit255(), verdict(expr.VerdictAccept))...)
+	}
+	b.rule(out, cat(ctDirection(1), verdict(expr.VerdictAccept))...)
+	for _, f := range nftFamilies {
+		b.rule(out, cat(f.match(), f.saddr(1), b.lookup("egress"+f.n, false), verdict(expr.VerdictDrop))...)
+	}
+
+	fwd := b.chain("tun_fwd", filterHook(nftables.ChainHookForward, 0))
+	tin := b.chain("tun_in", filterHook(nftables.ChainHookInput, 0))
+	raw := b.chain("tun_raw", filterHook(nftables.ChainHookPrerouting, -300))
+	rawOut := b.chain("tun_raw_out", filterHook(nftables.ChainHookOutput, -300))
+	for _, f := range nftFamilies {
+		nodes := "nodes" + f.n
+		b.rule(fwd, cat(f.match(), udpPort(port), f.daddr(1), b.lookup(nodes, false), verdict(expr.VerdictDrop))...)
+		b.rule(tin, cat(f.match(), udpPort(port), f.saddr(1), b.lookup(nodes, true), verdict(expr.VerdictDrop))...)
+		b.rule(raw, cat(f.match(), udpPort(port), f.saddr(1), b.lookup(nodes, false), []expr.Any{&expr.Notrack{}})...)
+		b.rule(rawOut, cat(f.match(), udpPort(port), f.daddr(1), b.lookup(nodes, false), []expr.Any{&expr.Notrack{}})...)
+	}
+	return nil
+}
 
 // hardeningElems is each hardening set's elements for h.
 func hardeningElems(h Hardening) map[string][]nftables.SetElement {
 	elems := map[string][]nftables.SetElement{}
 	add := func(set string, a netip.Addr, key []byte) {
-		if a.Is4() {
-			set += "4"
-		} else {
-			set += "6"
-		}
+		set += famSuffix(a)
 		elems[set] = append(elems[set], nftables.SetElement{Key: key})
 	}
 	for _, a := range h.Egress {
@@ -156,72 +353,57 @@ func hardeningElems(h Hardening) map[string][]nftables.SetElement {
 	return elems
 }
 
-// HardeningIntact reports whether the table SyncHardening writes for h is
-// in the kernel as written: every chain with its rules, every set with
-// exactly h's elements. Something else can remove it: another firewall
-// flushing the ruleset, for one.
-func HardeningIntact(c *nftables.Conn, h Hardening) (bool, error) {
-	t, err := c.ListTableOfFamily(NftTable, nftables.TableFamilyINet)
-	if err != nil || t == nil {
-		// A missing table is an error from the kernel (ENOENT).
-		return false, nil
+func famSuffix(a netip.Addr) string {
+	if a.Is4() {
+		return "4"
 	}
-	chains, err := c.ListChainsOfTableFamily(nftables.TableFamilyINet)
-	if err != nil {
-		return false, err
-	}
-	seen := 0
-	for _, ch := range chains {
-		if ch.Table.Name != NftTable {
-			continue
-		}
-		want, ok := hardeningChains[ch.Name]
-		if !ok {
-			return false, nil
-		}
-		rules, err := c.GetRules(t, ch)
-		if err != nil {
-			return false, err
-		}
-		if len(rules) != want {
-			return false, nil
-		}
-		seen++
-	}
-	if seen != len(hardeningChains) {
-		return false, nil
-	}
-	elems := hardeningElems(h)
-	for _, s := range hardeningSets {
-		set, err := c.GetSetByName(t, s.name)
-		if err != nil {
-			return false, nil
-		}
-		have, err := c.GetSetElements(set)
-		if err != nil {
-			return false, err
-		}
-		if !sameKeys(have, elems[s.name]) {
-			return false, nil
-		}
-	}
-	return true, nil
+	return "6"
 }
 
-func sameKeys(a, b []nftables.SetElement) bool {
+// sameElements reports whether two element lists hold the same elements,
+// verdicts included, in any order.
+func sameElements(a, b []nftables.SetElement) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	keys := map[string]int{}
 	for _, e := range a {
-		keys[string(e.Key)]++
+		keys[elementKey(e)]++
 	}
 	for _, e := range b {
-		if keys[string(e.Key)]--; keys[string(e.Key)] < 0 {
+		if keys[elementKey(e)]--; keys[elementKey(e)] < 0 {
 			return false
 		}
 	}
 	return true
+}
+
+func elementKey(e nftables.SetElement) string {
+	k := string(e.Key)
+	if e.IntervalEnd {
+		k += "|end"
+	}
+	switch {
+	case e.VerdictData != nil:
+		k += fmt.Sprintf("|%d:%s", e.VerdictData.Kind, e.VerdictData.Chain)
+	case len(e.Val) > 0:
+		// A map's verdict as the kernel lists it: its code and chain as
+		// netlink attributes.
+		code, chain := int32(0), ""
+		if ad, err := netlink.NewAttributeDecoder(e.Val); err == nil {
+			ad.ByteOrder = binary.BigEndian
+			for ad.Next() {
+				switch ad.Type() {
+				case unix.NFTA_VERDICT_CODE:
+					code = int32(ad.Uint32())
+				case unix.NFTA_VERDICT_CHAIN:
+					chain = ad.String()
+				}
+			}
+		}
+		k += fmt.Sprintf("|%d:%s", code, chain)
+	}
+	return k
 }
 
 // nftFamily builds an inet table's per-family expressions.
@@ -236,6 +418,14 @@ type nftFamily struct {
 var nftFamilies = []nftFamily{
 	{n: "4", nfproto: unix.NFPROTO_IPV4, addrLen: 4, saddrAt: 12, daddrAt: 16},
 	{n: "6", nfproto: unix.NFPROTO_IPV6, addrLen: 16, saddrAt: 8, daddrAt: 24},
+}
+
+// familyOf is a's nftFamily.
+func familyOf(a netip.Addr) nftFamily {
+	if a.Is4() {
+		return nftFamilies[0]
+	}
+	return nftFamilies[1]
 }
 
 func (f nftFamily) match() []expr.Any {
@@ -264,28 +454,55 @@ func l4proto(reg uint32) []expr.Any {
 	return []expr.Any{&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: reg}}
 }
 
+func l4protoIs(p byte) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{p}},
+	}
+}
+
 func dport(reg uint32) []expr.Any {
 	return []expr.Any{&expr.Payload{DestRegister: reg, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2}}
 }
 
 func udpPort(port uint16) []expr.Any {
-	p := make([]byte, 2)
-	binary.BigEndian.PutUint16(p, port)
+	return cat(l4protoIs(unix.IPPROTO_UDP), dport(1), []expr.Any{&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: be16(port)}})
+}
+
+// icmpType matches the ICMP or ICMPv6 type.
+func icmpType(t byte) []expr.Any {
 	return []expr.Any{
-		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_UDP}},
-		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: p},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{t}},
+	}
+}
+
+func hopLimit255() []expr.Any {
+	return []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 7, Len: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{255}},
+	}
+}
+
+// ctState matches any of the conntrack states in bits.
+func ctState(bits uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: ne32(bits), Xor: ne32(0)},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: ne32(0)},
 	}
 }
 
 func newOrInvalid() []expr.Any {
-	mask := make([]byte, 4)
-	binary.NativeEndian.PutUint32(mask, expr.CtStateBitNEW|expr.CtStateBitINVALID)
+	return ctState(expr.CtStateBitNEW | expr.CtStateBitINVALID)
+}
+
+// ctDirection matches the packet's conntrack direction: 0 original, 1
+// reply.
+func ctDirection(dir byte) []expr.Any {
 	return []expr.Any{
-		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
-		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: mask, Xor: make([]byte, 4)},
-		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: make([]byte, 4)},
+		&expr.Ct{Register: 1, Key: expr.CtKeyDIRECTION},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{dir}},
 	}
 }
 
@@ -298,12 +515,29 @@ func iifname(name string) []expr.Any {
 	}
 }
 
-func lookup(s *nftables.Set, invert bool) []expr.Any {
-	return []expr.Any{&expr.Lookup{SourceRegister: 1, SetName: s.Name, SetID: s.ID, Invert: invert}}
-}
-
 func verdict(k expr.VerdictKind) []expr.Any {
 	return []expr.Any{&expr.Verdict{Kind: k}}
+}
+
+func goTo(chain string) []expr.Any {
+	return []expr.Any{&expr.Verdict{Kind: expr.VerdictGoto, Chain: chain}}
+}
+
+func jump(chain string) []expr.Any {
+	return []expr.Any{&expr.Verdict{Kind: expr.VerdictJump, Chain: chain}}
+}
+
+// ne32 is v as nft compares a 32-bit mark or state: in host order.
+func ne32(v uint32) []byte {
+	b := make([]byte, 4)
+	binary.NativeEndian.PutUint32(b, v)
+	return b
+}
+
+func be16(v uint16) []byte {
+	b := make([]byte, 2)
+	binary.BigEndian.PutUint16(b, v)
+	return b
 }
 
 func cat(parts ...[]expr.Any) []expr.Any {
@@ -312,4 +546,9 @@ func cat(parts ...[]expr.Any) []expr.Any {
 		out = append(out, p...)
 	}
 	return out
+}
+
+// sortedKeys is m's keys in order.
+func sortedKeys[K cmp.Ordered, V any](m map[K]V) []K {
+	return slices.Sorted(maps.Keys(m))
 }

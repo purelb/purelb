@@ -80,7 +80,9 @@ func (a *Agent) localOwner(s *session, addr string, g *purelbv2.ServiceGroup, pr
 }
 
 // steeringOwner is the node this pod node steers local address addr's
-// traffic to (D1).
-func (a *Agent) steeringOwner(s *session, addr string, g *purelbv2.ServiceGroup, preferred []string) string {
-	return a.elect.SteeringWinner(addr, eligibility(s.nodes, g), preferred)
+// traffic to (D1); with without set, the one that wins once that node
+// leaves the election.
+func (a *Agent) steeringOwner(s *session, addr string, g *purelbv2.ServiceGroup, preferred []string, without string) string {
+	eligible := eligibility(s.nodes, g)
+	return a.elect.SteeringWinner(addr, func(n string) bool { return n != without && eligible(n) }, preferred)
 }

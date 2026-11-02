@@ -16,6 +16,7 @@ package allocator
 
 import (
 	"context"
+	appsv1 "k8s.io/api/apps/v1"
 	"testing"
 	"time"
 
@@ -163,7 +164,7 @@ func TestSliceActivation(t *testing.T) {
 	assert.Equal(t, map[string]string{"n1": slicePending}, states(ep))
 	assert.Equal(t, defaultReserveSlices, reserves(ep))
 	ns := g.syncNode(t, "n1")
-	assert.Equal(t, []purelbv2.EgressNodeSlice{{Endpoints: ep.Name, Address: "192.168.10.10", Index: 1, State: slicePending}}, ns.Spec.Slices)
+	assert.Equal(t, []purelbv2.EgressNodeSlice{{Endpoints: ep.Name, Address: "192.168.10.10", Index: 1, State: slicePending, SliceSize: 4096}}, ns.Spec.Slices)
 
 	// n2 announces the address but hasn't installed this generation.
 	g.status(t, "n2", purelbv2.EgressNodeStateStatus{Announcing: []purelbv2.EgressAnnouncing{
@@ -347,4 +348,52 @@ func TestNodeStateAndLabel(t *testing.T) {
 	n, err = g.kube.CoreV1().Nodes().Get(context.Background(), "n1", metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, "true", n.Labels[purelbv2.EgressCapableLabel])
+}
+
+// A node's spec carries what its pods need from their addresses: each
+// slice's size and PerPod identity, and the reserved ports of its pods.
+func TestNodeSpecPodInputs(t *testing.T) {
+	sel := map[string]string{"app": "a"}
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Namespace: "db", Name: "db"}, Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(1))}}
+	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil), namespace("db", nil),
+		node("n1", true), pod("voice", "a-1", "n1", sel), pod("voice", "a-2", "n1", map[string]string{"app": "a", "sip": "y"}),
+		sts, stsPod("db", "db-0", "n1", sel),
+		egressObj("voice", "sip", func(s *purelbv2.EgressSpec) {
+			s.Ports = &purelbv2.EgressPorts{SliceSize: ptr(int32(1024)), Reserved: []purelbv2.EgressReservedPort{
+				{Protocol: "UDP", Port: 5060, PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"sip": "y"}}}}}
+		}),
+		egressObj("db", "perpod", func(s *purelbv2.EgressSpec) { s.Affinity = &purelbv2.EgressAffinity{Mode: "PerPod"} }))
+	g.reconcile(t, "egress/voice/sip")
+	g.reconcile(t, "egress/db/perpod")
+	ns := g.syncNode(t, "n1")
+	byEP := map[string]purelbv2.EgressNodeSlice{}
+	for _, s := range ns.Spec.Slices {
+		byEP[s.Endpoints] = s
+	}
+	sip := endpointsOf(t, g.endpoints(t), "192.168.10.10")
+	db := endpointsOf(t, g.endpoints(t), "192.168.10.11")
+	assert.Equal(t, int32(1024), byEP[sip.Name].SliceSize)
+	assert.Empty(t, byEP[sip.Name].Identity)
+	assert.Equal(t, purelbv2.EgressNodeSlice{Endpoints: db.Name, Address: "192.168.10.11", Index: perPodIndex,
+		State: slicePending, SliceSize: 4096, Identity: "db-0"}, byEP[db.Name])
+	assert.Equal(t, []purelbv2.EgressNodeReserved{{Endpoints: sip.Name, Address: "192.168.10.10", Protocol: "UDP",
+		Port: 5060, Pod: "a-2"}}, ns.Spec.Reserved)
+}
+
+// The pod-set ids a node reports come out of its slot budget (D18): a
+// node with none left gets no slice, and the policy reports it.
+func TestPodSetsInBudget(t *testing.T) {
+	sel := map[string]string{"app": "a"}
+	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
+		node("n1", true), pod("voice", "a-1", "n1", sel), egressObj("voice", "sip", nil))
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{EgressCapable: true,
+		Slots: &purelbv2.EgressSlots{Used: slotBudget, Capacity: slotBudget, PodSets: slotBudget}}})
+	g.reconcile(t, "egress/voice/sip")
+	assert.Empty(t, states(g.ep(t)))
+	assert.Equal(t, reasonSlotsExhausted, condition(t, g.egress(t, "voice", "sip"), condDatapathReady).Reason)
+
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{EgressCapable: true,
+		Slots: &purelbv2.EgressSlots{Used: slotBudget - 1, Capacity: slotBudget, PodSets: slotBudget - 1}}})
+	g.reconcile(t, "egress/voice/sip")
+	assert.Contains(t, states(g.ep(t)), "n1", "one left")
 }

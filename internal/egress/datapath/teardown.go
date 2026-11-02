@@ -26,7 +26,8 @@ import (
 	"purelb.io/internal/bpfpin"
 )
 
-// DeleteHardening removes the hardening table, if there is one (D26).
+// DeleteHardening removes egress's table, if there is one (D26): the
+// hardening chains and the pod-node stage.
 func DeleteHardening(c *nftables.Conn) error {
 	t := &nftables.Table{Family: nftables.TableFamilyINet, Name: NftTable}
 	// Adding first makes the delete valid when the table doesn't exist.
@@ -63,7 +64,7 @@ func RemovePins(pinDir string) error {
 		return nil
 	}
 	var errs []error
-	for _, prefix := range []string{"pl_announce-", "pl_steer-"} {
+	for _, prefix := range []string{"pl_announce-", "pl_steer-", "pl_pod_tag-"} {
 		if _, err := bpfpin.Sweep(pinDir, prefix, func(string) bool { return false }); err != nil {
 			errs = append(errs, err)
 		}

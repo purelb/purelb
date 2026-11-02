@@ -17,6 +17,25 @@ rules:
   - get
   - list
   - watch
+# The pod-node stage: the agent watches only its own node's pods (field
+# selector spec.nodeName) and namespace labels (ClusterEgress selectors).
+- apiGroups:
+  - ''
+  resources:
+  - namespaces
+  - pods
+  verbs:
+  - list
+  - watch
+# The cluster networks pl_pod_tag lets a held pod reach include the
+# Service CIDRs.
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - servicecidrs
+  verbs:
+  - list
+  - watch
 - apiGroups:
   - purelb.io
   resources:

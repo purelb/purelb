@@ -16,6 +16,7 @@ package agent
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -52,12 +53,21 @@ type dpHealth struct {
 	// unreachable are the tunnel peers not answering probes, of probed.
 	unreachable []string
 	probed      int
+	// podFaults are the pod-node stage's address faults: port-less
+	// traffic on a slice (D4), missing helpers (D23).
+	podFaults map[netip.Addr]purelbv2.EgressAddressFault
+	// markConflict names the other rules using the mark byte (D18);
+	// forwardBlocked are the families whose flows don't reach their SNAT
+	// (D25).
+	markConflict   string
+	forwardBlocked []string
 }
 
 // health builds the datapath's health from its last apply. Datapath
 // goroutine only.
 func health(st *dpState, w dpWant, err error) *dpHealth {
-	h := &dpHealth{encryption: st.encryption}
+	h := &dpHealth{encryption: st.encryption, podFaults: maps.Clone(st.podFaults),
+		markConflict: st.markConflict, forwardBlocked: slices.Clone(st.forwardBlocked)}
 	if err != nil {
 		h.applyErr = err.Error()
 	}
@@ -103,7 +113,7 @@ func underlayEncryption(h *netlink.Handle) []string {
 // nodeConditions brings a.conds in line with the capability and the
 // datapath's health; a condition keeps its transition time while its
 // status holds. Queue goroutine only.
-func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth) []metav1.Condition {
+func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth, pn *podNode) []metav1.Condition {
 	set := func(typ, reason, msg string) {
 		st := metav1.ConditionFalse
 		if reason == "" {
@@ -112,17 +122,22 @@ func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth) []meta
 		meta.SetStatusCondition(&a.conds, metav1.Condition{Type: typ, Status: st, Reason: reason,
 			Message: truncate(msg, 1024), LastTransitionTime: metav1.NewTime(a.now())})
 	}
-	if v, err := kernelversion.Parse(c.Kernel); err != nil || !v.AtLeast(kernelversion.EgressMin) {
-		set(condDatapathCompatible, "KernelTooOld", fmt.Sprintf("kernel %s is older than egress needs", c.Kernel))
-	} else {
-		set(condDatapathCompatible, "", "")
-	}
 	if h == nil {
 		h = &dpHealth{}
+	}
+	if v, err := kernelversion.Parse(c.Kernel); err != nil || !v.AtLeast(kernelversion.EgressMin) {
+		set(condDatapathCompatible, "KernelTooOld", fmt.Sprintf("kernel %s is older than egress needs", c.Kernel))
+	} else if h.markConflict != "" {
+		set(condDatapathCompatible, "MarkConflict", h.markConflict)
+	} else {
+		set(condDatapathCompatible, "", "")
 	}
 	switch {
 	case h.applyErr != "":
 		set(condDatapathReady, "ApplyFailed", h.applyErr)
+	case pn != nil && len(pn.short) > 0:
+		set(condDatapathReady, "SlotsExhausted", fmt.Sprintf("all %d slots are in use; without one: %s",
+			slotBudget, strings.Join(pn.short, ", ")))
 	case len(h.noGateway) > 0:
 		set(condDatapathReady, "NoGateway", "pool interfaces with no default route: "+strings.Join(h.noGateway, ", "))
 	case len(h.arpAnnounce) > 0:
@@ -135,6 +150,13 @@ func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth) []meta
 		// No peer answers: this node's tunnel port, or its path to every
 		// peer, is blocked (a firewall: D25).
 		set(condForwardPath, "TunnelPortBlocked", "no tunnel peer answers probes: "+strings.Join(h.unreachable, ", "))
+	case len(h.forwardBlocked) > 0:
+		// The pods' new egress flows are marked but none reaches its SNAT:
+		// a forward filter (Docker, firewalld), rp_filter, or a
+		// NetworkPolicy denying every selected pod drops them (D25).
+		set(condForwardPath, "ForwardBlocked", strings.Join(h.forwardBlocked, ", ")+
+			": pods' new egress flows are marked but none reached its SNAT; a forward filter (Docker, firewalld), "+
+			"rp_filter, or a NetworkPolicy denying the selected pods drops them")
 	default:
 		set(condForwardPath, "", "")
 	}
@@ -152,16 +174,20 @@ func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth) []meta
 	return slices.Clone(a.conds)
 }
 
-// faultList is a.faults in address order.
-func (a *Agent) faultList() []purelbv2.EgressAddressFault {
-	addrs := make([]netip.Addr, 0, len(a.faults))
-	for addr := range a.faults {
-		addrs = append(addrs, addr)
+// faultList is a.faults and the datapath's pod-node faults (h), in
+// address order: an address can have one of each.
+func (a *Agent) faultList(h *dpHealth) []purelbv2.EgressAddressFault {
+	out := slices.Collect(maps.Values(a.faults))
+	if h != nil {
+		out = append(out, slices.Collect(maps.Values(h.podFaults))...)
 	}
-	slices.SortFunc(addrs, func(x, y netip.Addr) int { return x.Compare(y) })
-	out := make([]purelbv2.EgressAddressFault, 0, len(addrs))
-	for _, addr := range addrs {
-		out = append(out, a.faults[addr])
-	}
+	slices.SortFunc(out, func(x, y purelbv2.EgressAddressFault) int {
+		ax, _ := netip.ParseAddr(x.Address)
+		ay, _ := netip.ParseAddr(y.Address)
+		if c := ax.Compare(ay); c != 0 {
+			return c
+		}
+		return strings.Compare(x.Reason, y.Reason)
+	})
 	return out
 }

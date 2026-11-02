@@ -627,6 +627,14 @@ type EgressAddressSpec struct {
 	// (D31). Absent, the pool's setting applies.
 	// +optional
 	SkipIPv6DAD *bool `json:"skipIPv6DAD,omitempty"`
+
+	// PoolMTU is the smallest MTU its holders report for the interfaces
+	// it leaves them by: pod nodes keep their path MTU and MSS within it
+	// (D13). Absent until a holder reports one.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	PoolMTU int32 `json:"poolMTU,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -716,11 +724,16 @@ type EgressNodeState struct {
 	Status EgressNodeStateStatus `json:"status,omitempty"`
 }
 
-// EgressNodeStateSpec is the node's own slices.
+// EgressNodeStateSpec is the node's own slices and reserved ports.
 type EgressNodeStateSpec struct {
 	// +kubebuilder:validation:MaxItems=4096
 	// +optional
 	Slices []EgressNodeSlice `json:"slices,omitempty"`
+
+	// Reserved are the reserved ports assigned to this node's pods (D19).
+	// +kubebuilder:validation:MaxItems=1024
+	// +optional
+	Reserved []EgressNodeReserved `json:"reserved,omitempty"`
 }
 
 // EgressNodeSlice is one of the node's slices.
@@ -734,6 +747,31 @@ type EgressNodeSlice struct {
 	Index int32 `json:"index"`
 	// +kubebuilder:validation:Enum=Pending;Active;Draining
 	State string `json:"state"`
+	// SliceSize is the address's slice size, as in its EgressEndpoints.
+	// +kubebuilder:validation:Enum=64;128;256;512;1024;2048;4096;8192;16384
+	// +optional
+	SliceSize int32 `json:"sliceSize,omitempty"`
+	// Identity is a PerPod address's identity: its pod on this node holds
+	// the whole address, as slice 0.
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	Identity string `json:"identity,omitempty"`
+}
+
+// EgressNodeReserved is a reserved port assigned to one of the node's pods.
+type EgressNodeReserved struct {
+	// +kubebuilder:validation:MaxLength=253
+	Endpoints string `json:"endpoints"`
+	// +kubebuilder:validation:MaxLength=45
+	Address string `json:"address"`
+	// +kubebuilder:validation:Enum=TCP;UDP;SCTP
+	Protocol string `json:"protocol"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
+	// Pod is the pod's name; a ClusterEgress's is "namespace.name".
+	// +kubebuilder:validation:MaxLength=253
+	Pod string `json:"pod"`
 }
 
 // EgressNodeStateStatus is the node agent's report.
@@ -759,7 +797,8 @@ type EgressNodeStateStatus struct {
 	Drained []EgressDrained `json:"drained,omitempty"`
 
 	// AddressFaults lists this node's problems with egress addresses it
-	// holds or should hold, which the allocator reports on the policies.
+	// holds or should hold, or its pods' traffic takes, which the
+	// allocator reports on the policies.
 	// +kubebuilder:validation:MaxItems=4096
 	// +optional
 	AddressFaults []EgressAddressFault `json:"addressFaults,omitempty"`
@@ -781,6 +820,12 @@ type EgressAnnouncing struct {
 	// +kubebuilder:validation:MaxLength=45
 	Address    string `json:"address"`
 	Generation int64  `json:"generation"`
+	// MTU is that of the interface the address's traffic leaves this
+	// node by (D13).
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	MTU int32 `json:"mtu,omitempty"`
 }
 
 // EgressAddressFault is a node's problem with one egress address.
@@ -790,8 +835,12 @@ type EgressAddressFault struct {
 	// Reason: DADFailed (another host has the address), AddressAddFailed
 	// (it couldn't be placed), GuardMapFull (the address guard has no
 	// room for its entries), GuardStandingDown (the fail-closed guard
-	// isn't working, so a routed address isn't advertised here).
-	// +kubebuilder:validation:Enum=DADFailed;AddressAddFailed;GuardMapFull;GuardStandingDown
+	// isn't working, so a routed address isn't advertised here);
+	// ProtocolUnsupported (this node's pods sent protocols without ports
+	// to the address's slice), HelpersUnsupported (a helper its pods'
+	// policy asks for can't run here) and PathMTUTooSmall (its IPv6 path
+	// MTU is below 1280), as a pod node.
+	// +kubebuilder:validation:Enum=DADFailed;AddressAddFailed;GuardMapFull;GuardStandingDown;ProtocolUnsupported;HelpersUnsupported;PathMTUTooSmall
 	Reason string `json:"reason"`
 	// +kubebuilder:validation:MaxLength=1024
 	// +optional
@@ -838,6 +887,10 @@ type EgressCapability struct {
 type EgressSlots struct {
 	Used     int32 `json:"used"`
 	Capacity int32 `json:"capacity"`
+	// PodSets are the pod-set ids among Used; the allocator leaves them
+	// out of the slices it may give the node (D18).
+	// +optional
+	PodSets int32 `json:"podSets,omitempty"`
 }
 
 // EgressUnderlay is the node's tunnel underlay addresses.
@@ -994,9 +1047,10 @@ type LBNodeAgentEgressSpec struct {
 	TunnelPort int32 `json:"tunnelPort,omitempty"`
 
 	// MarkField is the byte of the packet and conntrack marks egress
-	// uses.
+	// uses. Unset, each node starts at 0x000000ff and moves to a free
+	// byte if its other netfilter rules use that one; set, it is never
+	// moved, and a node whose rules use it reports MarkConflict.
 	// +kubebuilder:validation:Enum="0x000000ff";"0x0000ff00";"0x00ff0000";"0xff000000"
-	// +kubebuilder:default="0x000000ff"
 	// +optional
 	MarkField string `json:"markField,omitempty"`
 

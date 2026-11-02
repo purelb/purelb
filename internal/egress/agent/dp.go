@@ -57,6 +57,32 @@ type dpWant struct {
 	// guardProgs its programs: pl_announce's uplinks, right behind it.
 	guardLinks []int
 	guardProgs []ebpf.ProgramID
+	// cluster are the cluster networks the API shows, nodeAddrs every
+	// Node's addresses (for the route rule, design 6.3).
+	cluster   []netip.Prefix
+	nodeAddrs map[netip.Addr]bool
+	// pods are this node's pods for pl_pod_tag, and stage the pod-node
+	// stage's nft program; podsKnown is false until the pod-node state is
+	// planned, which keeps what the kernel has (D12).
+	pods      []dpPod
+	stage     *datapath.PodStage
+	podsKnown bool
+	// steer is where each of stage's slots goes (D1, design 6.8).
+	steer map[uint8]dpSteer
+	// retired are the mark values no longer used that conntrack may
+	// carry; draining this node's Draining slices by slot id, and
+	// drainedNoSlot those with no slot, which have no flows (§5.6).
+	retired       []uint8
+	draining      map[uint8]purelbv2.EgressDrained
+	drainedNoSlot []purelbv2.EgressDrained
+	// specGen is the EgressNodeState spec generation the pod-node state
+	// and the holdings were both computed from; 0 when they differ or the
+	// state isn't whole (a slot left without an id). Installed, it is
+	// acked (D6).
+	specGen int64
+	// leaving: the node is shutting down, and the slots of the addresses
+	// it holds go through the tunnel to the holders that remain (D7).
+	leaving bool
 }
 
 // dpPool is one pool interface and the families placed on it.
@@ -90,16 +116,49 @@ type dpState struct {
 	// encryption is the node-to-node encryption last found (D30).
 	encryption []string
 	nodes      map[uint64]datapath.Node
-	// nft is the nftables connection (tests make their own); hardening
-	// what was last written through it.
+	// nft is the nftables connection (tests make their own); table what
+	// was last written through it, its MSS from the tunnel in tableMode.
 	nft       *nftables.Conn
-	hardening *datapath.Hardening
+	table     *datapath.Table
+	tableMode string
+	// helpers are the helpers found usable, by name, protocol and family.
+	helpers map[helperKey]bool
+	// portless are the port-less counts per address and when each last
+	// rose; podFaults the pod-node faults they and missing helpers make.
+	portless  map[netip.Addr]portlessSeen
+	podFaults map[netip.Addr]purelbv2.EgressAddressFault
 	// pools numbers the pool interfaces (ifindex: n, table 7900 + n);
 	// reports is what was last logged about each.
 	pools   map[int]uint32
 	reports map[int]poolReport
 	// addrs are the address entries in the maps.
 	addrs map[netip.Addr]*datapath.AddressEntries
+	// netkit are the netkit pod devices pl_pod_tag skips, as last logged.
+	netkit map[string]bool
+	// podIPs are the pods' addresses last applied; gone those of pods
+	// since gone whose flows aren't deleted yet.
+	podIPs map[netip.Addr]bool
+	gone   map[netip.Addr]bool
+	// shift is the mark byte in use (D18), from the pins until the
+	// pod-node state is planned; movedFrom the one it left, whose flows
+	// aren't reset yet; marks the other rules' mark uses as last read, and
+	// markConflict their conflict with it.
+	shift        uint8
+	movedFrom    *uint8
+	marks        *markRead
+	markConflict string
+	// prohibited are the slots routed to prohibit; fwd each family's
+	// flow window, IPv4 then IPv6, and forwardBlocked the families
+	// reported (D25).
+	prohibited     map[uint8]bool
+	fwd            [2]fwdWindow
+	forwardBlocked []string
+	// applied is the desired state last applied whole, and cluster its
+	// cluster networks; repointed the slots a leaving apply sent to the
+	// tunnel, with their holders.
+	applied   *dpWant
+	cluster   []netip.Prefix
+	repointed map[uint8][]string
 }
 
 // poolReport is what a pool interface lacks: a default route in a family
@@ -126,6 +185,17 @@ func (a *Agent) syncDatapath() {
 	}
 	if a.guard != nil {
 		w.guardLinks, w.guardProgs = a.guard.Interfaces(), a.guard.ProgramIDs()
+	}
+	w.cluster, w.nodeAddrs = a.clusterAPI(s), nodeAddrs(s)
+	if pn := a.podnode; pn != nil {
+		w.steer = a.steering(s, a.stageWant)
+		w.pods, w.stage, w.podsKnown = a.podsWant, steeredStage(a.stageWant, w.steer), true
+		w.retired = slices.Sorted(maps.Keys(pn.retired))
+		if ns, err := s.nodeStates.Get(a.node); err == nil {
+			// The holdings above read this same spec.
+			w.draining, w.drainedNoSlot = drainWant(ns.Spec, pn)
+			w.specGen = ackable(ns.Generation, pn)
+		}
 	}
 	for _, obj := range s.nodes.List() {
 		n := obj.(*corev1.Node)
@@ -159,8 +229,14 @@ func (a *Agent) syncDatapath() {
 		} else {
 			// Installed: the generations it covers may be acked, and the
 			// addresses it holds placed.
-			acks := w.hold.acks
+			acks := slices.Clone(w.hold.acks)
+			for i := range acks {
+				acks[i].MTU = int32(holderMTU(a.dp, acks[i].Address))
+			}
 			a.acks.Store(&acks)
+			if w.specGen != 0 {
+				a.specAck.Store(w.specGen)
+			}
 			a.installedHeld(w)
 		}
 		a.capability.Store(c)
@@ -213,9 +289,28 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 			_ = objs.Close()
 			return c, fmt.Errorf("reading the address maps: %w", err)
 		}
+		// And its mark byte: its table and flows use it.
+		shift, err := objs.MarkShift()
+		if err != nil {
+			_ = objs.Close()
+			return c, fmt.Errorf("reading the mark byte: %w", err)
+		}
+		st.shift = shift
 		st.objs, st.links, st.nodes, st.pools, st.addrs = objs, map[string]link.Link{}, nodes, pools, addrs
 		st.linkIfs = map[string]int{}
 		st.reports = map[int]poolReport{}
+		// And its pods' addresses: a pod gone while no agent ran still has
+		// its flows deleted.
+		st.podIPs, st.gone = map[netip.Addr]bool{}, map[netip.Addr]bool{}
+		if devs, err := objs.RecoverPodDevs(); err == nil {
+			for _, d := range devs {
+				for _, ip := range []netip.Addr{d.V4, d.V6} {
+					if ip.IsValid() {
+						st.podIPs[ip] = true
+					}
+				}
+			}
+		}
 	}
 
 	self := datapath.NodeID(w.self)
@@ -223,13 +318,33 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	if w.spec.TunnelPort != 0 {
 		port = uint16(w.spec.TunnelPort)
 	}
-	// The hardening chains before the tunnel opens its port (design 6.12).
-	if err := a.syncHardening(st, w, port); err != nil {
+	// The cluster networks: the stage's sets and the target tables'
+	// throws (design 6.3).
+	routes, err := datapath.ClusterRoutes(st.nl, w.nodeAddrs)
+	if err != nil {
+		return c, fmt.Errorf("reading the routes: %w", err)
+	}
+	cluster := append(slices.Clone(w.cluster), routes...)
+	if w.podsKnown {
+		a.unflushLive(w)
+	}
+	a.syncMarkByte(st, w)
+	a.markByte.Store(uint32(st.shift))
+	c.MarkField = fieldName(st.shift)
+	// The hardening chains before the tunnel opens its port (design 6.12),
+	// the stage's MSS from the mode last resolved; again once the tunnel
+	// resolves another.
+	if err := a.syncTable(st, w, port, st.mode, cluster); err != nil {
 		return c, err
 	}
 	mode, tun, err := datapath.EnsureTunnel(st.nl, w.spec.TunnelEncapsulation, port, datapath.TunnelMAC(self))
 	if err != nil {
 		return c, err
+	}
+	if mode != st.tableMode {
+		if err := a.syncTable(st, w, port, mode, cluster); err != nil {
+			return c, err
+		}
 	}
 	if st.tun == nil || st.tun.Attrs().Index != tun.Attrs().Index {
 		// A new device: links to the old one went with it.
@@ -256,7 +371,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 
 	// Every node first, so no tunnel packet from a node is taken for a
 	// forged one once pl_announce_tun is attached (design 6.5).
-	var peers6, underlay []netip.Addr
+	var peers6 []netip.Addr
 	want := map[uint64]datapath.Node{}
 	selfNode := datapath.Node{}
 	for _, n := range w.nodes {
@@ -267,11 +382,6 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 			continue
 		}
 		want[id] = dn
-		for _, ip := range []netip.Addr{n.v4, n.v6} {
-			if ip.IsValid() {
-				underlay = append(underlay, ip)
-			}
-		}
 		if n.v6.IsValid() {
 			peers6 = append(peers6, n.v6)
 		}
@@ -298,8 +408,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		st.nodes[id] = n
 	}
 	st.encryption = underlayEncryption(st.nl)
-	errs = append(errs, datapath.SyncThrows(st.nl, underlay))
-	errs = append(errs, a.syncPools(st, w))
+	errs = append(errs, a.syncPools(st, w, cluster))
 	// A local address forwards transit in its pool interface's table.
 	addrs := maps.Clone(w.hold.addrs)
 	for addr, ifindex := range w.hold.ifaces {
@@ -321,18 +430,9 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	}
 	errs = append(errs, syncAddresses(st, addrs))
 
-	shift := uint8(0)
-	switch w.spec.MarkField {
-	case "0x0000ff00":
-		shift = 8
-	case "0x00ff0000":
-		shift = 16
-	case "0xff000000":
-		shift = 24
-	}
 	errs = append(errs, st.objs.SetConfig(datapath.Config{Self: self, TunIfindex: tun.Attrs().Index,
 		TunMTU: uint32(datapath.TunnelMTU(st.nl, mode, peers6)), TunMAC: datapath.TunnelMAC(self),
-		L2: mode == datapath.ModeL2, MarkShift: shift,
+		L2: mode == datapath.ModeL2, MarkShift: st.shift,
 		Underlay4: selfNode.V4.IsValid(), Underlay6: selfNode.V6.IsValid(), Self4: selfNode.V4, Self6: selfNode.V6}))
 	if err := errors.Join(errs...); err != nil {
 		return c, err
@@ -358,62 +458,275 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	if err := a.syncUplinks(st, w); err != nil {
 		return c, err
 	}
+	if err := a.syncPodDevs(st, w); err != nil {
+		return c, err
+	}
+	// Until the pod-node state is planned (an agent restart), the rules,
+	// tables and steering an earlier agent left are kept (D12).
+	if w.podsKnown {
+		if err := a.syncSteering(st, w, addrs, cluster, mode, tun); err != nil {
+			return c, err
+		}
+		a.syncConntrack(st, w)
+		a.resetMoved(st)
+		a.syncForward(st)
+	}
+	st.applied, st.cluster = &w, cluster
 	c.EgressCapable = true
 	logging.Debug(a.logger, "op", "egressDatapath", "node", a.node, "tunnel", mode, "port", port,
 		"nodes", len(st.nodes), "pinned", st.pinDir != "", "msg", "datapath applied")
 	return c, nil
 }
 
-// syncHardening writes the hardening chains unless the kernel already
-// holds them as wanted; something else may have removed them (another
-// firewall flushing the ruleset), which is logged.
-func (a *Agent) syncHardening(st *dpState, w dpWant, port uint16) error {
-	h := datapath.Hardening{TunnelPort: port, Egress: w.hold.egress, ServicePorts: w.hold.services}
-	for _, n := range w.nodes {
-		for _, ip := range []netip.Addr{n.v4, n.v6} {
-			if ip.IsValid() {
-				h.Nodes = append(h.Nodes, ip)
-			}
-		}
+// markShift places the 8-bit mark field the spec's markField names
+// (D18).
+func markShift(spec purelbv2.LBNodeAgentEgressSpec) uint8 {
+	switch spec.MarkField {
+	case "0x0000ff00":
+		return 8
+	case "0x00ff0000":
+		return 16
+	case "0xff000000":
+		return 24
 	}
+	return 0
+}
+
+// helperKey is a helper in a family.
+type helperKey struct {
+	helper datapath.Helper
+	v6     bool
+}
+
+// portlessSeen is an address's port-less count and when it last rose.
+type portlessSeen struct {
+	count uint64
+	rose  time.Time
+}
+
+// portlessWindow is how long an address reports ProtocolUnsupported after
+// its port-less count last rose (user decision 2026-10-30).
+const portlessWindow = 10 * time.Minute
+
+// sysModule is where loaded kernel modules are listed.
+var sysModule = "/sys/module"
+
+// syncTable writes egress's table: the hardening chains (design 6.12) and,
+// once the pod-node state is planned, the pod-node stage (design 6.3),
+// with each slot's MSS from the tunnel's path MTU in mode (D13) and only
+// the helpers the kernel can run (D23). The table is rewritten when what
+// is wanted changed, or when something else changed the kernel's (another
+// firewall flushing the ruleset), which is logged. Until the pod-node
+// state is planned (an agent restart), a table the kernel holds is kept
+// (D12). The port-less counts are read first: a rewrite resets them.
+func (a *Agent) syncTable(st *dpState, w dpWant, port uint16, mode string, cluster []netip.Prefix) error {
 	if st.nft == nil {
-		c, err := nftables.New()
+		c, err := datapath.NftConn()
 		if err != nil {
 			return fmt.Errorf("opening an nftables connection: %w", err)
 		}
 		st.nft = c
 	}
-	intact, err := datapath.HardeningIntact(st.nft, h)
-	if err != nil {
-		return fmt.Errorf("reading the hardening chains: %w", err)
+	if st.table != nil && st.table.Pods != nil {
+		if err := a.readPortless(st, *st.table.Pods); err != nil {
+			return err
+		}
 	}
-	if intact {
-		st.hardening = &h
-		return nil
+	t := datapath.Table{Hardening: datapath.Hardening{TunnelPort: port, Egress: w.hold.egress, ServicePorts: w.hold.services}}
+	for _, n := range w.nodes {
+		for _, ip := range []netip.Addr{n.v4, n.v6} {
+			if ip.IsValid() {
+				t.Hardening.Nodes = append(t.Hardening.Nodes, ip)
+			}
+		}
 	}
-	if st.hardening != nil && reflect.DeepEqual(*st.hardening, h) {
-		logging.Info(a.logger, "op", "egressHardening", "node", a.node,
-			"msg", "the hardening chains were changed outside the agent; restoring them")
+	faults := map[netip.Addr]purelbv2.EgressAddressFault{}
+	if !w.podsKnown {
+		if st.table == nil {
+			if tbl, err := st.nft.ListTableOfFamily(datapath.NftTable, nftables.TableFamilyINet); err == nil && tbl != nil {
+				return nil // an earlier agent's: kept until the plan
+			}
+		}
+	} else if w.stage != nil {
+		t.Pods = a.tableStage(st, w, mode, cluster, faults)
 	}
-	if err := datapath.SyncHardening(st.nft, h); err != nil {
-		return fmt.Errorf("writing the hardening chains: %w", err)
+
+	write := st.table == nil || !reflect.DeepEqual(*st.table, t)
+	if !write {
+		intact, err := datapath.TableIntact(st.nft, t)
+		if err != nil {
+			return fmt.Errorf("reading the egress table: %w", err)
+		}
+		if !intact {
+			logging.Info(a.logger, "op", "egressTable", "node", a.node,
+				"msg", "the egress table was changed outside the agent; restoring it")
+			write = true
+		}
 	}
-	st.hardening = &h
+	if write {
+		if err := datapath.SyncTable(st.nft, t); err != nil {
+			return fmt.Errorf("writing the egress table: %w", err)
+		}
+		st.table = &t
+		// The new table's counters start from zero.
+		for addr, seen := range st.portless {
+			seen.count = 0
+			st.portless[addr] = seen
+		}
+		logging.Debug(a.logger, "op", "egressTable", "node", a.node, "podStage", t.Pods != nil, "msg", "egress table written")
+	}
+	st.tableMode = mode
+
+	// ProtocolUnsupported while an address's port-less count rose in the
+	// last portlessWindow; addresses no longer in the stage are forgotten.
+	addrs := map[netip.Addr]bool{}
+	if t.Pods != nil {
+		for _, p := range t.Pods.Policies {
+			for _, f := range []*datapath.PolicyFamily{p.V4, p.V6} {
+				if f != nil && f.Address.IsValid() {
+					addrs[f.Address] = true
+				}
+			}
+		}
+	}
+	now := a.now()
+	for addr, seen := range st.portless {
+		if !addrs[addr] {
+			delete(st.portless, addr)
+			continue
+		}
+		if !seen.rose.IsZero() && now.Sub(seen.rose) < portlessWindow {
+			faults[addr] = purelbv2.EgressAddressFault{Address: addr.String(), Reason: "ProtocolUnsupported",
+				Message: "pods sent protocols without ports to this address's slice, which carries TCP, UDP, SCTP and ICMP echo only"}
+		}
+	}
+	st.podFaults = faults
 	return nil
 }
 
+// readPortless reads stage's port-less counters (D4), as written, and notes
+// when each address's count rose.
+func (a *Agent) readPortless(st *dpState, stage datapath.PodStage) error {
+	drops, err := datapath.PortlessDrops(st.nft, stage)
+	if err != nil {
+		return fmt.Errorf("reading the port-less counters: %w", err)
+	}
+	if st.portless == nil {
+		st.portless = map[netip.Addr]portlessSeen{}
+	}
+	now := a.now()
+	for addr, n := range drops {
+		seen := st.portless[addr]
+		if n > seen.count {
+			if seen.rose.IsZero() || now.Sub(seen.rose) >= portlessWindow {
+				logging.Info(a.logger, "op", "egressPods", "node", a.node, "address", addr, "packets", n-seen.count,
+					"msg", "pods sent a protocol without ports to a slice address, which can't carry it (D4)")
+			}
+			seen.rose = now
+		}
+		seen.count = n
+		st.portless[addr] = seen
+	}
+	return nil
+}
+
+// tableStage is w's pod-node stage as the kernel can run it: with the
+// cluster networks (as pl_pod_tag has them), each slot's MSS, and only the
+// helpers that are usable, the others reported in faults.
+func (a *Agent) tableStage(st *dpState, w dpWant, mode string, cluster []netip.Prefix,
+	faults map[netip.Addr]purelbv2.EgressAddressFault) *datapath.PodStage {
+	stage := *w.stage
+	stage.Cluster = cluster
+	stage.MarkShift = st.shift
+	mtu4, mtu6 := pathMTU(st, w, mode)
+	if st.helpers == nil {
+		st.helpers = map[helperKey]bool{}
+	}
+	stage.Slots = map[uint8]datapath.Slot{}
+	for id, s := range w.stage.Slots {
+		mtu := slotMTU(s.Addr, mtu4, mtu6, w.steer[id].mtu)
+		if s.Addr.Is6() && mtu > 0 && mtu < minMTU6 {
+			faults[s.Addr] = purelbv2.EgressAddressFault{Address: s.Addr.String(), Reason: "PathMTUTooSmall",
+				Message: fmt.Sprintf("the path MTU is %d, below IPv6's minimum of %d", mtu, minMTU6)}
+			mtu = minMTU6
+		}
+		switch {
+		case s.Addr.Is4() && mtu > 40:
+			s.MSS = uint16(mtu - 40)
+		case s.Addr.Is6() && mtu > 60:
+			s.MSS = uint16(mtu - 60)
+		}
+		var usable []datapath.Helper
+		for _, h := range s.Helpers {
+			k := helperKey{helper: h, v6: s.Addr.Is6()}
+			if !st.helpers[k] {
+				if why := datapath.HelperUsable(st.nft, sysModule, h, k.v6); why != "" {
+					faults[s.Addr] = purelbv2.EgressAddressFault{Address: s.Addr.String(), Reason: "HelpersUnsupported",
+						Message: truncate(why, 1024)}
+					continue
+				}
+				st.helpers[k] = true
+			}
+			usable = append(usable, h)
+		}
+		s.Helpers = usable
+		stage.Slots[id] = s
+	}
+	return &stage
+}
+
+// minMTU6 is the smallest MTU IPv6 allows.
+const minMTU6 = 1280
+
+// pathMTU is the tunnel's path MTU to every peer in mode, per inner
+// family (D13); 0 with no peer.
+func pathMTU(st *dpState, w dpWant, mode string) (int, int) {
+	var self datapath.Node
+	var peers []datapath.Node
+	for _, n := range w.nodes {
+		if n.name == w.self {
+			self = datapath.Node{V4: n.v4, V6: n.v6}
+		} else {
+			peers = append(peers, datapath.Node{V4: n.v4, V6: n.v6})
+		}
+	}
+	if mode == "" {
+		mode = datapath.ModeL3
+	}
+	return datapath.PathMTU(st.nl, mode, self, peers)
+}
+
+// slotMTU is a slot's path MTU (D13): the tunnel's in its family, capped
+// by its address's pool MTU when known; 0 when neither is.
+func slotMTU(addr netip.Addr, mtu4, mtu6, pool int) int {
+	mtu := mtu4
+	if addr.Is6() {
+		mtu = mtu6
+	}
+	if pool > 0 && (mtu == 0 || pool < mtu) {
+		mtu = pool
+	}
+	return mtu
+}
+
 // syncPools numbers w's pool interfaces, keeping the numbers they have,
-// mirrors their tables, and reports what each lacks when that changes.
-// The numbering changes table-first: a new interface's table is filled
-// before pool_ifs names it, a removed one leaves pool_ifs before its
-// table is emptied.
-func (a *Agent) syncPools(st *dpState, w dpWant) error {
+// mirrors their tables with the cluster networks thrown, and reports what
+// each lacks when that changes. The numbering changes table-first: a new
+// interface's table is filled before pool_ifs names it, a removed one
+// leaves pool_ifs before its table is emptied.
+func (a *Agent) syncPools(st *dpState, w dpWant, cluster []netip.Prefix) error {
 	var errs []error
 	next := map[int]uint32{}
 	used := map[uint32]bool{}
 	for ifindex, n := range st.pools {
 		if _, ok := w.pools[ifindex]; !ok {
-			if err := st.objs.DeletePoolInterface(ifindex); err != nil {
+			// Its src_valid_mark goes first: pool_ifs is the record of
+			// where egress turned it on.
+			err := a.resetSrcValidMark(st.nl, ifindex)
+			if err == nil {
+				err = st.objs.DeletePoolInterface(ifindex)
+			}
+			if err != nil {
 				errs = append(errs, err)
 			} else {
 				continue
@@ -439,7 +752,7 @@ func (a *Agent) syncPools(st *dpState, w dpWant) error {
 		}
 		next[ifindex], used[n] = n, true
 	}
-	status, err := datapath.SyncPoolTables(st.nl, next)
+	status, err := datapath.SyncPoolTables(st.nl, next, cluster)
 	errs = append(errs, err)
 	for _, ifindex := range added {
 		if n, ok := next[ifindex]; ok {

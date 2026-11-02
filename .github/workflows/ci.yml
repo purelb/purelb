@@ -175,12 +175,29 @@ jobs:
           set -o pipefail
           sudo modprobe geneve
           sudo modprobe nft_ct
-          sudo env EGRESS_BPF_TESTS=required PURELB_NETNS_TESTS=required \
+          sudo modprobe nf_nat_ftp
+          # The iptables tools' table modules, which the tools can't load
+          # from inside the test's capability set.
+          sudo modprobe iptable_mangle
+          sudo modprobe ip6table_mangle
+          sudo env EGRESS_BPF_TESTS=required PURELB_NETNS_TESTS=required EGRESS_HELPER_TESTS=required \
+            EGRESS_XTABLES_TESTS=required \
             setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
             ./datapath.test -test.v -test.run '^TestNetns' | tee tunnel.out
           grep -q -- '--- PASS: TestNetnsTunnelEndToEnd' tunnel.out
           grep -q -- '--- PASS: TestNetnsHardening' tunnel.out
           grep -q -- '--- PASS: TestNetnsPoolTables' tunnel.out
+          grep -q -- '--- PASS: TestNetnsPodDevices' tunnel.out
+          grep -q -- '--- PASS: TestNetnsPodStage' tunnel.out
+          grep -q -- '--- PASS: TestNetnsPodStageHelper' tunnel.out
+          grep -q -- '--- PASS: TestNetnsOutSrc' tunnel.out
+          grep -q -- '--- PASS: TestNetnsSyncTargets' tunnel.out
+          grep -q -- '--- PASS: TestNetnsSyncRules' tunnel.out
+          grep -q -- '--- PASS: TestNetnsSrcValidMark' tunnel.out
+          grep -q -- '--- PASS: TestNetnsConntrack' tunnel.out
+          grep -q -- '--- PASS: TestNetnsForeignMarks' tunnel.out
+          grep -q -- '--- PASS: TestNetnsXtablesMarks' tunnel.out
+          grep -q -- '--- PASS: TestNetnsCtEvents' tunnel.out
 
       # The agent's own datapath apply, run without CAP_SYS_ADMIN as the
       # agent runs it: first apply, repeat, node changes, the tunnel deleted
@@ -189,7 +206,7 @@ jobs:
         run: |
           set -o pipefail
           sudo env PURELB_NETNS_TESTS=required \
-            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin -- \
+            setpriv --inh-caps=-all --bounding-set=-all,+bpf,+net_admin,+sys_admin,+net_raw -- \
             ./agent.test -test.v -test.run '^TestNetns' | tee agent.out
           grep -q -- '--- PASS: TestNetnsApplyDatapath' agent.out
           grep -q -- '--- PASS: TestNetnsApplyDatapathPools' agent.out
@@ -199,6 +216,9 @@ jobs:
           grep -q -- '--- PASS: TestNetnsApplyDatapathHeals' agent.out
           grep -q -- '--- PASS: TestNetnsApplyDatapathAddresses' agent.out
           grep -q -- '--- PASS: TestNetnsApplyDatapathUplinks' agent.out
+          grep -q -- '--- PASS: TestNetnsApplyDatapathPods' agent.out
+          grep -q -- '--- PASS: TestNetnsWatchRules' agent.out
+          grep -q -- '--- PASS: TestNetnsFlowLog' agent.out
 
       # Egress's addresses placed through the announcer's VIP path (D31).
       - name: Run the egress address placement test in a network namespace

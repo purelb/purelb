@@ -50,3 +50,101 @@ func ServesNamespace(sg *ServiceGroup, namespace string) bool {
 func IsNamespaceCatchAll(sg *ServiceGroup) bool {
 	return sg == nil || len(sg.Spec.Namespaces) == 0
 }
+
+// NamespaceBinding is the ServiceGroups that list one namespace.
+//
+// +k8s:deepcopy-gen=false
+type NamespaceBinding struct {
+	// Eligible is every ServiceGroup listing the namespace, sorted.
+	Eligible []string
+	// Enforce is whether any of them sets EnforceNamespaces: the
+	// namespace is confined to them.
+	Enforce bool
+	// Defaults are those of them that set NamespaceDefault, sorted.
+	Defaults []string
+}
+
+// NamespaceBindings indexes ServiceGroups by the namespaces they list.
+//
+// The allocator (for Services and egress policies) and the node agent (for
+// a ClusterEgress's pods) both decide namespace scope from this, so the
+// two can't disagree about which pods a policy may select.
+//
+// +k8s:deepcopy-gen=false
+type NamespaceBindings struct {
+	// Namespaces are the bindings of every listed namespace.
+	Namespaces map[string]NamespaceBinding
+	// Confined are the ServiceGroups serving a confined namespace.
+	Confined map[string]bool
+}
+
+// BindNamespaces indexes groups by the namespaces they list. The caller
+// passes only the groups that may bind: a group whose spec is broken must
+// not deny a namespace on the strength of a YAML error elsewhere.
+func BindNamespaces(groups []*ServiceGroup) NamespaceBindings {
+	idx := map[string]NamespaceBinding{}
+	for _, g := range groups {
+		// Dedupe: +listType=set is deliberately not used (under server-side
+		// apply it gives per-element ownership, so an entry deleted from Git
+		// would silently persist). The API server therefore accepts
+		// `namespaces: [a, a]`, and without this a single ServiceGroup with a
+		// copy-pasted entry would appear twice in Eligible, look like two
+		// groups competing, and deny its own namespace.
+		for _, ns := range slices.Compact(slices.Sorted(slices.Values(g.Spec.Namespaces))) {
+			b := idx[ns]
+			b.Eligible = append(b.Eligible, g.Name)
+			b.Enforce = b.Enforce || g.Spec.EnforceNamespaces
+			if g.Spec.NamespaceDefault {
+				b.Defaults = append(b.Defaults, g.Name)
+			}
+			idx[ns] = b
+		}
+	}
+	// Exclusion is derived from namespace confinement, not from a group's own
+	// EnforceNamespaces. Reading the target's own flag would fence a tenant's
+	// L2 pool while leaving its BGP pool reachable from every namespace in
+	// the cluster.
+	confined := map[string]bool{}
+	for ns, b := range idx {
+		// Sorted for stable event text and inspect output only; it never
+		// selects anything, so the build stays order-independent.
+		slices.Sort(b.Eligible)
+		slices.Sort(b.Defaults)
+		idx[ns] = b
+		if b.Enforce {
+			for _, name := range b.Eligible {
+				confined[name] = true
+			}
+		}
+	}
+	if len(idx) == 0 {
+		return NamespaceBindings{}
+	}
+	return NamespaceBindings{Namespaces: idx, Confined: confined}
+}
+
+// Fence is why a ServiceGroup may not serve a namespace.
+type Fence int
+
+const (
+	// Unfenced: the group may serve the namespace.
+	Unfenced Fence = iota
+	// FenceExcluded: the group serves a confined namespace and doesn't
+	// list this one.
+	FenceExcluded
+	// FenceConfined: the namespace is confined to other groups.
+	FenceConfined
+)
+
+// Fenced applies both halves of the namespace boundary to the ServiceGroup
+// called name (sg, which may be nil) serving namespace ns. Both derive from
+// the namespace, not from the group's own EnforceNamespaces.
+func (b NamespaceBindings) Fenced(name string, sg *ServiceGroup, ns string) Fence {
+	if b.Confined[name] && !ServesNamespace(sg, ns) {
+		return FenceExcluded
+	}
+	if nb, bound := b.Namespaces[ns]; bound && nb.Enforce && !slices.Contains(nb.Eligible, name) {
+		return FenceConfined
+	}
+	return Unfenced
+}

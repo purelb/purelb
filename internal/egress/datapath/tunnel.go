@@ -25,7 +25,6 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
 
 	"purelb.io/internal/bpfpin"
 )
@@ -40,10 +39,10 @@ const (
 	ModeL2   = "L2"
 )
 
-// The pod-node target tables (design 6.11): the tunnel and prohibit
-// targets. Each carries a throw route for every node's underlay address, a
-// backstop that keeps a tunnel's outer packets out of the slot tables
-// should the mark ever survive steering.
+// The pod-node target tables (design 6.3): the tunnel and prohibit
+// targets (SyncTargets). Each carries a throw route for every node's
+// underlay address, a backstop that keeps a tunnel's outer packets out of
+// the slot tables should the mark ever survive steering.
 const (
 	TunnelTable   = 7700
 	ProhibitTable = 7799
@@ -159,51 +158,6 @@ func l3Supported(h *netlink.Handle, port uint16) bool {
 	return err == nil && l.(*netlink.Geneve).InnerProtoInherit
 }
 
-// SyncThrows makes the throw routes in TunnelTable and ProhibitTable
-// exactly one per underlay address, both families.
-func SyncThrows(h *netlink.Handle, underlay []netip.Addr) error {
-	want := map[string]bool{}
-	for _, a := range underlay {
-		want[netip.PrefixFrom(a, a.BitLen()).String()] = true
-	}
-	var errs []error
-	for _, table := range []int{TunnelTable, ProhibitTable} {
-		have := map[string]bool{}
-		for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-			routes, err := h.RouteListFiltered(fam, &netlink.Route{Table: table, Type: unix.RTN_THROW},
-				netlink.RT_FILTER_TABLE|netlink.RT_FILTER_TYPE)
-			if err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			for _, r := range routes {
-				if r.Dst == nil {
-					continue
-				}
-				p := r.Dst.String()
-				if !want[p] {
-					if err := h.RouteDel(&r); err != nil {
-						errs = append(errs, err)
-					}
-					continue
-				}
-				have[p] = true
-			}
-		}
-		for p := range want {
-			if have[p] {
-				continue
-			}
-			_, dst, _ := net.ParseCIDR(p)
-			r := &netlink.Route{Dst: dst, Table: table, Type: unix.RTN_THROW}
-			if err := h.RouteAdd(r); err != nil && !errors.Is(err, unix.EEXIST) {
-				errs = append(errs, fmt.Errorf("throw %s table %d: %w", p, table, err))
-			}
-		}
-	}
-	return errors.Join(errs...)
-}
-
 // TunnelMTU is the largest inner packet the tunnel carries to every peer
 // over an IPv6 underlay (D13: from each peer's route, D30), which is what
 // pl_announce answers oversize replies against; 0 with no IPv6 peer (an
@@ -229,6 +183,47 @@ func TunnelMTU(h *netlink.Handle, mode string, peers6 []netip.Addr) int {
 		}
 	}
 	return mtu
+}
+
+// PathMTU is the largest inner packet the tunnel carries to every peer,
+// per inner family (D13): each peer's route MTU less the overhead of the
+// outer family pl_steer picks for it (IPv4 for IPv4 where both ends have
+// IPv4, else IPv6 where both have IPv6, else IPv4). 0: no peer.
+func PathMTU(h *netlink.Handle, mode string, self Node, peers []Node) (v4, v6 int) {
+	for _, p := range peers {
+		for _, inner6 := range []bool{false, true} {
+			outer6 := !(!inner6 && self.V4.IsValid() && p.V4.IsValid()) && self.V6.IsValid() && p.V6.IsValid()
+			dst := p.V4
+			if outer6 {
+				dst = p.V6
+			}
+			if !dst.IsValid() {
+				continue
+			}
+			routes, err := h.RouteGet(dst.AsSlice())
+			if err != nil || len(routes) == 0 {
+				continue
+			}
+			m := routes[0].MTU
+			if m == 0 {
+				if l, err := h.LinkByIndex(routes[0].LinkIndex); err == nil {
+					m = l.Attrs().MTU
+				}
+			}
+			if m == 0 {
+				continue
+			}
+			m -= overhead(mode, outer6)
+			cur := &v4
+			if inner6 {
+				cur = &v6
+			}
+			if *cur == 0 || m < *cur {
+				*cur = m
+			}
+		}
+	}
+	return v4, v6
 }
 
 // AttachTCX attaches prog to ifindex at hook, right after the first

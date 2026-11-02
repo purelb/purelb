@@ -29,6 +29,7 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"purelb.io/internal/egress/datapath"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	purelbfake "purelb.io/pkg/generated/clientset/versioned/fake"
 )
@@ -61,7 +62,8 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	var kubeObjs, purelbObjs []runtime.Object
 	for _, o := range objs {
 		switch o.(type) {
-		case *purelbv2.EgressNodeState, *purelbv2.EgressAddress, *purelbv2.EgressEndpoints:
+		case *purelbv2.EgressNodeState, *purelbv2.EgressAddress, *purelbv2.EgressEndpoints,
+			*purelbv2.Egress, *purelbv2.ClusterEgress:
 			purelbObjs = append(purelbObjs, o)
 		default:
 			kubeObjs = append(kubeObjs, o)
@@ -76,6 +78,7 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	}
 	purelb := purelbfake.NewSimpleClientset(purelbObjs...)
 	a := New(log.NewNopLogger(), testNode, "purelb-system")
+	a.SetElection(&fakeElector{}) // the agent always runs with one
 	a.statusInterval = 50 * time.Millisecond
 	wants := make(chan dpWant, 100)
 	a.apply = func(w dpWant) (*purelbv2.EgressCapability, error) {
@@ -86,6 +89,7 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	}
 	a.tear = func() error { return nil }
 	a.sendProbe = func(netip.Addr, netip.Addr, int, []byte) error { return nil }
+	a.tableSlots = func() (map[uint8]datapath.SlotNAT, error) { return nil, nil }
 	keys := make(chan string, 1000)
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
@@ -313,6 +317,29 @@ func TestDatapath(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	require.Eventually(t, func() bool { return d.live(time.Now().Add(time.Hour)) == nil }, time.Second, time.Millisecond)
+}
+
+// The datapath goroutine signals its exit once stopped, after the item it
+// was running: what it owned is then the shutdown's (D7's repoint).
+func TestDatapathExits(t *testing.T) {
+	d := newRunner()
+	release := make(chan struct{})
+	d.submit(func() { <-release })
+	stop := make(chan struct{})
+	go d.run(stop)
+	require.Eventually(t, func() bool { return d.started.Load() != 0 }, time.Second, time.Millisecond)
+	close(stop)
+	select {
+	case <-d.exited:
+		t.Fatal("exited with an item running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-d.exited:
+	case <-time.After(time.Second):
+		t.Fatal("never exited")
+	}
 }
 
 // The datapath gets every node's underlay addresses, and again when one

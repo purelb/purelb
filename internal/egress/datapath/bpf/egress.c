@@ -15,6 +15,12 @@
 //   address's pool interface, and a reply for a pod on this node goes on to
 //   the stack with the reply flag; anything else is forged and dropped.
 //
+// pl_pod_tag runs at tcx ingress of every pod's host-side device on a pod
+// node (D2, design 6.2): it drops packets a pod sources from an address
+// that isn't its own (D20), drops a held pod's traffic leaving the cluster
+// (FailClosed, design 8.1), and writes a selected pod's pod-set id into the
+// mark field for the nft stage.
+//
 // pl_steer runs at tcx egress of purelb-eg0 on a pod node (design 6.8): a
 // packet whose mark carries a slot gets the tunnel key of one of the slot's
 // holders, and the mark field is cleared so the outer route lookup can't
@@ -106,6 +112,8 @@ enum reason {
 	R_NO_HOLDER,        // steering: a slot with no holder (dropped)
 	R_PROBE_REFLECTED,  // tunnel: a peer's probe sent back to it
 	R_PROBE_REPLY,      // tunnel: a peer answered this node's probe
+	R_SOURCE_CHECK,     // pod: sourced from an address that isn't the pod's
+	R_FAIL_CLOSED,      // pod: held, and not to a cluster network
 	R_MAX,
 };
 
@@ -178,6 +186,29 @@ struct holders {
 
 struct pool_if {
 	__u32 n; // routing table 7900 + n; the direct-path mark is 0x81 + n
+};
+
+// A pod's host-side device (pod_devs, keyed by its ifindex): its addresses,
+// for the source check, its pod-set id (0: unselected) and whether it is
+// held.
+struct pod_dev {
+	__u32 v4;
+	__u32 v6[4];
+	__u8 has_v4;
+	__u8 has_v6;
+	__u8 pod_set;
+	__u8 hold;
+};
+
+// Cluster networks (cluster4, cluster6): where a held pod may still send.
+struct lpm4 {
+	__u32 prefixlen;
+	__u32 addr;
+};
+
+struct lpm6 {
+	__u32 prefixlen;
+	__u32 addr[4];
 };
 
 struct egress_config {
@@ -339,6 +370,30 @@ struct {
 	__type(key, struct underlay_key);
 	__type(value, __u64);
 } peer_seen SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, __u32);
+	__type(value, struct pod_dev);
+} pod_devs SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, 4096);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct lpm4);
+	__type(value, __u8);
+} cluster4 SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, 4096);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct lpm6);
+	__type(value, __u8);
+} cluster6 SEC(".maps");
 
 // Sized, not typed: bpf2go can't express bpf_fib_lookup's anonymous
 // unions, and only the programs read it.
@@ -1229,6 +1284,91 @@ int pl_announce_tun(struct __sk_buff *skb)
 	}
 	count(R_FORGED_INNER_DST, f->dst.family);
 	return TCX_DROP;
+}
+
+// ---- pod devices -------------------------------------------------------------
+
+// to_cluster reports whether a cluster network holds f's destination. The
+// lookup key is built in scratch, in buffers pl_pod_tag leaves unused (eth,
+// ip).
+static __always_inline int to_cluster(struct scratch *s)
+{
+	struct flow *f = &s->f;
+
+	if (f->dst.family == AF_INET_) {
+		struct lpm4 *k = (struct lpm4 *)s->eth;
+
+		k->prefixlen = 32;
+		k->addr = f->dst.addr[0];
+		return bpf_map_lookup_elem(&cluster4, k) != 0;
+	}
+	struct lpm6 *k = (struct lpm6 *)s->ip;
+
+	k->prefixlen = 128;
+	__builtin_memcpy(k->addr, f->dst.addr, 16);
+	return bpf_map_lookup_elem(&cluster6, k) != 0;
+}
+
+// An IPv6 source a pod may use without owning it: link-local or
+// unspecified, for neighbour discovery and multicast listener reports
+// (ICMPv6 130-137 and 143) only. Those never leave the link.
+static __always_inline int nd_source(struct __sk_buff *skb, struct scratch *s)
+{
+	struct flow *f = &s->f;
+	__u32 a0 = bpf_ntohl(f->src.addr[0]);
+	__u8 type;
+
+	if (!((a0 & 0xffc00000) == 0xfe800000 ||
+	      (f->src.addr[0] | f->src.addr[1] | f->src.addr[2] | f->src.addr[3]) == 0))
+		return 0;
+	if (parse_l4(skb, s) < 0 || f->proto != IPPROTO_ICMPV6_ || f->frag == 2)
+		return 0;
+	type = s->l4b[0];
+	return (type >= 130 && type <= 137) || type == 143;
+}
+
+SEC("tcx/ingress")
+int pl_pod_tag(struct __sk_buff *skb)
+{
+	struct egress_config *c;
+	struct scratch *s;
+	struct pod_dev *pd;
+	struct flow *f;
+	__be16 proto = skb->protocol;
+
+	if (proto != ETH_P_IP_BE && proto != ETH_P_IPV6_BE)
+		return TCX_NEXT; // ARP and the rest: no address to check
+	s = scr();
+	c = config();
+	if (!s || !c)
+		return TCX_NEXT;
+	s->ifindex = skb->ifindex; // the key in scratch, as in uplink()
+	pd = bpf_map_lookup_elem(&pod_devs, &s->ifindex);
+	if (!pd)
+		return TCX_NEXT; // not (yet) a known pod
+	if (parse_ip(skb, s, ETH_HLEN, proto) < 0)
+		return TCX_NEXT; // the stack drops what it can't parse
+	f = &s->f;
+	if (f->src.family == AF_INET_) {
+		if (!pd->has_v4 || f->src.addr[0] != pd->v4) {
+			count(R_SOURCE_CHECK, AF_INET_);
+			return TCX_DROP;
+		}
+	} else if (!pd->has_v6 || f->src.addr[0] != pd->v6[0] || f->src.addr[1] != pd->v6[1] ||
+		   f->src.addr[2] != pd->v6[2] || f->src.addr[3] != pd->v6[3]) {
+		if (!nd_source(skb, s)) {
+			count(R_SOURCE_CHECK, AF_INET6_);
+			return TCX_DROP;
+		}
+		return TCX_NEXT; // on-link only: neither held nor tagged
+	}
+	if (pd->hold && !to_cluster(s)) {
+		count(R_FAIL_CLOSED, f->src.family);
+		return TCX_DROP;
+	}
+	if (pd->pod_set)
+		set_mark(skb, c, pd->pod_set);
+	return TCX_NEXT;
 }
 
 // ---- steering ----------------------------------------------------------------

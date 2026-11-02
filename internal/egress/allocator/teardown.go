@@ -62,10 +62,9 @@ func (r *Reconciler) retire(run *run, keep []address) int {
 			continue
 		}
 		active++
-		if !run.revoked && r.ordinalRetained(ep) {
-			continue
-		}
-		r.retireEndpoints(ref.String(), run.conds, ep)
+		// A restarting PerPod pod keeps its address; only its old node's
+		// slice drains (§7.6).
+		r.retireEndpoints(ref.String(), run.conds, ep, run.revoked || !r.ordinalRetained(ep))
 	}
 	return active
 }
@@ -77,7 +76,7 @@ func (r *Reconciler) retireOrphans(ref egress.PolicyRef) {
 	eps := r.ownedEndpoints(ref)
 	for _, ep := range eps {
 		if ep.Spec.State == stateActive {
-			r.retireEndpoints(ref.String(), conditions{}, ep)
+			r.retireEndpoints(ref.String(), conditions{}, ep, true)
 		}
 	}
 	ms := r.ownedMembers(ref)
@@ -93,8 +92,9 @@ func (r *Reconciler) retireOrphans(ref egress.PolicyRef) {
 // retireEndpoints moves one address toward its tombstone: every slice
 // drains and is freed through the usual gating, then, once the holders
 // have acked a generation with no slices, the address becomes a
-// tombstone held for the group's releaseQuarantine (D16).
-func (r *Reconciler) retireEndpoints(owner string, conds conditions, ep *purelbv2.EgressEndpoints) {
+// tombstone held for the group's releaseQuarantine (D16). Without
+// quarantine only the slices drain and the address stays Active.
+func (r *Reconciler) retireEndpoints(owner string, conds conditions, ep *purelbv2.EgressEndpoints, quarantine bool) {
 	if latest, ok := r.latestEndpoints(ep.Name); ok {
 		ep = latest
 	}
@@ -114,7 +114,7 @@ func (r *Reconciler) retireEndpoints(owner string, conds conditions, ep *purelbv
 			s.State = sliceDraining
 			spec.Slices = append(spec.Slices, s)
 		}
-		if len(ep.Spec.Slices) == 0 {
+		if quarantine && len(ep.Spec.Slices) == 0 {
 			spec.State, spec.ExcludedNodes, spec.Reserved = stateQuarantined, nil, nil
 			spec.Until = &metav1.Time{Time: r.now().Add(r.releaseQuarantine(ep.Spec.ServiceGroup)).Truncate(time.Second)}
 			logging.Info(r.logger, "op", "egressRelease", "endpoints", ep.Name, "address", ep.Spec.Address,

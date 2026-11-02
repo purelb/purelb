@@ -76,13 +76,10 @@ type allocatorState struct {
 	// pool named "default", exactly as before this feature existed.
 	nsToPools map[string]nsBinding
 
-	// confinedGroups holds every ServiceGroup that serves at least one
-	// confined namespace. Exclusion is derived from this rather than from a
-	// group's own EnforceNamespaces: fencing a tenant's L2 pool while
-	// leaving its BGP pool reachable cluster-wide would be a half-open
-	// fence, so enforcing on any one of a namespace's groups fences all of
-	// them.
-	confinedGroups map[string]bool
+	// bindings are the namespace bindings both halves of the boundary are
+	// applied from (purelbv2.NamespaceBindings.Fenced), shared with the
+	// node agent's egress pod selection.
+	bindings purelbv2.NamespaceBindings
 }
 
 // nsBinding is what a namespace resolves to. eligible is a set, because
@@ -217,17 +214,17 @@ func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 		}
 	}
 
-	nsToPools, confinedGroups := a.buildNSIndex(groups, pools)
+	nsToPools, bindings := a.buildNSIndex(groups, pools)
 
 	// Atomic swap — after this, G1's next Pools() call sees the new map.
 	// Everything derived from this config is published together so a reader
 	// can never mix a binding index from one generation with pools from
 	// another.
 	a.state.Store(&allocatorState{
-		pools:          pools,
-		sgByName:       sgByName,
-		nsToPools:      nsToPools,
-		confinedGroups: confinedGroups,
+		pools:     pools,
+		sgByName:  sgByName,
+		nsToPools: nsToPools,
+		bindings:  bindings,
 	})
 	a.populated.Store(false)
 
@@ -249,37 +246,22 @@ func (a *Allocator) SetPools(groups []*purelbv2.ServiceGroup) error {
 // Only ServiceGroups that survived parseGroups contribute: a group whose
 // spec is broken has no pool, and binding a namespace to it would deny every
 // Service in that namespace on the strength of a YAML error elsewhere.
-func (a *Allocator) buildNSIndex(groups []*purelbv2.ServiceGroup, pools map[string]Pool) (map[string]nsBinding, map[string]bool) {
-	idx := map[string]nsBinding{}
-	marked := map[string][]string{}
-
+func (a *Allocator) buildNSIndex(groups []*purelbv2.ServiceGroup, pools map[string]Pool) (map[string]nsBinding, purelbv2.NamespaceBindings) {
+	var parsed []*purelbv2.ServiceGroup
 	for _, g := range groups {
-		if _, parsed := pools[g.Name]; !parsed {
-			continue
-		}
-		// Dedupe: +listType=set is deliberately not used (under server-side
-		// apply it gives per-element ownership, so an entry deleted from Git
-		// would silently persist). The API server therefore accepts
-		// `namespaces: [a, a]`, and without this a single ServiceGroup with a
-		// copy-pasted entry would appear twice in eligible, look like two
-		// groups competing, and deny its own namespace.
-		for _, ns := range slices.Compact(slices.Sorted(slices.Values(g.Spec.Namespaces))) {
-			b := idx[ns]
-			b.eligible = append(b.eligible, g.Name)
-			b.enforce = b.enforce || g.Spec.EnforceNamespaces
-			idx[ns] = b
-			if g.Spec.NamespaceDefault {
-				marked[ns] = append(marked[ns], g.Name)
-			}
+		if _, ok := pools[g.Name]; ok {
+			parsed = append(parsed, g)
 		}
 	}
+	bindings := purelbv2.BindNamespaces(parsed)
+	if len(bindings.Namespaces) == 0 {
+		return nil, bindings
+	}
 
-	for ns, b := range idx {
-		// Sorted for stable event text and inspect output only; it never
-		// selects anything, so the build stays order-independent.
-		slices.Sort(b.eligible)
-		m := marked[ns]
-		slices.Sort(m)
+	idx := make(map[string]nsBinding, len(bindings.Namespaces))
+	for ns, nb := range bindings.Namespaces {
+		b := nsBinding{eligible: nb.Eligible, enforce: nb.Enforce}
+		m := nb.Defaults
 		switch {
 		case len(b.eligible) == 1:
 			b.def = b.eligible[0]
@@ -292,25 +274,7 @@ func (a *Allocator) buildNSIndex(groups []*purelbv2.ServiceGroup, pools map[stri
 		}
 		idx[ns] = b
 	}
-
-	// Exclusion is derived from namespace confinement, not from a group's own
-	// EnforceNamespaces. Reading the target's own flag would fence a tenant's
-	// L2 pool while leaving its BGP pool reachable from every namespace in
-	// the cluster.
-	confined := map[string]bool{}
-	for _, b := range idx {
-		if !b.enforce {
-			continue
-		}
-		for _, name := range b.eligible {
-			confined[name] = true
-		}
-	}
-
-	if len(idx) == 0 {
-		return nil, nil
-	}
-	return idx, confined
+	return idx, bindings
 }
 
 // populateFromExisting scans the service cache and registers all

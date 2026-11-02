@@ -37,6 +37,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"purelb.io/internal/bpfpin"
+	"purelb.io/internal/egress/datapath"
 	"purelb.io/internal/egresshook"
 	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -54,6 +55,9 @@ const (
 	keyConfig = "agent:config"
 	// keyNode recomputes this node's EgressNodeState status.
 	keyNode = "agent:node"
+	// keyPods recomputes the pod-node state: slots, pod-sets and this
+	// node's pods.
+	keyPods = "agent:pods"
 )
 
 // Agent is the node agent's egress controller. Its state belongs to the
@@ -104,14 +108,28 @@ type Agent struct {
 	// installed, for status.announcing (D6). Written by the datapath
 	// goroutine.
 	acks atomic.Pointer[[]purelbv2.EgressAnnouncing]
+	// specAck is the EgressNodeState spec generation the datapath last
+	// installed whole (status.observedGeneration, D6); drained the
+	// Draining slices it found no flows of; ctFlushed the retired mark
+	// values whose flows it deleted, free to be used again (D18). Written
+	// by the datapath goroutine.
+	specAck   atomic.Int64
+	drained   atomic.Pointer[[]purelbv2.EgressDrained]
+	ctFlushed atomic.Pointer[map[uint8]bool]
+	// tableSlots reads the slots an earlier agent left in the nft table
+	// (tests replace it).
+	tableSlots func() (map[uint8]datapath.SlotNAT, error)
 
 	// guard is the node's address guard, nil without one; guarded the
 	// addresses egress has put in it. Queue goroutine only.
 	guard   Guard
 	guarded map[netip.Addr]bool
 	// services are the Service addresses this node announces, with the
-	// Services announcing each (Inherit). Queue goroutine only.
-	services map[netip.Addr]map[string]bool
+	// Services announcing each (Inherit); placements how the LB path
+	// places every Service address, by Service, for steering to a shared
+	// address's holders. Queue goroutine only.
+	services   map[netip.Addr]map[string]bool
+	placements map[netip.Addr]map[string]egresshook.ServicePlacement
 
 	// placer places dedicated addresses (the announcer). placed are the
 	// ones placed, shared the held shared ones (placed by their Service),
@@ -134,6 +152,20 @@ type Agent struct {
 	dadLost sync.Map // netip.Addr: true
 	// addrFlags lists the node's addresses and their IFA flags.
 	addrFlags func() (map[netip.Addr]int, error)
+
+	// podnode is the pod-node state last planned, and podsWant its pods
+	// and stageWant its nft program as the datapath last got them. Queue
+	// goroutine only.
+	podnode   *podNode
+	podsWant  []dpPod
+	stageWant *datapath.PodStage
+
+	// flows is the running flow log (queue goroutine only); it names
+	// flows by flowView (from the queue goroutine) and the mark byte in
+	// use (from the datapath goroutine).
+	flows    *flowLog
+	flowView atomic.Pointer[flowView]
+	markByte atomic.Uint32
 
 	// faults are this node's address problems and conds its conditions,
 	// as last reported. Queue goroutine only.
@@ -171,6 +203,17 @@ type session struct {
 	// scoped EgressEndpoints watches (D6). Queue goroutine only.
 	addresses listers.EgressAddressNamespaceLister
 	watches   map[string]*eeWatch
+	// For the pod-node stage: this node's pods, the policies, namespaces
+	// and Services (serviceRef selectors).
+	pods            cache.Indexer
+	egresses        listers.EgressLister
+	clusterEgresses listers.ClusterEgressLister
+	namespaces      cache.Indexer
+	services        cache.Indexer
+	// For the cluster networks: the Service CIDRs (nil where the API
+	// doesn't serve them) and the API server's EndpointSlices.
+	serviceCIDRs cache.Indexer
+	apiServer    cache.Indexer
 }
 
 var (
@@ -183,8 +226,9 @@ func New(logger log.Logger, node, namespace string) *Agent {
 	a := &Agent{logger: logger, node: node, namespace: namespace, runner: newRunner(), now: time.Now,
 		statusInterval: statusInterval, dp: &dpState{pinRoot: bpfpin.Dir},
 		guarded: map[netip.Addr]bool{}, services: map[netip.Addr]map[string]bool{},
-		placed: map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
-		sendProbe: sendUDPProbe}
+		placements: map[netip.Addr]map[string]egresshook.ServicePlacement{},
+		placed:     map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
+		sendProbe: sendUDPProbe, tableSlots: tableSlots}
 	a.apply, a.tear = a.applyDatapath, a.teardown
 	return a
 }
@@ -200,6 +244,7 @@ func (a *Agent) Configure(cfg *purelbv2.Config) {
 	}
 	a.config.Store(d)
 	a.add(keyConfig, false)
+	a.add(keyPods, false) // groups: scope and priority ceilings
 }
 
 // add enqueues key once Start has run; Start enqueues keyConfig itself.
@@ -270,6 +315,8 @@ func (a *Agent) Sync(key string) error {
 		a.syncConfig()
 	case keyNode:
 		a.syncNode()
+	case keyPods:
+		a.syncPods()
 	case keyDatapath:
 		a.syncDatapath()
 	case keyTeardown:
@@ -279,7 +326,9 @@ func (a *Agent) Sync(key string) error {
 }
 
 // Keys returns the agent's keys, for ForceSync. It runs on the caller's
-// goroutine, so it reads no queue-goroutine state.
+// goroutine, so it reads no queue-goroutine state. ForceSync follows Lease
+// membership, which the pod-node state doesn't read: its own informers
+// and Configure queue keyPods.
 func (a *Agent) Keys() []string {
 	return []string{keyConfig, keyNode, keyDatapath}
 }
@@ -314,6 +363,7 @@ func (a *Agent) syncConfig() {
 		// what an earlier agent left (D26), if anything.
 		a.endDatapath()
 	}
+	a.syncFlowLog()
 }
 
 // startSession starts egress's informers and its first capability probe.
@@ -335,7 +385,10 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	pf := externalversions.NewSharedInformerFactoryWithOptions(a.purelb, resync, externalversions.WithNamespace(a.namespace))
 	eas := pf.Purelb().V2().EgressAddresses()
 	s.addresses = eas.Lister().EgressAddresses(a.namespace)
-	kickDP := func(interface{}) { a.add(keyDatapath, false) }
+	kickDP := func(interface{}) {
+		a.add(keyDatapath, false)
+		a.add(keyPods, false) // which policies are in force
+	}
 	_, _ = eas.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: kickDP, DeleteFunc: kickDP,
 		UpdateFunc: func(_, o interface{}) { kickDP(o) }})
 
@@ -350,8 +403,20 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 			a.add(keyNode, false)
 		}
 	}
-	_, _ = ens.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: mine,
-		UpdateFunc: func(_, o interface{}) { mine(o) }, DeleteFunc: mine})
+	// The spec (this node's slices) feeds the pod-node state; the status
+	// is the agent's own writes.
+	minePods := func(obj interface{}) {
+		mine(obj)
+		a.add(keyPods, false)
+	}
+	_, _ = ens.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: minePods, DeleteFunc: minePods,
+		UpdateFunc: func(o, n interface{}) {
+			if !equality.Semantic.DeepEqual(o.(*purelbv2.EgressNodeState).Spec, n.(*purelbv2.EgressNodeState).Spec) {
+				minePods(n)
+				return
+			}
+			mine(n)
+		}})
 	nodeChanged := func(obj interface{}) {
 		mine(obj)
 		a.add(keyDatapath, false)
@@ -363,18 +428,29 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 		UpdateFunc: func(o, n interface{}) {
 			on, nn := o.(*corev1.Node), n.(*corev1.Node)
 			if !equality.Semantic.DeepEqual(on.Status.Addresses, nn.Status.Addresses) ||
-				!equality.Semantic.DeepEqual(on.Labels, nn.Labels) {
+				!equality.Semantic.DeepEqual(on.Labels, nn.Labels) ||
+				!equality.Semantic.DeepEqual(on.Spec.PodCIDRs, nn.Spec.PodCIDRs) {
 				nodeChanged(n)
 			}
 		}})
 
+	podInformers, err := a.podNodeInformers(s, kf)
+	if err != nil {
+		logging.Info(a.logger, "op", "egressStart", "error", err)
+		return
+	}
+
 	own.Start(s.stop)
 	kf.Start(s.stop)
 	pf.Start(s.stop)
+	for _, start := range podInformers.start {
+		start(s.stop)
+	}
 	kick := func() { a.add(keyDatapath, false) }
 	go watchRoutes(a.logger, s.stop, a.poolSet, kick)
 	go watchTunnel(a.logger, s.stop, kick)
 	go watchNft(a.logger, s.stop, kick)
+	go watchRules(a.logger, s.stop, kick)
 	go watchAddrs(a.logger, s.stop, a.placedAddrs, func(addr netip.Addr) { a.dadLost.Store(addr, true) }, kick)
 	go a.runProbes(s)
 	go func() {
@@ -390,11 +466,14 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 		}
 	}()
 	go func() {
-		if !cache.WaitForCacheSync(s.stop, ens.Informer().HasSynced, nodes.HasSynced, eas.Informer().HasSynced) {
+		synced := append([]cache.InformerSynced{ens.Informer().HasSynced, nodes.HasSynced, eas.Informer().HasSynced},
+			podInformers.synced...)
+		if !cache.WaitForCacheSync(s.stop, synced...) {
 			return
 		}
 		s.synced.Store(true)
 		a.add(keyDatapath, false)
+		a.add(keyPods, false)
 	}()
 	a.on = s
 	logging.Info(a.logger, "op", "egressEnable", "node", a.node, "msg", "egress enabled on this node")
@@ -424,6 +503,8 @@ func (a *Agent) stopSession() {
 	}
 	close(a.on.stop)
 	a.on = nil
+	a.syncFlowLog()
+	a.flowView.Store(nil)
 	if a.guard != nil {
 		for addr := range a.guarded {
 			if err := a.guard.UpdateEgress(addr, false, nil, nil); err != nil {
@@ -433,10 +514,13 @@ func (a *Agent) stopSession() {
 	}
 	a.guarded = map[netip.Addr]bool{}
 	a.withdrawPlaced("egress disabled")
-	a.shared, a.faults, a.conds = nil, nil, nil
+	a.shared, a.faults, a.conds, a.podnode, a.podsWant, a.stageWant = nil, nil, nil, nil, nil, nil
 	a.installed.Store(nil)
 	a.probing.Store(nil)
 	a.acks.Store(nil)
+	a.specAck.Store(0)
+	a.drained.Store(nil)
+	a.ctFlushed.Store(nil)
 	logging.Info(a.logger, "op", "egressDisable", "node", a.node, "msg", "egress disabled on this node")
 }
 
@@ -452,8 +536,30 @@ func (a *Agent) syncNode() {
 	}
 	c = c.DeepCopy()
 	c.Underlay = underlay(s.nodes, a.node)
-	st := &purelbv2.EgressNodeStateStatus{Capability: c, AddressFaults: a.faultList(),
-		Conditions: a.nodeConditions(c, a.health.Load())}
+	c.Slots = &purelbv2.EgressSlots{Capacity: slotBudget}
+	if pn := a.podnode; pn != nil {
+		c.Slots.Used, c.Slots.PodSets = int32(pn.used()), int32(len(pn.sets))
+	}
+	h := a.health.Load()
+	st := &purelbv2.EgressNodeStateStatus{Capability: c, AddressFaults: a.faultList(h),
+		Conditions: a.nodeConditions(c, h, a.podnode), ObservedGeneration: a.specAck.Load()}
+	if d := a.drained.Load(); d != nil {
+		// Only slices Draining now: a report the datapath made before the
+		// slice changed is stale.
+		draining := map[purelbv2.EgressDrained]bool{}
+		if ns, err := s.nodeStates.Get(a.node); err == nil {
+			for _, sl := range ns.Spec.Slices {
+				if sl.State == "Draining" {
+					draining[purelbv2.EgressDrained{Endpoints: sl.Endpoints, Index: sl.Index}] = true
+				}
+			}
+		}
+		for _, x := range *d {
+			if draining[x] {
+				st.Drained = append(st.Drained, x)
+			}
+		}
+	}
 	if acks := a.acks.Load(); acks != nil {
 		// Only what this node announces now: an address it holds but
 		// couldn't place isn't announced, and gates nothing (D6).
@@ -492,7 +598,7 @@ func underlay(nodes cache.Indexer, name string) *purelbv2.EgressUnderlay {
 }
 
 // slimNode is a Node informer transform keeping what egress reads: name,
-// UID, labels and addresses.
+// UID, labels, podCIDRs and addresses.
 func slimNode(obj interface{}) (interface{}, error) {
 	n, ok := obj.(*corev1.Node)
 	if !ok {
@@ -500,18 +606,20 @@ func slimNode(obj interface{}) (interface{}, error) {
 	}
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: n.Name, UID: n.UID, Labels: n.Labels, ResourceVersion: n.ResourceVersion},
+		Spec:       corev1.NodeSpec{PodCIDRs: n.Spec.PodCIDRs},
 		Status:     corev1.NodeStatus{Addresses: n.Status.Addresses},
 	}, nil
 }
 
 // PrepareShutdown runs at the start of a graceful shutdown, after the
-// work-queue goroutine has stopped: egress withdraws the addresses it
-// placed while the lease still stands (design 5.5; the repoint ahead of it
-// is Phase 5's).
+// work-queue goroutine has stopped, while the lease still stands: egress
+// repoints this node's pods' slots off the addresses it holds (D7), then
+// withdraws the addresses it placed (design 5.5).
 func (a *Agent) PrepareShutdown() {
 	if a.on == nil {
 		return
 	}
+	a.repoint()
 	a.withdrawPlaced("shutdown")
 }
 

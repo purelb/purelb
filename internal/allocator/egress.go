@@ -61,6 +61,12 @@ func (a *Allocator) EgressGroup(ns, group string) (*purelbv2.ServiceGroup, Pool,
 	return sg, pool, nil
 }
 
+// NamespaceBindings returns the namespace bindings of the current config,
+// for scoping a ClusterEgress's namespaces with the boundary Services use.
+func (a *Allocator) NamespaceBindings() purelbv2.NamespaceBindings {
+	return a.Snapshot().bindings
+}
+
 // ServiceGroup returns the named ServiceGroup and its pool, if both
 // exist. The ServiceGroup is the allocator's snapshot copy; don't modify
 // it.

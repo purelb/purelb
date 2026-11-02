@@ -159,7 +159,6 @@ func (r *Reconciler) nodeConditions(run *run, eps map[string]*purelbv2.EgressEnd
 		objs, _ := r.nodeStateIdx.ByIndex(idxFault, addr)
 		for _, o := range objs {
 			ns := o.(*purelbv2.EgressNodeState)
-			holders[ns.Name] = true
 			for _, f := range ns.Status.AddressFaults {
 				if f.Address != addr {
 					continue
@@ -172,7 +171,15 @@ func (r *Reconciler) nodeConditions(run *run, eps map[string]*purelbv2.EgressEnd
 					add(condAnnounced, f.Reason, addr, ns.Name)
 				case "GuardMapFull", "GuardStandingDown":
 					add(condGuarded, f.Reason, addr, ns.Name)
+				case "ProtocolUnsupported", "HelpersUnsupported":
+					// A pod node's, not a holder's.
+					add(condDatapathCompatible, f.Reason, addr, ns.Name)
+					continue
+				case "PathMTUTooSmall":
+					add(condDatapathReady, f.Reason, addr, ns.Name)
+					continue
 				}
+				holders[ns.Name] = true
 			}
 		}
 		nodes := maps.Clone(holders)
@@ -186,8 +193,8 @@ func (r *Reconciler) nodeConditions(run *run, eps map[string]*purelbv2.EgressEnd
 				continue
 			}
 			cs := ns.Status.Conditions
-			if c := apimeta.FindStatusCondition(cs, "DatapathReady"); holders[n] && c != nil &&
-				c.Status == metav1.ConditionFalse && c.Reason == "NoGateway" {
+			if c := apimeta.FindStatusCondition(cs, "DatapathReady"); c != nil && c.Status == metav1.ConditionFalse &&
+				((holders[n] && c.Reason == "NoGateway") || c.Reason == reasonSlotsExhausted) {
 				add(condDatapathReady, c.Reason, addr, n)
 			}
 			if c := apimeta.FindStatusCondition(cs, "DatapathCompatible"); c != nil && c.Status == metav1.ConditionFalse {

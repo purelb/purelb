@@ -253,7 +253,7 @@ func tunnelCase(t *testing.T, c tunCase) {
 	for _, h := range []*host{a, b} {
 		h.sysctl(t, "net.ipv4.ip_forward", "1")
 		h.sysctl(t, "net.ipv6.conf.all.forwarding", "1")
-		h.sysctl(t, "net.ipv4.conf.all.rp_filter", "0") // Phase 5 marks for strict rp_filter
+		h.sysctl(t, "net.ipv4.conf.all.rp_filter", "0")
 	}
 
 	// purelb-eg0 on both.
@@ -271,23 +271,26 @@ func tunnelCase(t *testing.T, c tunCase) {
 		require.NoError(t, err, "%s: %s", x.h.name, c)
 		require.Equal(t, mode, got)
 		*x.l = l
-		x.h.sysctl(t, "net.ipv4.conf.purelb-eg0.rp_filter", "0")
 	}
+	// A, the pod node, checks sources strictly (IPv4): its replies come
+	// through only with the reply flag's rule and src_valid_mark.
+	a.sysctl(t, "net.ipv4.conf.all.rp_filter", "1")
+	a.sysctl(t, "net.ipv4.conf.purelb-eg0.rp_filter", "1")
+	b.sysctl(t, "net.ipv4.conf.purelb-eg0.rp_filter", "0")
 
-	// A: the slot rule into the tunnel table, its default to purelb-eg0
-	// and the underlay throws.
-	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		r := netlink.NewRule()
-		r.Family, r.Priority, r.Table, r.Mark = fam, 80, TunnelTable, slot
-		r.Mask = func(v uint32) *uint32 { return &v }(0xff)
-		require.NoError(t, a.nl.RuleAdd(r))
-		dst := "0.0.0.0/0"
-		if fam == netlink.FAMILY_V6 {
-			dst = "::/0"
-		}
-		a.route(t, &netlink.Route{Dst: cidr(dst), LinkIndex: tunA.Attrs().Index, Table: TunnelTable})
-	}
-	require.NoError(t, SyncThrows(a.nl, []netip.Addr{netip.MustParseAddr("10.0.0.2"), netip.MustParseAddr("fd00::2")}))
+	// A: the slot's rule into the tunnel table, the reply flag's into the
+	// reply table, and their throws: the underlay backstop, and the egress
+	// address standing in for the pod networks (without the SNAT, replies
+	// are to the egress address).
+	require.NoError(t, SyncTargets(a.nl, Targets{Tunnel: tunA.Attrs().Index, Throws: []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.2/32"), netip.MustParsePrefix("fd00::2/128"),
+		netip.MustParsePrefix(egress4 + "/32"), netip.MustParsePrefix(egress6 + "/128")}}))
+	require.NoError(t, SyncRules(a.nl, 0, []MarkRule{{Pref: PrefReply, Mark: 0x80, Table: ReplyTable},
+		{Pref: PrefSlot, Mark: slot, Table: TunnelTable}}))
+	require.NoError(t, a.in(func() error {
+		_, err := EnsureSrcValidMark(tunA.Attrs().Index, TunnelName)
+		return err
+	}))
 	// B: the pool interface's table, as the route watcher mirrors it.
 	b.route(t, &netlink.Route{Dst: cidr("172.30.10.0/24"), LinkIndex: b.link(t, "pool").Attrs().Index, Table: 7900})
 	b.route(t, &netlink.Route{Dst: cidr("fdaa::/64"), LinkIndex: b.link(t, "pool").Attrs().Index, Table: 7900})
@@ -496,40 +499,6 @@ func TestNetnsEnsureTunnel(t *testing.T) {
 
 	_, _, err = EnsureTunnel(h.nl, "L4", 6082, mac)
 	assert.Error(t, err)
-}
-
-// SyncThrows keeps exactly one throw per underlay address in each target
-// table, both families.
-func TestNetnsSyncThrows(t *testing.T) {
-	netnsOrSkip(t)
-	h := newHost(t, "node")
-	throws := func(table int) []string {
-		var out []string
-		for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-			rs, err := h.nl.RouteListFiltered(fam, &netlink.Route{Table: table, Type: unix.RTN_THROW},
-				netlink.RT_FILTER_TABLE|netlink.RT_FILTER_TYPE)
-			require.NoError(t, err)
-			for _, r := range rs {
-				out = append(out, r.Dst.String())
-			}
-		}
-		return out
-	}
-	addrs := func(s ...string) []netip.Addr {
-		var out []netip.Addr
-		for _, a := range s {
-			out = append(out, netip.MustParseAddr(a))
-		}
-		return out
-	}
-	require.NoError(t, SyncThrows(h.nl, addrs("10.0.0.2", "10.0.0.3", "fd00::2")))
-	for _, table := range []int{TunnelTable, ProhibitTable} {
-		assert.ElementsMatch(t, []string{"10.0.0.2/32", "10.0.0.3/32", "fd00::2/128"}, throws(table))
-	}
-	require.NoError(t, SyncThrows(h.nl, addrs("10.0.0.3", "fd00::4")))
-	assert.ElementsMatch(t, []string{"10.0.0.3/32", "fd00::4/128"}, throws(TunnelTable))
-	require.NoError(t, SyncThrows(h.nl, nil))
-	assert.Empty(t, throws(ProhibitTable))
 }
 
 // TunnelMTU is the smallest route MTU to an IPv6 peer less the tunnel's

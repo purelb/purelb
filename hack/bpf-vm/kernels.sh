@@ -42,7 +42,14 @@ CACHE=${BPF_VM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/purelb-bpf-vm}
 NAME=${1:?usage: kernels.sh <kernel name>}
 SET=${BPF_VM_MODULES:-}
 case $SET in "" | egress) ;; *) echo "kernels.sh: unknown BPF_VM_MODULES=$SET" >&2; exit 2 ;; esac
+# The egress set's modules (staged below). Its cache directory names a hash
+# of the list, so a changed list is staged again instead of reusing a
+# directory without the new modules.
+EGRESS_MODS="geneve nf_tables nft_ct nft_nat nft_chain_nat nft_fib_inet nf_conntrack_netlink bridge br_netfilter nf_nat_ftp"
 DIR=$CACHE/$NAME${SET:+-$SET}
+if [ "$SET" = egress ]; then
+	DIR=$DIR-$(echo "$EGRESS_MODS" | sha256sum | cut -c1-8)
+fi
 if [ -s "$DIR/vmlinuz" ]; then
 	echo "$DIR"
 	exit 0
@@ -140,7 +147,6 @@ if [ "$SET" = egress ]; then
 	# silently tested without it.
 	# The crc32c algorithm goes first (below): libcrc32c only soft-depends
 	# on it (modinfo softdep), which modprobe would load and /init cannot.
-	EGRESS_MODS="geneve nf_tables nft_ct nft_nat nft_chain_nat nft_fib_inet nf_conntrack_netlink bridge br_netfilter"
 	declare -A path=() seen=()
 	while IFS= read -r f; do
 		b=${f##*/}

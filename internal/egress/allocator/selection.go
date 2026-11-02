@@ -25,17 +25,8 @@ import (
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
-// Why a selected pod is excluded (EgressStatus.excludedPods[].reason).
-const (
-	excludedHostNetwork = "HostNetwork"
-	excludedOptedOut    = "OptedOut"
-	excludedNotSTS      = "NotStatefulSet"
-	excludedUnsupported = "NodeUnsupported"
-	excludedNotInScope  = "NamespaceNotInScope"
-	excludedOutranked   = "Outranked"
-	maxExcludedPods     = 100
-	admittedLabel       = "purelb.io/cluster-egress-admitted"
-)
+// maxExcludedPods bounds EgressStatus.excludedPods.
+const maxExcludedPods = 100
 
 // member is one selected pod.
 type member struct {
@@ -93,22 +84,19 @@ func (r *Reconciler) selectPods(run *run) {
 		objs := r.candidatePods(ns, podSel)
 		for _, o := range objs {
 			pod := o.(*corev1.Pod)
-			if !podSel.Matches(labels.Set(pod.Labels)) || !live(pod) {
+			if !podSel.Matches(labels.Set(pod.Labels)) || !egress.Live(pod) {
 				continue
 			}
+			why := egress.PodExcluded(pod, p.optOut, perPod)
 			switch {
 			case !inScope[ns]:
-				run.sel.exclude(pod, excludedNotInScope)
-			case pod.Spec.HostNetwork:
-				run.sel.exclude(pod, excludedHostNetwork)
-			case p.optOut != "Denied" && pod.Annotations[purelbv2.EgressOptOutAnnotation] == "false":
-				run.sel.exclude(pod, excludedOptedOut)
-			case perPod && statefulSetOf(pod) == "":
-				run.sel.exclude(pod, excludedNotSTS)
+				run.sel.exclude(pod, egress.ExcludedNotInScope)
+			case why != "":
+				run.sel.exclude(pod, why)
 			case !r.egressCapable(pod.Spec.NodeName):
-				run.sel.exclude(pod, excludedUnsupported)
+				run.sel.exclude(pod, egress.ExcludedUnsupported)
 			case r.outranked(run, pod):
-				run.sel.exclude(pod, excludedOutranked)
+				run.sel.exclude(pod, egress.ExcludedOutranked)
 			default:
 				m := member{namespace: pod.Namespace, name: pod.Name, uid: string(pod.UID)}
 				if perPod {
@@ -132,23 +120,6 @@ func (r *Reconciler) selectPods(run *run) {
 	}
 }
 
-// live reports whether a pod counts: scheduled, not finished and not
-// terminating. A terminating pod's slice drains rather than staying held.
-func live(pod *corev1.Pod) bool {
-	return pod.Spec.NodeName != "" && pod.DeletionTimestamp == nil &&
-		pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed
-}
-
-// statefulSetOf is the name of the StatefulSet that owns pod, or "".
-func statefulSetOf(pod *corev1.Pod) string {
-	for _, o := range pod.OwnerReferences {
-		if o.Kind == "StatefulSet" && o.Controller != nil && *o.Controller {
-			return o.Name
-		}
-	}
-	return ""
-}
-
 // egressCapable reports whether a node carries the egress-capable label
 // (D29).
 func (r *Reconciler) egressCapable(node string) bool {
@@ -168,16 +139,14 @@ func (r *Reconciler) clusterNamespaces(run *run) ([]string, map[string]bool) {
 	}
 	var names []string
 	inScope := map[string]bool{}
+	bindings := r.alloc.NamespaceBindings()
 	for _, o := range r.namespaces.List() {
 		ns := o.(*corev1.Namespace)
 		if !sel.Matches(labels.Set(ns.Labels)) {
 			continue
 		}
 		names = append(names, ns.Name)
-		if p.admittedOnly && ns.Labels[admittedLabel] != "true" {
-			continue
-		}
-		if sg, _, err := r.alloc.EgressGroup(ns.Name, run.group.Name); err == nil && sg.Name == run.group.Name {
+		if egress.NamespaceInScope(ns, p.admittedOnly, run.group.Name, run.group, bindings) {
 			inScope[ns.Name] = true
 		}
 	}

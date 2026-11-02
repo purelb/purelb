@@ -39,12 +39,14 @@ type runner struct {
 	next atomic.Pointer[func()]
 	kick chan struct{}
 	// started is when the running item began (Unix nanoseconds), 0 when
-	// idle.
+	// idle; exited closes once run returns, handing what the goroutine
+	// owned to whoever waits on it.
 	started atomic.Int64
+	exited  chan struct{}
 }
 
 func newRunner() *runner {
-	return &runner{kick: make(chan struct{}, 1)}
+	return &runner{kick: make(chan struct{}, 1), exited: make(chan struct{})}
 }
 
 // submit replaces the pending item with f.
@@ -58,6 +60,7 @@ func (d *runner) submit(f func()) {
 
 // run runs items until stop closes.
 func (d *runner) run(stop <-chan struct{}) {
+	defer close(d.exited)
 	for {
 		select {
 		case <-stop:

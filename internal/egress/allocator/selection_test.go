@@ -271,10 +271,10 @@ func TestClusterSelection(t *testing.T) {
 	}
 	f := newFixture(t, []*purelbv2.ServiceGroup{group("pci", "payments", "ledger", "unadmitted")},
 		node("n1", true),
-		namespace("payments", map[string]string{"zone": "pci", admittedLabel: "true"}),
-		namespace("ledger", map[string]string{"zone": "pci", admittedLabel: "true"}),
+		namespace("payments", map[string]string{"zone": "pci", egress.AdmittedLabel: "true"}),
+		namespace("ledger", map[string]string{"zone": "pci", egress.AdmittedLabel: "true"}),
 		namespace("unadmitted", map[string]string{"zone": "pci"}),
-		namespace("unserved", map[string]string{"zone": "pci", admittedLabel: "true"}),
+		namespace("unserved", map[string]string{"zone": "pci", egress.AdmittedLabel: "true"}),
 		namespace("web", nil),
 		stsPod("payments", "db-0", "n1", sel), stsPod("ledger", "db-0", "n1", sel),
 		stsPod("unadmitted", "db-0", "n1", sel), stsPod("unserved", "db-0", "n1", sel), stsPod("web", "db-0", "n1", sel),

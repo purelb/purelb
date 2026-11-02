@@ -21,6 +21,7 @@ import (
 	"github.com/go-kit/log"
 	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 
 	"purelb.io/internal/egress/datapath"
@@ -90,13 +91,21 @@ func watchRoutes(logger log.Logger, stop <-chan struct{}, pools func() map[int]b
 				logging.Info(logger, "op", "egressWatch", "watch", "routes", "error", err, "msg", "watch failed; resubscribing")
 			}})
 	}, func(u netlink.RouteUpdate) {
-		if poolRoute(u.Route, pools()) || (u.Type == unix.RTM_DELROUTE && ownTable(u.Route.Table)) {
+		if poolRoute(u.Route, pools()) || (u.Type == unix.RTM_DELROUTE && ownTable(u.Route.Table)) || clusterRoute(u.Route) {
 			kick()
 		}
 	}, kick)
 }
 
-// watchTunnel kicks when the tunnel device is deleted or set down.
+// clusterRoute reports whether a route change can change the cluster
+// networks (design 6.3): any route outside the local table and egress's
+// own.
+func clusterRoute(r netlink.Route) bool {
+	return r.Table != unix.RT_TABLE_LOCAL && !ownTable(r.Table)
+}
+
+// watchTunnel kicks when the tunnel device is deleted or set down, and
+// when a pod device (a veth or netkit with a peer namespace) comes or goes.
 func watchTunnel(logger log.Logger, stop <-chan struct{}, kick func()) {
 	watch(logger, "links", stop, func(done <-chan struct{}) (<-chan netlink.LinkUpdate, error) {
 		ch := make(chan netlink.LinkUpdate, 64)
@@ -106,6 +115,10 @@ func watchTunnel(logger log.Logger, stop <-chan struct{}, kick func()) {
 			}})
 	}, func(u netlink.LinkUpdate) {
 		if u.Link.Attrs().Name == datapath.TunnelName && (u.Header.Type == unix.RTM_DELLINK || u.IfInfomsg.Flags&unix.IFF_UP == 0) {
+			kick()
+		}
+		// A deletion carries no peer namespace: the peer went with it.
+		if t := u.Link.Type(); (t == "veth" || t == "netkit") && (u.Link.Attrs().NetNsID >= 0 || u.Header.Type == unix.RTM_DELLINK) {
 			kick()
 		}
 	}, kick)
@@ -128,6 +141,45 @@ func watchAddrs(logger log.Logger, stop <-chan struct{}, placed func() map[netip
 			if u.Flags&unix.IFA_F_TENTATIVE != 0 {
 				lost(addr.Unmap()) // deleted in DAD: it failed
 			}
+			kick()
+		}
+	}, kick)
+}
+
+// watchRules kicks when an RPDB rule is deleted, either family: it may be
+// one of egress's slot or reply rules (design 6.11). The netlink library
+// has no rule subscription, so this one is raw.
+func watchRules(logger log.Logger, stop <-chan struct{}, kick func()) {
+	watch(logger, "rules", stop, func(done <-chan struct{}) (<-chan uint16, error) {
+		s, err := nl.Subscribe(unix.NETLINK_ROUTE, unix.RTNLGRP_IPV4_RULE, unix.RTNLGRP_IPV6_RULE)
+		if err != nil {
+			return nil, err
+		}
+		go func() {
+			<-done
+			s.Close()
+		}()
+		ch := make(chan uint16, 64)
+		go func() {
+			defer close(ch)
+			for {
+				msgs, _, err := s.Receive()
+				if err != nil {
+					select {
+					case <-done:
+					default:
+						logging.Info(logger, "op", "egressWatch", "watch", "rules", "error", err, "msg", "watch failed; resubscribing")
+					}
+					return
+				}
+				for _, m := range msgs {
+					ch <- m.Header.Type
+				}
+			}
+		}()
+		return ch, nil
+	}, func(t uint16) {
+		if t == unix.RTM_DELRULE {
 			kick()
 		}
 	}, kick)
@@ -215,10 +267,10 @@ func poolRoute(r netlink.Route, pools map[int]bool) bool {
 	return false
 }
 
-// ownTable reports whether table is one the agent fills: the tunnel and
-// prohibit targets, or a pool interface's.
+// ownTable reports whether table is one the agent fills: the tunnel,
+// prohibit and reply targets, or a pool interface's.
 func ownTable(table int) bool {
-	return table == datapath.TunnelTable || table == datapath.ProhibitTable ||
+	return table == datapath.TunnelTable || table == datapath.ProhibitTable || table == datapath.ReplyTable ||
 		(table >= datapath.PoolTableBase && table < datapath.PoolTableBase+datapath.MaxPoolInterfaces)
 }
 

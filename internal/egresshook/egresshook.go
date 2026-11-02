@@ -62,6 +62,12 @@ type Agent interface {
 	// Service's "namespace/name". It may repeat a report.
 	ServiceAddress(key string, ip net.IP, announced bool)
 
+	// ServicePlacement reports, from every node, how the LB path places
+	// one of a Service's addresses, so pod nodes can steer to a shared
+	// egress address's holders (Inherit); nil: the Service no longer has
+	// the address. It may repeat a report.
+	ServicePlacement(key string, ip net.IP, p *ServicePlacement)
+
 	// PrepareShutdown runs at the start of a graceful shutdown, before
 	// any address is withdrawn and while the lease stands: egress
 	// withdraws the addresses it placed.
@@ -101,6 +107,17 @@ type EgressPlacement struct {
 	Still func() bool
 }
 
+// ServicePlacement is how the LB path places a Service address: a local
+// pool's is elected among the nodes with its subnet, preferring Preferred
+// (node affinity); a remote pool's is announced by every node, or with
+// ETPLocal by the nodes in EndpointNodes.
+type ServicePlacement struct {
+	Remote        bool
+	Preferred     []string
+	ETPLocal      bool
+	EndpointNodes []string
+}
+
 // Controller is how internal/k8s runs egress's own objects in either
 // process, on the same work queue as Services.
 type Controller interface {
@@ -136,6 +153,7 @@ func (Noop) Replay(func(pool, key string, ips []net.IP, ref bool) error)   {}
 func (Noop) ReleaseService(string, string, net.IP) bool                    { return true }
 func (Noop) Referenced(net.IP) bool                                        { return false }
 func (Noop) ServiceAddress(string, net.IP, bool)                           {}
+func (Noop) ServicePlacement(string, net.IP, *ServicePlacement)            {}
 func (Noop) PrepareShutdown()                                              {}
 func (Noop) Start(<-chan struct{}, *rest.Config, func(string, bool)) error { return nil }
 func (Noop) Sync(string) error                                             { return nil }

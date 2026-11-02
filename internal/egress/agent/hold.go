@@ -249,6 +249,7 @@ func (a *Agent) syncHoldings(s *session) holdings {
 				Generation: ep.Generation})
 		}
 	}
+	a.ownSlices(s, h)
 	// Every egress address is guarded on every egress node (§6.10); only a
 	// holder's carries its slices and ports.
 	if a.guard != nil {
@@ -270,6 +271,53 @@ func (a *Agent) syncHoldings(s *session) holdings {
 	}
 	sort.Slice(h.acks, func(i, j int) bool { return h.acks[i].Endpoints < h.acks[j].Endpoints })
 	return h
+}
+
+// ownSlices gives each address this node doesn't hold its own slices,
+// PerPod ownership and reserved ports from its EgressNodeState spec (D6):
+// a reply the tunnel brings for one of its pods is admitted only for a
+// slice the maps say is this node's (design 6.5). A held address has
+// them already, from its EgressEndpoints.
+func (a *Agent) ownSlices(s *session, h holdings) {
+	ns, err := s.nodeStates.Get(a.node)
+	if err != nil {
+		return
+	}
+	self := datapath.NodeID(a.node)
+	entry := func(address string) *datapath.AddressEntries {
+		addr, err := netip.ParseAddr(address)
+		if err != nil || h.pending[addr] {
+			return nil
+		}
+		if e := h.addrs[addr]; e != nil && !e.Held {
+			if e.Slices == nil {
+				e.Slices, e.Reserved, e.Services = map[uint16]uint64{}, map[datapath.PortKey]uint64{}, map[datapath.PortKey]bool{}
+			}
+			return e
+		}
+		return nil
+	}
+	for _, sl := range ns.Spec.Slices {
+		e := entry(sl.Address)
+		if e == nil || sl.SliceSize <= 0 {
+			continue
+		}
+		if size := uint32(sl.SliceSize); e.SliceSize != 0 && e.SliceSize != size {
+			logging.Info(a.logger, "op", "egressHold", "node", a.node, "address", sl.Address,
+				"msg", "this node's slices of the address differ in size; using the first")
+			continue
+		}
+		e.SliceSize, e.Base = uint32(sl.SliceSize), egress.FirstSlicePort
+		if sl.Identity != "" {
+			e.WholeOwner = self
+		}
+		e.Slices[uint16(sl.Index)] = self
+	}
+	for _, r := range ns.Spec.Reserved {
+		if e := entry(r.Address); e != nil && e.SliceSize != 0 {
+			e.Reserved[datapath.PortKey{Proto: protoNumber(r.Protocol), Port: uint16(r.Port)}] = self
+		}
+	}
 }
 
 // holds reports whether this node holds egress address ea of group g

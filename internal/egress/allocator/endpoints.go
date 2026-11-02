@@ -200,11 +200,14 @@ func (r *Reconciler) syncEndpoints(run *run, addrs []address) map[string]*purelb
 
 // planAddress plans one address's slices: one for each node with selected
 // pods and each node claiming one, within the node's slot budget. A PerPod
-// address has none: its node gets the whole address.
+// address has one, index 0, on its pod's node: the whole address.
 func (r *Reconciler) planAddress(run *run, a address, ee string, size int32, cur []purelbv2.EgressSlice,
 	freed map[int32]bool, added map[string]int) []purelbv2.EgressSlice {
+	slotOK := func(n string) bool {
+		return r.slotsUsed(n)+added[n] < r.slotLimit(n, run.p.ref.Kind)
+	}
 	if a.identity != "" {
-		return nil
+		return r.account(run, a, size, nil, cur, planPerPod(cur, perPodNode(run, a.identity), freed, slotOK), added)
 	}
 	want := map[string]bool{}
 	for n := range run.sel.nodes {
@@ -222,14 +225,19 @@ func (r *Reconciler) planAddress(run *run, a address, ee string, size int32, cur
 			ports = append(ports, rp.Port)
 		}
 	}
+	plan := planSlices(sliceInput{size: size, current: cur, want: want, ports: ports, reserve: reserveSlices(run),
+		freed: freed, slotOK: slotOK})
+	return r.account(run, a, size, ports, cur, plan, added)
+}
+
+// account counts the slots plan takes in added and reports what it
+// couldn't place.
+func (r *Reconciler) account(run *run, a address, size int32, ports []int32, cur []purelbv2.EgressSlice,
+	plan slicePlan, added map[string]int) []purelbv2.EgressSlice {
 	before := map[int32]string{} // index -> node
 	for _, s := range cur {
 		before[s.Index] = s.Node
 	}
-	plan := planSlices(sliceInput{size: size, current: cur, want: want, ports: ports, reserve: reserveSlices(run),
-		freed: freed, slotOK: func(n string) bool {
-			return r.slotsUsed(n)+added[n] < r.slotLimit(n, run.p.ref.Kind)
-		}})
 	for _, s := range plan.slices {
 		if n, ok := before[s.Index]; s.Node != "" && (!ok || n != s.Node) {
 			added[s.Node]++

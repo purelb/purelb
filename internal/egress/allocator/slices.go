@@ -229,3 +229,48 @@ func sliceCapacity(size int32, ports []int32, slices []purelbv2.EgressSlice) int
 	}
 	return n
 }
+
+// perPodIndex is a PerPod address's one slice: the whole address, below
+// every port slice's range.
+const perPodIndex = 0
+
+// planPerPod plans a PerPod address's one slice: its pod's node (node, ""
+// when no selected pod has the identity) holds the whole address (§7.6,
+// D4). When the pod moves or goes, its old node's slice drains first, and
+// the new node gets it once freed, so the address is never on two nodes'
+// pods at once. The states follow planSlices.
+func planPerPod(current []purelbv2.EgressSlice, node string, freed map[int32]bool, slotOK func(string) bool) slicePlan {
+	for _, s := range current {
+		if s.Index != perPodIndex || freed[s.Index] || s.Node == "" {
+			continue
+		}
+		switch {
+		case s.Node == node && s.State == sliceDraining:
+			s.State = sliceActive // the pod returned
+		case s.Node != node && s.State == slicePending:
+			continue // never activated: no flows
+		case s.Node != node && s.State == sliceActive:
+			s.State = sliceDraining
+		}
+		return slicePlan{slices: []purelbv2.EgressSlice{s}}
+	}
+	switch {
+	case node == "":
+		return slicePlan{}
+	case slotOK != nil && !slotOK(node):
+		return slicePlan{overBudget: []string{node}}
+	}
+	return slicePlan{slices: []purelbv2.EgressSlice{{Index: perPodIndex, Node: node, State: slicePending}}}
+}
+
+// perPodNode is the node of the selected pod with identity, or "".
+func perPodNode(run *run, identity string) string {
+	for n, ms := range run.sel.nodes {
+		for _, m := range ms {
+			if m.identity == identity {
+				return n
+			}
+		}
+	}
+	return ""
+}

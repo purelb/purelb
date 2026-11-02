@@ -17,11 +17,14 @@ package datapath
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/cilium/ebpf"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -50,9 +53,11 @@ type PoolStatus struct {
 
 // SyncPoolTables makes the tables 7900-7963 exactly the mirrors of the
 // pool interfaces in pools (ifindex: n): each holds the main table's
-// routes out of its interface, both families; every other table in the
-// range is emptied. It reports each interface's gateways.
-func SyncPoolTables(h *netlink.Handle, pools map[int]uint32) (map[int]PoolStatus, error) {
+// routes out of its interface, both families, and a throw for each of
+// throws the mirror doesn't route itself, so a direct-path reply to a pod
+// (its mark routes it here, design 6.3) leaves for main; every other
+// table in the range is emptied. It reports each interface's gateways.
+func SyncPoolTables(h *netlink.Handle, pools map[int]uint32, throws []netip.Prefix) (map[int]PoolStatus, error) {
 	status := map[int]PoolStatus{}
 	byTable := map[int]int{}
 	for ifindex, n := range pools {
@@ -92,6 +97,27 @@ func SyncPoolTables(h *netlink.Handle, pools map[int]uint32) (map[int]PoolStatus
 				}
 			case r.Table >= PoolTableBase && r.Table < PoolTableBase+MaxPoolInterfaces:
 				have[r.Table] = append(have[r.Table], r)
+			}
+		}
+		for table := range byTable {
+			mirrored := map[string]bool{}
+			for _, m := range want[table] {
+				if m.Dst != nil {
+					mirrored[m.Dst.String()] = true
+				}
+			}
+			for _, p := range throws {
+				if p.Addr().Is4() != (fam == netlink.FAMILY_V4) || mirrored[ipNet(p.Masked()).String()] {
+					continue
+				}
+				mirrored[ipNet(p.Masked()).String()] = true
+				// IPv6 routes come back with the kernel's default metric.
+				prio := 0
+				if fam == netlink.FAMILY_V6 {
+					prio = 1024
+				}
+				want[table] = append(want[table], netlink.Route{Dst: ipNet(p.Masked()), Table: table,
+					Type: unix.RTN_THROW, Family: fam, Priority: prio})
 			}
 		}
 		for table, routes := range have {
@@ -157,17 +183,21 @@ func isDefault(r netlink.Route) bool {
 	return ones == 0
 }
 
-// routeKey identifies a route by what a mirror copies.
+// routeKey identifies a route by what a mirror copies. The kernel puts
+// an IPv6 throw route on lo: a throw's device doesn't count.
 func routeKey(r netlink.Route) string {
 	dst := "default"
 	if r.Dst != nil && !isDefault(r) {
 		dst = r.Dst.String()
 	}
+	if r.Type == unix.RTN_THROW {
+		return fmt.Sprintf("%d throw %s prio=%d", r.Family, dst, r.Priority)
+	}
 	hops := []string{fmt.Sprintf("%d/%s", r.LinkIndex, r.Gw)}
 	for _, nh := range r.MultiPath {
 		hops = append(hops, fmt.Sprintf("%d/%s", nh.LinkIndex, nh.Gw))
 	}
-	return fmt.Sprintf("%d %s %s src=%s prio=%d mtu=%d", r.Family, dst, strings.Join(hops, ","), r.Src, r.Priority, r.MTU)
+	return fmt.Sprintf("%d %d %s %s src=%s prio=%d mtu=%d", r.Family, r.Type, dst, strings.Join(hops, ","), r.Src, r.Priority, r.MTU)
 }
 
 // ArpAnnounce is the arp_announce in effect on an interface: the larger
@@ -200,4 +230,21 @@ func (o *Objects) RecoverPoolInterfaces() (map[int]uint32, error) {
 		pools[int(ifindex)] = v.N
 	}
 	return pools, it.Err()
+}
+
+// PinnedPoolInterfaces reads the pool interface numbering from the map
+// pinned in pinDir, as an earlier agent left it; none when there is no
+// such map.
+func PinnedPoolInterfaces(pinDir string) (map[int]uint32, error) {
+	m, err := ebpf.LoadPinnedMap(filepath.Join(pinDir, "pool_ifs"), &ebpf.LoadPinOptions{ReadOnly: true})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer m.Close()
+	o := &Objects{}
+	o.PoolIfs = m
+	return o.RecoverPoolInterfaces()
 }
