@@ -2,7 +2,8 @@
 # enabled) so they stay attached across agent restarts and upgrades (D12).
 # The node's /sys/fs/bpf/purelb is mounted over the container's /sys/fs/bpf:
 # the container's /sys is sysfs, where the runtime can't create a
-# /sys/fs/bpf/purelb mount point.
+# /sys/fs/bpf/purelb mount point. /run/purelb holds the socket the CNI
+# plugin calls the agent on (design 8.1).
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -16,8 +17,14 @@ spec:
         hostPath:
           path: /sys/fs/bpf/purelb
           type: DirectoryOrCreate
+      - name: run-purelb
+        hostPath:
+          path: /run/purelb
+          type: DirectoryOrCreate
       containers:
       - name: lbnodeagent
         volumeMounts:
         - name: bpf-pins
           mountPath: /sys/fs/bpf
+        - name: run-purelb
+          mountPath: /run/purelb

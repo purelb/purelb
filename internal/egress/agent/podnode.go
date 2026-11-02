@@ -65,6 +65,9 @@ type podState struct {
 	// hold: a FailClosed policy selects it and its slot isn't Active yet,
 	// so its traffic outside the cluster is dropped (§8.1).
 	hold bool
+	// selected: an in-force policy selects it; pending: one of those has
+	// no slot it may use yet, which a CNI ADD waits for (§8.1).
+	selected, pending bool
 }
 
 // podNode is the pod-node stage's desired state: slots and pod-set ids
@@ -85,6 +88,12 @@ type podNode struct {
 	// generation is the EgressNodeState spec generation it was planned
 	// from.
 	generation int64
+	// claims are the EgressEndpoints this node asks a slice of: a policy
+	// selects a pod here and the node has none of its slices (D17).
+	claims []string
+	// failClosedNS are the namespaces a FailClosed policy covers: a pod
+	// there that isn't known yet may be one it selects (§8.1).
+	failClosedNS map[string]bool
 }
 
 // used is how many mark values the node holds.
@@ -142,6 +151,12 @@ type pnInput struct {
 	reservedCluster int
 	// inUse reports whether conntrack still carries a retired id.
 	inUse func(uint8) bool
+	// ips are pods' addresses from their CNI ADD, in place of their
+	// status's, which the API has only once ADD returns; ended the pods
+	// whose sandbox was deleted (CNI DEL) with none since. By
+	// namespace/name.
+	ips   map[string][]netip.Addr
+	ended map[string]bool
 }
 
 // planPodNode computes the pod-node state from in, keeping prev's ids for
@@ -149,7 +164,8 @@ type pnInput struct {
 // pod-set.
 func planPodNode(in pnInput, prev *podNode) *podNode {
 	pn := &podNode{slots: map[uint8]slot{}, slotIDs: map[slotKey]uint8{}, sets: map[uint8]podSet{},
-		setIDs: map[string]uint8{}, pods: map[string]podState{}, retired: map[uint8]bool{}, generation: in.generation}
+		setIDs: map[string]uint8{}, pods: map[string]podState{}, retired: map[uint8]bool{}, generation: in.generation,
+		failClosedNS: map[string]bool{}}
 	if prev == nil {
 		prev = &podNode{}
 	}
@@ -179,12 +195,20 @@ func planPodNode(in pnInput, prev *podNode) *podNode {
 	sort.Slice(policies, func(i, j int) bool { return egress.Before(policies[i].rank, policies[j].rank) })
 	wantSets := map[string]podSet{}
 	podSetKey := map[string]string{}
+	claim := map[egress.PolicyRef]bool{}
 	for _, pod := range in.pods {
-		if !egress.Live(pod) || pod.Spec.HostNetwork {
+		name := pod.Namespace + "/" + pod.Name
+		if !onNode(pod) || pod.Spec.HostNetwork || in.ended[name] {
 			continue
 		}
-		name := pod.Namespace + "/" + pod.Name
 		st := podState{ips: podIPs(pod)}
+		if ips, ok := in.ips[name]; ok {
+			st.ips = ips
+		}
+		// A terminating pod keeps its pod-set and slots until its CNI DEL
+		// (§8.2): its slice may be Draining by then, the allocator having
+		// let it go, and still carries its flows.
+		terminating := pod.DeletionTimestamp != nil
 		var parts, ids []string
 		var refs []egress.PolicyRef
 		reserved := ""
@@ -198,10 +222,16 @@ func planPodNode(in pnInput, prev *podNode) *podNode {
 				if s.identity != "" && s.identity != p.identity(pod) {
 					continue // another PerPod pod's address
 				}
-				ready = ready || s.state == "Active"
+				ready = ready || s.state == "Active" || (terminating && s.state == "Draining")
 			}
-			if !ready && p.failClosed() {
-				st.hold = true
+			if !ready {
+				st.pending = true
+				if p.failClosed() {
+					st.hold = true
+				}
+			}
+			if len(slotsOf[p.ref]) == 0 && !p.perPod() && !terminating {
+				claim[p.ref] = true
 			}
 			part, id := p.ref.String(), ""
 			if p.perPod() {
@@ -216,6 +246,7 @@ func planPodNode(in pnInput, prev *podNode) *podNode {
 			ids = append(ids, id)
 		}
 		if len(parts) > 0 {
+			st.selected = true
 			key := strings.Join(parts, ",")
 			if reserved != "" {
 				key += "|" + reserved
@@ -313,7 +344,25 @@ func planPodNode(in pnInput, prev *podNode) *podNode {
 	failClosed := map[egress.PolicyRef]bool{}
 	for _, p := range policies {
 		failClosed[p.ref] = p.failClosed()
+		if claim[p.ref] {
+			for _, addr := range p.addrs {
+				pn.claims = append(pn.claims, egress.EndpointsName(p.ref, addr))
+			}
+		}
+		if !p.failClosed() {
+			continue
+		}
+		if p.ref.Kind != egress.KindClusterEgress {
+			pn.failClosedNS[p.ref.Namespace] = true
+			continue
+		}
+		for name, ns := range in.namespaces {
+			if p.coversNamespace(ns, in) {
+				pn.failClosedNS[name] = true
+			}
+		}
 	}
+	sort.Strings(pn.claims)
 	for name, key := range podSetKey {
 		st := pn.pods[name]
 		st.podSet = pn.setIDs[key]
@@ -335,8 +384,7 @@ func (p *pnPolicy) selects(pod *corev1.Pod, in pnInput) bool {
 	switch p.ref.Kind {
 	case egress.KindClusterEgress:
 		ns, ok := in.namespaces[pod.Namespace]
-		if !ok || !p.namespaces.Matches(labels.Set(ns.Labels)) ||
-			!egress.NamespaceInScope(ns, p.admittedOnly, p.group, p.sg, in.bindings) {
+		if !ok || !p.coversNamespace(ns, in) {
 			return false
 		}
 	default:
@@ -345,6 +393,18 @@ func (p *pnPolicy) selects(pod *corev1.Pod, in pnInput) bool {
 		}
 	}
 	return p.pods.Matches(labels.Set(pod.Labels)) && egress.PodExcluded(pod, p.optOut, p.perPod()) == ""
+}
+
+// coversNamespace reports whether ClusterEgress p selects pods from ns.
+func (p *pnPolicy) coversNamespace(ns *corev1.Namespace, in pnInput) bool {
+	return p.namespaces.Matches(labels.Set(ns.Labels)) &&
+		egress.NamespaceInScope(ns, p.admittedOnly, p.group, p.sg, in.bindings)
+}
+
+// onNode reports whether pod is on its node and not finished. Unlike
+// egress.Live a terminating pod counts, until its CNI DEL (§8.2).
+func onNode(pod *corev1.Pod) bool {
+	return pod.Spec.NodeName != "" && pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed
 }
 
 // podIPs are a pod's addresses.

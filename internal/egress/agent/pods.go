@@ -182,6 +182,7 @@ func (a *Agent) syncPods() {
 		a.podsWant, a.stageWant = pods, stage
 		a.add(keyDatapath, false)
 	}
+	a.add(keyCNI, false) // ADDs of pods that need nothing installed
 }
 
 // podNodeInput gathers planPodNode's input from the session's caches.
@@ -204,6 +205,7 @@ func (a *Agent) podNodeInput(s *session) pnInput {
 			in.pods = append(in.pods, pod)
 		}
 	}
+	in.ips, in.ended = a.sandboxInput(in.pods)
 	for _, o := range s.namespaces.List() {
 		ns := o.(*corev1.Namespace)
 		in.namespaces[ns.Name] = ns

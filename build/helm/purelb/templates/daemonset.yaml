@@ -110,10 +110,13 @@ spec:
         {{- if .Values.egress.enabled }}
         # The node's /sys/fs/bpf/purelb over /sys/fs/bpf, for pinning (D12):
         # the container's /sys is sysfs, where the runtime can't create a
-        # /sys/fs/bpf/purelb mount point.
+        # /sys/fs/bpf/purelb mount point. /run/purelb holds the socket the CNI
+        # plugin calls the agent on (design 8.1).
         volumeMounts:
         - name: bpf-pins
           mountPath: /sys/fs/bpf
+        - name: run-purelb
+          mountPath: /run/purelb
         {{- end }}
         {{- if .Values.gobgp.enabled }}
       - name: k8gobgp
@@ -239,6 +242,10 @@ spec:
       - name: bpf-pins
         hostPath:
           path: /sys/fs/bpf/purelb
+          type: DirectoryOrCreate
+      - name: run-purelb
+        hostPath:
+          path: /run/purelb
           type: DirectoryOrCreate
       {{- end }}
       {{- end }}

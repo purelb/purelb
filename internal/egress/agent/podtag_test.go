@@ -213,6 +213,10 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	assert.Len(t, devs, 1, "a pod with no device yet has no entry")
 	assert.Equal(t, uint8(3), devs[veth].PodSet)
 	assert.True(t, devs[veth].Hold)
+	// What a CNI ADD may count on (§8.1): both of the pod's addresses,
+	// entry and program in place; not the pod with no device.
+	held := datapath.PodDev{V4: pod4, V6: pod6, PodSet: 3, Hold: true}
+	assert.Equal(t, map[netip.Addr]datapath.PodDev{pod4: held, pod6: held}, a.dp.tagged)
 	cluster, err := a.dp.objs.ClusterNetworks()
 	require.NoError(t, err)
 	assert.Contains(t, cluster, netip.MustParsePrefix("10.96.0.0/12"), "from the API")
@@ -466,6 +470,18 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	devs, err = c.dp.objs.RecoverPodDevs()
 	require.NoError(t, err)
 	assert.Empty(t, devs)
+
+	// The pod's device deleted while the pod is still planned (its
+	// sandbox torn down during termination, without the plugin's DEL):
+	// its link goes, and a CNI ADD no longer counts it tagged.
+	w.pods = []dpPod{{name: "voice/a", v4: pod4, v6: pod6, podSet: 3}}
+	apply(t, c, w)
+	require.Contains(t, c.dp.tagged, pod4)
+	require.NoError(t, netlink.LinkDel(&netlink.Veth{LinkAttrs: netlink.LinkAttrs{Index: veth}}))
+	apply(t, c, w)
+	assert.NotContains(t, c.dp.links, "pl_pod_tag-vpod0")
+	assert.Empty(t, c.dp.tagged)
+	assert.False(t, pinned())
 	closeAgent(c)
 }
 

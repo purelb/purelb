@@ -17,6 +17,7 @@ package agent
 import (
 	"context"
 	"net/netip"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -78,11 +79,21 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	}
 	purelb := purelbfake.NewSimpleClientset(purelbObjs...)
 	a := New(log.NewNopLogger(), testNode, "purelb-system")
+	a.sockPath = filepath.Join(t.TempDir(), "egress.sock")
 	a.SetElection(&fakeElector{}) // the agent always runs with one
 	a.statusInterval = 50 * time.Millisecond
 	wants := make(chan dpWant, 100)
 	a.apply = func(w dpWant) (*purelbv2.EgressCapability, error) {
 		wants <- w
+		// Every pod's device tagged as wanted, as the kernel's would be.
+		a.dp.tagged = map[netip.Addr]datapath.PodDev{}
+		for _, p := range w.pods {
+			for _, ip := range []netip.Addr{p.v4, p.v6} {
+				if ip.IsValid() {
+					a.dp.tagged[ip] = datapath.PodDev{V4: p.v4, V6: p.v6, PodSet: p.podSet, Hold: p.hold}
+				}
+			}
+		}
 		c := probeCapability(w.spec)
 		c.TunnelEncapsulation = "L3"
 		return c, nil
@@ -254,6 +265,38 @@ func TestStatusWriterDebounce(t *testing.T) {
 	w.set(&purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{Kernel: "t"}})
 	time.Sleep(500 * time.Millisecond)
 	assert.Equal(t, n, patches(), "an unchanged status is not rewritten")
+}
+
+// A status adding a claim is written at once, not after the interval
+// (D6); one leaving egress off drops its claims.
+func TestStatusWriterClaimNow(t *testing.T) {
+	purelb := purelbfake.NewSimpleClientset(&purelbv2.EgressNodeState{ObjectMeta: metav1.ObjectMeta{Name: testNode}})
+	w := newStatusWriter(log.NewNopLogger(), testNode, kubefake.NewSimpleClientset(testNodeObj), purelb)
+	w.interval = time.Hour
+	stop := make(chan struct{})
+	defer close(stop)
+	go w.run(stop)
+	claims := func() []purelbv2.EgressClaim {
+		ens, _ := purelb.PurelbV2().EgressNodeStates().Get(context.Background(), testNode, metav1.GetOptions{})
+		return ens.Status.Claims
+	}
+	capable := &purelbv2.EgressCapability{EgressCapable: true}
+	w.set(&purelbv2.EgressNodeStateStatus{Capability: capable}) // the first write goes at once
+	require.Eventually(t, func() bool { return len(purelb.Actions()) > 0 }, 5*time.Second, 10*time.Millisecond)
+	w.set(&purelbv2.EgressNodeStateStatus{Capability: capable, Claims: []purelbv2.EgressClaim{{Endpoints: "e-1"}}})
+	time.Sleep(200 * time.Millisecond)
+	assert.Empty(t, claims(), "set waits out the interval")
+	w.setNow(&purelbv2.EgressNodeStateStatus{Capability: capable, Claims: []purelbv2.EgressClaim{{Endpoints: "e-2"}}})
+	require.Eventually(t, func() bool { c := claims(); return len(c) == 1 && c[0].Endpoints == "e-2" },
+		5*time.Second, 10*time.Millisecond)
+
+	// Egress off claims nothing.
+	purelb = purelbfake.NewSimpleClientset(&purelbv2.EgressNodeState{ObjectMeta: metav1.ObjectMeta{Name: testNode},
+		Status: purelbv2.EgressNodeStateStatus{Capability: capable, Claims: []purelbv2.EgressClaim{{Endpoints: "e-2"}}}})
+	w = newStatusWriter(log.NewNopLogger(), testNode, kubefake.NewSimpleClientset(testNodeObj), purelb)
+	w.disable()
+	require.NoError(t, w.write())
+	assert.Empty(t, claims())
 }
 
 // A failed write is retried.

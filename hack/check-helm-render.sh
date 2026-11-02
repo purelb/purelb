@@ -168,8 +168,11 @@ for gobgp in true false; do
 	out=$(render daemonset.yaml --set gobgp.enabled=$gobgp | pins)
 	expect "egress (gobgp=$gobgp): pin directory hostPath" "^volume bpf-pins /sys/fs/bpf/purelb$" "$out"
 	expect "egress (gobgp=$gobgp): mounted over /sys/fs/bpf" "^mount lbnodeagent bpf-pins /sys/fs/bpf$" "$out"
+	expect "egress (gobgp=$gobgp): CNI socket hostPath" "^volume run-purelb /run/purelb$" "$out"
+	expect "egress (gobgp=$gobgp): CNI socket mounted" "^mount lbnodeagent run-purelb /run/purelb$" "$out"
 	out=$(render daemonset.yaml --set gobgp.enabled=$gobgp --set egress.enabled=false | pins)
 	refuse "no egress (gobgp=$gobgp): no pin directory" "bpf-pins" "$out"
+	refuse "no egress (gobgp=$gobgp): no CNI socket directory" "run-purelb" "$out"
 done
 
 # The Lease FlowSchema is core: it renders whatever egress and gobgp say,

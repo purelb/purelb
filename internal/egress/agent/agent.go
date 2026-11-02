@@ -22,6 +22,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +38,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"purelb.io/internal/bpfpin"
+	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/egress/datapath"
 	"purelb.io/internal/egresshook"
 	"purelb.io/internal/logging"
@@ -167,10 +169,11 @@ type Agent struct {
 	flowView atomic.Pointer[flowView]
 	markByte atomic.Uint32
 
-	// faults are this node's address problems and conds its conditions,
-	// as last reported. Queue goroutine only.
-	faults map[netip.Addr]purelbv2.EgressAddressFault
-	conds  []metav1.Condition
+	// faults are this node's address problems, conds its conditions and
+	// claimed its claims, as last reported. Queue goroutine only.
+	faults  map[netip.Addr]purelbv2.EgressAddressFault
+	conds   []metav1.Condition
+	claimed []string
 	// health is what the datapath last found. Written by the datapath
 	// goroutine.
 	health atomic.Pointer[dpHealth]
@@ -178,6 +181,19 @@ type Agent struct {
 	// sends one probe (tests replace it).
 	probing   atomic.Pointer[map[netip.Addr]probeTarget]
 	sendProbe func(from, to netip.Addr, port int, pkt []byte) error
+
+	// sockPath is the CNI plugin's socket and cniHold ADD's longest wait
+	// (tests use their own);
+	// sandboxes are the pod sandboxes the plugin reported, by container
+	// id, and waiters its ADDs waiting for their pods (§8.1). Stored by
+	// the socket's goroutines, read and pruned by the queue goroutine.
+	sockPath  string
+	cniHold   time.Duration
+	sandboxes sync.Map // string: *cniSandbox
+	waiters   sync.Map // string: *waiter
+	// tagged are the pod devices the datapath last installed, by pod
+	// address. Written by the datapath goroutine.
+	tagged atomic.Pointer[map[netip.Addr]datapath.PodDev]
 
 	now func() time.Time
 	// statusInterval is the status writer's interval; tests shorten it.
@@ -228,7 +244,8 @@ func New(logger log.Logger, node, namespace string) *Agent {
 		guarded: map[netip.Addr]bool{}, services: map[netip.Addr]map[string]bool{},
 		placements: map[netip.Addr]map[string]egresshook.ServicePlacement{},
 		placed:     map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
-		sendProbe: sendUDPProbe, tableSlots: tableSlots}
+		sendProbe: sendUDPProbe, tableSlots: tableSlots, sockPath: cnisock.DefaultPath,
+		cniHold: cniHold}
 	a.apply, a.tear = a.applyDatapath, a.teardown
 	return a
 }
@@ -321,6 +338,8 @@ func (a *Agent) Sync(key string) error {
 		a.syncDatapath()
 	case keyTeardown:
 		a.syncTeardown()
+	case keyCNI:
+		a.syncCNI()
 	}
 	return nil
 }
@@ -453,6 +472,7 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	go watchRules(a.logger, s.stop, kick)
 	go watchAddrs(a.logger, s.stop, a.placedAddrs, func(addr netip.Addr) { a.dadLost.Store(addr, true) }, kick)
 	go a.runProbes(s)
+	go a.serveCNI(s)
 	go func() {
 		t := time.NewTicker(reconcileInterval)
 		defer t.Stop()
@@ -514,8 +534,9 @@ func (a *Agent) stopSession() {
 	}
 	a.guarded = map[netip.Addr]bool{}
 	a.withdrawPlaced("egress disabled")
-	a.shared, a.faults, a.conds, a.podnode, a.podsWant, a.stageWant = nil, nil, nil, nil, nil, nil
+	a.shared, a.faults, a.conds, a.podnode, a.podsWant, a.stageWant, a.claimed = nil, nil, nil, nil, nil, nil, nil
 	a.installed.Store(nil)
+	a.tagged.Store(nil)
 	a.probing.Store(nil)
 	a.acks.Store(nil)
 	a.specAck.Store(0)
@@ -537,12 +558,17 @@ func (a *Agent) syncNode() {
 	c = c.DeepCopy()
 	c.Underlay = underlay(s.nodes, a.node)
 	c.Slots = &purelbv2.EgressSlots{Capacity: slotBudget}
+	var claims []string
 	if pn := a.podnode; pn != nil {
 		c.Slots.Used, c.Slots.PodSets = int32(pn.used()), int32(len(pn.sets))
+		claims = pn.claims
 	}
 	h := a.health.Load()
 	st := &purelbv2.EgressNodeStateStatus{Capability: c, AddressFaults: a.faultList(h),
 		Conditions: a.nodeConditions(c, h, a.podnode), ObservedGeneration: a.specAck.Load()}
+	for _, ee := range claims {
+		st.Claims = append(st.Claims, purelbv2.EgressClaim{Endpoints: ee})
+	}
 	if d := a.drained.Load(); d != nil {
 		// Only slices Draining now: a report the datapath made before the
 		// slice changed is stale.
@@ -570,7 +596,13 @@ func (a *Agent) syncNode() {
 			}
 		}
 	}
-	a.status.set(st)
+	// A new claim is written at once (D6), acks at most once a second.
+	if slices.ContainsFunc(claims, func(ee string) bool { return !slices.Contains(a.claimed, ee) }) {
+		a.status.setNow(st)
+	} else {
+		a.status.set(st)
+	}
+	a.claimed = claims
 }
 
 // underlay is the node's InternalIPs, one per family (D3).

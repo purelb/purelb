@@ -231,10 +231,15 @@ func (a *Agent) syncPodDevs(st *dpState, w dpWant) error {
 	if err != nil {
 		return fmt.Errorf("reading the pod devices: %w", err)
 	}
+	set := map[int]bool{}
 	for ifindex, e := range want {
 		if have[ifindex] != e.pd {
-			errs = append(errs, st.objs.SetPodDev(ifindex, e.pd))
+			if err := st.objs.SetPodDev(ifindex, e.pd); err != nil {
+				errs = append(errs, err)
+				continue
+			}
 		}
+		set[ifindex] = true
 	}
 	for ifindex := range have {
 		if _, ok := want[ifindex]; !ok {
@@ -283,6 +288,17 @@ func (a *Agent) syncPodDevs(st *dpState, w dpWant) error {
 			return ok
 		}); err != nil {
 			errs = append(errs, err)
+		}
+	}
+	// What a CNI ADD may count on: the device's entry and its program.
+	st.tagged = map[netip.Addr]datapath.PodDev{}
+	for ifindex, e := range want {
+		if _, ok := st.links[podTagPrefix+e.dev.Name]; ok && set[ifindex] {
+			for _, ip := range []netip.Addr{e.pd.V4, e.pd.V6} {
+				if ip.IsValid() {
+					st.tagged[ip] = e.pd
+				}
+			}
 		}
 	}
 	if !maps.Equal(skipped, st.netkit) {

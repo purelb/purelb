@@ -135,6 +135,9 @@ type dpState struct {
 	addrs map[netip.Addr]*datapath.AddressEntries
 	// netkit are the netkit pod devices pl_pod_tag skips, as last logged.
 	netkit map[string]bool
+	// tagged are the pod devices last installed whole, entry and program,
+	// by pod address: what a CNI ADD may count on (§8.1).
+	tagged map[netip.Addr]datapath.PodDev
 	// podIPs are the pods' addresses last applied; gone those of pods
 	// since gone whose flows aren't deleted yet.
 	podIPs map[netip.Addr]bool
@@ -238,6 +241,11 @@ func (a *Agent) syncDatapath() {
 				a.specAck.Store(w.specGen)
 			}
 			a.installedHeld(w)
+			if w.podsKnown {
+				tagged := maps.Clone(a.dp.tagged)
+				a.tagged.Store(&tagged)
+				a.add(keyCNI, false)
+			}
 		}
 		a.capability.Store(c)
 		a.add(keyNode, false)
@@ -359,8 +367,14 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	for name, l := range st.links {
 		// Detached by something else: attached again below.
 		if info, err := l.Info(); err != nil || info.TCX() == nil || int(info.TCX().Ifindex) != st.linkIfs[name] {
-			logging.Info(a.logger, "op", "egressDatapath", "node", a.node, "link", name,
-				"msg", "a datapath link was detached outside the agent; attaching it again")
+			if _, err := st.nl.LinkByIndex(st.linkIfs[name]); err != nil {
+				// Its device is gone: a pod's, once its sandbox is torn
+				// down while the pod is still known.
+				logging.Debug(a.logger, "op", "egressDatapath", "node", a.node, "link", name, "msg", "its device is gone")
+			} else {
+				logging.Info(a.logger, "op", "egressDatapath", "node", a.node, "link", name,
+					"msg", "a datapath link was detached outside the agent; attaching it again")
+			}
 			_ = l.Close()
 			delete(st.links, name)
 			delete(st.linkIfs, name)
