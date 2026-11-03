@@ -296,7 +296,13 @@ func TestCNISocket(t *testing.T) {
 		5*time.Second, 20*time.Millisecond)
 	assert.Zero(t, testutil.ToFloat64(snapshotAge), "egress off")
 	assert.Zero(t, testutil.ToFloat64(cniUnrecorded), "egress off")
-	// The snapshot stays: the plugin may still be in the chain.
-	_, err = cnisock.ReadSnapshot(f.a.snapPath)
+	// The installer is asked to remove the plugin (D26); none answers
+	// here, so the snapshot stays, passing every pod.
+	d, err = cnisock.ReadDesired(f.a.desiredPath)
 	require.NoError(t, err)
+	assert.False(t, d.Enabled)
+	snap, err = cnisock.ReadSnapshot(f.a.snapPath)
+	require.NoError(t, err)
+	assert.Empty(t, snap.Pods)
+	assert.Empty(t, snap.FailClosedNamespaces)
 }

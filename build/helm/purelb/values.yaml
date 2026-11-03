@@ -306,6 +306,12 @@ allocator:
 # first). Only for emergencies: older CRDs reject or drop new fields.
 skipCRDVersionCheck: false
 
+# Fail an upgrade to a release older than the one that programmed egress
+# on any node (EgressNodeState status.programmed): disable egress first
+# (egress.enabled false in every LBNodeAgent, and wait for the nodes to
+# report it torn down). Only for emergencies.
+skipEgressDowngradeCheck: false
+
 # Egress gives selected pods stable source addresses from PureLB pools.
 # Installed but idle: nothing happens on a node until an LBNodeAgent sets
 # spec.egress.enabled. Setting this false leaves the egress RBAC out; the
@@ -327,6 +333,11 @@ egress:
       requests:
         cpu: 5m
         memory: 40Mi
+  # The pre-delete hook disables egress on every node and waits this long
+  # for each to tear it down; a node that doesn't fails the uninstall,
+  # naming it. Keep it under helm uninstall's --timeout (5m by default).
+  uninstallHook:
+    timeout: 4m
 
 # k8gobgp sidecar — per-node BGP route announcement for remote VIPs.
 # When enabled, k8gobgp runs as a sidecar in the lbnodeagent DaemonSet pod.

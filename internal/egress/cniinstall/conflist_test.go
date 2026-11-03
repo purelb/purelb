@@ -70,6 +70,25 @@ func TestChainInsert(t *testing.T) {
 			i := c2.find("purelb-egress")
 			require.Equal(t, len(c2.plugins)-1, i, "last in the chain")
 			assert.Equal(t, entry, string(out[c2.plugins[i].start:c2.plugins[i].end]))
+			assert.Equal(t, tc.in, string(c2.remove(out, i)), "removal undoes it, byte for byte")
+		})
+	}
+}
+
+// Removing an entry anywhere in the chain leaves the rest as it was.
+func TestChainRemove(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"first", `{"plugins":[ ` + entry + ` , {"type":"a"},{"type":"b"}]}`, `{"plugins":[ {"type":"a"},{"type":"b"}]}`},
+		{"middle", `{"plugins":[{"type":"a"},` + "\n  " + entry + `,{"type":"b"}]}`, `{"plugins":[{"type":"a"},{"type":"b"}]}`},
+		{"last", `{"plugins":[{"type":"a"}, ` + entry + ` ]}`, `{"plugins":[{"type":"a"} ]}`},
+		{"alone", `{"plugins":[ ` + entry + ` ]}`, `{"plugins":[  ]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := parseChain([]byte(tc.in))
+			require.NoError(t, err)
+			out := c.remove([]byte(tc.in), c.find("purelb-egress"))
+			assert.Equal(t, tc.want, string(out))
+			assert.True(t, json.Valid(out))
 		})
 	}
 }

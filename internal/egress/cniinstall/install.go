@@ -65,11 +65,16 @@ type Installer struct {
 	Self string
 	now  func() time.Time
 
+	// removing is whether the agent wants the plugin removed (D26);
 	// lastWrite is when it last wrote the conflist, reverts when its
-	// writes were undone; stopped once a write war is found.
+	// writes were undone; stopped once a write war is found, until the
+	// agent's wish changes. retry wakes Run to look again (a removal's
+	// binary waits for the entry to stay out).
+	removing  bool
 	lastWrite time.Time
 	reverts   []time.Time
 	stopped   bool
+	retry     <-chan time.Time
 	// reported is the status last written, at reportedAt.
 	reported   cnisock.InstallerStatus
 	reportedAt time.Time
@@ -132,6 +137,7 @@ func (in *Installer) Run(stop <-chan struct{}) error {
 			return nil
 		case <-events:
 		case <-t.C:
+		case <-in.retry:
 		}
 		in.reconcile()
 	}
@@ -182,16 +188,33 @@ func missing(reason, msg string) cnisock.InstallerStatus {
 	return cnisock.InstallerStatus{Chain: cnisock.ChainMissing, Reason: reason, Message: msg}
 }
 
-// check makes one pass and says what it found.
+// check makes one pass and says what it found, and for which desired
+// state.
 func (in *Installer) check() cnisock.InstallerStatus {
 	d, err := cnisock.ReadDesired(in.DesiredPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return cnisock.InstallerStatus{Chain: cnisock.ChainOff, Message: "the agent's desired state is unreadable: " + err.Error()}
 	}
-	if err != nil || !d.Enabled {
-		// D-idle: nothing is written while the agent wants nothing.
+	if err != nil {
+		// D-idle: nothing is written while the agent never asked.
 		return cnisock.InstallerStatus{Chain: cnisock.ChainOff}
 	}
+	if removing := !d.Enabled; removing != in.removing {
+		// Reverts of the other kind of write say nothing about these.
+		in.removing, in.lastWrite, in.reverts, in.stopped = removing, time.Time{}, nil, false
+	}
+	var st cnisock.InstallerStatus
+	if d.Enabled {
+		st = in.install(d)
+	} else {
+		st = in.teardown()
+	}
+	st.DesiredWritten = d.Written
+	return st
+}
+
+// install keeps the plugin binary and its chain entry in place.
+func (in *Installer) install(d cnisock.Desired) cnisock.InstallerStatus {
 	if err := in.ensureBinary(); err != nil {
 		// Never chain a plugin the runtime can't find.
 		return missing(cnisock.ReasonFailed, "installing the plugin binary: "+err.Error())
@@ -228,20 +251,10 @@ func (in *Installer) chain(path string, entry []byte) cnisock.InstallerStatus {
 			" is rewritten without the plugin each time it is added; chain it through the CNI's own configuration")
 	}
 	now := in.now()
-	if !in.lastWrite.IsZero() && now.Sub(in.lastWrite) <= revertWithin {
-		// Its last write was undone at once: the CNI owns the file.
-		in.reverts = append(in.reverts, now)
-		for len(in.reverts) > 0 && now.Sub(in.reverts[0]) > warWindow {
-			in.reverts = in.reverts[1:]
-		}
-		logging.Debug(in.Logger, "op", "cniInstall", "conflist", path, "reverts", len(in.reverts),
-			"msg", "the chain entry was undone within a second of writing it")
-		if len(in.reverts) >= warReverts {
-			in.stopped = true
-			logging.Info(in.Logger, "op", "cniInstall", "conflist", path, "reverts", len(in.reverts), "window", warWindow.String(),
-				"msg", "write war: the CNI keeps rewriting its configuration without the plugin; no longer editing it (CNIChainMissing)")
-			return in.chain(path, entry)
-		}
+	if in.undone(path, now) {
+		logging.Info(in.Logger, "op", "cniInstall", "conflist", path, "reverts", len(in.reverts), "window", warWindow.String(),
+			"msg", "write war: the CNI keeps rewriting its configuration without the plugin; no longer editing it (CNIChainMissing)")
+		return in.chain(path, entry)
 	}
 	if err := writeFile(path, c.insert(b, entry)); err != nil {
 		return missing(cnisock.ReasonFailed, "writing "+filepath.Base(path)+": "+err.Error())
@@ -254,6 +267,87 @@ func (in *Installer) chain(path string, entry []byte) cnisock.InstallerStatus {
 	}
 	logging.Info(in.Logger, "op", "cniInstall", "conflist", path, "msg", msg)
 	return cnisock.InstallerStatus{Chain: cnisock.ChainPresent}
+}
+
+// undone notes, at now, that the conflist is back as it was before the
+// installer's last write, which the CNI undid if that write was within
+// revertWithin. It reports a write war found: warReverts undone within
+// warWindow stop the installer editing.
+func (in *Installer) undone(path string, now time.Time) bool {
+	if in.lastWrite.IsZero() || now.Sub(in.lastWrite) > revertWithin {
+		return false
+	}
+	in.reverts = append(in.reverts, now)
+	for len(in.reverts) > 0 && now.Sub(in.reverts[0]) > warWindow {
+		in.reverts = in.reverts[1:]
+	}
+	logging.Debug(in.Logger, "op", "cniInstall", "conflist", path, "reverts", len(in.reverts),
+		"msg", "the installer's last write was undone within a second")
+	if len(in.reverts) < warReverts {
+		return false
+	}
+	in.stopped = true
+	return true
+}
+
+// teardown removes the plugin from the CNI directories (D26): its entry
+// from the primary conflist, every other byte as the CNI wrote it, then
+// the binary once the entry has stayed out past revertWithin, so no chain
+// ever names a missing plugin. An entry the CNI puts back each time it is
+// removed is its own configuration's (Cilium's cni.configMap, §10.4): the
+// installer stops editing and keeps the binary that entry needs (user
+// decision 2026-11-03). Anything left reports the chain Present.
+func (in *Installer) teardown() cnisock.InstallerStatus {
+	st := cnisock.InstallerStatus{Chain: cnisock.ChainPresent}
+	path, err := primary(in.ConfDir)
+	if err != nil {
+		st.Reason, st.Message = cnisock.ReasonFailed, err.Error()
+		return st
+	}
+	now := in.now()
+	if path != "" {
+		st.Conflist = filepath.Base(path)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			st.Reason, st.Message = cnisock.ReasonFailed, err.Error()
+			return st
+		}
+		// A single-plugin .conf holds no entry of its.
+		if c, err := parseChain(b); err == nil {
+			if i := c.find(cnisock.PluginType); i >= 0 {
+				if in.stopped || in.undone(path, now) {
+					if in.reported.Reason != cnisock.ReasonCNIOwned {
+						logging.Info(in.Logger, "op", "cniInstall", "conflist", path,
+							"msg", "the CNI chains the plugin again each time it is removed: no longer editing it; the plugin binary stays")
+					}
+					st.Reason, st.Message = cnisock.ReasonCNIOwned, st.Conflist+
+						" chains the plugin again each time it is removed: remove it from the CNI's own configuration; the plugin binary stays until then"
+					return st
+				}
+				if err := writeFile(path, c.remove(b, i)); err != nil {
+					st.Reason, st.Message = cnisock.ReasonFailed, "writing "+st.Conflist+": "+err.Error()
+					return st
+				}
+				in.lastWrite = now
+				logging.Info(in.Logger, "op", "cniInstall", "conflist", path, "msg", "the plugin is unchained")
+			}
+		}
+	}
+	if !in.lastWrite.IsZero() && now.Sub(in.lastWrite) <= revertWithin {
+		// The removal may yet be undone: the binary waits.
+		in.retry = time.After(revertWithin - now.Sub(in.lastWrite) + 10*time.Millisecond)
+		st.Message = "unchained; the plugin binary goes once the entry stays out"
+		return st
+	}
+	dst := filepath.Join(in.BinDir, cnisock.PluginType)
+	if err := os.Remove(dst); err == nil {
+		logging.Info(in.Logger, "op", "cniInstall", "binary", dst, "msg", "plugin binary removed")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		st.Reason, st.Message = cnisock.ReasonFailed, "removing the plugin binary: "+err.Error()
+		return st
+	}
+	in.verified = nil
+	return cnisock.InstallerStatus{Chain: cnisock.ChainOff, Conflist: st.Conflist}
 }
 
 // ensureBinary installs Self as the plugin unless the installed one has
@@ -356,7 +450,8 @@ func writeFile(path string, b []byte) error {
 func (in *Installer) report(st cnisock.InstallerStatus) {
 	now := in.now()
 	changed := st.Chain != in.reported.Chain || st.Reason != in.reported.Reason ||
-		st.Message != in.reported.Message || st.Conflist != in.reported.Conflist
+		st.Message != in.reported.Message || st.Conflist != in.reported.Conflist ||
+		!st.DesiredWritten.Equal(in.reported.DesiredWritten)
 	if !changed && now.Sub(in.reportedAt) < cnisock.StatusRefresh {
 		return
 	}

@@ -1,0 +1,24 @@
+{{- /*
+Downgrade refusal (design 8.10, D26; user decision 2026-11-03): a node's
+egress state (pinned BPF objects, the CNI chain entry, the snapshot) is
+written by its agent's release, and an older release may not read or
+remove it. This fails an install or upgrade, before anything changes, when
+any node's EgressNodeState names a newer release in status.programmed.
+Only semver releases are compared (a branch build's isn't). It can't stop
+a downgrade to a release without this check, or a manifest install:
+disable egress first. lookup returns nothing without a cluster (helm
+template), so the check passes there.
+*/}}
+{{- if not .Values.skipEgressDowngradeCheck }}
+{{- $semver := "^v?[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$" }}
+{{- $chart := .Chart.AppVersion }}
+{{- if regexMatch $semver $chart }}
+{{- $states := lookup "purelb.io/v2" "EgressNodeState" "" "" }}
+{{- range $s := (($states | default dict).items | default list) }}
+{{- $p := (($s.status | default dict).programmed | default "") }}
+{{- if and (regexMatch $semver $p) (semverCompare (printf ">%s" ($chart | trimPrefix "v")) ($p | trimPrefix "v")) }}
+{{- fail (printf "node %s has egress programmed by release %s, newer than this chart's %s, which may not read or remove it. Disable egress first: set egress.enabled false in every LBNodeAgent and wait until no EgressNodeState has status.programmed (kubectl get egressnodestates -o custom-columns=NODE:.metadata.name,PROGRAMMED:.status.programmed). Set skipEgressDowngradeCheck=true to skip this check." $s.metadata.name $p $chart) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

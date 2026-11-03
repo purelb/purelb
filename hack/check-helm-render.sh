@@ -136,6 +136,10 @@ expect "egress: allocator binding by default" "^ClusterRoleBinding/.*:egress:all
 expect "egress: node-label admission policy by default" "^ValidatingAdmissionPolicy/.*-egress-node-label$" "$out"
 expect "egress: node-label admission policy bound" "^ValidatingAdmissionPolicyBinding/.*-egress-node-label$" "$out"
 expect "egress: purelb-cni installer by default" "^DaemonSet/purelb-cni$" "$out"
+expect "egress: uninstall hook Job by default" "^Job/.*-egress-uninstall$" "$out"
+expect "egress: uninstall hook ServiceAccount" "^ServiceAccount/.*-egress-uninstall$" "$out"
+expect "egress: uninstall hook ClusterRole" "^ClusterRole/.*-egress-uninstall$" "$out"
+expect "egress: uninstall hook binding" "^ClusterRoleBinding/.*-egress-uninstall$" "$out"
 out=$($HELM template t "$CHART" --kube-version 1.31.0 --set egress.enabled=false | kinds)
 refuse "egress: nothing egress with egress.enabled=false" "egress" "$out"
 refuse "egress: no purelb-cni with egress.enabled=false" "purelb-cni" "$out"
@@ -162,6 +166,24 @@ expect "purelb-cni: status writable" "^/run/purelb False$" "$ro"
 out=$(render egress-cni-daemonset.yaml)
 expect "purelb-cni: default conf dir" "path: /etc/cni/net.d$" "$out"
 expect "purelb-cni: default bin dir" "path: /opt/cni/bin$" "$out"
+
+# The egress pre-delete hook (D26): every object a pre-delete hook, gone
+# once it succeeds; the Job runs the hook subcommand once, with the
+# timeout from values, and its role only lists and patches.
+out=$(render egress-uninstall-hook.yaml --set egress.uninstallHook.timeout=9m)
+hooks=$(python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d:
+        a = d["metadata"]["annotations"]
+        print(d["kind"], a["helm.sh/hook"], a["helm.sh/hook-delete-policy"])' <<<"$out")
+for k in ServiceAccount ClusterRole ClusterRoleBinding Job; do
+	expect "uninstall hook: $k is pre-delete" "^$k pre-delete before-hook-creation,hook-succeeded$" "$hooks"
+done
+expect "uninstall hook: runs egress-uninstall" "^ *- egress-uninstall$" "$out"
+expect "uninstall hook: timeout from values" "^ *- --timeout=9m$" "$out"
+expect "uninstall hook: runs once" "backoffLimit: 0" "$out"
+refuse "uninstall hook: no write beyond patch" "verbs:.*(create|update|delete)" "$out"
 
 # Priority (user decision 2026-11-02): critical with egress unless
 # priorityClassName says otherwise, unset without egress.

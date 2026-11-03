@@ -256,6 +256,109 @@ func TestInstallerReport(t *testing.T) {
 }
 
 // Run follows the directories with inotify.
+// disable writes the agent's wish to remove the plugin, at the clock.
+func (e *env) disable(t *testing.T) time.Time {
+	require.NoError(t, cnisock.WriteDesired(e.in.DesiredPath, cnisock.Desired{Enabled: false, Written: e.clock}))
+	return e.clock
+}
+
+// Teardown (D26): the entry out of the conflist, every other byte as the
+// CNI wrote it, then the binary once the entry stayed out.
+func TestInstallerTeardown(t *testing.T) {
+	e := newEnv(t)
+	e.enable(t, entry)
+	e.in.reconcile()
+	require.Equal(t, chained, e.read(t, e.flist))
+	bin := filepath.Join(e.bin, "purelb-egress")
+
+	e.clock = e.clock.Add(time.Minute)
+	asked := e.disable(t)
+	e.in.reconcile()
+	assert.Equal(t, flannelConf, e.read(t, e.flist), "flannel's bytes, as they were")
+	fi, err := os.Stat(e.flist)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o640), fi.Mode().Perm())
+	assert.Equal(t, "binary v1", e.read(t, bin), "kept while the removal may be undone")
+	st := e.status(t)
+	assert.Equal(t, cnisock.ChainPresent, st.Chain)
+	assert.True(t, asked.Equal(st.DesiredWritten), "names the wish it acts on")
+	assert.NotNil(t, e.in.retry, "looks again once the window passes")
+
+	e.clock = e.clock.Add(revertWithin + time.Millisecond)
+	e.in.reconcile()
+	_, err = os.Stat(bin)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	st = e.status(t)
+	assert.Equal(t, cnisock.ChainOff, st.Chain)
+	assert.True(t, asked.Equal(st.DesiredWritten))
+
+	// Done: nothing written again; a later CNI rewrite is left alone.
+	e.cniRewrites(t, time.Minute, flannelConf)
+	assert.Equal(t, flannelConf, e.read(t, e.flist))
+	assert.Equal(t, cnisock.ChainOff, e.status(t).Chain)
+
+	// Enabled again: chained again.
+	e.enable(t, entry)
+	e.in.reconcile()
+	assert.Equal(t, chained, e.read(t, e.flist))
+}
+
+// An entry the CNI puts back each time it is removed is its own
+// configuration's (Cilium's cni.configMap): the installer stops, keeps the
+// binary the entry needs, and reports; once the CNI's configuration drops
+// it, the binary goes.
+func TestInstallerTeardownCNIOwned(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, os.WriteFile(e.flist, []byte(chained), 0o640))
+	bin := filepath.Join(e.bin, "purelb-egress")
+	require.NoError(t, os.WriteFile(bin, []byte("binary v1"), 0o755))
+	e.disable(t)
+	e.in.reconcile()
+	for range warReverts {
+		require.Equal(t, flannelConf, e.read(t, e.flist))
+		e.cniRewrites(t, 50*time.Millisecond, chained)
+	}
+	st := e.status(t)
+	assert.Equal(t, cnisock.ChainPresent, st.Chain)
+	assert.Equal(t, cnisock.ReasonCNIOwned, st.Reason)
+	assert.Contains(t, st.Message, "remove it from the CNI's own configuration")
+	assert.Equal(t, chained, e.read(t, e.flist), "no longer edited")
+	e.cniRewrites(t, time.Minute, chained)
+	assert.Equal(t, chained, e.read(t, e.flist))
+	assert.Equal(t, "binary v1", e.read(t, bin), "the entry still needs it")
+
+	e.cniRewrites(t, time.Minute, flannelConf)
+	_, err := os.Stat(bin)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	assert.Equal(t, cnisock.ChainOff, e.status(t).Chain)
+
+	// The war is about removing: enabled again, the installer chains.
+	e.enable(t, entry)
+	e.in.reconcile()
+	assert.Equal(t, chained, e.read(t, e.flist))
+	assert.False(t, e.in.stopped)
+}
+
+// Undone fewer times than a war: removed again each time, binary kept
+// until it stays out.
+func TestInstallerTeardownNoWar(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, os.WriteFile(e.flist, []byte(chained), 0o640))
+	bin := filepath.Join(e.bin, "purelb-egress")
+	require.NoError(t, os.WriteFile(bin, []byte("binary v1"), 0o755))
+	e.disable(t)
+	e.in.reconcile()
+	for range warReverts - 1 {
+		e.cniRewrites(t, 50*time.Millisecond, chained)
+		require.Equal(t, flannelConf, e.read(t, e.flist), "removed again")
+		require.Equal(t, "binary v1", e.read(t, bin))
+	}
+	e.clock = e.clock.Add(2 * time.Second)
+	e.in.reconcile()
+	_, err := os.Stat(bin)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
 func TestInstallerRun(t *testing.T) {
 	e := newEnv(t)
 	e.in.now = time.Now
@@ -271,6 +374,16 @@ func TestInstallerRun(t *testing.T) {
 	require.NoError(t, os.WriteFile(e.flist, []byte(flannelConf), 0o640))
 	require.Eventually(t, func() bool { return e.read(t, e.flist) == chained }, 5*time.Second, 10*time.Millisecond)
 	assert.Empty(t, e.in.reverts)
+
+	// Teardown: the binary goes once the window passes, with no other
+	// event to wake the installer.
+	time.Sleep(1100 * time.Millisecond)
+	require.NoError(t, cnisock.WriteDesired(e.in.DesiredPath, cnisock.Desired{Enabled: false, Written: time.Now()}))
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(e.bin, "purelb-egress"))
+		return os.IsNotExist(err)
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, flannelConf, e.read(t, e.flist))
 
 	close(stop)
 	select {

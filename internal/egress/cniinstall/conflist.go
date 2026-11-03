@@ -100,6 +100,19 @@ func (c *chain) insert(b, entry []byte) []byte {
 	return splice(b, at, at, append([]byte(","), entry...))
 }
 
+// remove is b without the chain's plugin i, every other byte as it was:
+// with the comma before it, or after it when it is first. It undoes
+// insert exactly.
+func (c *chain) remove(b []byte, i int) []byte {
+	switch {
+	case i > 0:
+		return splice(b, c.plugins[i-1].end, c.plugins[i].end, nil)
+	case len(c.plugins) > 1:
+		return splice(b, c.plugins[0].start, c.plugins[1].start, nil)
+	}
+	return splice(b, c.plugins[0].start, c.plugins[0].end, nil)
+}
+
 func splice(b []byte, start, end int, with []byte) []byte {
 	out := make([]byte, 0, len(b)-(end-start)+len(with))
 	out = append(out, b[:start]...)

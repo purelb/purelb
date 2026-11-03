@@ -806,6 +806,14 @@ type EgressNodeStateStatus struct {
 	// +optional
 	Capability *EgressCapability `json:"capability,omitempty"`
 
+	// Programmed is the release of the agent that programmed egress on
+	// this node (its kernel state and the CNI chain entry); empty once
+	// teardown removed it (D26). The Helm pre-delete hook waits for it to
+	// clear, and the chart refuses a downgrade below it.
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	Programmed string `json:"programmed,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +kubebuilder:validation:MaxItems=16

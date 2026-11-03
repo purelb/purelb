@@ -189,8 +189,8 @@ type Agent struct {
 	// sockPath is the CNI plugin's socket, snapPath its snapshot (D35),
 	// recordDir its sandbox records (design 8.1), desiredPath and
 	// statusPath the files the agent and the purelb-cni installer tell
-	// each other by (D34), and cniHold ADD's longest wait (tests use
-	// their own);
+	// each other by (D34), cniHold ADD's longest wait, and unchainWait
+	// teardown's for the installer (tests use their own);
 	// sandboxes are the pod sandboxes the plugin reported, over the socket
 	// or in its records, by container id, and waiters its ADDs waiting for
 	// their pods (§8.1). Stored by the socket's goroutines and, from the
@@ -201,6 +201,7 @@ type Agent struct {
 	desiredPath string
 	statusPath  string
 	cniHold     time.Duration
+	unchainWait time.Duration
 	sandboxes   sync.Map // string: *cniSandbox
 	waiters     sync.Map // string: *waiter
 	// tagged are the pod devices the datapath last installed, by pod
@@ -277,7 +278,7 @@ func New(logger log.Logger, node, namespace string) *Agent {
 		placed:     map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
 		sendProbe: sendUDPProbe, tableSlots: tableSlots, sockPath: cnisock.DefaultPath, snapPath: cnisock.SnapshotPath,
 		recordDir: cnisock.RecordDir, desiredPath: cnisock.DesiredPath, statusPath: cnisock.StatusPath, probeCounts: readProbeCounts,
-		cniHold: cniHold}
+		cniHold: cniHold, unchainWait: unchainWait}
 	a.apply, a.tear = a.applyDatapath, a.teardown
 	return a
 }
@@ -410,12 +411,13 @@ func (a *Agent) syncConfig() {
 		a.on.spec = *d.spec
 		a.syncDatapath()
 	case !want && a.on != nil:
+		done := a.on.snap.done
 		a.stopSession()
-		a.endDatapath()
+		a.endDatapath(done)
 	case !want && first:
 		// Egress may have been on before this agent started: remove
 		// what an earlier agent left (D26), if anything.
-		a.endDatapath()
+		a.endDatapath(nil)
 	}
 	a.syncFlowLog()
 }
@@ -616,7 +618,7 @@ func (a *Agent) syncNode() {
 	}
 	h := a.health.Load()
 	st := &purelbv2.EgressNodeStateStatus{Capability: c, AddressFaults: a.faultList(h),
-		Conditions: a.nodeConditions(c, h, a.podnode), ObservedGeneration: a.specAck.Load()}
+		Conditions: a.nodeConditions(c, h, a.podnode), ObservedGeneration: a.specAck.Load(), Programmed: programmed()}
 	for _, ee := range claims {
 		st.Claims = append(st.Claims, purelbv2.EgressClaim{Endpoints: ee})
 	}

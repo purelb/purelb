@@ -17,6 +17,7 @@ package agent
 import (
 	"context"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -86,6 +87,8 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	a.desiredPath = filepath.Join(filepath.Dir(a.snapPath), "cni-desired.json")
 	a.statusPath = filepath.Join(t.TempDir(), "cni-status.json")
 	a.recordDir = filepath.Join(t.TempDir(), "sandboxes")
+	// No installer answers teardown here (TestUnchain has one).
+	a.unchainWait = 100 * time.Millisecond
 	require.NoError(t, cnisock.WriteStatus(a.statusPath, cnisock.InstallerStatus{Written: time.Now(), Chain: cnisock.ChainPresent}))
 	a.SetElection(&fakeElector{}) // the agent always runs with one
 	a.statusInterval = 50 * time.Millisecond
@@ -225,18 +228,39 @@ func TestDisableReportsOff(t *testing.T) {
 		ens := f.nodeState()
 		return ens != nil && ens.Status.Capability != nil && ens.Status.Capability.EgressCapable
 	}, 5*time.Second, 20*time.Millisecond)
+	assert.Equal(t, "dev", f.nodeState().Status.Programmed, "what the Helm pre-delete hook waits on (a build without a release)")
+	require.Eventually(t, func() bool { _, err := cnisock.ReadDesired(f.a.desiredPath); return err == nil },
+		5*time.Second, 20*time.Millisecond, "the plugin chained")
+	// The installer removes the plugin when asked (D26).
+	go func() {
+		for range 250 {
+			if d, err := cnisock.ReadDesired(f.a.desiredPath); err == nil && !d.Enabled {
+				_ = cnisock.WriteStatus(f.a.statusPath, cnisock.InstallerStatus{Written: time.Now(), Chain: cnisock.ChainOff,
+					DesiredWritten: d.Written})
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
 	f.a.Configure(agentWith(&purelbv2.LBNodeAgentEgressSpec{Enabled: false}))
 	require.Eventually(t, func() bool {
 		ens := f.nodeState()
 		return ens != nil && !ens.Status.Capability.EgressCapable
 	}, 5*time.Second, 20*time.Millisecond)
+	assert.Empty(t, f.nodeState().Status.Programmed, "torn down")
+	// Out of the chain: nothing left that only the plugin reads.
+	for _, p := range []string{f.a.snapPath, f.a.desiredPath} {
+		_, err := os.Stat(p)
+		assert.ErrorIs(t, err, os.ErrNotExist, p)
+	}
 }
 
 // An agent that starts with egress off corrects a capability left on by
 // an earlier run.
 func TestStartOffCorrectsStaleCapability(t *testing.T) {
 	stale := &purelbv2.EgressNodeState{ObjectMeta: metav1.ObjectMeta{Name: testNode},
-		Status: purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{EgressCapable: true, Kernel: "6.12.0"}}}
+		Status: purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{EgressCapable: true, Kernel: "6.12.0"},
+			Programmed: "v0.17.0"}}
 	f := newFixture(t, true, testNodeObj, stale)
 	f.a.Configure(agentWith(nil))
 	require.Eventually(t, func() bool {
@@ -244,6 +268,16 @@ func TestStartOffCorrectsStaleCapability(t *testing.T) {
 		return !ens.Status.Capability.EgressCapable
 	}, 5*time.Second, 20*time.Millisecond)
 	assert.Equal(t, "6.12.0", f.nodeState().Status.Capability.Kernel, "the rest of the status is kept")
+	assert.Empty(t, f.nodeState().Status.Programmed, "what the earlier run programmed is torn down")
+}
+
+// Only status.programmed left (egress was never capable here): cleared.
+func TestStartOffClearsProgrammed(t *testing.T) {
+	stale := &purelbv2.EgressNodeState{ObjectMeta: metav1.ObjectMeta{Name: testNode},
+		Status: purelbv2.EgressNodeStateStatus{Programmed: "v0.17.0"}}
+	f := newFixture(t, true, testNodeObj, stale)
+	f.a.Configure(agentWith(nil))
+	require.Eventually(t, func() bool { return f.nodeState().Status.Programmed == "" }, 5*time.Second, 20*time.Millisecond)
 }
 
 // The status writer writes at most once per interval, the latest status,

@@ -38,6 +38,7 @@ import (
 	egressagent "purelb.io/internal/egress/agent"
 	"purelb.io/internal/egress/cniinstall"
 	"purelb.io/internal/egress/cniplugin"
+	"purelb.io/internal/egress/uninstall"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
@@ -375,13 +376,17 @@ func guardEnabledAtStartup(
 func main() {
 	// Multi-call (D34): installed in the CNI bin dir as purelb-egress,
 	// this binary is the CNI plugin; run as "cni-install", the purelb-cni
-	// installer.
+	// installer; as "egress-uninstall", the Helm pre-delete hook.
 	if filepath.Base(os.Args[0]) == cniplugin.Name {
 		cniplugin.Main()
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == cniinstall.Command {
 		cniinstall.Main(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == uninstall.Command {
+		uninstall.Main(os.Args[2:])
 		return
 	}
 	logger := logging.Init()

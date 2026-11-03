@@ -44,10 +44,15 @@ const (
 	StatusVersion  = 1
 )
 
-// Desired is what the agent wants in the CNI directories.
+// Desired is what the agent wants in the CNI directories: the plugin
+// chained (Enabled), or removed (D26). With no file the installer writes
+// nothing (D-idle).
 type Desired struct {
 	Version int  `json:"version"`
 	Enabled bool `json:"enabled"`
+	// Written is when the agent wrote it; the installer's status names
+	// the one it acted on.
+	Written time.Time `json:"written,omitempty"`
 	// Entry is the conflist entry the installer keeps in the chain.
 	Entry json.RawMessage `json:"entry,omitempty"`
 }
@@ -69,13 +74,17 @@ const (
 	ChainPresent = "Present"
 	// ChainMissing: it doesn't; Reason says why.
 	ChainMissing = "Missing"
-	// ChainOff: the agent wants nothing (egress off), so nothing is checked.
+	// ChainOff: nothing of the plugin's is in the CNI directories (the
+	// agent wants it removed, or never asked for it).
 	ChainOff = "Off"
 )
 
 // Reasons the chain is missing. WriteWar and NotAConflist are ones the
-// installer won't fix (CNIChainMissing); the others it retries.
+// installer won't fix (CNIChainMissing); the others it retries. CNIOwned
+// is why a removal leaves the chain Present: the CNI puts the entry back
+// each time it is removed (its own configuration chains the plugin).
 const (
+	ReasonCNIOwned     = "CNIOwned"
 	ReasonWriteWar     = "WriteWar"
 	ReasonNotAConflist = "NotAConflist"
 	ReasonNoConflist   = "NoConflist"
@@ -91,6 +100,8 @@ type InstallerStatus struct {
 	Message string    `json:"message,omitempty"`
 	// Conflist is the primary CNI configuration file it edits.
 	Conflist string `json:"conflist,omitempty"`
+	// DesiredWritten is the Written of the desired state it acted on.
+	DesiredWritten time.Time `json:"desiredWritten,omitempty"`
 }
 
 // WriteDesired replaces the desired state at path whole.

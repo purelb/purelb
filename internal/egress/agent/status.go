@@ -163,6 +163,16 @@ func (w *statusWriter) write() error {
 	return nil
 }
 
+// programmed is status.programmed while egress runs here: this agent's
+// release, never empty, or the Helm pre-delete hook would take the node
+// for torn down ("dev" for a build without one).
+func programmed() string {
+	if r := logging.Release(); r != "" {
+		return r
+	}
+	return "dev"
+}
+
 // writeOff reports egress off in an existing object, leaving the rest of
 // its status alone.
 func (w *statusWriter) writeOff() error {
@@ -178,7 +188,7 @@ func (w *statusWriter) writeOff() error {
 	w.written = nil
 	capable := cur.Status.Capability != nil && cur.Status.Capability.EgressCapable
 	if !capable && len(cur.Status.Announcing) == 0 && len(cur.Status.Conditions) == 0 && len(cur.Status.AddressFaults) == 0 &&
-		len(cur.Status.Claims) == 0 {
+		len(cur.Status.Claims) == 0 && cur.Status.Programmed == "" {
 		return nil
 	}
 	st := cur.Status.DeepCopy()
@@ -190,6 +200,8 @@ func (w *statusWriter) writeOff() error {
 	// would go on failing its policies, and a claim would go on getting it
 	// slices.
 	st.Announcing, st.Conditions, st.AddressFaults, st.Claims = nil, nil, nil, nil
+	// Torn down: what the Helm pre-delete hook waits for (D26).
+	st.Programmed = ""
 	if err := w.patch(st); err != nil {
 		return err
 	}

@@ -72,13 +72,15 @@ type snapshotWriter struct {
 	// the queue goroutine.
 	want atomic.Pointer[cnisock.Snapshot]
 	kick chan struct{}
+	// done closes when run returns: teardown writes the last snapshot.
+	done chan struct{}
 	// written is when it last wrote (Unix nanoseconds), for the gauge.
 	written atomic.Int64
 }
 
 func newSnapshotWriter(logger log.Logger, node, path, desiredPath string, entry []byte) *snapshotWriter {
 	return &snapshotWriter{logger: logger, node: node, path: path, desiredPath: desiredPath, entry: entry,
-		kick: make(chan struct{}, 1)}
+		kick: make(chan struct{}, 1), done: make(chan struct{})}
 }
 
 // set asks for s to be written.
@@ -93,6 +95,7 @@ func (w *snapshotWriter) set(s *cnisock.Snapshot) {
 // run writes until stop closes. The file stays: it is what the plugin
 // decides by while no agent runs.
 func (w *snapshotWriter) run(stop <-chan struct{}) {
+	defer close(w.done)
 	var last *cnisock.Snapshot
 	failing, desired := false, false
 	t := time.NewTimer(snapshotRefresh)
