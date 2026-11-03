@@ -15,8 +15,9 @@
 // Package cniplugin is the purelb-egress CNI plugin (design 8.1): the
 // lbnodeagent binary run under that name (D34). It is chained after the
 // node's primary CNI, passes the primary's result through unchanged, and
-// asks the node's agent over its socket whether the pod may start (D35).
-// It holds no API credential.
+// asks the node's agent over its socket whether the pod may start, or,
+// with no agent, the agent's last snapshot (D35). It holds no API
+// credential.
 package cniplugin
 
 import (
@@ -27,6 +28,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -65,6 +67,9 @@ type Conf struct {
 	types.PluginConf
 	// Socket is the agent's socket; empty means cnisock.DefaultPath.
 	Socket string `json:"socket,omitempty"`
+	// Snapshot is the agent's snapshot; empty means
+	// cnisock.SnapshotPath.
+	Snapshot string `json:"snapshot,omitempty"`
 	// PureLBNamespace is the namespace whose pods, with kube-system's,
 	// always pass (D35); empty means purelb-system.
 	PureLBNamespace string `json:"purelbNamespace,omitempty"`
@@ -76,7 +81,7 @@ type Conf struct {
 // configuration from stdin, the result goes to stdout and the log to
 // stderr (the runtime's log).
 func Main() {
-	p := plugin{out: os.Stdout, log: os.Stderr}
+	p := plugin{out: os.Stdout, log: os.Stderr, now: time.Now}
 	skel.PluginMainFuncs(skel.CNIFuncs{Add: p.add, Del: p.del, Check: p.check, GC: p.gc, Status: p.status},
 		Supported, "CNI plugin "+Name+" "+logging.Release())
 }
@@ -84,6 +89,7 @@ func Main() {
 type plugin struct {
 	out io.Writer // the CNI result
 	log io.Writer // the log
+	now func() time.Time
 }
 
 // call is one request: the pod's identity, its addresses, and the agent's
@@ -106,6 +112,9 @@ func (p plugin) parse(args *skel.CmdArgs, op string) (*call, error) {
 	}
 	if conf.Socket == "" {
 		conf.Socket = cnisock.DefaultPath
+	}
+	if conf.Snapshot == "" {
+		conf.Snapshot = cnisock.SnapshotPath
 	}
 	if conf.PureLBNamespace == "" {
 		conf.PureLBNamespace = defaultNamespace
@@ -201,8 +210,13 @@ func (p plugin) add(args *skel.CmdArgs) error {
 	resp, noAgent, err := c.ask(addTimeout)
 	switch {
 	case noAgent:
-		logging.Info(c.logger, "op", "cniAdd", "pod", c.pod(), "error", err, "msg", "the PureLB agent isn't running on this node; ADD fails and kubelet retries")
-		return fmt.Errorf("the PureLB agent isn't running on this node (%s); kubelet retries", c.conf.Socket)
+		pass, why := c.fromSnapshot(p.now())
+		logging.Info(c.logger, "op", "cniAdd", "pod", c.pod(), "agentError", err, "pass", pass,
+			"duration", time.Since(start).String(), "msg", "no agent: "+why)
+		if !pass {
+			return fmt.Errorf("the PureLB agent isn't running on this node, and %s; kubelet retries", why)
+		}
+		return result()
 	case err != nil:
 		logging.Info(c.logger, "op", "cniAdd", "pod", c.pod(), "error", err, "msg", "the agent didn't answer; ADD fails and kubelet retries")
 		return fmt.Errorf("asking the PureLB agent: %w", err)
@@ -218,6 +232,34 @@ func (p plugin) add(args *skel.CmdArgs) error {
 	}
 	logging.Info(c.logger, "op", "cniAdd", "pod", c.pod(), "result", resp.Result, "duration", time.Since(start).String(), "msg", "pod admitted")
 	return result()
+}
+
+// fromSnapshot decides the pod by the agent's snapshot (§8.1), saying
+// why.
+func (c *call) fromSnapshot(now time.Time) (bool, string) {
+	s, err := cnisock.ReadSnapshot(c.conf.Snapshot)
+	if err != nil {
+		return false, fmt.Sprintf("it has no usable snapshot (%v)", err)
+	}
+	maxAge := time.Duration(s.MaxAgeSeconds) * time.Second
+	if age := now.Sub(s.Written); age > maxAge {
+		// A forgotten uninstall never stops pods starting (D35).
+		return true, fmt.Sprintf("its snapshot is %s old, past its %s bound: the pod starts without egress",
+			age.Round(time.Second), maxAge)
+	}
+	for _, p := range s.Pods {
+		if p.Namespace != c.req.Namespace || p.Name != c.req.Name || (p.UID != "" && c.req.UID != "" && p.UID != c.req.UID) {
+			continue
+		}
+		if p.FailClosed {
+			return false, "a FailClosed policy selects the pod in its snapshot"
+		}
+		return true, "its snapshot has the pod, which no FailClosed policy selects"
+	}
+	if slices.Contains(s.FailClosedNamespaces, c.req.Namespace) {
+		return false, "its snapshot doesn't have the pod, whose namespace a FailClosed policy covers"
+	}
+	return true, "its snapshot doesn't have the pod, and no FailClosed policy covers its namespace"
 }
 
 // pass prints the primary's result, in the configuration's version.

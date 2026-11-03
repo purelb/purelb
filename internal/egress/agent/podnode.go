@@ -68,6 +68,9 @@ type podState struct {
 	// selected: an in-force policy selects it; pending: one of those has
 	// no slot it may use yet, which a CNI ADD waits for (§8.1).
 	selected, pending bool
+	// failClosed: one of those is FailClosed, which the snapshot tells the
+	// plugin (D35).
+	failClosed bool
 }
 
 // podNode is the pod-node stage's desired state: slots and pod-set ids
@@ -216,6 +219,7 @@ func planPodNode(in pnInput, prev *podNode) *podNode {
 			if !p.selects(pod, in) {
 				continue
 			}
+			st.failClosed = st.failClosed || p.failClosed()
 			ready := false
 			for _, k := range slotsOf[p.ref] {
 				s := want[k]

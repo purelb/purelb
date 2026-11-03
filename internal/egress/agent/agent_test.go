@@ -80,6 +80,7 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	purelb := purelbfake.NewSimpleClientset(purelbObjs...)
 	a := New(log.NewNopLogger(), testNode, "purelb-system")
 	a.sockPath = filepath.Join(t.TempDir(), "egress.sock")
+	a.snapPath = filepath.Join(t.TempDir(), "egress-snapshot.json")
 	a.SetElection(&fakeElector{}) // the agent always runs with one
 	a.statusInterval = 50 * time.Millisecond
 	wants := make(chan dpWant, 100)

@@ -182,12 +182,13 @@ type Agent struct {
 	probing   atomic.Pointer[map[netip.Addr]probeTarget]
 	sendProbe func(from, to netip.Addr, port int, pkt []byte) error
 
-	// sockPath is the CNI plugin's socket and cniHold ADD's longest wait
-	// (tests use their own);
+	// sockPath is the CNI plugin's socket, snapPath its snapshot (D35)
+	// and cniHold ADD's longest wait (tests use their own);
 	// sandboxes are the pod sandboxes the plugin reported, by container
 	// id, and waiters its ADDs waiting for their pods (§8.1). Stored by
 	// the socket's goroutines, read and pruned by the queue goroutine.
 	sockPath  string
+	snapPath  string
 	cniHold   time.Duration
 	sandboxes sync.Map // string: *cniSandbox
 	waiters   sync.Map // string: *waiter
@@ -219,6 +220,8 @@ type session struct {
 	// scoped EgressEndpoints watches (D6). Queue goroutine only.
 	addresses listers.EgressAddressNamespaceLister
 	watches   map[string]*eeWatch
+	// snap writes the CNI plugin's snapshot from the pod-node plan.
+	snap *snapshotWriter
 	// For the pod-node stage: this node's pods, the policies, namespaces
 	// and Services (serviceRef selectors).
 	pods            cache.Indexer
@@ -244,7 +247,7 @@ func New(logger log.Logger, node, namespace string) *Agent {
 		guarded: map[netip.Addr]bool{}, services: map[netip.Addr]map[string]bool{},
 		placements: map[netip.Addr]map[string]egresshook.ServicePlacement{},
 		placed:     map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
-		sendProbe: sendUDPProbe, tableSlots: tableSlots, sockPath: cnisock.DefaultPath,
+		sendProbe: sendUDPProbe, tableSlots: tableSlots, sockPath: cnisock.DefaultPath, snapPath: cnisock.SnapshotPath,
 		cniHold: cniHold}
 	a.apply, a.tear = a.applyDatapath, a.teardown
 	return a
@@ -387,7 +390,8 @@ func (a *Agent) syncConfig() {
 
 // startSession starts egress's informers and its first capability probe.
 func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
-	s := &session{stop: make(chan struct{}), spec: spec, watches: map[string]*eeWatch{}}
+	s := &session{stop: make(chan struct{}), spec: spec, watches: map[string]*eeWatch{},
+		snap: newSnapshotWriter(a.logger, a.node, a.snapPath)}
 	own := externalversions.NewSharedInformerFactoryWithOptions(a.purelb, resync,
 		externalversions.WithTweakListOptions(func(o *metav1.ListOptions) {
 			o.FieldSelector = fields.OneTermEqualSelector("metadata.name", a.node).String()
@@ -473,6 +477,8 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	go watchAddrs(a.logger, s.stop, a.placedAddrs, func(addr netip.Addr) { a.dadLost.Store(addr, true) }, kick)
 	go a.runProbes(s)
 	go a.serveCNI(s)
+	snapshots.Store(s.snap)
+	go s.snap.run(s.stop)
 	go func() {
 		t := time.NewTicker(reconcileInterval)
 		defer t.Stop()
@@ -522,6 +528,7 @@ func (a *Agent) stopSession() {
 		close(w.stop)
 	}
 	close(a.on.stop)
+	snapshots.CompareAndSwap(a.on.snap, nil)
 	a.on = nil
 	a.syncFlowLog()
 	a.flowView.Store(nil)

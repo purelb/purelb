@@ -1066,4 +1066,13 @@ type LBNodeAgentEgressSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	FlowLog bool `json:"flowLog,omitempty"`
+
+	// SnapshotMaxAge is how long the CNI plugin trusts the agent's
+	// snapshot while the agent is down. Past it, new pods start without
+	// egress, so a node whose agent is gone for good (a forgotten
+	// uninstall) still starts pods.
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1m') && duration(self) <= duration('720h')",message="snapshotMaxAge must be between 1m and 720h"
+	// +kubebuilder:default="1h"
+	// +optional
+	SnapshotMaxAge *metav1.Duration `json:"snapshotMaxAge,omitempty"`
 }

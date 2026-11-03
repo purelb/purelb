@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/stretchr/testify/assert"
@@ -55,7 +56,9 @@ const prev100 = `{"cniVersion":"1.0.0","ips":[{"address":"10.244.2.9/24"},{"addr
 // conf is a conflist entry of version v with prevResult prev.
 func conf(t *testing.T, v, socket, prev string) []byte {
 	t.Helper()
-	m := map[string]any{"cniVersion": v, "name": "cbr0", "type": Name, "socket": socket}
+	// The snapshot beside the socket, never the host's.
+	m := map[string]any{"cniVersion": v, "name": "cbr0", "type": Name, "socket": socket,
+		"snapshot": filepath.Join(filepath.Dir(socket), "egress-snapshot.json")}
 	if prev != "" {
 		var r map[string]any
 		require.NoError(t, json.Unmarshal([]byte(prev), &r))
@@ -118,7 +121,7 @@ func TestAdd(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sock, reqs := agent(t, tc.answer)
 			var out, log bytes.Buffer
-			p := plugin{out: &out, log: &log}
+			p := plugin{out: &out, log: &log, now: time.Now}
 			err := p.add(&skel.CmdArgs{ContainerID: "c1", Netns: "/var/run/netns/cni-1", IfName: "eth0",
 				Args: podArgsStr, StdinData: conf(t, tc.v, sock, tc.prev)})
 			r := reqs.take()
@@ -167,9 +170,68 @@ func TestAddNoAgent(t *testing.T) {
 			}
 			stdin, _ := json.Marshal(m)
 			var out, log bytes.Buffer
-			err := plugin{out: &out, log: &log}.add(&skel.CmdArgs{ContainerID: "c1", Netns: "/x", IfName: "eth0", Args: tc.args, StdinData: stdin})
+			err := plugin{out: &out, log: &log, now: time.Now}.add(&skel.CmdArgs{ContainerID: "c1", Netns: "/x", IfName: "eth0", Args: tc.args, StdinData: stdin})
 			if !tc.pass {
 				require.ErrorContains(t, err, "isn't running on this node")
+				return
+			}
+			require.NoError(t, err)
+			assert.Contains(t, out.String(), "10.244.2.9/24")
+		})
+	}
+}
+
+func TestAddFromSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "egress.sock")
+	now := time.Unix(1700000000, 0)
+	snap := cnisock.Snapshot{Version: cnisock.SnapshotVersion, Written: now.Add(-10 * time.Minute), MaxAgeSeconds: 3600,
+		FailClosedNamespaces: []string{"web"},
+		Pods: []cnisock.SnapshotPod{
+			{Namespace: "web", Name: "client-0", UID: "u-1", FailClosed: true},
+			{Namespace: "web", Name: "plain", UID: "u-2"},
+			{Namespace: "db", Name: "client-0", UID: "u-3", FailClosed: true},
+			{Namespace: "batch", Name: "job", UID: "u-4"},
+		}}
+	for _, tc := range []struct {
+		name    string
+		edit    func(*cnisock.Snapshot) // nil: no snapshot file
+		args    string
+		pass    bool
+		because string
+	}{
+		{"no snapshot", nil, podArgsStr, false, "no usable snapshot"},
+		{"FailClosed pod", func(*cnisock.Snapshot) {}, podArgsStr, false, "a FailClosed policy selects the pod"},
+		{"pod no FailClosed policy selects", func(*cnisock.Snapshot) {}, "K8S_POD_NAMESPACE=web;K8S_POD_NAME=plain;K8S_POD_UID=u-2", true, "which no FailClosed policy selects"},
+		{"absent, FailClosed namespace", func(*cnisock.Snapshot) {}, "K8S_POD_NAMESPACE=web;K8S_POD_NAME=new;K8S_POD_UID=u-9", false, "whose namespace a FailClosed policy covers"},
+		{"absent, other namespace", func(*cnisock.Snapshot) {}, "K8S_POD_NAMESPACE=batch;K8S_POD_NAME=new;K8S_POD_UID=u-9", true, "no FailClosed policy covers its namespace"},
+		{"same name, another pod (UID)", func(*cnisock.Snapshot) {}, "K8S_POD_NAMESPACE=batch;K8S_POD_NAME=job;K8S_POD_UID=u-other", true, "doesn't have the pod"},
+		{"same name, another pod, FailClosed namespace", func(*cnisock.Snapshot) {}, "K8S_POD_NAMESPACE=web;K8S_POD_NAME=plain;K8S_POD_UID=u-other", false, "whose namespace a FailClosed policy covers"},
+		{"no UID from the runtime", func(*cnisock.Snapshot) {}, "K8S_POD_NAMESPACE=db;K8S_POD_NAME=client-0", false, "a FailClosed policy selects the pod"},
+		{"past its bound", func(s *cnisock.Snapshot) { s.Written = now.Add(-61 * time.Minute) }, podArgsStr, true, "past its 1h0m0s bound"},
+		{"at its bound", func(s *cnisock.Snapshot) { s.Written = now.Add(-60 * time.Minute) }, podArgsStr, false, "a FailClosed policy selects the pod"},
+		{"configured bound", func(s *cnisock.Snapshot) { s.MaxAgeSeconds = 300 }, podArgsStr, true, "past its 5m0s bound"},
+		{"written ahead of the clock", func(s *cnisock.Snapshot) { s.Written = now.Add(time.Hour) }, podArgsStr, false, "a FailClosed policy selects the pod"},
+		{"newer version", func(s *cnisock.Snapshot) { s.Version = cnisock.SnapshotVersion + 1 }, podArgsStr, false, "no usable snapshot"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "egress-snapshot.json")
+			if tc.edit != nil {
+				s := snap
+				tc.edit(&s)
+				require.NoError(t, cnisock.WriteSnapshot(path, s))
+			}
+			m := mustMap(t, string(conf(t, "1.0.0", missing, prev100)))
+			m["snapshot"] = path
+			stdin, _ := json.Marshal(m)
+			var out, log bytes.Buffer
+			p := plugin{out: &out, log: &log, now: func() time.Time { return now }}
+			err := p.add(&skel.CmdArgs{ContainerID: "c1", Netns: "/x", IfName: "eth0", Args: tc.args, StdinData: stdin})
+			assert.Contains(t, log.String(), tc.because)
+			if !tc.pass {
+				require.ErrorContains(t, err, "isn't running on this node, and ")
+				require.ErrorContains(t, err, tc.because)
+				assert.Empty(t, out.String())
 				return
 			}
 			require.NoError(t, err)
@@ -182,7 +244,7 @@ func TestAddSystemAsksAgent(t *testing.T) {
 	// A system pod is recorded by the agent, and passes whatever it says.
 	sock, reqs := agent(t, cnisock.Response{Error: "anything"})
 	var out, log bytes.Buffer
-	err := plugin{out: &out, log: &log}.add(&skel.CmdArgs{ContainerID: "c2", Netns: "/x", IfName: "eth0",
+	err := plugin{out: &out, log: &log, now: time.Now}.add(&skel.CmdArgs{ContainerID: "c2", Netns: "/x", IfName: "eth0",
 		Args: "K8S_POD_NAMESPACE=kube-system;K8S_POD_NAME=coredns-1", StdinData: conf(t, "1.0.0", sock, prev100)})
 	require.NoError(t, err)
 	r := reqs.take()
@@ -193,7 +255,7 @@ func TestAddSystemAsksAgent(t *testing.T) {
 func TestAddNoPrevResult(t *testing.T) {
 	sock, reqs := agent(t, cnisock.Response{Result: cnisock.ResultReady})
 	var out, log bytes.Buffer
-	err := plugin{out: &out, log: &log}.add(&skel.CmdArgs{ContainerID: "c1", Netns: "/x", IfName: "eth0",
+	err := plugin{out: &out, log: &log, now: time.Now}.add(&skel.CmdArgs{ContainerID: "c1", Netns: "/x", IfName: "eth0",
 		Args: podArgsStr, StdinData: conf(t, "1.0.0", sock, "")})
 	require.ErrorContains(t, err, "must follow the primary CNI plugin")
 	assert.Empty(t, reqs.take())
@@ -221,7 +283,7 @@ func TestDel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sock, reqs := tc.sock(t)
 			var out, log bytes.Buffer
-			err := plugin{out: &out, log: &log}.del(&skel.CmdArgs{ContainerID: "c1", IfName: "eth0", Args: podArgsStr, StdinData: tc.stdin(sock)})
+			err := plugin{out: &out, log: &log, now: time.Now}.del(&skel.CmdArgs{ContainerID: "c1", IfName: "eth0", Args: podArgsStr, StdinData: tc.stdin(sock)})
 			require.NoError(t, err, "DEL always succeeds")
 			assert.Empty(t, out.String())
 			assert.Contains(t, log.String(), tc.logged)
@@ -238,7 +300,7 @@ func TestDel(t *testing.T) {
 func TestCheck(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "egress.sock")
 	var out, log bytes.Buffer
-	p := plugin{out: &out, log: &log}
+	p := plugin{out: &out, log: &log, now: time.Now}
 	args := func(sock string) *skel.CmdArgs {
 		return &skel.CmdArgs{ContainerID: "c1", Netns: "/x", IfName: "eth0", Args: podArgsStr, StdinData: conf(t, "1.0.0", sock, prev100)}
 	}
@@ -300,6 +362,13 @@ func TestExec(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &cniErr), out)
 	assert.Contains(t, cniErr.Msg, "isn't running on this node")
+
+	// With the agent's snapshot, which no FailClosed policy is in, it passes.
+	require.NoError(t, cnisock.WriteSnapshot(filepath.Join(filepath.Dir(missing), "egress-snapshot.json"),
+		cnisock.Snapshot{Version: cnisock.SnapshotVersion, Written: time.Now(), MaxAgeSeconds: 3600}))
+	out, err = run("ADD", conf(t, "1.0.0", missing, prev100))
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "10.244.2.9/24")
 
 	out, err = run("DEL", conf(t, "1.0.0", missing, prev100))
 	require.NoError(t, err, out)

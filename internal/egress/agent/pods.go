@@ -171,6 +171,7 @@ func (a *Agent) syncPods() {
 			"short", pn.short, "msg", "slot budget exhausted: these get no slot")
 	}
 	a.podnode = pn
+	s.snap.set(snapshotOf(pn, in.pods, s.spec))
 	logging.Debug(a.logger, "op", "egressPods", "node", a.node, "slots", len(pn.slots), "podSets", len(pn.sets),
 		"pods", len(pn.pods), "retired", len(pn.retired))
 	a.add(keyNode, false) // capability.slots and SlotsExhausted

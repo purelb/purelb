@@ -3,7 +3,8 @@
 # The node's /sys/fs/bpf/purelb is mounted over the container's /sys/fs/bpf:
 # the container's /sys is sysfs, where the runtime can't create a
 # /sys/fs/bpf/purelb mount point. /run/purelb holds the socket the CNI
-# plugin calls the agent on (design 8.1).
+# plugin calls the agent on (design 8.1), /var/lib/purelb the snapshot it
+# decides by while the agent is down (D35), which survives reboots.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -21,6 +22,10 @@ spec:
         hostPath:
           path: /run/purelb
           type: DirectoryOrCreate
+      - name: var-lib-purelb
+        hostPath:
+          path: /var/lib/purelb
+          type: DirectoryOrCreate
       containers:
       - name: lbnodeagent
         volumeMounts:
@@ -28,3 +33,5 @@ spec:
           mountPath: /sys/fs/bpf
         - name: run-purelb
           mountPath: /run/purelb
+        - name: var-lib-purelb
+          mountPath: /var/lib/purelb

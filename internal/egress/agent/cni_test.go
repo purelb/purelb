@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -157,6 +158,20 @@ func TestCNISocket(t *testing.T) {
 	// Selected, its slice Active: ready once its device carries its
 	// pod-set, the address from ADD.
 	require.Eventually(t, func() bool { return call(add).Result == cnisock.ResultReady }, 5*time.Second, 50*time.Millisecond)
+
+	// The snapshot the plugin decides by without the agent (D35).
+	var snap cnisock.Snapshot
+	require.Eventually(t, func() bool {
+		var err error
+		snap, err = cnisock.ReadSnapshot(f.a.snapPath)
+		return err == nil
+	}, 5*time.Second, 20*time.Millisecond)
+	assert.Equal(t, []cnisock.SnapshotPod{{Namespace: "voice", Name: "a", UID: "u-a", FailClosed: true},
+		{Namespace: "web", Name: "b", UID: "u-b"}}, snap.Pods)
+	assert.Equal(t, []string{"voice"}, snap.FailClosedNamespaces)
+	assert.Equal(t, int64(3600), snap.MaxAgeSeconds)
+	assert.WithinDuration(t, time.Now(), snap.Written, 5*time.Second)
+	assert.Greater(t, testutil.ToFloat64(snapshotAge), 0.0, "the session's writer reports its age")
 	assert.Equal(t, cnisock.ResultReady, call(cnisock.Request{Op: cnisock.OpCheck, ContainerID: "c-a", Namespace: "voice", Name: "a"}).Result)
 	assert.Contains(t, call(cnisock.Request{Op: cnisock.OpCheck, ContainerID: "c-x", Namespace: "voice", Name: "a"}).Error, "no record")
 	assert.Equal(t, cnisock.ResultReady, call(cnisock.Request{Op: cnisock.OpAdd, ContainerID: "c-b", Namespace: "web", Name: "b",
@@ -219,4 +234,8 @@ func TestCNISocket(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond)
 	require.Eventually(t, func() bool { ns := f.nodeState(); return ns != nil && len(ns.Status.Claims) == 0 },
 		5*time.Second, 20*time.Millisecond)
+	assert.Zero(t, testutil.ToFloat64(snapshotAge), "egress off")
+	// The snapshot stays: the plugin may still be in the chain.
+	_, err = cnisock.ReadSnapshot(f.a.snapPath)
+	require.NoError(t, err)
 }
