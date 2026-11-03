@@ -76,10 +76,8 @@ type waiter struct {
 type cniVerdict struct {
 	result, err string
 	final       bool
-	// probe asks the plugin for the stage probe (ADD); stage is what one
-	// found (PROBE).
+	// probe asks the plugin for the stage probe (ADD).
 	probe bool
-	stage string
 }
 
 func (w *waiter) set(v *cniVerdict) {
@@ -196,7 +194,7 @@ func (a *Agent) cniAnswer(req cnisock.Request, v *cniVerdict) cnisock.Response {
 	} else {
 		logging.Debug(a.logger, kv...)
 	}
-	return cnisock.Response{Result: v.result, Stage: v.stage}
+	return cnisock.Response{Result: v.result}
 }
 
 // syncCNI decides each waiting ADD from the pod-node state and the pod

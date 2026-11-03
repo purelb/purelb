@@ -258,7 +258,7 @@ func (c *call) probe(netnsPath string) {
 		logging.Info(c.logger, "op", "cniProbe", "pod", c.pod(), "error", err, "msg", "the stage probe wasn't reported")
 		return
 	}
-	logging.Info(c.logger, "op", "cniProbe", "pod", c.pod(), "ips", strings.Join(sent, ","), "stage", resp.Stage, "msg", "stage probe")
+	logging.Info(c.logger, "op", "cniProbe", "pod", c.pod(), "ips", strings.Join(sent, ","), "msg", "stage probe sent")
 }
 
 // fromSnapshot decides the pod by the agent's snapshot (§8.1), saying

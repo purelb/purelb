@@ -205,8 +205,8 @@ func TestCNISocket(t *testing.T) {
 	// Classified by mark from then on, and reported.
 	assert.Contains(t, call(cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c-b", Namespace: "web", Name: "b",
 		IPs: []string{"10.1.0.6"}}).Error, "asked no stage probe")
-	assert.Equal(t, cnisock.StageMark, call(cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c-a", Namespace: "voice", Name: "a",
-		UID: "u-a", IPs: []string{"10.1.0.5"}}).Stage)
+	assert.Equal(t, cnisock.ResultReady, call(cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c-a", Namespace: "voice", Name: "a",
+		UID: "u-a", IPs: []string{"10.1.0.5"}}).Result)
 	f.until(t, func(w dpWant) bool { return w.stage != nil && !w.stage.SourceIP })
 	eventually(t, "Netfilter", func() string {
 		if ns := f.nodeState(); ns != nil && ns.Status.Capability != nil {

@@ -75,7 +75,7 @@ func TestNetnsProbe(t *testing.T) {
 	}
 	require.NoError(t, netns.Set(orig))
 
-	sock, reqs := agent(t, cnisock.Response{Result: cnisock.ResultReady, Probe: true, Stage: cnisock.StageMark})
+	sock, reqs := agent(t, cnisock.Response{Result: cnisock.ResultReady, Probe: true})
 	var out, log bytes.Buffer
 	// A third address the namespace doesn't have: not sent, not reported.
 	prev := `{"cniVersion":"1.0.0","ips":[{"address":"10.244.2.9/24"},{"address":"fd00:244:2::9/64"},{"address":"10.244.2.10/24"}]}`
@@ -100,5 +100,5 @@ func TestNetnsProbe(t *testing.T) {
 	require.Len(t, r, 2)
 	assert.Equal(t, cnisock.OpProbe, r[1].Op)
 	assert.Equal(t, []string{"10.244.2.9", "fd00:244:2::9"}, r[1].IPs)
-	assert.Contains(t, log.String(), `"stage":"Mark"`)
+	assert.Contains(t, log.String(), `"ips":"10.244.2.9,fd00:244:2::9","level":"info","msg":"stage probe sent"`)
 }

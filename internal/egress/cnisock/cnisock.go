@@ -103,14 +103,12 @@ type Request struct {
 
 // Response is the agent's answer: a Result, or an Error that fails the
 // call. A refused version carries the versions the agent speaks. Probe
-// asks the plugin to send the stage probe and report it (ADD); Stage is
-// what the probe found (PROBE).
+// asks the plugin to send the stage probe and report it (ADD).
 type Response struct {
 	Version    int    `json:"version"`
 	Result     string `json:"result,omitempty"`
 	Error      string `json:"error,omitempty"`
 	Probe      bool   `json:"probe,omitempty"`
-	Stage      string `json:"stage,omitempty"`
 	MinVersion int    `json:"minVersion,omitempty"`
 	MaxVersion int    `json:"maxVersion,omitempty"`
 }

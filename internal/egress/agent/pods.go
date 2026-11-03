@@ -152,6 +152,7 @@ func (a *Agent) syncPods() {
 	if s == nil || !s.synced.Load() {
 		return
 	}
+	a.settled()
 	in := a.podNodeInput(s)
 	prev := a.podnode
 	if prev == nil {

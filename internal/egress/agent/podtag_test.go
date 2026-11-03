@@ -328,11 +328,22 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 		probed <- nil
 	}()
 	require.NoError(t, <-probed)
-	b.prober.Store(&probeTicket{container: "c-probe", at: time.Now()})
+	// The counters are watched on another goroutine, whose thread isn't
+	// in this namespace: read them on a socket opened here.
+	lasting, err := datapath.NftConn(nftables.AsLasting())
+	require.NoError(t, err)
+	defer lasting.CloseLasting()
+	b.probeCounts = func() (map[string]datapath.ProbeCount, error) { return datapath.ProbeCounts(lasting) }
+	tk := &probeTicket{container: "c-probe", at: time.Now()}
+	b.prober.Store(tk)
 	resp := b.probeReport(cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c-probe", Namespace: "voice", Name: "a"},
 		[]netip.Addr{pod4, pod6})
 	require.Empty(t, resp.Error)
-	assert.Equal(t, cnisock.StageMark, resp.Stage)
+	for deadline := time.Now().Add(5 * time.Second); tk.result.Load() == nil && !tk.failed.Load() && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, tk.result.Load())
+	assert.Equal(t, cnisock.StageMark, tk.result.Load().stage)
 	counts, err := datapath.ProbeCounts(b.dp.nft)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]datapath.ProbeCount{"4": {Seen: 1, Tagged: 1, Forwarded: 1}, "6": {Seen: 1, Tagged: 1, Forwarded: 1}}, counts)

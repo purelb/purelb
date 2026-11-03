@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/nftables"
@@ -37,9 +38,14 @@ import (
 // the next one is asked (a plugin too old to probe never reports).
 const probeTimeout = 30 * time.Second
 
-// probeWait bounds reading the counters after the plugin's report: the
-// datagrams cross the pod's device and the stack asynchronously.
-const probeWait, probePoll = time.Second, 50 * time.Millisecond
+// probeSettle bounds watching the counters after the plugin's report: a
+// datagram can wait seconds for its first hop's neighbour (a node's first
+// pod after boot, IPv6: found on prox-purelb2 2026-11-03). The plugin is
+// answered at once and the counters are watched in the background (user
+// decision 2026-11-03).
+var probeSettle = 10 * time.Second
+
+const probePoll = 50 * time.Millisecond
 
 // stageResult is what this session's probe found.
 type stageResult struct {
@@ -47,10 +53,14 @@ type stageResult struct {
 	detail string
 }
 
-// probeTicket is the sandbox asked to probe, and when.
+// probeTicket is the sandbox asked to probe, and when; result is what its
+// report's counters showed, for the queue goroutine to take (settled).
 type probeTicket struct {
 	container string
 	at        time.Time
+	reported  atomic.Bool
+	result    atomic.Pointer[stageResult]
+	failed    atomic.Bool
 }
 
 // askProbe adds the probe request to v, an ADD's final ready verdict for
@@ -74,8 +84,8 @@ func (a *Agent) askProbe(container string, st podState, v *cniVerdict) *cniVerdi
 	return &asked
 }
 
-// probeReport reads where the probe the plugin sent from ips was seen, on
-// the socket's goroutine, and records the node's stage.
+// probeReport takes the plugin's report that it sent the probe from ips,
+// on the socket's goroutine, and watches the counters in the background.
 func (a *Agent) probeReport(req cnisock.Request, ips []netip.Addr) cnisock.Response {
 	t := a.prober.Load()
 	if t == nil || t.container != req.ContainerID {
@@ -88,25 +98,49 @@ func (a *Agent) probeReport(req cnisock.Request, ips []netip.Addr) cnisock.Respo
 	if len(fams) == 0 {
 		return a.cniAnswer(req, &cniVerdict{err: "the probe report names no pod address"})
 	}
+	if t.reported.CompareAndSwap(false, true) {
+		go a.settleProbe(t, req.Namespace+"/"+req.Name, fams)
+	}
+	return a.cniAnswer(req, &cniVerdict{result: cnisock.ResultReady})
+}
+
+// settleProbe reads the probe's counters until every family probed is
+// forwarded, or for probeSettle, and leaves the stage they show in t.
+func (a *Agent) settleProbe(t *probeTicket, pod string, fams map[string]bool) {
 	var counts map[string]datapath.ProbeCount
 	var err error
-	for deadline := time.Now().Add(probeWait); ; time.Sleep(probePoll) {
+	for deadline := time.Now().Add(probeSettle); ; time.Sleep(probePoll) {
 		if counts, err = a.probeCounts(); err == nil && forwarded(counts, fams) || time.Now().After(deadline) {
 			break
 		}
 	}
 	if err != nil {
-		a.prober.CompareAndSwap(t, nil)
-		return a.cniAnswer(req, &cniVerdict{err: "reading the probe's counters: " + err.Error()})
+		logging.Info(a.logger, "op", "egressStageProbe", "node", a.node, "pod", pod, "error", err,
+			"msg", "reading the stage probe's counters; the next selected pod probes again")
+		t.failed.Store(true)
+	} else {
+		r := stageOf(counts, fams)
+		logging.Info(a.logger, "op", "egressStageProbe", "node", a.node, "pod", pod, "stage", r.stage,
+			"detail", r.detail, "msg", "stage probe")
+		t.result.Store(r)
 	}
-	r := stageOf(counts, fams)
-	a.stage.Store(r)
-	a.prober.CompareAndSwap(t, nil)
-	logging.Info(a.logger, "op", "egressStageProbe", "node", a.node, "pod", req.Namespace+"/"+req.Name, "stage", r.stage,
-		"detail", r.detail, "msg", "stage probe")
-	a.add(keyPods, false) // the classification
-	a.add(keyNode, false) // the capability and conditions
-	return a.cniAnswer(req, &cniVerdict{result: cnisock.ResultReady, stage: r.stage})
+	a.add(keyPods, false) // the classification, and the capability and conditions
+}
+
+// settled takes the stage the asked sandbox's probe found, once its
+// counters settled. Queue goroutine only, as stopSession, so a probe
+// settling after its session stopped is dropped with its ticket.
+func (a *Agent) settled() {
+	t := a.prober.Load()
+	if t == nil {
+		return
+	}
+	if r := t.result.Load(); r != nil {
+		a.stage.Store(r)
+		a.prober.Store(nil)
+	} else if t.failed.Load() {
+		a.prober.Store(nil)
+	}
 }
 
 func forwarded(counts map[string]datapath.ProbeCount, fams map[string]bool) bool {

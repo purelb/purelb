@@ -17,6 +17,7 @@ package agent
 import (
 	"errors"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -100,33 +101,62 @@ func TestProbeReport(t *testing.T) {
 	a.prober.Store(&probeTicket{container: "c1", at: time.Now()})
 	assert.Contains(t, a.probeReport(req, nil).Error, "names no pod address")
 
-	// The counters can't be read: reported, and the next pod asked.
+	defer func(d time.Duration) { probeSettle = d }(probeSettle)
+	probeSettle = 500 * time.Millisecond
+	// report answers ready at once and settles the ticket in the
+	// background; settled takes the result on the queue goroutine.
+	report := func(ips []netip.Addr) (*probeTicket, cnisock.Response, time.Duration) {
+		tk := &probeTicket{container: "c1", at: time.Now()}
+		a.prober.Store(tk)
+		start := time.Now()
+		resp := a.probeReport(req, ips)
+		assert.Less(t, time.Since(start), probeSettle/2, "the plugin isn't kept waiting")
+		require.Eventually(t, func() bool { return tk.result.Load() != nil || tk.failed.Load() }, 5*time.Second, 5*time.Millisecond)
+		return tk, resp, time.Since(start)
+	}
+
+	// The counters can't be read for probeSettle: reported, and the
+	// next pod asked.
 	a.probeCounts = func() (map[string]datapath.ProbeCount, error) { return nil, errors.New("no table") }
-	assert.Contains(t, a.probeReport(req, ips).Error, "no table")
+	tk, resp, took := report(ips)
+	assert.GreaterOrEqual(t, took, probeSettle, "retried meanwhile")
+	assert.Equal(t, cnisock.ResultReady, resp.Result)
+	assert.True(t, tk.failed.Load())
+	a.settled()
 	assert.Nil(t, a.prober.Load())
 	assert.Nil(t, a.stage.Load())
 
 	// Counted only after a while: read until forwarded in each family.
-	a.prober.Store(&probeTicket{container: "c1", at: time.Now()})
-	reads := 0
+	var reads atomic.Int32
 	a.probeCounts = func() (map[string]datapath.ProbeCount, error) {
-		reads++
-		if reads < 3 {
+		if reads.Add(1) < 3 {
 			return map[string]datapath.ProbeCount{"4": pc(1, 1, 1)}, nil
 		}
 		return map[string]datapath.ProbeCount{"4": pc(1, 1, 1), "6": pc(1, 1, 1)}, nil
 	}
-	resp := a.probeReport(req, ips)
-	assert.Equal(t, cnisock.StageMark, resp.Stage)
-	assert.Equal(t, 3, reads)
+	tk, resp, _ = report(ips)
+	assert.Equal(t, cnisock.ResultReady, resp.Result)
+	assert.Equal(t, int32(3), reads.Load())
+	assert.Nil(t, a.stage.Load(), "until the queue goroutine takes it")
+	// A second report of the same ticket starts no second watch.
+	assert.Equal(t, cnisock.ResultReady, a.probeReport(req, ips).Result)
+	time.Sleep(3 * probePoll)
+	assert.Equal(t, int32(3), reads.Load())
+	a.settled()
 	assert.Equal(t, cnisock.StageMark, a.stage.Load().stage)
 	assert.Nil(t, a.prober.Load())
+	assert.Contains(t, a.probeReport(req, ips).Error, "asked no stage probe", "once per start")
 
-	// Never forwarded: given up after probeWait, bypassed.
+	// Never forwarded: given up after probeSettle, bypassed.
 	a.stage.Store(nil)
-	a.prober.Store(&probeTicket{container: "c1", at: time.Now()})
 	a.probeCounts = func() (map[string]datapath.ProbeCount, error) { return map[string]datapath.ProbeCount{}, nil }
-	start := time.Now()
-	assert.Equal(t, cnisock.StageBypassed, a.probeReport(req, ips[:1]).Stage)
-	assert.GreaterOrEqual(t, time.Since(start), probeWait)
+	tk, resp, took = report(ips[:1])
+	assert.Equal(t, cnisock.ResultReady, resp.Result)
+	assert.GreaterOrEqual(t, took, probeSettle)
+	assert.Equal(t, cnisock.StageBypassed, tk.result.Load().stage)
+
+	// A session stopped meanwhile drops it with its ticket.
+	a.prober.Store(nil)
+	a.settled()
+	assert.Nil(t, a.stage.Load())
 }
