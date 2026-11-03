@@ -27,6 +27,8 @@ import (
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	"golang.org/x/sys/unix"
+
+	"purelb.io/internal/egress/cnisock"
 )
 
 // PodStage is the pod-node stage's netfilter program (design 6.3): a
@@ -239,7 +241,24 @@ func (b *builder) podStage(p PodStage) error {
 		return err
 	}
 
+	// The stage probe (design 6.1): counted just ahead of classify, with
+	// pl_pod_tag's mark or without it, and at forward, where it is
+	// dropped; classify leaves it alone, so it takes no slot.
+	pre := b.chain("probe_pre", filterHook(nftables.ChainHookPrerouting, -95))
+	fwd := b.chain("probe_fwd", filterHook(nftables.ChainHookForward, -200))
+	for _, f := range nftFamilies {
+		for _, c := range []string{"probe_pre", "probe_tag", "probe_fwd"} {
+			b.obj(&nftables.NamedObj{Name: c + f.n, Type: nftables.ObjTypeCounter, Obj: &expr.Counter{}})
+		}
+		b.rule(pre, cat(probeFlow(f), objref("probe_pre"+f.n))...)
+		b.rule(pre, cat(probeFlow(f), m.load(), notZero(), objref("probe_tag"+f.n))...)
+		b.rule(fwd, cat(probeFlow(f), objref("probe_fwd"+f.n), verdict(expr.VerdictDrop))...)
+	}
+
 	cl := b.chain("classify", filterHook(nftables.ChainHookPrerouting, -90))
+	for _, f := range nftFamilies {
+		b.rule(cl, cat(probeFlow(f), verdict(expr.VerdictReturn))...)
+	}
 	if !p.SourceIP {
 		// Unselected pods and host traffic: nothing to do.
 		b.rule(cl, cat(m.load(), isZero(), m.loadCt(), isZero(), verdict(expr.VerdictReturn))...)
@@ -474,6 +493,20 @@ func isZero() []expr.Any {
 	return []expr.Any{&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ne32(0)}}
 }
 
+func notZero() []expr.Any {
+	return []expr.Any{&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: ne32(0)}}
+}
+
+// probeFlow matches the stage probe of family f (design 6.1).
+func probeFlow(f nftFamily) []expr.Any {
+	to := cnisock.ProbeV4
+	if f.n == "6" {
+		to = cnisock.ProbeV6
+	}
+	return cat(f.match(), f.daddr(1), []expr.Any{&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: to.AsSlice()}},
+		l4protoIs(unix.IPPROTO_UDP), dport(1), []expr.Any{&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: be16(cnisock.ProbePort)}})
+}
+
 // fibLocal matches a destination that is one of this node's addresses.
 func fibLocal() []expr.Any {
 	return []expr.Any{
@@ -670,6 +703,24 @@ func stageCounters(c *nftables.Conn) (map[string]uint64, error) {
 		}
 	}
 	return counts, nil
+}
+
+// ProbeCount is what the stage probe's counters saw in one family since
+// the table was written: packets just ahead of classify, those of them
+// carrying pl_pod_tag's mark, and those forwarded.
+type ProbeCount struct{ Seen, Tagged, Forwarded uint64 }
+
+// ProbeCounts reads the stage probe's counters, by family ("4", "6").
+func ProbeCounts(c *nftables.Conn) (map[string]ProbeCount, error) {
+	counts, err := stageCounters(c)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]ProbeCount{}
+	for _, f := range nftFamilies {
+		out[f.n] = ProbeCount{Seen: counts["probe_pre"+f.n], Tagged: counts["probe_tag"+f.n], Forwarded: counts["probe_fwd"+f.n]}
+	}
+	return out, nil
 }
 
 // SlotFlows are a slot's new flows since the table was written: marked

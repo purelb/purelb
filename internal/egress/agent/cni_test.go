@@ -157,7 +157,9 @@ func TestCNISocket(t *testing.T) {
 
 	// Selected, its slice Active: ready once its device carries its
 	// pod-set, the address from ADD.
-	require.Eventually(t, func() bool { return call(add).Result == cnisock.ResultReady }, 5*time.Second, 50*time.Millisecond)
+	var first cnisock.Response
+	require.Eventually(t, func() bool { first = call(add); return first.Result == cnisock.ResultReady }, 5*time.Second, 50*time.Millisecond)
+	assert.True(t, first.Probe, "the first selected pod after the start sends the stage probe")
 
 	// The snapshot the plugin decides by without the agent (D35).
 	var snap cnisock.Snapshot
@@ -189,14 +191,31 @@ func TestCNISocket(t *testing.T) {
 	eventually(t, "True "+condDatapathCompatible, func() string { return f.condition(condDatapathCompatible) }, "chained again")
 	assert.Equal(t, cnisock.ResultReady, call(cnisock.Request{Op: cnisock.OpCheck, ContainerID: "c-a", Namespace: "voice", Name: "a"}).Result)
 	assert.Contains(t, call(cnisock.Request{Op: cnisock.OpCheck, ContainerID: "c-x", Namespace: "voice", Name: "a"}).Error, "no record")
-	assert.Equal(t, cnisock.ResultReady, call(cnisock.Request{Op: cnisock.OpAdd, ContainerID: "c-b", Namespace: "web", Name: "b",
-		UID: "u-b", IPs: []string{"10.1.0.6"}}).Result, "not selected")
+	unsel := call(cnisock.Request{Op: cnisock.OpAdd, ContainerID: "c-b", Namespace: "web", Name: "b", UID: "u-b", IPs: []string{"10.1.0.6"}})
+	assert.Equal(t, cnisock.ResultReady, unsel.Result, "not selected")
+	assert.False(t, unsel.Probe)
 	assert.Equal(t, cnisock.ResultPass, call(cnisock.Request{Op: cnisock.OpAdd, ContainerID: "c-k", Namespace: "kube-system",
 		Name: "dns", UID: "u-k", IPs: []string{"10.1.0.7"}}).Result, "system namespaces are never held")
 	assert.Contains(t, call(cnisock.Request{Op: cnisock.OpAdd, ContainerID: "c-z", Namespace: "voice", Name: "z",
 		IPs: []string{"nope"}}).Error, "bad pod address")
 	assert.Equal(t, cnisock.ResultPass, call(cnisock.Request{Op: cnisock.OpAdd, ContainerID: "c-u", Namespace: "web", Name: "unknown",
 		UID: "u-u", IPs: []string{"10.1.0.8"}}).Result, "not known, and no FailClosed policy covers its namespace")
+
+	// The stage probe's report (design 6.1): only from the sandbox asked.
+	// Classified by mark from then on, and reported.
+	assert.Contains(t, call(cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c-b", Namespace: "web", Name: "b",
+		IPs: []string{"10.1.0.6"}}).Error, "asked no stage probe")
+	assert.Equal(t, cnisock.StageMark, call(cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c-a", Namespace: "voice", Name: "a",
+		UID: "u-a", IPs: []string{"10.1.0.5"}}).Stage)
+	f.until(t, func(w dpWant) bool { return w.stage != nil && !w.stage.SourceIP })
+	eventually(t, "Netfilter", func() string {
+		if ns := f.nodeState(); ns != nil && ns.Status.Capability != nil {
+			return ns.Status.Capability.PodNodeStage
+		}
+		return ""
+	}, "the stage reported")
+	assert.Contains(t, call(cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c-a", Namespace: "voice", Name: "a",
+		IPs: []string{"10.1.0.5"}}).Error, "asked no stage probe", "once per start")
 
 	// DEL: its address leaves the datapath's pods.
 	assert.Equal(t, cnisock.ResultReady, call(cnisock.Request{Op: cnisock.OpDel, ContainerID: "c-a", Namespace: "voice", Name: "a",

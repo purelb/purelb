@@ -32,6 +32,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"purelb.io/internal/egress"
+	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -175,7 +176,8 @@ func (a *Agent) syncPods() {
 	logging.Debug(a.logger, "op", "egressPods", "node", a.node, "slots", len(pn.slots), "podSets", len(pn.sets),
 		"pods", len(pn.pods), "retired", len(pn.retired))
 	a.add(keyNode, false) // capability.slots and SlotsExhausted
-	pods, stage := dpPods(pn), stagePlan(pn, in, markShift(s.spec))
+	r := a.stage.Load()
+	pods, stage := dpPods(pn), stagePlan(pn, in, markShift(s.spec), r == nil || r.stage != cnisock.StageMark)
 	a.flowView.Store(newFlowView(pn, pods))
 	// A new spec generation is acked once installed, changed or not.
 	if !slices.Equal(pods, a.podsWant) || a.podsWant == nil || !reflect.DeepEqual(stage, a.stageWant) ||

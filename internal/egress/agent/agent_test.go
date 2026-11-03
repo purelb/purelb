@@ -89,6 +89,10 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	a.SetElection(&fakeElector{}) // the agent always runs with one
 	a.statusInterval = 50 * time.Millisecond
 	a.installerPoll = 50 * time.Millisecond
+	// The stage probe's counters: tagged and forwarded in both families.
+	a.probeCounts = func() (map[string]datapath.ProbeCount, error) {
+		return map[string]datapath.ProbeCount{"4": {Seen: 1, Tagged: 1, Forwarded: 1}, "6": {Seen: 1, Tagged: 1, Forwarded: 1}}, nil
+	}
 	wants := make(chan dpWant, 100)
 	a.apply = func(w dpWant) (*purelbv2.EgressCapability, error) {
 		wants <- w

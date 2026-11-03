@@ -68,7 +68,7 @@ func TestStagePlan(t *testing.T) {
 			Reserved: []purelbv2.EgressNodeReserved{{Endpoints: "e-web", Address: "192.0.2.1", Protocol: "UDP", Port: 5060, Pod: "a"}},
 		}}
 	pn := planPodNode(in, nil)
-	ps := stagePlan(pn, in, 8)
+	ps := stagePlan(pn, in, 8, true)
 	assert.True(t, ps.SourceIP, "source-IP classification until the stage probe")
 	assert.Equal(t, uint8(8), ps.MarkShift)
 
@@ -117,5 +117,5 @@ func TestStagePlan(t *testing.T) {
 
 	// The same input plans the same program (the datapath rewrites the
 	// table only when it changes).
-	assert.Equal(t, ps, stagePlan(planPodNode(in, pn), in, 8))
+	assert.Equal(t, ps, stagePlan(planPodNode(in, pn), in, 8, true))
 }

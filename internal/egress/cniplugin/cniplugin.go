@@ -230,8 +230,35 @@ func (p plugin) add(args *skel.CmdArgs) error {
 	default:
 		return fmt.Errorf("the PureLB agent answered %q", resp.Result)
 	}
+	if resp.Probe {
+		c.probe(args.Netns)
+	}
 	logging.Info(c.logger, "op", "cniAdd", "pod", c.pod(), "result", resp.Result, "duration", time.Since(start).String(), "msg", "pod admitted")
 	return result()
+}
+
+// probe sends the stage probe the agent asked for from the pod's network
+// namespace and reports it (design 6.1). It never fails the ADD: without
+// a report the agent asks another pod.
+func (c *call) probe(netnsPath string) {
+	sent, err := sendProbe(netnsPath, c.req.IPs)
+	if err != nil {
+		logging.Info(c.logger, "op", "cniProbe", "pod", c.pod(), "error", err, "msg", "the stage probe wasn't sent in every family")
+	}
+	if len(sent) == 0 {
+		return
+	}
+	report := *c
+	report.req.Op, report.req.IPs = cnisock.OpProbe, sent
+	resp, _, err := report.ask(otherTimeout)
+	if err == nil && resp.Error != "" {
+		err = errors.New(resp.Error)
+	}
+	if err != nil {
+		logging.Info(c.logger, "op", "cniProbe", "pod", c.pod(), "error", err, "msg", "the stage probe wasn't reported")
+		return
+	}
+	logging.Info(c.logger, "op", "cniProbe", "pod", c.pod(), "ips", strings.Join(sent, ","), "stage", resp.Stage, "msg", "stage probe")
 }
 
 // fromSnapshot decides the pod by the agent's snapshot (§8.1), saying

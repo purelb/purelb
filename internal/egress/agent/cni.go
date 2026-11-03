@@ -76,6 +76,10 @@ type waiter struct {
 type cniVerdict struct {
 	result, err string
 	final       bool
+	// probe asks the plugin for the stage probe (ADD); stage is what one
+	// found (PROBE).
+	probe bool
+	stage string
 }
 
 func (w *waiter) set(v *cniVerdict) {
@@ -130,6 +134,8 @@ func (a *Agent) handleCNI(req cnisock.Request) cnisock.Response {
 		a.sandboxes.Store(req.ContainerID, sb)
 		a.add(keyPods, false)
 		return a.cniAnswer(req, &cniVerdict{result: cnisock.ResultReady})
+	case cnisock.OpProbe:
+		return a.probeReport(req, ips)
 	case cnisock.OpCheck:
 		if v, ok := a.sandboxes.Load(req.ContainerID); ok && !v.(*cniSandbox).deleted {
 			return a.cniAnswer(req, &cniVerdict{result: cnisock.ResultReady})
@@ -181,12 +187,16 @@ func (a *Agent) cniAnswer(req cnisock.Request, v *cniVerdict) cnisock.Response {
 		logging.Info(a.logger, append(kv, "error", v.err)...)
 		return cnisock.Response{Error: v.err}
 	}
+	if v.probe {
+		logging.Info(a.logger, append(kv, "msg", "asking the plugin for the stage probe")...)
+		return cnisock.Response{Result: v.result, Probe: true}
+	}
 	if result == cnisock.ResultHeld {
 		logging.Info(a.logger, append(kv, "msg", "its slice isn't ready: its traffic leaving the cluster is dropped until it is")...)
 	} else {
 		logging.Debug(a.logger, kv...)
 	}
-	return cnisock.Response{Result: v.result}
+	return cnisock.Response{Result: v.result, Stage: v.stage}
 }
 
 // syncCNI decides each waiting ADD from the pod-node state and the pod
@@ -201,9 +211,9 @@ func (a *Agent) syncCNI() {
 		tagged = *t
 	}
 	c := a.capability.Load()
-	a.waiters.Range(func(_, v any) bool {
+	a.waiters.Range(func(k, v any) bool {
 		w := v.(*waiter)
-		w.set(cniDecide(s, pn, c, tagged, w))
+		w.set(a.askProbe(k.(string), pn.pods[w.namespace+"/"+w.name], cniDecide(s, pn, c, tagged, w)))
 		return true
 	})
 }

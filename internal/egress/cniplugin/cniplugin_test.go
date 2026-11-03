@@ -240,6 +240,20 @@ func TestAddFromSnapshot(t *testing.T) {
 	}
 }
 
+// A probe that can't be sent (no such namespace here) is logged and not
+// reported; the pod is admitted all the same.
+func TestAddProbeUnsent(t *testing.T) {
+	sock, reqs := agent(t, cnisock.Response{Result: cnisock.ResultReady, Probe: true})
+	var out, log bytes.Buffer
+	err := plugin{out: &out, log: &log, now: time.Now}.add(&skel.CmdArgs{ContainerID: "c1", Netns: "/nonexistent/netns",
+		IfName: "eth0", Args: podArgsStr, StdinData: conf(t, "1.0.0", sock, prev100)})
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "10.244.2.9/24")
+	assert.Contains(t, log.String(), "the stage probe wasn't sent")
+	r := reqs.take()
+	require.Len(t, r, 1, "the ADD, no report")
+}
+
 func TestAddSystemAsksAgent(t *testing.T) {
 	// A system pod is recorded by the agent, and passes whatever it says.
 	sock, reqs := agent(t, cnisock.Response{Error: "anything"})

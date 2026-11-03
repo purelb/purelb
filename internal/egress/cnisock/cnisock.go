@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"time"
 )
@@ -40,11 +41,34 @@ const (
 	MinVersion = 1
 )
 
-// Operations, as the CNI names them.
+// Operations: the CNI's, and PROBE, the plugin's report that it sent the
+// stage probe an ADD's answer asked for (design 6.1).
 const (
 	OpAdd   = "ADD"
 	OpDel   = "DEL"
 	OpCheck = "CHECK"
+	OpProbe = "PROBE"
+)
+
+// The stage probe (design 6.1): one UDP datagram per pod family, from the
+// new pod's network namespace to a destination that is never used (a
+// TEST-NET-2 host, and the RFC 6666 discard-only prefix), which the
+// agent's table counts as it passes and drops before it leaves the node.
+var (
+	ProbeV4 = netip.MustParseAddr("198.51.100.254")
+	ProbeV6 = netip.MustParseAddr("100::1")
+)
+
+// ProbePort is the probe's UDP destination port (discard).
+const ProbePort = 9
+
+// Stages a probe finds: pl_pod_tag's mark reaches classify (Mark), the
+// packet reaches it without the mark (SourceIP), or it never reaches
+// netfilter (Bypassed: the eBPF stage's case).
+const (
+	StageMark     = "Mark"
+	StageSourceIP = "SourceIP"
+	StageBypassed = "Bypassed"
 )
 
 // Results of a request the agent answered. Each lets the pod start.
@@ -78,11 +102,15 @@ type Request struct {
 }
 
 // Response is the agent's answer: a Result, or an Error that fails the
-// call. A refused version carries the versions the agent speaks.
+// call. A refused version carries the versions the agent speaks. Probe
+// asks the plugin to send the stage probe and report it (ADD); Stage is
+// what the probe found (PROBE).
 type Response struct {
 	Version    int    `json:"version"`
 	Result     string `json:"result,omitempty"`
 	Error      string `json:"error,omitempty"`
+	Probe      bool   `json:"probe,omitempty"`
+	Stage      string `json:"stage,omitempty"`
 	MinVersion int    `json:"minVersion,omitempty"`
 	MaxVersion int    `json:"maxVersion,omitempty"`
 }

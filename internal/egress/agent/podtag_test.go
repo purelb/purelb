@@ -285,6 +285,63 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 		apply(t, b, w)
 	}
 	require.Equal(t, "ProtocolUnsupported", b.dp.podFaults[eg].Reason)
+
+	// The stage probe (design 6.1), sent from the pod as the plugin sends
+	// it: seen ahead of classify with pl_pod_tag's mark and forwarded in
+	// both families, then dropped, taking no slot. Forwarding on in both
+	// (a new namespace takes IPv4's from the host's, which may be off,
+	// and starts with IPv6's off), and IPv6 routes both ways.
+	require.NoError(t, os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644))
+	require.NoError(t, os.WriteFile("/proc/sys/net/ipv6/conf/all/forwarding", []byte("1"), 0o644))
+	gw6, err := netlink.ParseAddr("fd04:0:0:1::1/64")
+	require.NoError(t, err)
+	gw6.Flags = unix.IFA_F_NODAD
+	require.NoError(t, netlink.AddrAdd(&netlink.Veth{LinkAttrs: netlink.LinkAttrs{Index: veth}}, gw6))
+	require.NoError(t, ph.RouteAdd(&netlink.Route{Gw: net.ParseIP("fd04:0:0:1::1")}))
+	require.NoError(t, netlink.RouteAdd(&netlink.Route{LinkIndex: eth0.Attrs().Index, Gw: net.ParseIP("fd00::254")}))
+	flows, err := datapath.ForwardCounts(b.dp.nft, *b.dp.table.Pods)
+	require.NoError(t, err)
+	txPackets := func() uint64 {
+		l, err := netlink.LinkByName("eth0")
+		require.NoError(t, err)
+		return l.Attrs().Statistics.TxPackets
+	}
+	tx := txPackets()
+	probed := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread() // discarded with the goroutine
+		if err := netns.Set(podNS); err != nil {
+			probed <- err
+			return
+		}
+		for _, x := range [][2]netip.Addr{{pod4, cnisock.ProbeV4}, {pod6, cnisock.ProbeV6}} {
+			c, err := net.DialUDP("udp", &net.UDPAddr{IP: x[0].AsSlice()}, &net.UDPAddr{IP: x[1].AsSlice(), Port: cnisock.ProbePort})
+			if err == nil {
+				_, err = c.Write([]byte("probe"))
+				_ = c.Close()
+			}
+			if err != nil {
+				probed <- err
+				return
+			}
+		}
+		probed <- nil
+	}()
+	require.NoError(t, <-probed)
+	b.prober.Store(&probeTicket{container: "c-probe", at: time.Now()})
+	resp := b.probeReport(cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c-probe", Namespace: "voice", Name: "a"},
+		[]netip.Addr{pod4, pod6})
+	require.Empty(t, resp.Error)
+	assert.Equal(t, cnisock.StageMark, resp.Stage)
+	counts, err := datapath.ProbeCounts(b.dp.nft)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]datapath.ProbeCount{"4": {Seen: 1, Tagged: 1, Forwarded: 1}, "6": {Seen: 1, Tagged: 1, Forwarded: 1}}, counts)
+	after, err := datapath.ForwardCounts(b.dp.nft, *b.dp.table.Pods)
+	require.NoError(t, err)
+	assert.Equal(t, flows, after, "no slot for the probe")
+	assert.Equal(t, tx, txPackets(), "dropped: the probe never leaves the node")
+	b.stage.Store(nil)
+
 	faults := b.faultList(health(b.dp, w, nil))
 	assert.Contains(t, faults, purelbv2.EgressAddressFault{Address: "192.0.2.1", Reason: "ProtocolUnsupported",
 		Message: b.dp.podFaults[eg].Message})

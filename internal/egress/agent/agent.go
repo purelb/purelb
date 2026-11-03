@@ -202,6 +202,13 @@ type Agent struct {
 	// installer is the purelb-cni installer's last status. Written by its
 	// poller.
 	installer atomic.Pointer[cnisock.InstallerStatus]
+	// stage is what this session's stage probe found (nil: not yet),
+	// prober the sandbox asked to probe; probeCounts reads the probe's
+	// counters (tests use their own). Written by the queue and socket
+	// goroutines.
+	stage       atomic.Pointer[stageResult]
+	prober      atomic.Pointer[probeTicket]
+	probeCounts func() (map[string]datapath.ProbeCount, error)
 
 	now func() time.Time
 	// statusInterval is the status writer's interval, installerPoll how
@@ -256,7 +263,7 @@ func New(logger log.Logger, node, namespace string) *Agent {
 		placements: map[netip.Addr]map[string]egresshook.ServicePlacement{},
 		placed:     map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
 		sendProbe: sendUDPProbe, tableSlots: tableSlots, sockPath: cnisock.DefaultPath, snapPath: cnisock.SnapshotPath,
-		desiredPath: cnisock.DesiredPath, statusPath: cnisock.StatusPath,
+		desiredPath: cnisock.DesiredPath, statusPath: cnisock.StatusPath, probeCounts: readProbeCounts,
 		cniHold: cniHold}
 	a.apply, a.tear = a.applyDatapath, a.teardown
 	return a
@@ -556,6 +563,8 @@ func (a *Agent) stopSession() {
 	a.installed.Store(nil)
 	a.tagged.Store(nil)
 	a.installer.Store(nil)
+	a.stage.Store(nil)
+	a.prober.Store(nil)
 	a.probing.Store(nil)
 	a.acks.Store(nil)
 	a.specAck.Store(0)
@@ -577,6 +586,12 @@ func (a *Agent) syncNode() {
 	c = c.DeepCopy()
 	c.Underlay = underlay(s.nodes, a.node)
 	c.Slots = &purelbv2.EgressSlots{Capacity: slotBudget}
+	if r := a.stage.Load(); r != nil {
+		c.PodNodeStage = "Netfilter"
+		if r.stage == cnisock.StageBypassed {
+			c.PodNodeStage = "EBPF" // the stage it needs (Phase 7)
+		}
+	}
 	var claims []string
 	if pn := a.podnode; pn != nil {
 		c.Slots.Used, c.Slots.PodSets = int32(pn.used()), int32(len(pn.sets))

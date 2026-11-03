@@ -37,12 +37,12 @@ var kernelHelpers = map[purelbv2.EgressHelper][]datapath.Helper{
 
 // stagePlan is the pod-node stage's nft program for pn (design 6.3): each
 // pod-set's policies in rank order, each policy's destinations and the
-// slot its new flows take per family, and every slot's SNAT. Nodes
-// classify by source address until the stage probe (Phase 6) can tell
-// where pl_pod_tag's mark survives. The datapath adds the cluster
-// networks and each slot's MSS. Queue goroutine only.
-func stagePlan(pn *podNode, in pnInput, markShift uint8) *datapath.PodStage {
-	ps := &datapath.PodStage{MarkShift: markShift, SourceIP: true, Pods: map[netip.Addr]uint8{},
+// slot its new flows take per family, and every slot's SNAT. sourceIP
+// classifies by source address, as a node does until its stage probe
+// shows pl_pod_tag's mark reaching classify (design 6.1). The datapath
+// adds the cluster networks and each slot's MSS. Queue goroutine only.
+func stagePlan(pn *podNode, in pnInput, markShift uint8, sourceIP bool) *datapath.PodStage {
+	ps := &datapath.PodStage{MarkShift: markShift, SourceIP: sourceIP, Pods: map[netip.Addr]uint8{},
 		PodSets: map[uint8][]string{}, Policies: map[string]datapath.Policy{}, Slots: map[uint8]datapath.Slot{}}
 	policies := map[egress.PolicyRef]*pnPolicy{}
 	for _, p := range in.policies {

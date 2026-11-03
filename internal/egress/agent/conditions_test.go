@@ -84,6 +84,13 @@ func TestNodeConditions(t *testing.T) {
 		Conflist: "05-cilium.conflist", Message: "rewritten"})
 	assert.Equal(t, "False CNIChainMissing", get(a.nodeConditions(ok, nil, nil), condDatapathCompatible))
 	assert.Equal(t, "False MarkConflict", get(a.nodeConditions(ok, &dpHealth{markConflict: "x"}, nil), condDatapathCompatible))
+
+	// Pod traffic that bypasses netfilter needs the eBPF stage (design
+	// 6.1), ahead of the rest.
+	a.stage.Store(&stageResult{stage: cnisock.StageBypassed, detail: "IPv4 pod traffic never reached the forward hook"})
+	assert.Equal(t, "False NetfilterBypassed", get(a.nodeConditions(ok, &dpHealth{markConflict: "x"}, nil), condDatapathCompatible))
+	a.stage.Store(&stageResult{stage: cnisock.StageSourceIP})
+	assert.Equal(t, "False MarkConflict", get(a.nodeConditions(ok, &dpHealth{markConflict: "x"}, nil), condDatapathCompatible))
 }
 
 func TestChainCondition(t *testing.T) {
