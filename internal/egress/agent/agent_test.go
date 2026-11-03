@@ -17,6 +17,8 @@ package agent
 import (
 	"context"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/egress/datapath"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	purelbfake "purelb.io/pkg/generated/clientset/versioned/fake"
@@ -78,11 +81,34 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	}
 	purelb := purelbfake.NewSimpleClientset(purelbObjs...)
 	a := New(log.NewNopLogger(), testNode, "purelb-system")
+	a.sockPath = filepath.Join(t.TempDir(), "egress.sock")
+	a.snapPath = filepath.Join(t.TempDir(), "egress-snapshot.json")
+	// The purelb-cni installer, reporting the plugin chained.
+	a.desiredPath = filepath.Join(filepath.Dir(a.snapPath), "cni-desired.json")
+	a.statusPath = filepath.Join(t.TempDir(), "cni-status.json")
+	a.recordDir = filepath.Join(t.TempDir(), "sandboxes")
+	// No installer answers teardown here (TestUnchain has one).
+	a.unchainWait = 100 * time.Millisecond
+	require.NoError(t, cnisock.WriteStatus(a.statusPath, cnisock.InstallerStatus{Written: time.Now(), Chain: cnisock.ChainPresent}))
 	a.SetElection(&fakeElector{}) // the agent always runs with one
 	a.statusInterval = 50 * time.Millisecond
+	a.installerPoll = 50 * time.Millisecond
+	// The stage probe's counters: tagged and forwarded in both families.
+	a.probeCounts = func() (map[string]datapath.ProbeCount, error) {
+		return map[string]datapath.ProbeCount{"4": {Seen: 1, Tagged: 1, Forwarded: 1}, "6": {Seen: 1, Tagged: 1, Forwarded: 1}}, nil
+	}
 	wants := make(chan dpWant, 100)
 	a.apply = func(w dpWant) (*purelbv2.EgressCapability, error) {
 		wants <- w
+		// Every pod's device tagged as wanted, as the kernel's would be.
+		a.dp.tagged = map[netip.Addr]datapath.PodDev{}
+		for _, p := range w.pods {
+			for _, ip := range []netip.Addr{p.v4, p.v6} {
+				if ip.IsValid() {
+					a.dp.tagged[ip] = datapath.PodDev{V4: p.v4, V6: p.v6, PodSet: p.podSet, Hold: p.hold}
+				}
+			}
+		}
 		c := probeCapability(w.spec)
 		c.TunnelEncapsulation = "L3"
 		return c, nil
@@ -91,10 +117,23 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	a.sendProbe = func(netip.Addr, netip.Addr, int, []byte) error { return nil }
 	a.tableSlots = func() (map[uint8]datapath.SlotNAT, error) { return nil, nil }
 	keys := make(chan string, 1000)
-	stop := make(chan struct{})
-	t.Cleanup(func() { close(stop) })
-	require.NoError(t, a.start(stop, kube, purelb, func(k string, _ bool) { keys <- k }))
+	stop, looped := make(chan struct{}), make(chan struct{})
+	// Runs before the TempDirs are removed (registered after them): the
+	// queue loop, the datapath goroutine (teardown's unchain) and the
+	// session's snapshot writer are done writing there.
+	t.Cleanup(func() {
+		close(stop)
+		<-looped
+		if a.crds { // start ran the datapath goroutine only then
+			<-a.runner.exited
+		}
+		if s := a.on; s != nil {
+			close(s.stop)
+			<-s.snap.done
+		}
+	})
 	go func() {
+		defer close(looped)
 		for {
 			select {
 			case <-stop:
@@ -104,6 +143,7 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 			}
 		}
 	}()
+	require.NoError(t, a.start(stop, kube, purelb, func(k string, _ bool) { keys <- k }))
 	return &fixture{a: a, kube: kube, purelb: purelb, wants: wants}
 }
 
@@ -202,18 +242,39 @@ func TestDisableReportsOff(t *testing.T) {
 		ens := f.nodeState()
 		return ens != nil && ens.Status.Capability != nil && ens.Status.Capability.EgressCapable
 	}, 5*time.Second, 20*time.Millisecond)
+	assert.Equal(t, "dev", f.nodeState().Status.Programmed, "what the Helm pre-delete hook waits on (a build without a release)")
+	require.Eventually(t, func() bool { _, err := cnisock.ReadDesired(f.a.desiredPath); return err == nil },
+		5*time.Second, 20*time.Millisecond, "the plugin chained")
+	// The installer removes the plugin when asked (D26).
+	go func() {
+		for range 250 {
+			if d, err := cnisock.ReadDesired(f.a.desiredPath); err == nil && !d.Enabled {
+				_ = cnisock.WriteStatus(f.a.statusPath, cnisock.InstallerStatus{Written: time.Now(), Chain: cnisock.ChainOff,
+					DesiredWritten: d.Written})
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
 	f.a.Configure(agentWith(&purelbv2.LBNodeAgentEgressSpec{Enabled: false}))
 	require.Eventually(t, func() bool {
 		ens := f.nodeState()
 		return ens != nil && !ens.Status.Capability.EgressCapable
 	}, 5*time.Second, 20*time.Millisecond)
+	assert.Empty(t, f.nodeState().Status.Programmed, "torn down")
+	// Out of the chain: nothing left that only the plugin reads.
+	for _, p := range []string{f.a.snapPath, f.a.desiredPath} {
+		_, err := os.Stat(p)
+		assert.ErrorIs(t, err, os.ErrNotExist, p)
+	}
 }
 
 // An agent that starts with egress off corrects a capability left on by
 // an earlier run.
 func TestStartOffCorrectsStaleCapability(t *testing.T) {
 	stale := &purelbv2.EgressNodeState{ObjectMeta: metav1.ObjectMeta{Name: testNode},
-		Status: purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{EgressCapable: true, Kernel: "6.12.0"}}}
+		Status: purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{EgressCapable: true, Kernel: "6.12.0"},
+			Programmed: "v0.17.0"}}
 	f := newFixture(t, true, testNodeObj, stale)
 	f.a.Configure(agentWith(nil))
 	require.Eventually(t, func() bool {
@@ -221,6 +282,16 @@ func TestStartOffCorrectsStaleCapability(t *testing.T) {
 		return !ens.Status.Capability.EgressCapable
 	}, 5*time.Second, 20*time.Millisecond)
 	assert.Equal(t, "6.12.0", f.nodeState().Status.Capability.Kernel, "the rest of the status is kept")
+	assert.Empty(t, f.nodeState().Status.Programmed, "what the earlier run programmed is torn down")
+}
+
+// Only status.programmed left (egress was never capable here): cleared.
+func TestStartOffClearsProgrammed(t *testing.T) {
+	stale := &purelbv2.EgressNodeState{ObjectMeta: metav1.ObjectMeta{Name: testNode},
+		Status: purelbv2.EgressNodeStateStatus{Programmed: "v0.17.0"}}
+	f := newFixture(t, true, testNodeObj, stale)
+	f.a.Configure(agentWith(nil))
+	require.Eventually(t, func() bool { return f.nodeState().Status.Programmed == "" }, 5*time.Second, 20*time.Millisecond)
 }
 
 // The status writer writes at most once per interval, the latest status,
@@ -254,6 +325,38 @@ func TestStatusWriterDebounce(t *testing.T) {
 	w.set(&purelbv2.EgressNodeStateStatus{Capability: &purelbv2.EgressCapability{Kernel: "t"}})
 	time.Sleep(500 * time.Millisecond)
 	assert.Equal(t, n, patches(), "an unchanged status is not rewritten")
+}
+
+// A status adding a claim is written at once, not after the interval
+// (D6); one leaving egress off drops its claims.
+func TestStatusWriterClaimNow(t *testing.T) {
+	purelb := purelbfake.NewSimpleClientset(&purelbv2.EgressNodeState{ObjectMeta: metav1.ObjectMeta{Name: testNode}})
+	w := newStatusWriter(log.NewNopLogger(), testNode, kubefake.NewSimpleClientset(testNodeObj), purelb)
+	w.interval = time.Hour
+	stop := make(chan struct{})
+	defer close(stop)
+	go w.run(stop)
+	claims := func() []purelbv2.EgressClaim {
+		ens, _ := purelb.PurelbV2().EgressNodeStates().Get(context.Background(), testNode, metav1.GetOptions{})
+		return ens.Status.Claims
+	}
+	capable := &purelbv2.EgressCapability{EgressCapable: true}
+	w.set(&purelbv2.EgressNodeStateStatus{Capability: capable}) // the first write goes at once
+	require.Eventually(t, func() bool { return len(purelb.Actions()) > 0 }, 5*time.Second, 10*time.Millisecond)
+	w.set(&purelbv2.EgressNodeStateStatus{Capability: capable, Claims: []purelbv2.EgressClaim{{Endpoints: "e-1"}}})
+	time.Sleep(200 * time.Millisecond)
+	assert.Empty(t, claims(), "set waits out the interval")
+	w.setNow(&purelbv2.EgressNodeStateStatus{Capability: capable, Claims: []purelbv2.EgressClaim{{Endpoints: "e-2"}}})
+	require.Eventually(t, func() bool { c := claims(); return len(c) == 1 && c[0].Endpoints == "e-2" },
+		5*time.Second, 10*time.Millisecond)
+
+	// Egress off claims nothing.
+	purelb = purelbfake.NewSimpleClientset(&purelbv2.EgressNodeState{ObjectMeta: metav1.ObjectMeta{Name: testNode},
+		Status: purelbv2.EgressNodeStateStatus{Capability: capable, Claims: []purelbv2.EgressClaim{{Endpoints: "e-2"}}}})
+	w = newStatusWriter(log.NewNopLogger(), testNode, kubefake.NewSimpleClientset(testNodeObj), purelb)
+	w.disable()
+	require.NoError(t, w.write())
+	assert.Empty(t, claims())
 }
 
 // A failed write is retried.

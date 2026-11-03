@@ -5,6 +5,7 @@ go 1.26.8
 require (
 	github.com/apparentlymart/go-cidr v1.1.0
 	github.com/cilium/ebpf v0.22.0
+	github.com/containernetworking/cni v1.3.1
 	github.com/go-kit/log v0.2.1
 	github.com/google/go-cmp v0.7.0
 	github.com/google/nftables v0.3.0

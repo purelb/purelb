@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +46,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"purelb.io/internal/egress"
+	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/egress/datapath"
+	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -213,6 +217,10 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	assert.Len(t, devs, 1, "a pod with no device yet has no entry")
 	assert.Equal(t, uint8(3), devs[veth].PodSet)
 	assert.True(t, devs[veth].Hold)
+	// What a CNI ADD may count on (§8.1): both of the pod's addresses,
+	// entry and program in place; not the pod with no device.
+	held := datapath.PodDev{V4: pod4, V6: pod6, PodSet: 3, Hold: true}
+	assert.Equal(t, map[netip.Addr]datapath.PodDev{pod4: held, pod6: held}, a.dp.tagged)
 	cluster, err := a.dp.objs.ClusterNetworks()
 	require.NoError(t, err)
 	assert.Contains(t, cluster, netip.MustParsePrefix("10.96.0.0/12"), "from the API")
@@ -280,6 +288,74 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 		apply(t, b, w)
 	}
 	require.Equal(t, "ProtocolUnsupported", b.dp.podFaults[eg].Reason)
+
+	// The stage probe (design 6.1), sent from the pod as the plugin sends
+	// it: seen ahead of classify with pl_pod_tag's mark and forwarded in
+	// both families, then dropped, taking no slot. Forwarding on in both
+	// (a new namespace takes IPv4's from the host's, which may be off,
+	// and starts with IPv6's off), and IPv6 routes both ways.
+	require.NoError(t, os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644))
+	require.NoError(t, os.WriteFile("/proc/sys/net/ipv6/conf/all/forwarding", []byte("1"), 0o644))
+	gw6, err := netlink.ParseAddr("fd04:0:0:1::1/64")
+	require.NoError(t, err)
+	gw6.Flags = unix.IFA_F_NODAD
+	require.NoError(t, netlink.AddrAdd(&netlink.Veth{LinkAttrs: netlink.LinkAttrs{Index: veth}}, gw6))
+	require.NoError(t, ph.RouteAdd(&netlink.Route{Gw: net.ParseIP("fd04:0:0:1::1")}))
+	require.NoError(t, netlink.RouteAdd(&netlink.Route{LinkIndex: eth0.Attrs().Index, Gw: net.ParseIP("fd00::254")}))
+	flows, err := datapath.ForwardCounts(b.dp.nft, *b.dp.table.Pods)
+	require.NoError(t, err)
+	txPackets := func() uint64 {
+		l, err := netlink.LinkByName("eth0")
+		require.NoError(t, err)
+		return l.Attrs().Statistics.TxPackets
+	}
+	tx := txPackets()
+	probed := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread() // discarded with the goroutine
+		if err := netns.Set(podNS); err != nil {
+			probed <- err
+			return
+		}
+		for _, x := range [][2]netip.Addr{{pod4, cnisock.ProbeV4}, {pod6, cnisock.ProbeV6}} {
+			c, err := net.DialUDP("udp", &net.UDPAddr{IP: x[0].AsSlice()}, &net.UDPAddr{IP: x[1].AsSlice(), Port: cnisock.ProbePort})
+			if err == nil {
+				_, err = c.Write([]byte("probe"))
+				_ = c.Close()
+			}
+			if err != nil {
+				probed <- err
+				return
+			}
+		}
+		probed <- nil
+	}()
+	require.NoError(t, <-probed)
+	// The counters are watched on another goroutine, whose thread isn't
+	// in this namespace: read them on a socket opened here.
+	lasting, err := datapath.NftConn(nftables.AsLasting())
+	require.NoError(t, err)
+	defer lasting.CloseLasting()
+	b.probeCounts = func() (map[string]datapath.ProbeCount, error) { return datapath.ProbeCounts(lasting) }
+	tk := &probeTicket{container: "c-probe", at: time.Now()}
+	b.prober.Store(tk)
+	resp := b.probeReport(cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c-probe", Namespace: "voice", Name: "a"},
+		[]netip.Addr{pod4, pod6})
+	require.Empty(t, resp.Error)
+	for deadline := time.Now().Add(5 * time.Second); tk.result.Load() == nil && !tk.failed.Load() && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, tk.result.Load())
+	assert.Equal(t, cnisock.StageMark, tk.result.Load().stage)
+	counts, err := datapath.ProbeCounts(b.dp.nft)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]datapath.ProbeCount{"4": {Seen: 1, Tagged: 1, Forwarded: 1}, "6": {Seen: 1, Tagged: 1, Forwarded: 1}}, counts)
+	after, err := datapath.ForwardCounts(b.dp.nft, *b.dp.table.Pods)
+	require.NoError(t, err)
+	assert.Equal(t, flows, after, "no slot for the probe")
+	assert.Equal(t, tx, txPackets(), "dropped: the probe never leaves the node")
+	b.stage.Store(nil)
+
 	faults := b.faultList(health(b.dp, w, nil))
 	assert.Contains(t, faults, purelbv2.EgressAddressFault{Address: "192.0.2.1", Reason: "ProtocolUnsupported",
 		Message: b.dp.podFaults[eg].Message})
@@ -347,6 +423,8 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	assert.Nil(t, b.dp.movedFrom)
 	// Set explicitly to that byte: never moved, MarkConflict instead.
 	compat := func(c *purelbv2.EgressCapability) *metav1.Condition {
+		// purelb-cni reporting the plugin chained.
+		b.installer.Store(&cnisock.InstallerStatus{Written: b.now(), Chain: cnisock.ChainPresent})
 		return apimeta.FindStatusCondition(b.nodeConditions(c, health(b.dp, w, nil), nil), condDatapathCompatible)
 	}
 	w.spec.MarkField = "0x000000ff"
@@ -466,6 +544,55 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	devs, err = c.dp.objs.RecoverPodDevs()
 	require.NoError(t, err)
 	assert.Empty(t, devs)
+
+	// An agent start with no entry pinned for a FailClosed pod (it started
+	// while no agent ran, as after a reboot): held before the table
+	// classifies anything, then let go, its slot ready (design 8.1); not
+	// the pod with an entry an earlier agent pinned (single-family, as the
+	// held one: a missing family is no address). A restart finding its
+	// entry pinned doesn't hold it again.
+	var logs bytes.Buffer
+	start := func() *Agent {
+		closeAgent(c)
+		logs.Reset()
+		n := newNetnsAgent(dir)
+		n.logger = logging.New(&logs, logging.LevelDebug)
+		return n
+	}
+	open4 := netip.MustParseAddr("10.244.1.9")
+	openVeth, _ := podNetnsAt(t, "vpod1", "10.244.1.9/24")
+	open := dpPod{name: "voice/open", v4: open4, failClosed: true}
+	c = start()
+	w.pods = []dpPod{open}
+	apply(t, c, w)
+	c = start()
+	w.pods = []dpPod{{name: "voice/a", v4: pod4, podSet: 3, failClosed: true}, open,
+		{name: "voice/b", v4: netip.MustParseAddr("10.244.1.10")}}
+	apply(t, c, w)
+	assert.Contains(t, logs.String(), `"pods":["voice/a"]`, "FailClosed pods no earlier agent programmed only")
+	heldAt, writtenAt := strings.Index(logs.String(), "holding FailClosed pods"), strings.Index(logs.String(), "egress table written")
+	require.GreaterOrEqual(t, heldAt, 0, logs.String())
+	require.GreaterOrEqual(t, writtenAt, 0, logs.String())
+	assert.Less(t, heldAt, writtenAt, "held before the table")
+	devs, err = c.dp.objs.RecoverPodDevs()
+	require.NoError(t, err)
+	assert.Equal(t, datapath.PodDev{V4: pod4, PodSet: 3}, devs[veth], "let go once classified")
+	assert.Equal(t, datapath.PodDev{V4: open4}, devs[openVeth])
+	c = start()
+	apply(t, c, w)
+	assert.NotContains(t, logs.String(), "holding FailClosed pods")
+
+	// The pod's device deleted while the pod is still planned (its
+	// sandbox torn down during termination, without the plugin's DEL):
+	// its link goes, and a CNI ADD no longer counts it tagged.
+	w.pods = []dpPod{{name: "voice/a", v4: pod4, v6: pod6, podSet: 3}}
+	apply(t, c, w)
+	require.Contains(t, c.dp.tagged, pod4)
+	require.NoError(t, netlink.LinkDel(&netlink.Veth{LinkAttrs: netlink.LinkAttrs{Index: veth}}))
+	apply(t, c, w)
+	assert.NotContains(t, c.dp.links, "pl_pod_tag-vpod0")
+	assert.Empty(t, c.dp.tagged)
+	assert.False(t, pinned())
 	closeAgent(c)
 }
 

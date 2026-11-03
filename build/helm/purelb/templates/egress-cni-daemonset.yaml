@@ -1,0 +1,93 @@
+{{- if .Values.egress.enabled }}
+# purelb-cni (D34): the lbnodeagent image as the CNI installer. It owns the
+# node's CNI directories: it installs the purelb-egress plugin and keeps
+# its entry in the primary conflist's chain while the node's agent asks for
+# it, and reports to the agent. Until an LBNodeAgent enables egress on the
+# node it writes nothing there. It has no API credential, and runs on the
+# host network so it starts while the node's pod network is broken. It
+# runs wherever lbnodeagent does.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+    app.kubernetes.io/component: purelb-cni
+  name: purelb-cni
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "purelb.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: purelb-cni
+  template:
+    metadata:
+      labels:
+        {{- include "purelb.labels" . | nindent 8 }}
+        app.kubernetes.io/component: purelb-cni
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - cni-install
+        - --conf-dir=/host/cni/net.d
+        - --bin-dir=/host/cni/bin
+        image: "{{ .Values.image.repository }}/lbnodeagent:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        name: install
+        {{- with .Values.egress.cni.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsUser: 0
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: cni-conf
+          mountPath: /host/cni/net.d
+        - name: cni-bin
+          mountPath: /host/cni/bin
+        - name: var-lib-purelb
+          mountPath: /var/lib/purelb
+          readOnly: true
+        - name: run-purelb
+          mountPath: /run/purelb
+      hostNetwork: true
+      nodeSelector:
+        kubernetes.io/os: linux
+        {{- with .Values.lbnodeagent.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      priorityClassName: {{ .Values.priorityClassName | default "system-node-critical" }}
+      terminationGracePeriodSeconds: 10
+      {{- with .Values.lbnodeagent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+      - name: cni-conf
+        hostPath:
+          path: {{ .Values.egress.cni.confDir }}
+          type: DirectoryOrCreate
+      - name: cni-bin
+        hostPath:
+          path: {{ .Values.egress.cni.binDir }}
+          type: DirectoryOrCreate
+      - name: var-lib-purelb
+        hostPath:
+          path: /var/lib/purelb
+          type: DirectoryOrCreate
+      - name: run-purelb
+        hostPath:
+          path: /run/purelb
+          type: DirectoryOrCreate
+{{- end }}

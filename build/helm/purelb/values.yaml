@@ -195,6 +195,8 @@ defaultAnnouncer: "PureLB"
 memberlistSecretKey: "8sb7ikA5qHwQQqxc"
 
 # Optional priorityClass to use for both allocator and lbnodeagent pods.
+# Unset with egress enabled, egress makes them critical: lbnodeagent and
+# purelb-cni system-node-critical, the allocator system-cluster-critical.
 # https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/
 priorityClassName: ""
 
@@ -304,12 +306,38 @@ allocator:
 # first). Only for emergencies: older CRDs reject or drop new fields.
 skipCRDVersionCheck: false
 
+# Fail an upgrade to a release older than the one that programmed egress
+# on any node (EgressNodeState status.programmed): disable egress first
+# (egress.enabled false in every LBNodeAgent, and wait for the nodes to
+# report it torn down). Only for emergencies.
+skipEgressDowngradeCheck: false
+
 # Egress gives selected pods stable source addresses from PureLB pools.
 # Installed but idle: nothing happens on a node until an LBNodeAgent sets
 # spec.egress.enabled. Setting this false leaves the egress RBAC out; the
 # egress CRDs are always installed, because Helm can't template crds/.
 egress:
   enabled: true
+  # purelb-cni, the installer that chains the egress CNI plugin: the
+  # node's CNI configuration and plugin directories, as the container
+  # runtime reads them. RKE2 uses the defaults. k3s with its own flannel:
+  # confDir /var/lib/rancher/k3s/agent/etc/cni/net.d,
+  # binDir /var/lib/rancher/k3s/data/cni.
+  cni:
+    confDir: /etc/cni/net.d
+    binDir: /opt/cni/bin
+    # Measured resident 36-38 MiB on prox-purelb2.
+    resources:
+      limits:
+        memory: 64Mi
+      requests:
+        cpu: 5m
+        memory: 40Mi
+  # The pre-delete hook disables egress on every node and waits this long
+  # for each to tear it down; a node that doesn't fails the uninstall,
+  # naming it. Keep it under helm uninstall's --timeout (5m by default).
+  uninstallHook:
+    timeout: 4m
 
 # k8gobgp sidecar — per-node BGP route announcement for remote VIPs.
 # When enabled, k8gobgp runs as a sidecar in the lbnodeagent DaemonSet pod.

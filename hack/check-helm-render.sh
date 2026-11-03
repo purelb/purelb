@@ -135,12 +135,73 @@ expect "egress: lbnodeagent ClusterRole by default" "^ClusterRole/.*:egress:lbno
 expect "egress: allocator binding by default" "^ClusterRoleBinding/.*:egress:allocator$" "$out"
 expect "egress: node-label admission policy by default" "^ValidatingAdmissionPolicy/.*-egress-node-label$" "$out"
 expect "egress: node-label admission policy bound" "^ValidatingAdmissionPolicyBinding/.*-egress-node-label$" "$out"
+expect "egress: purelb-cni installer by default" "^DaemonSet/purelb-cni$" "$out"
+expect "egress: uninstall hook Job by default" "^Job/.*-egress-uninstall$" "$out"
+expect "egress: uninstall hook ServiceAccount" "^ServiceAccount/.*-egress-uninstall$" "$out"
+expect "egress: uninstall hook ClusterRole" "^ClusterRole/.*-egress-uninstall$" "$out"
+expect "egress: uninstall hook binding" "^ClusterRoleBinding/.*-egress-uninstall$" "$out"
 out=$($HELM template t "$CHART" --kube-version 1.31.0 --set egress.enabled=false | kinds)
 refuse "egress: nothing egress with egress.enabled=false" "egress" "$out"
+refuse "egress: no purelb-cni with egress.enabled=false" "purelb-cni" "$out"
+
+# purelb-cni (D34): no API credential, the host network, the CNI
+# directories from values (k3s's own flannel's here), read-only desired
+# state.
+out=$(render egress-cni-daemonset.yaml --set egress.cni.confDir=/var/lib/rancher/k3s/agent/etc/cni/net.d \
+	--set egress.cni.binDir=/var/lib/rancher/k3s/data/cni)
+expect "purelb-cni: no service account token" "automountServiceAccountToken: false" "$out"
+expect "purelb-cni: host network" "hostNetwork: true" "$out"
+expect "purelb-cni: installer mode" "^ *- cni-install$" "$out"
+expect "purelb-cni: conf dir from values" "path: /var/lib/rancher/k3s/agent/etc/cni/net.d$" "$out"
+expect "purelb-cni: bin dir from values" "path: /var/lib/rancher/k3s/data/cni$" "$out"
+ro=$(python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d:
+        for c in d["spec"]["template"]["spec"]["containers"]:
+            for m in c.get("volumeMounts") or []:
+                print(m["mountPath"], bool(m.get("readOnly")))' <<<"$out")
+expect "purelb-cni: desired state read-only" "^/var/lib/purelb True$" "$ro"
+expect "purelb-cni: status writable" "^/run/purelb False$" "$ro"
+out=$(render egress-cni-daemonset.yaml)
+expect "purelb-cni: default conf dir" "path: /etc/cni/net.d$" "$out"
+expect "purelb-cni: default bin dir" "path: /opt/cni/bin$" "$out"
+
+# The egress pre-delete hook (D26): every object a pre-delete hook, gone
+# once it succeeds; the Job runs the hook subcommand once, with the
+# timeout from values, and its role only lists and patches.
+out=$(render egress-uninstall-hook.yaml --set egress.uninstallHook.timeout=9m)
+hooks=$(python3 -c '
+import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d:
+        a = d["metadata"]["annotations"]
+        print(d["kind"], a["helm.sh/hook"], a["helm.sh/hook-delete-policy"])' <<<"$out")
+for k in ServiceAccount ClusterRole ClusterRoleBinding Job; do
+	expect "uninstall hook: $k is pre-delete" "^$k pre-delete before-hook-creation,hook-succeeded$" "$hooks"
+done
+expect "uninstall hook: runs egress-uninstall" "^ *- egress-uninstall$" "$out"
+expect "uninstall hook: timeout from values" "^ *- --timeout=9m$" "$out"
+expect "uninstall hook: runs once" "backoffLimit: 0" "$out"
+refuse "uninstall hook: no write beyond patch" "verbs:.*(create|update|delete)" "$out"
+
+# Priority (user decision 2026-11-02): critical with egress unless
+# priorityClassName says otherwise, unset without egress.
+prio() { grep -E '^ *priorityClassName:' | sed 's/^ *//' || true; }
+expect "priority: lbnodeagent system-node-critical with egress" "system-node-critical" "$(render daemonset.yaml | prio)"
+expect "priority: allocator system-cluster-critical with egress" "system-cluster-critical" "$(render deployment.yaml | prio)"
+expect "priority: purelb-cni system-node-critical" "system-node-critical" "$(render egress-cni-daemonset.yaml | prio)"
+for tpl in daemonset.yaml deployment.yaml egress-cni-daemonset.yaml; do
+	expect "priority: $tpl takes priorityClassName" "^priorityClassName: site-critical$" \
+		"$(render $tpl --set priorityClassName=site-critical | prio)"
+done
+for tpl in daemonset.yaml deployment.yaml; do
+	refuse "priority: $tpl unset without egress" "priorityClassName" "$(render $tpl --set egress.enabled=false | prio)"
+done
 
 # Every container's root filesystem is read-only, as in the kustomize
 # manifests; the two drifted apart once (lbnodeagent was writable in Helm).
-out=$(render daemonset.yaml)$'\n'$(render deployment.yaml)
+out=$(render daemonset.yaml)$'\n'$(render deployment.yaml)$'\n'$(render egress-cni-daemonset.yaml)
 rofs=$(python3 -c '
 import sys, yaml
 for d in yaml.safe_load_all(sys.stdin):
@@ -149,6 +210,7 @@ for d in yaml.safe_load_all(sys.stdin):
             print(c["name"], (c.get("securityContext") or {}).get("readOnlyRootFilesystem"))' <<<"$out")
 expect "lbnodeagent root filesystem read-only" "^lbnodeagent True$" "$rofs"
 expect "allocator root filesystem read-only" "^allocator True$" "$rofs"
+expect "purelb-cni root filesystem read-only" "^install True$" "$rofs"
 refuse "no container with a writable root filesystem" " (False|None)$" "$rofs"
 
 # The pin directory (D12): the node's /sys/fs/bpf/purelb over the agent's
@@ -168,8 +230,14 @@ for gobgp in true false; do
 	out=$(render daemonset.yaml --set gobgp.enabled=$gobgp | pins)
 	expect "egress (gobgp=$gobgp): pin directory hostPath" "^volume bpf-pins /sys/fs/bpf/purelb$" "$out"
 	expect "egress (gobgp=$gobgp): mounted over /sys/fs/bpf" "^mount lbnodeagent bpf-pins /sys/fs/bpf$" "$out"
+	expect "egress (gobgp=$gobgp): CNI socket hostPath" "^volume run-purelb /run/purelb$" "$out"
+	expect "egress (gobgp=$gobgp): CNI socket mounted" "^mount lbnodeagent run-purelb /run/purelb$" "$out"
+	expect "egress (gobgp=$gobgp): CNI snapshot hostPath" "^volume var-lib-purelb /var/lib/purelb$" "$out"
+	expect "egress (gobgp=$gobgp): CNI snapshot mounted" "^mount lbnodeagent var-lib-purelb /var/lib/purelb$" "$out"
 	out=$(render daemonset.yaml --set gobgp.enabled=$gobgp --set egress.enabled=false | pins)
 	refuse "no egress (gobgp=$gobgp): no pin directory" "bpf-pins" "$out"
+	refuse "no egress (gobgp=$gobgp): no CNI socket directory" "run-purelb" "$out"
+	refuse "no egress (gobgp=$gobgp): no CNI snapshot directory" "var-lib-purelb" "$out"
 done
 
 # The Lease FlowSchema is core: it renders whatever egress and gobgp say,

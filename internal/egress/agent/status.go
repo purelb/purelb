@@ -52,7 +52,10 @@ type statusWriter struct {
 	// replaces. Set by the queue goroutine.
 	want atomic.Pointer[purelbv2.EgressNodeStateStatus]
 	off  atomic.Bool
-	kick chan struct{}
+	// urgent writes the next status without waiting out the interval: it
+	// adds a claim, which is written at once (D6).
+	urgent atomic.Bool
+	kick   chan struct{}
 
 	interval, retry time.Duration
 	// written is the status last written. Writer goroutine only.
@@ -69,6 +72,12 @@ func (w *statusWriter) set(st *purelbv2.EgressNodeStateStatus) {
 	w.want.Store(st)
 	w.off.Store(false)
 	w.wake()
+}
+
+// setNow asks for st to be written at once.
+func (w *statusWriter) setNow(st *purelbv2.EgressNodeStateStatus) {
+	w.urgent.Store(true)
+	w.set(st)
 }
 
 // disable asks for the status to say egress is off, if the object exists.
@@ -94,12 +103,8 @@ func (w *statusWriter) run(stop <-chan struct{}) {
 			return
 		case <-w.kick:
 		}
-		if wait := w.interval - time.Since(last); wait > 0 {
-			select {
-			case <-stop:
-				return
-			case <-time.After(wait):
-			}
+		if wait := w.interval - time.Since(last); wait > 0 && !w.urgent.Swap(false) && !w.await(stop, wait) {
+			return
 		}
 		last = time.Now()
 		if err := w.write(); err != nil {
@@ -111,6 +116,25 @@ func (w *statusWriter) run(stop <-chan struct{}) {
 					w.wake()
 				}
 			}()
+		}
+	}
+}
+
+// await waits out d, or less once an urgent request comes; false when
+// stop closes.
+func (w *statusWriter) await(stop <-chan struct{}, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return false
+		case <-t.C:
+			return true
+		case <-w.kick:
+			if w.urgent.Swap(false) {
+				return true
+			}
 		}
 	}
 }
@@ -139,6 +163,16 @@ func (w *statusWriter) write() error {
 	return nil
 }
 
+// programmed is status.programmed while egress runs here: this agent's
+// release, never empty, or the Helm pre-delete hook would take the node
+// for torn down ("dev" for a build without one).
+func programmed() string {
+	if r := logging.Release(); r != "" {
+		return r
+	}
+	return "dev"
+}
+
 // writeOff reports egress off in an existing object, leaving the rest of
 // its status alone.
 func (w *statusWriter) writeOff() error {
@@ -153,7 +187,8 @@ func (w *statusWriter) writeOff() error {
 	}
 	w.written = nil
 	capable := cur.Status.Capability != nil && cur.Status.Capability.EgressCapable
-	if !capable && len(cur.Status.Announcing) == 0 && len(cur.Status.Conditions) == 0 && len(cur.Status.AddressFaults) == 0 {
+	if !capable && len(cur.Status.Announcing) == 0 && len(cur.Status.Conditions) == 0 && len(cur.Status.AddressFaults) == 0 &&
+		len(cur.Status.Claims) == 0 && cur.Status.Programmed == "" {
 		return nil
 	}
 	st := cur.Status.DeepCopy()
@@ -161,9 +196,12 @@ func (w *statusWriter) writeOff() error {
 		st.Capability.EgressCapable = false
 	}
 	// A node with egress off holds nothing: an ack left behind would keep
-	// it in the allocator's gating (D6), and a condition or fault left
-	// behind would go on failing its policies.
-	st.Announcing, st.Conditions, st.AddressFaults = nil, nil, nil
+	// it in the allocator's gating (D6), a condition or fault left behind
+	// would go on failing its policies, and a claim would go on getting it
+	// slices.
+	st.Announcing, st.Conditions, st.AddressFaults, st.Claims = nil, nil, nil, nil
+	// Torn down: what the Helm pre-delete hook waits for (D26).
+	st.Programmed = ""
 	if err := w.patch(st); err != nil {
 		return err
 	}

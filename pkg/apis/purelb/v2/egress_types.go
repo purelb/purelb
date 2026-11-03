@@ -806,6 +806,14 @@ type EgressNodeStateStatus struct {
 	// +optional
 	Capability *EgressCapability `json:"capability,omitempty"`
 
+	// Programmed is the release of the agent that programmed egress on
+	// this node (its kernel state and the CNI chain entry); empty once
+	// teardown removed it (D26). The Helm pre-delete hook waits for it to
+	// clear, and the chart refuses a downgrade below it.
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	Programmed string `json:"programmed,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +kubebuilder:validation:MaxItems=16
@@ -1066,4 +1074,13 @@ type LBNodeAgentEgressSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	FlowLog bool `json:"flowLog,omitempty"`
+
+	// SnapshotMaxAge is how long the CNI plugin trusts the agent's
+	// snapshot while the agent is down. Past it, new pods start without
+	// egress, so a node whose agent is gone for good (a forgotten
+	// uninstall) still starts pods.
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1m') && duration(self) <= duration('720h')",message="snapshotMaxAge must be between 1m and 720h"
+	// +kubebuilder:default="1h"
+	// +optional
+	SnapshotMaxAge *metav1.Duration `json:"snapshotMaxAge,omitempty"`
 }

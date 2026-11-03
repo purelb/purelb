@@ -22,6 +22,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,12 +32,17 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/types"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 
 	"purelb.io/internal/bpfpin"
+	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/egress/datapath"
 	"purelb.io/internal/egresshook"
 	"purelb.io/internal/logging"
@@ -167,10 +173,11 @@ type Agent struct {
 	flowView atomic.Pointer[flowView]
 	markByte atomic.Uint32
 
-	// faults are this node's address problems and conds its conditions,
-	// as last reported. Queue goroutine only.
-	faults map[netip.Addr]purelbv2.EgressAddressFault
-	conds  []metav1.Condition
+	// faults are this node's address problems, conds its conditions and
+	// claimed its claims, as last reported. Queue goroutine only.
+	faults  map[netip.Addr]purelbv2.EgressAddressFault
+	conds   []metav1.Condition
+	claimed []string
 	// health is what the datapath last found. Written by the datapath
 	// goroutine.
 	health atomic.Pointer[dpHealth]
@@ -179,9 +186,45 @@ type Agent struct {
 	probing   atomic.Pointer[map[netip.Addr]probeTarget]
 	sendProbe func(from, to netip.Addr, port int, pkt []byte) error
 
+	// sockPath is the CNI plugin's socket, snapPath its snapshot (D35),
+	// recordDir its sandbox records (design 8.1), desiredPath and
+	// statusPath the files the agent and the purelb-cni installer tell
+	// each other by (D34), cniHold ADD's longest wait, and unchainWait
+	// teardown's for the installer (tests use their own);
+	// sandboxes are the pod sandboxes the plugin reported, over the socket
+	// or in its records, by container id, and waiters its ADDs waiting for
+	// their pods (§8.1). Stored by the socket's goroutines and, from the
+	// records, the queue goroutine, which reads and prunes them.
+	sockPath    string
+	snapPath    string
+	recordDir   string
+	desiredPath string
+	statusPath  string
+	cniHold     time.Duration
+	unchainWait time.Duration
+	sandboxes   sync.Map // string: *cniSandbox
+	waiters     sync.Map // string: *waiter
+	// tagged are the pod devices the datapath last installed, by pod
+	// address. Written by the datapath goroutine.
+	tagged atomic.Pointer[map[netip.Addr]datapath.PodDev]
+	// installer is the purelb-cni installer's last status. Written by its
+	// poller.
+	installer atomic.Pointer[cnisock.InstallerStatus]
+	// stage is what this session's stage probe found (nil: not yet),
+	// prober the sandbox asked to probe; probeCounts reads the probe's
+	// counters (tests use their own). Written by the queue and socket
+	// goroutines.
+	stage       atomic.Pointer[stageResult]
+	prober      atomic.Pointer[probeTicket]
+	probeCounts func() (map[string]datapath.ProbeCount, error)
+
+	// events records events on pods; nil until Start.
+	events record.EventRecorder
+
 	now func() time.Time
-	// statusInterval is the status writer's interval; tests shorten it.
-	statusInterval time.Duration
+	// statusInterval is the status writer's interval, installerPoll how
+	// often the installer's status is read; tests shorten them.
+	statusInterval, installerPoll time.Duration
 }
 
 // delivery is what egress takes from one config delivery: this node's
@@ -203,6 +246,11 @@ type session struct {
 	// scoped EgressEndpoints watches (D6). Queue goroutine only.
 	addresses listers.EgressAddressNamespaceLister
 	watches   map[string]*eeWatch
+	// snap writes the CNI plugin's snapshot from the pod-node plan;
+	// reported are the pods reported as started without the plugin
+	// (syncRecords). Queue goroutine only.
+	snap     *snapshotWriter
+	reported map[types.UID]bool
 	// For the pod-node stage: this node's pods, the policies, namespaces
 	// and Services (serviceRef selectors).
 	pods            cache.Indexer
@@ -224,11 +272,13 @@ var (
 // New returns the agent's egress controller for node; Start brings it up.
 func New(logger log.Logger, node, namespace string) *Agent {
 	a := &Agent{logger: logger, node: node, namespace: namespace, runner: newRunner(), now: time.Now,
-		statusInterval: statusInterval, dp: &dpState{pinRoot: bpfpin.Dir},
+		statusInterval: statusInterval, installerPoll: installerPoll, dp: &dpState{pinRoot: bpfpin.Dir},
 		guarded: map[netip.Addr]bool{}, services: map[netip.Addr]map[string]bool{},
 		placements: map[netip.Addr]map[string]egresshook.ServicePlacement{},
 		placed:     map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
-		sendProbe: sendUDPProbe, tableSlots: tableSlots}
+		sendProbe: sendUDPProbe, tableSlots: tableSlots, sockPath: cnisock.DefaultPath, snapPath: cnisock.SnapshotPath,
+		recordDir: cnisock.RecordDir, desiredPath: cnisock.DesiredPath, statusPath: cnisock.StatusPath, probeCounts: readProbeCounts,
+		cniHold: cniHold, unchainWait: unchainWait}
 	a.apply, a.tear = a.applyDatapath, a.teardown
 	return a
 }
@@ -282,6 +332,9 @@ func (a *Agent) start(stop <-chan struct{}, kube kubernetes.Interface, purelb ve
 		logging.Info(a.logger, "op", "egressStart", "msg", "egress CRDs not installed; egress is off")
 		return nil
 	}
+	b := record.NewBroadcaster()
+	b.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kube.CoreV1().Events("")})
+	a.events = b.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "purelb-egress"})
 	a.status = newStatusWriter(a.logger, a.node, kube, purelb)
 	a.status.interval = a.statusInterval
 	go a.status.run(stop)
@@ -321,6 +374,8 @@ func (a *Agent) Sync(key string) error {
 		a.syncDatapath()
 	case keyTeardown:
 		a.syncTeardown()
+	case keyCNI:
+		a.syncCNI()
 	}
 	return nil
 }
@@ -356,19 +411,22 @@ func (a *Agent) syncConfig() {
 		a.on.spec = *d.spec
 		a.syncDatapath()
 	case !want && a.on != nil:
+		done := a.on.snap.done
 		a.stopSession()
-		a.endDatapath()
+		a.endDatapath(done)
 	case !want && first:
 		// Egress may have been on before this agent started: remove
 		// what an earlier agent left (D26), if anything.
-		a.endDatapath()
+		a.endDatapath(nil)
 	}
 	a.syncFlowLog()
 }
 
 // startSession starts egress's informers and its first capability probe.
 func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
-	s := &session{stop: make(chan struct{}), spec: spec, watches: map[string]*eeWatch{}}
+	s := &session{stop: make(chan struct{}), spec: spec, watches: map[string]*eeWatch{}, reported: map[types.UID]bool{},
+		snap: newSnapshotWriter(a.logger, a.node, a.snapPath, a.desiredPath,
+			cnisock.PluginEntry(a.namespace, logging.GetLevel().String()))}
 	own := externalversions.NewSharedInformerFactoryWithOptions(a.purelb, resync,
 		externalversions.WithTweakListOptions(func(o *metav1.ListOptions) {
 			o.FieldSelector = fields.OneTermEqualSelector("metadata.name", a.node).String()
@@ -453,6 +511,10 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	go watchRules(a.logger, s.stop, kick)
 	go watchAddrs(a.logger, s.stop, a.placedAddrs, func(addr netip.Addr) { a.dadLost.Store(addr, true) }, kick)
 	go a.runProbes(s)
+	go a.serveCNI(s)
+	snapshots.Store(s.snap)
+	go s.snap.run(s.stop)
+	go a.pollInstaller(s.stop)
 	go func() {
 		t := time.NewTicker(reconcileInterval)
 		defer t.Stop()
@@ -502,6 +564,7 @@ func (a *Agent) stopSession() {
 		close(w.stop)
 	}
 	close(a.on.stop)
+	snapshots.CompareAndSwap(a.on.snap, nil)
 	a.on = nil
 	a.syncFlowLog()
 	a.flowView.Store(nil)
@@ -514,9 +577,14 @@ func (a *Agent) stopSession() {
 	}
 	a.guarded = map[netip.Addr]bool{}
 	a.withdrawPlaced("egress disabled")
-	a.shared, a.faults, a.conds, a.podnode, a.podsWant, a.stageWant = nil, nil, nil, nil, nil, nil
+	a.shared, a.faults, a.conds, a.podnode, a.podsWant, a.stageWant, a.claimed = nil, nil, nil, nil, nil, nil, nil
 	a.installed.Store(nil)
+	a.tagged.Store(nil)
+	a.installer.Store(nil)
+	a.stage.Store(nil)
+	a.prober.Store(nil)
 	a.probing.Store(nil)
+	cniUnrecorded.Set(0)
 	a.acks.Store(nil)
 	a.specAck.Store(0)
 	a.drained.Store(nil)
@@ -537,12 +605,23 @@ func (a *Agent) syncNode() {
 	c = c.DeepCopy()
 	c.Underlay = underlay(s.nodes, a.node)
 	c.Slots = &purelbv2.EgressSlots{Capacity: slotBudget}
+	if r := a.stage.Load(); r != nil {
+		c.PodNodeStage = "Netfilter"
+		if r.stage == cnisock.StageBypassed {
+			c.PodNodeStage = "EBPF" // the stage it needs (Phase 7)
+		}
+	}
+	var claims []string
 	if pn := a.podnode; pn != nil {
 		c.Slots.Used, c.Slots.PodSets = int32(pn.used()), int32(len(pn.sets))
+		claims = pn.claims
 	}
 	h := a.health.Load()
 	st := &purelbv2.EgressNodeStateStatus{Capability: c, AddressFaults: a.faultList(h),
-		Conditions: a.nodeConditions(c, h, a.podnode), ObservedGeneration: a.specAck.Load()}
+		Conditions: a.nodeConditions(c, h, a.podnode), ObservedGeneration: a.specAck.Load(), Programmed: programmed()}
+	for _, ee := range claims {
+		st.Claims = append(st.Claims, purelbv2.EgressClaim{Endpoints: ee})
+	}
 	if d := a.drained.Load(); d != nil {
 		// Only slices Draining now: a report the datapath made before the
 		// slice changed is stale.
@@ -570,7 +649,13 @@ func (a *Agent) syncNode() {
 			}
 		}
 	}
-	a.status.set(st)
+	// A new claim is written at once (D6), acks at most once a second.
+	if slices.ContainsFunc(claims, func(ee string) bool { return !slices.Contains(a.claimed, ee) }) {
+		a.status.setNow(st)
+	} else {
+		a.status.set(st)
+	}
+	a.claimed = claims
 }
 
 // underlay is the node's InternalIPs, one per family (D3).

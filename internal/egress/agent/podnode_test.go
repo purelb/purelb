@@ -153,6 +153,67 @@ func TestPlanPodNodeHold(t *testing.T) {
 		"the pod-set exists, for when the slot is")
 }
 
+// What the CNI plugin adds (§8.1, 8.2): a pod's addresses from its ADD; a
+// pod gone at its DEL; a terminating pod keeping its pod-set and a
+// Draining slot; claims for policies with no slice here; the namespaces
+// FailClosed policies cover.
+func TestPlanPodNodeCNI(t *testing.T) {
+	closed := pnEgress("voice", "closed", 100, func(p *pnPolicy) { p.addrs = []netip.Addr{netip.MustParseAddr("192.0.2.1")} })
+	open := pnEgress("web", "open", 100, func(p *pnPolicy) {
+		p.spec.FailurePolicy = "FailOpen"
+		p.addrs = []netip.Addr{netip.MustParseAddr("192.0.2.9"), netip.MustParseAddr("2001:db8::9")}
+	})
+	starting := pnPod("voice", "starting", appA) // no addresses in the API yet
+	ended := pnPod("voice", "ended", appA, "10.1.0.7")
+	in := pnIn("Active", []*corev1.Pod{starting, ended}, closed)
+	in.ips = map[string][]netip.Addr{"voice/starting": {netip.MustParseAddr("10.1.0.6")}}
+	in.ended = map[string]bool{"voice/ended": true}
+	pn := planPodNode(in, nil)
+	st := pn.pods["voice/starting"]
+	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.1.0.6")}, st.ips, "ADD's addresses")
+	assert.True(t, st.selected)
+	assert.False(t, st.pending)
+	assert.NotContains(t, pn.pods, "voice/ended", "its sandbox was deleted")
+	assert.Empty(t, pn.claims, "the node has the policy's slice")
+	assert.Equal(t, map[string]bool{"voice": true}, pn.failClosedNS)
+
+	// Draining: a running pod is held, a terminating one keeps using it.
+	running := pnPod("voice", "running", appA, "10.1.0.8")
+	leaving := pnPod("voice", "leaving", appA, "10.1.0.9")
+	leaving.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	pn = planPodNode(pnIn("Draining", []*corev1.Pod{running, leaving}, closed), nil)
+	assert.True(t, pn.pods["voice/running"].hold)
+	assert.True(t, pn.pods["voice/running"].pending)
+	assert.False(t, pn.pods["voice/leaving"].hold, "terminating: its Draining slot still carries it")
+	assert.False(t, pn.pods["voice/leaving"].pending)
+	assert.NotZero(t, pn.pods["voice/leaving"].podSet)
+
+	// No slice of the policy here: the node claims one per address, not
+	// for a terminating pod; FailOpen covers no namespace.
+	in = pnIn("Active", []*corev1.Pod{pnPod("web", "w", appA, "10.1.0.10")})
+	in.policies = []*pnPolicy{open}
+	pn = planPodNode(in, nil)
+	assert.True(t, pn.pods["web/w"].pending)
+	assert.False(t, pn.pods["web/w"].hold, "FailOpen")
+	assert.ElementsMatch(t, []string{egress.EndpointsName(open.ref, netip.MustParseAddr("192.0.2.9")),
+		egress.EndpointsName(open.ref, netip.MustParseAddr("2001:db8::9"))}, pn.claims)
+	assert.Empty(t, pn.failClosedNS)
+	gone := pnPod("web", "w", appA, "10.1.0.10")
+	gone.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	in.pods = []*corev1.Pod{gone}
+	assert.Empty(t, planPodNode(in, nil).claims)
+
+	// A FailClosed ClusterEgress covers the namespaces it selects from.
+	ce := &pnPolicy{ref: egress.PolicyRef{Kind: egress.KindClusterEgress, Name: "pci"}, rank: egress.Rank{Priority: 1000},
+		pods: labels.Everything(), namespaces: labels.SelectorFromSet(labels.Set{"zone": "pci"}), group: "pci",
+		sg: &purelbv2.ServiceGroup{ObjectMeta: metav1.ObjectMeta{Name: "pci"}}}
+	in = pnIn("Active", nil, ce)
+	in.namespaces = map[string]*corev1.Namespace{
+		"pay":   {ObjectMeta: metav1.ObjectMeta{Name: "pay", Labels: map[string]string{"zone": "pci"}}},
+		"other": {ObjectMeta: metav1.ObjectMeta{Name: "other"}}}
+	assert.Equal(t, map[string]bool{"pay": true}, planPodNode(in, nil).failClosedNS)
+}
+
 // A PerPod pod has its own pod-set and only its own address's slot counts
 // for it; a pod holding a reserved port has its own pod-set (D19).
 func TestPlanPodNodePerPodAndReserved(t *testing.T) {

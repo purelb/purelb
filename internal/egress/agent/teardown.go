@@ -37,16 +37,23 @@ const keyTeardown = "agent:teardown"
 // link detaches asynchronously after its last reference goes (design 6.11).
 const detachWait = 5 * time.Second
 
-// endDatapath tears the datapath down on the datapath goroutine, then
-// clears this node's status, which tells the allocator and the Helm
-// pre-delete hook that nothing egress is left (D26). A failure is retried.
-func (a *Agent) endDatapath() {
+// endDatapath, on the datapath goroutine, takes the plugin out of the CNI
+// chain, tears the datapath down, removes the plugin's files once nothing
+// can run it, then clears this node's status, which tells the allocator
+// and the Helm pre-delete hook that nothing egress is left (D26). A
+// failure is retried. snapDone closes once the session's snapshot writer
+// has stopped (nil: none).
+func (a *Agent) endDatapath(snapDone <-chan struct{}) {
 	a.runner.submit(func() {
+		unchained := a.unchain(snapDone)
 		if err := a.tear(); err != nil {
 			logging.Info(a.logger, "op", "egressTeardown", "node", a.node, "error", err,
 				"msg", "removing the egress datapath; retrying")
 			time.AfterFunc(datapathRetry, func() { a.add(keyTeardown, false) })
 			return
+		}
+		if unchained {
+			a.removePluginFiles()
 		}
 		a.capability.Store(nil)
 		a.status.disable()
@@ -56,7 +63,7 @@ func (a *Agent) endDatapath() {
 // syncTeardown retries a failed teardown unless egress is back on.
 func (a *Agent) syncTeardown() {
 	if a.on == nil {
-		a.endDatapath()
+		a.endDatapath(nil)
 	}
 }
 

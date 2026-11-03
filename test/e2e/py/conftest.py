@@ -803,6 +803,24 @@ def _purelb_health_problems(cluster: Cluster) -> List[str]:
     except Exception:  # noqa: BLE001 - SSH is checked by the tests that need it
         pass
 
+    # The suite configures nodes through the catch-all `default`
+    # LBNodeAgent, and an LBNodeAgent with a nodeSelector outranks it on
+    # the nodes it selects: there every change a test makes to `default`
+    # silently never lands (14 LB tests failed that way on 2026-11-03,
+    # behind a leftover egress fixture).
+    try:
+        for a in cluster.list_crs("lbnodeagent", ns):
+            sel = (a.get("spec") or {}).get("nodeSelector") or {}
+            if a["metadata"]["name"] != "default" and (sel.get("matchLabels") or sel.get("matchExpressions")):
+                problems.append(
+                    f"LBNodeAgent {ns}/{a['metadata']['name']} has a nodeSelector, so it outranks the "
+                    f"`default` LBNodeAgent the suite configures\n"
+                    f"      on the nodes it selects, and those nodes never get the tests' settings. "
+                    f"Remove it for the run (back it up first)."
+                )
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"could not list the LBNodeAgents in {ns!r}: {exc!r}")
+
     return problems
 
 

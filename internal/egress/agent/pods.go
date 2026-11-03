@@ -32,6 +32,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"purelb.io/internal/egress"
+	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -151,6 +152,7 @@ func (a *Agent) syncPods() {
 	if s == nil || !s.synced.Load() {
 		return
 	}
+	a.settled()
 	in := a.podNodeInput(s)
 	prev := a.podnode
 	if prev == nil {
@@ -171,10 +173,12 @@ func (a *Agent) syncPods() {
 			"short", pn.short, "msg", "slot budget exhausted: these get no slot")
 	}
 	a.podnode = pn
+	s.snap.set(snapshotOf(pn, in.pods, s.spec))
 	logging.Debug(a.logger, "op", "egressPods", "node", a.node, "slots", len(pn.slots), "podSets", len(pn.sets),
 		"pods", len(pn.pods), "retired", len(pn.retired))
 	a.add(keyNode, false) // capability.slots and SlotsExhausted
-	pods, stage := dpPods(pn), stagePlan(pn, in, markShift(s.spec))
+	r := a.stage.Load()
+	pods, stage := dpPods(pn), stagePlan(pn, in, markShift(s.spec), r == nil || r.stage != cnisock.StageMark)
 	a.flowView.Store(newFlowView(pn, pods))
 	// A new spec generation is acked once installed, changed or not.
 	if !slices.Equal(pods, a.podsWant) || a.podsWant == nil || !reflect.DeepEqual(stage, a.stageWant) ||
@@ -182,6 +186,7 @@ func (a *Agent) syncPods() {
 		a.podsWant, a.stageWant = pods, stage
 		a.add(keyDatapath, false)
 	}
+	a.add(keyCNI, false) // ADDs of pods that need nothing installed
 }
 
 // podNodeInput gathers planPodNode's input from the session's caches.
@@ -204,6 +209,7 @@ func (a *Agent) podNodeInput(s *session) pnInput {
 			in.pods = append(in.pods, pod)
 		}
 	}
+	in.ips, in.ended = a.sandboxInput(in.pods)
 	for _, o := range s.namespaces.List() {
 		ns := o.(*corev1.Namespace)
 		in.namespaces[ns.Name] = ns

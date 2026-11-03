@@ -20,6 +20,7 @@ package logging
 import (
 	"bufio"
 	"flag"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -118,6 +119,14 @@ func Init() log.Logger {
 	logger.Log("release", release, "commit", commit, "git-branch", branch, "log-level", currentLevel.String(), "msg", "Starting")
 
 	return logger
+}
+
+// New returns a JSON logger to w at level, for a process that can't use
+// Init: one whose stdout is not its log (the CNI plugin's stdout is its
+// result).
+func New(w io.Writer, level Level) log.Logger {
+	l := &filterLogger{downstream: log.NewJSONLogger(log.NewSyncWriter(w)), level: level}
+	return log.With(l, "caller", log.DefaultCaller)
 }
 
 // Debug logs a message at debug level. The message will only appear if

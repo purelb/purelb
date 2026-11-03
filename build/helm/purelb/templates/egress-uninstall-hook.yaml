@@ -1,0 +1,107 @@
+{{- if .Values.egress.enabled }}
+{{- /*
+The egress pre-delete hook (design 8.10, D26): before Helm deletes
+anything, it disables egress on every LBNodeAgent and waits for every
+node's agent to tear egress down (the CNI plugin out of the chain, its
+kernel state removed: EgressNodeState status.programmed empty). A node
+that doesn't within egress.uninstallHook.timeout fails the uninstall,
+naming it (user decision 2026-11-03): uninstalled anyway, it would keep
+the plugin chained with nothing to answer it. Its own ServiceAccount, with
+only what the hook does; Helm deletes them all once it succeeds.
+*/}}
+{{- $name := printf "%s-egress-uninstall" (include "purelb.fullname" .) }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+- apiGroups: [purelb.io]
+  resources: [lbnodeagents]
+  verbs: [list, patch]
+- apiGroups: [purelb.io]
+  resources: [egressnodestates]
+  verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+- kind: ServiceAccount
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "purelb.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress-uninstall
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        {{- include "purelb.labels" . | nindent 8 }}
+        app.kubernetes.io/component: egress-uninstall
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      serviceAccountName: {{ $name }}
+      restartPolicy: Never
+      containers:
+      - name: uninstall
+        image: "{{ .Values.image.repository }}/lbnodeagent:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args:
+        - egress-uninstall
+        - --timeout={{ .Values.egress.uninstallHook.timeout }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          seccompProfile:
+            type: RuntimeDefault
+      nodeSelector:
+        kubernetes.io/os: linux
+{{- end }}

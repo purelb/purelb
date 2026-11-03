@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/kernelversion"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
@@ -127,8 +128,13 @@ func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth, pn *po
 	}
 	if v, err := kernelversion.Parse(c.Kernel); err != nil || !v.AtLeast(kernelversion.EgressMin) {
 		set(condDatapathCompatible, "KernelTooOld", fmt.Sprintf("kernel %s is older than egress needs", c.Kernel))
+	} else if r := a.stage.Load(); r != nil && r.stage == cnisock.StageBypassed {
+		// Its pods need the eBPF stage (design 6.1, 6.4).
+		set(condDatapathCompatible, "NetfilterBypassed", r.detail+": this node needs the eBPF pod stage")
 	} else if h.markConflict != "" {
 		set(condDatapathCompatible, "MarkConflict", h.markConflict)
+	} else if reason, msg := chainCondition(a.installer.Load(), a.now()); reason != "" {
+		set(condDatapathCompatible, reason, msg)
 	} else {
 		set(condDatapathCompatible, "", "")
 	}
