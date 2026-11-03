@@ -37,7 +37,9 @@ func TestUnchain(t *testing.T) {
 		dir := t.TempDir()
 		a.snapPath, a.desiredPath = filepath.Join(dir, "snap.json"), filepath.Join(dir, "desired.json")
 		a.statusPath, a.recordDir = filepath.Join(dir, "status.json"), filepath.Join(dir, "sandboxes")
-		a.unchainWait = 500 * time.Millisecond
+		// Long, so "returned before the wait ran out" holds on a slow
+		// runner (the agent re-reads the status every unchainPoll).
+		a.unchainWait = 5 * time.Second
 		return a
 	}
 	chained := func(t *testing.T, a *Agent) {
@@ -126,6 +128,7 @@ func TestUnchain(t *testing.T) {
 
 	t.Run("no answer", func(t *testing.T) {
 		a := newAgent(t)
+		a.unchainWait = 500 * time.Millisecond // waited out in full
 		chained(t, a)
 		start := time.Now()
 		assert.False(t, a.unchain(nil))
