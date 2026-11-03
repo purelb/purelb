@@ -173,10 +173,17 @@ func TestCNISocket(t *testing.T) {
 	assert.Equal(t, []string{"voice"}, snap.FailClosedNamespaces)
 	assert.Equal(t, int64(3600), snap.MaxAgeSeconds)
 	assert.WithinDuration(t, time.Now(), snap.Written, 5*time.Second)
-	assert.Greater(t, testutil.ToFloat64(snapshotAge), 0.0, "the session's writer reports its age")
+	// The writer records its write and asks for the chain just after the
+	// file appears.
+	require.Eventually(t, func() bool { return testutil.ToFloat64(snapshotAge) > 0 }, 5*time.Second, 20*time.Millisecond,
+		"the session's writer reports its age")
 	// With a snapshot written, purelb-cni is asked to chain the plugin.
-	d, err := cnisock.ReadDesired(f.a.desiredPath)
-	require.NoError(t, err)
+	var d cnisock.Desired
+	require.Eventually(t, func() bool {
+		var err error
+		d, err = cnisock.ReadDesired(f.a.desiredPath)
+		return err == nil
+	}, 5*time.Second, 20*time.Millisecond)
 	assert.True(t, d.Enabled)
 	assert.JSONEq(t, `{"type":"purelb-egress","purelbNamespace":"purelb-system","logLevel":"info"}`, string(d.Entry))
 
@@ -270,7 +277,7 @@ func TestCNISocket(t *testing.T) {
 	// end.
 	cur := f.nodeState()
 	cur.Spec.Slices[0].State = "Pending"
-	_, err = f.purelb.PurelbV2().EgressNodeStates().Update(context.Background(), cur, metav1.UpdateOptions{})
+	_, err := f.purelb.PurelbV2().EgressNodeStates().Update(context.Background(), cur, metav1.UpdateOptions{})
 	require.NoError(t, err)
 	add.ContainerID = "c-a2"
 	require.Eventually(t, func() bool { return call(add).Result == cnisock.ResultHeld }, 5*time.Second, 50*time.Millisecond)

@@ -102,7 +102,7 @@ func TestProbeReport(t *testing.T) {
 	assert.Contains(t, a.probeReport(req, nil).Error, "names no pod address")
 
 	defer func(d time.Duration) { probeSettle = d }(probeSettle)
-	probeSettle = 500 * time.Millisecond
+	probeSettle = 2 * time.Second // long enough for a slow runner's reads and return
 	// report answers ready at once and settles the ticket in the
 	// background; settled takes the result on the queue goroutine.
 	report := func(ips []netip.Addr) (*probeTicket, cnisock.Response, time.Duration) {
