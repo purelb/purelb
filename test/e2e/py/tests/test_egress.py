@@ -47,7 +47,25 @@ everything else):
 * a pod gone has its flows reset and its node's slice drained and freed;
 * turning egress off resets egress's flows and src_valid_mark.
 
-WHAT THIS DOES TO THE CLUSTER: egress on every node through the `default`
+What Phase 6 shows, with the CNI plugin (D34, D35, design 8.1):
+
+* purelb-cni chains the plugin on every egress node and installs its
+  binary; each node says it is programmed, and keeps a snapshot;
+* a FailClosed pod starting on a node with no slice of its address waits
+  in its ADD, so from its first packet its traffic leaves from the
+  address, never the node's; its sandbox is recorded;
+* an agent start reports a sandbox with no record, and the next selected
+  pod's ADD sends the stage probe, which never reaches the router;
+* with no agent answering, the snapshot holds back a FailClosed pod and
+  lets an unselected one start;
+* the Helm pre-delete hook's subcommand disables egress and waits for
+  every node; teardown takes the plugin out of the chain first;
+* a node rebooted with a pod that talks from its first moment: the router
+  never sees its traffic from the node's address.
+
+WHAT THIS DOES TO THE CLUSTER (Phase 6 also: moves an agent's socket
+aside for a while, runs the uninstall hook's Job with its own
+ServiceAccount, and reboots a worker node): egress on every node through the `default`
 LBNodeAgent (already so under --egress), with GARP/NA configured so the
 takeover can be seen on the wire; any other LBNodeAgent enabling egress
 is set aside for the module and put back; two ServiceGroups (.221-.223 /
@@ -346,6 +364,123 @@ def pin_pod(cluster: Cluster, node: str = "", avoid: str = "") -> None:
     cluster.apps.patch_namespaced_deployment("egress-e2e", NS, {"spec": {"template": {"spec": {"affinity": affinity}}}})
 
 
+CNI_CONF, CNI_BIN, PLUGIN = "/etc/cni/net.d", "/opt/cni/bin", "purelb-egress"
+RECORDS = "/run/purelb/sandboxes"
+UNRECORDED = "EgressSandboxUnrecorded"
+
+# A pod that tries a TCP connection to argv[1] port 22 every 0.2 s from
+# the moment it starts: its first packets are what the router sees.
+TALK = ("import socket,sys,time\na=sys.argv[1]\nwhile True:\n"
+        " s=socket.socket(socket.AF_INET6 if ':' in a else socket.AF_INET)\n s.settimeout(1)\n"
+        " try: s.connect((a,22))\n except Exception: pass\n s.close()\n time.sleep(0.2)")
+
+
+def cni_chain(host: str) -> Tuple[str, List[str]]:
+    """The node's primary CNI configuration (libcni's: the lexically first
+    .conf, .conflist or .json) and its chain's plugin types."""
+    names = sorted(n for n in ssh(host, f"sudo ls {CNI_CONF}").split()
+                   if n.endswith((".conf", ".conflist", ".json")))
+    assert names, f"{host}: no CNI configuration"
+    conf = json.loads(ssh(host, f"sudo cat {CNI_CONF}/{names[0]}"))
+    return names[0], [p.get("type", "") for p in conf.get("plugins", [conf])]
+
+
+def has_plugin_binary(host: str) -> bool:
+    return ssh(host, f"sudo test -x {CNI_BIN}/{PLUGIN} && echo yes || true", check=False).strip() == "yes"
+
+
+def node_json(host: str, path: str) -> Optional[dict]:
+    """A JSON file on the node, None when it isn't there."""
+    out = ssh(host, f"sudo cat {path} 2>/dev/null || true", check=False).strip()
+    return json.loads(out) if out else None
+
+
+def records_of(host: str, pod: str) -> List[str]:
+    """The plugin's sandbox records on the node naming `pod` (a DNS label,
+    so safe unquoted; the directory is root's)."""
+    return ssh(host, f"sudo sh -c 'grep -l -F {pod} {RECORDS}/* 2>/dev/null' || true", check=False).split()
+
+
+def unrecorded_events(cluster: Cluster, namespace: str, pod: str) -> List[client.CoreV1Event]:
+    return cluster.core.list_namespaced_event(
+        namespace, field_selector=f"involvedObject.name={pod},reason={UNRECORDED}").items
+
+
+def talker(cluster: Cluster, name: str, namespace: str, node: str, dst: str, labels: Dict[str, str]) -> None:
+    """A pod on `node` connecting to dst from its first moment (TALK)."""
+    cluster.core.create_namespaced_pod(namespace, {
+        "apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "labels": labels},
+        "spec": {"terminationGracePeriodSeconds": 1, "nodeSelector": {"kubernetes.io/hostname": node},
+                 "tolerations": [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists",
+                                  "effect": "NoSchedule"}],
+                 "containers": [{"name": "c", "image": backend.IMAGE, "command": ["python3", "-c", TALK, dst]}]}})
+
+
+def running(cluster: Cluster, namespace: str, name: str) -> Optional[client.V1Pod]:
+    try:
+        p = cluster.core.read_namespaced_pod(name, namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            return None
+        raise
+    return p if p.status.phase == "Running" and p.status.pod_ip else None
+
+
+def delete_pod_now(cluster: Cluster, namespace: str, name: str) -> None:
+    try:
+        cluster.core.delete_namespaced_pod(name, namespace, grace_period_seconds=0)
+    except ApiException as exc:
+        if exc.status != 404:
+            raise
+    wait_until(lambda: running(cluster, namespace, name) is None and not any(
+        p.metadata.name == name for p in cluster.core.list_namespaced_pod(namespace).items),
+        timeout=120, description=f"pod {namespace}/{name} gone")
+
+
+def my_address(host: str) -> str:
+    """This host's source address toward `host` (the harness's own ssh)."""
+    import subprocess  # noqa: PLC0415
+    out = subprocess.run(["ip", "route", "get", host], capture_output=True, text=True, check=True).stdout  # noqa: S603,S607
+    return re.search(r" src (\S+)", out).group(1)
+
+
+def run_uninstall_hook(cluster: Cluster, image: str, timeout: str = "3m") -> str:
+    """The Helm pre-delete hook as the chart has it (D26): its own
+    ServiceAccount, a ClusterRole listing and patching only, and a Job
+    running `lbnodeagent egress-uninstall`; returns the Job's log once it
+    succeeds. Everything it creates is removed."""
+    name, ns = "egress-e2e-uninstall", cluster.purelb_namespace
+    rbac, batch = client.RbacAuthorizationV1Api(), client.BatchV1Api()
+    cluster.core.create_namespaced_service_account(ns, {"metadata": {"name": name}})
+    rbac.create_cluster_role({"metadata": {"name": name}, "rules": [
+        {"apiGroups": ["purelb.io"], "resources": ["lbnodeagents"], "verbs": ["list", "patch"]},
+        {"apiGroups": ["purelb.io"], "resources": ["egressnodestates"], "verbs": ["list"]}]})
+    rbac.create_cluster_role_binding({"metadata": {"name": name},
+                                      "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": name},
+                                      "subjects": [{"kind": "ServiceAccount", "name": name, "namespace": ns}]})
+    try:
+        batch.create_namespaced_job(ns, {"metadata": {"name": name}, "spec": {"backoffLimit": 0, "template": {"spec": {
+            "serviceAccountName": name, "restartPolicy": "Never",
+            "containers": [{"name": "uninstall", "image": image, "imagePullPolicy": "Always",
+                            "args": ["egress-uninstall", f"--timeout={timeout}"],
+                            "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]},
+                                                "readOnlyRootFilesystem": True, "runAsNonRoot": True, "runAsUser": 65534}}]}}}})
+
+        def finished():  # noqa: ANN202
+            st = batch.read_namespaced_job(name, ns).status
+            if st.failed:
+                raise AssertionError("the uninstall hook's Job failed")
+            return st.succeeded
+        wait_until(finished, timeout=300, interval=3, description="the uninstall hook's Job")
+        pod = cluster.core.list_namespaced_pod(ns, label_selector=f"job-name={name}").items[0]
+        return cluster.pod_log_text(ns, pod.metadata.name, "uninstall")
+    finally:
+        batch.delete_namespaced_job(name, ns, propagation_policy="Foreground")
+        rbac.delete_cluster_role_binding(name)
+        rbac.delete_cluster_role(name)
+        cluster.core.delete_namespaced_service_account(name, ns)
+
+
 # ---------------------------------------------------------------- fixture
 
 
@@ -497,6 +632,30 @@ def test_routed_addresses_one_path_per_node(cluster: Cluster, node_ips: Dict[str
                description="one IPv4 path per node at the router")
     wait_until(lambda: len(router.nexthops(ROUTED_V6[1])) == len(node_ips), timeout=90,
                description="one IPv6 path per node at the router")
+
+
+def test_cni_plugin_chained_on_every_node(cluster: Cluster, node_ips: Dict[str, str], env: Env, agent_metrics) -> None:
+    """purelb-cni chains the plugin on every egress node (D34): its entry
+    last in the primary conflist's chain and its binary installed, or,
+    where the CNI's own configuration chains it, the entry there; the
+    installer reports it Present, no node reports the chain missing; each
+    node says what release programmed it and keeps a fresh snapshot for
+    the plugin (D35)."""
+    for n, ip in node_ips.items():
+        wait_until(lambda ip=ip: PLUGIN in cni_chain(ip)[1] and has_plugin_binary(ip), timeout=120,
+                   description=f"{n}: the plugin chained and installed")
+        name, chain = cni_chain(ip)
+        st = node_json(ip, "/run/purelb/cni-status.json") or {}
+        assert st.get("chain") == "Present" and st.get("conflist") == name, f"{n}: installer status {st}"
+        if st.get("reason") != "CNIOwned":
+            assert chain[-1] == PLUGIN, f"{n}: {name} chains {chain}: the plugin goes last"
+        status, reason, msg = node_condition(cluster, n, "DatapathCompatible")
+        assert reason not in ("ChainMissing", "CNIChainMissing"), f"{n}: {reason}: {msg}"
+        assert (node_states(cluster)[n].get("status") or {}).get("programmed"), f"{n}: status.programmed"
+        snap = node_json(ip, "/var/lib/purelb/egress-snapshot.json")
+        assert snap and snap["version"] == 1 and snap["maxAgeSeconds"] == 3600, f"{n}: snapshot {snap}"
+        age = agent_metrics(n).value("purelb_egress_cni_snapshot_age_seconds")
+        assert 0 < age < 120, f"{n}: snapshot {age} s old"
 
 
 def test_removed_address_comes_back(cluster: Cluster, node_ips: Dict[str, str], env: Env) -> None:
@@ -678,10 +837,54 @@ def test_pod_traffic_leaves_from_its_slice(cluster: Cluster, router: Router, env
     wait_until(lambda: '"flow log off"' in agent_log(cluster, node, since), timeout=60, description="flow log off")
 
 
+def test_a_new_pods_first_packets_leave_as_egress(cluster: Cluster, node_ips: Dict[str, str], router: Router, env: Env,
+                                                   agent_metrics) -> None:
+    """A FailClosed pod starting on a node with no slice of its policy's
+    address (design 8.1): its ADD waits for the node's slice and classifier
+    (or ends held), so from its very first packet the router sees its
+    traffic only from the policy's address, never from the node's; the
+    agent answered the ADD, and the plugin recorded the sandbox, so the
+    agent doesn't report it."""
+    busy = client_pod(cluster).spec.node_name
+    n = next((x for x in sorted(node_ips) if x != busy and not node_slice(cluster, x, env.r4)), None)
+    if n is None:
+        pytest.skip("every node has a slice of the routed address")
+    me = my_address(router.host)
+    adds0 = agent_metrics(n).counter("purelb_egress_cni_requests_total", op="ADD")
+    since = utcnow()
+    name = "egress-e2e-first"
+    try:
+        with router.capture("any", f"tcp dst port 22 and dst host {env.routed_dst4} and not src host {me}",
+                            seconds=150) as cap:
+            talker(cluster, name, NS, n, env.routed_dst4, {"app": "egress-e2e"})
+            wait_until(lambda: running(cluster, NS, name), timeout=120, description=f"{name} running on {n}")
+            time.sleep(5)
+        syns = router_syns(cap.lines)
+        assert any(src == env.r4 for src, _, _ in syns), f"no SYN from {env.r4}: {cap.lines[-20:]}"
+        # Not classified, the pod's traffic leaves from its node's address
+        # (the CNI's masquerade) or its own.
+        leaks = set(node_ips.values()) | {running(cluster, NS, name).status.pod_ip}
+        stray = sorted({src for src, _, _ in syns if src in leaks})
+        assert not stray, f"the pod's SYNs left from {stray}, not only {env.r4}"
+        line = next((ln for ln in agent_log(cluster, n, since).splitlines()
+                     if '"op":"egressCNI"' in ln and '"request":"ADD"' in ln and f"{NS}/{name}" in ln), "")
+        assert re.search(r'"result":"(ready|held)"', line), f"{n}: the ADD's answer: {line or 'none'}"
+        assert agent_metrics(n).counter("purelb_egress_cni_requests_total", op="ADD") > adds0
+        assert records_of(node_ips[n], name), f"{n}: no record of {name}'s sandbox"
+        time.sleep(5)
+        assert not unrecorded_events(cluster, NS, name), "reported as started without the plugin"
+    finally:
+        delete_pod_now(cluster, NS, name)
+    # The pod can leave the API before kubelet tears its sandbox down.
+    wait_until(lambda: not records_of(node_ips[n], name), timeout=60,
+               description=f"{n}: {name}'s record removed at its DEL")
+
+
 def test_mark_byte_moves_off_a_used_byte(cluster: Cluster, node_ips: Dict[str, str], env: Env, agent_metrics) -> None:
     """Another rule on the pod's node setting a bit of the mark byte after
     classify: with markField unset the node moves to the next free byte
-    and the pod's flows still go; set explicitly to that byte it stays and
+    (which one depends on the CNI's own marks: Calico's are in
+    0x00ff0000) and the pod's flows still go; set explicitly to that byte it stays and
     reports MarkConflict, on the node and the policies, until the rule
     goes; unset again, the byte in use stays (D18)."""
     pod = client_pod(cluster)
@@ -698,7 +901,7 @@ def test_mark_byte_moves_off_a_used_byte(cluster: Cluster, node_ips: Dict[str, s
             "sudo nft 'add chain ip purelb_e2e_mark post { type filter hook postrouting priority 0; }' && "
             "sudo nft add rule ip purelb_e2e_mark post ip daddr 192.0.2.255 meta mark set meta mark or 0x1")
     try:
-        wait_nodes(cluster, lambda: mark_field() == "0x00ff0000", 120, f"{node} moving off 0x000000ff")
+        wait_nodes(cluster, lambda: mark_field() not in ("", "0x000000ff"), 120, f"{node} moving off 0x000000ff")
         assert "moved egress's mark byte" in agent_log(cluster, node, since)
         assert agent_metrics(node).counter("purelb_egress_mark_moves_total") == moves0 + 1
         for dst in (env.routed_dst4, env.local_dst6):
@@ -821,6 +1024,91 @@ def test_flows_survive_an_agent_restart(cluster: Cluster, node_ips: Dict[str, st
         pin_pod(cluster)
 
 
+def test_agent_start_reports_and_probes(cluster: Cluster, node_ips: Dict[str, str], router: Router, env: Env,
+                                        agent_metrics) -> None:
+    """Design 8.1 and 6.1. The pod's sandbox record removed (as for one that
+    started without the plugin) and its node's agent restarted: the new
+    agent reports the pod, by a log line, a Warning event on it and a
+    gauge. The next selected pod's ADD after the start sends the stage
+    probe; the stage it finds is what the node reports and classifies by
+    (flannel: Mark, classify by mark), and the probe never reaches the
+    router."""
+    pod = client_pod(cluster)
+    n, ip = pod.spec.node_name, node_ips[pod.spec.node_name]
+    removed = ssh(ip, f"sudo sh -c 'grep -l -F {pod.metadata.name} {RECORDS}/* | xargs -r rm -v' || true", check=False)
+    assert removed.strip(), f"{n}: no record of {pod.metadata.name} to remove"
+    old = agent_pod(cluster, n)
+    cluster.core.delete_namespaced_pod(old.metadata.name, cluster.purelb_namespace)
+    wait_until(lambda: (lambda p: p is not None and p.metadata.name != old.metadata.name and
+                        p.status.phase == "Running")(agent_pod(cluster, n)), timeout=120, description=f"{n}'s new agent")
+    wait_until(lambda: unrecorded_events(cluster, NS, pod.metadata.name), timeout=120,
+               description=f"{pod.metadata.name} reported as started without the plugin")
+    assert agent_metrics(n).value("purelb_egress_cni_unrecorded_pods") >= 1
+    assert "the pod's sandbox started without the CNI plugin" in agent_log(cluster, n)
+
+    since = utcnow()
+    try:
+        with router.capture("any", f"udp dst port 9 and (dst host 198.51.100.254 or dst host 100::1)", seconds=150) as cap:
+            pin_pod(cluster, node=n)
+            wait_until(lambda: (lambda p: p if p.spec.node_name == n and p.metadata.name != pod.metadata.name else None)(
+                client_pod(cluster)), timeout=180, description=f"a new pod on {n}")
+            line = wait_until(lambda: next((ln for ln in agent_log(cluster, n, since).splitlines()
+                                            if '"op":"egressStageProbe"' in ln and '"stage"' in ln), None),
+                              timeout=60, description=f"{n}'s stage probe")
+        assert not cap.lines, f"the probe reached the router: {cap.lines}"
+    finally:
+        pin_pod(cluster)
+    stage = json.loads(line)["stage"]
+    assert stage in ("Mark", "SourceIP", "Bypassed"), line
+    if any(d.metadata.name == "kube-flannel-ds" for d in cluster.apps.list_daemon_set_for_all_namespaces().items):
+        assert stage == "Mark", f"flannel: pl_pod_tag's mark reaches classify ({line})"
+    want = "EBPF" if stage == "Bypassed" else "Netfilter"
+    wait_until(lambda: ((node_states(cluster)[n].get("status") or {}).get("capability") or {}).get("podNodeStage") == want,
+               timeout=60, description=f"{n} reporting podNodeStage {want}")
+    status, reason, _ = node_condition(cluster, n, "DatapathCompatible")
+    assert (reason == "NetfilterBypassed") == (stage == "Bypassed"), f"{n}: {status} {reason} with stage {stage}"
+    if stage != "Bypassed":
+        rule = "vmap @podset" if stage == "Mark" else "vmap @pods4"
+        wait_until(lambda: rule in ssh(ip, "sudo nft list chain inet purelb_egress classify", check=False), timeout=60,
+                   description=f"{n} classifying with {rule}")
+
+
+def test_the_snapshot_decides_while_no_agent_answers(cluster: Cluster, node_ips: Dict[str, str], env: Env) -> None:
+    """D35: with no agent answering on a node (its socket moved aside), the
+    plugin decides by the agent's snapshot. A pod a FailClosed policy
+    selects doesn't start: its ADD fails, saying why, and kubelet retries
+    until the agent answers again. A pod no policy selects starts, and
+    its sandbox is recorded, so the agent doesn't report it."""
+    n = sorted(node_ips)[-1]
+    ip = node_ips[n]
+    other = "egress-e2e-other"
+    cluster.core.create_namespace(client.V1Namespace(metadata=client.V1ObjectMeta(name=other)))
+    sock = "/run/purelb/egress.sock"
+    ssh(ip, f"sudo mv {sock} {sock}.e2e")
+    moved = True
+    try:
+        talker(cluster, "held", NS, n, env.routed_dst4, {"app": "egress-e2e"})
+        talker(cluster, "free", other, n, env.routed_dst4, {"app": "free"})
+        wait_until(lambda: running(cluster, other, "free"), timeout=120, description="the unselected pod running")
+        assert records_of(ip, "free"), f"{n}: the unselected pod's sandbox not recorded"
+
+        def refused() -> bool:
+            evs = cluster.core.list_namespaced_event(NS, field_selector="involvedObject.name=held").items
+            return any("the PureLB agent isn't running on this node" in (e.message or "") for e in evs)
+        wait_until(refused, timeout=90, description="the FailClosed pod's ADD refused by the snapshot")
+        assert running(cluster, NS, "held") is None, "a FailClosed pod started with no agent"
+        ssh(ip, f"sudo mv {sock}.e2e {sock}")
+        moved = False
+        wait_until(lambda: running(cluster, NS, "held"), timeout=180, description="the FailClosed pod running")
+        time.sleep(10)
+        assert not unrecorded_events(cluster, other, "free"), "the snapshot-passed pod reported as unrecorded"
+    finally:
+        if moved:
+            ssh(ip, f"sudo mv {sock}.e2e {sock}", check=False)
+        delete_pod_now(cluster, NS, "held")
+        cluster.core.delete_namespace(other)
+
+
 def test_deleted_pods_flows_are_reset_and_drained(cluster: Cluster, env: Env, agent_metrics) -> None:
     """The pod moved off its node with a flow open: the node deletes the
     flow's conntrack entry and says so, its slice drains (no flow left) and
@@ -878,16 +1166,40 @@ def test_disable_removes_everything_and_enable_rebuilds(cluster: Cluster, node_i
     ping = in_background(lambda: pod_exec(cluster, pod.metadata.name, f"ping -i 0.5 -w 20 {env.local_dst4}",
                                           timeout=60))
 
+    # The node's mark byte (an earlier case may have moved it, D18).
+    field = int((((node_states(cluster).get(n) or {}).get("status") or {}).get("capability") or {})
+                .get("markField", "0x000000ff"), 16)
+    shift = (field & -field).bit_length() - 1
+
     def marked_flow() -> bool:
         """The ping's conntrack entry on n, carrying a slot (D18)."""
         out = ssh(node_ips[n], f"sudo grep 'icmp.*src={pod4} dst={env.local_dst4} ' /proc/net/nf_conntrack || true",
                   check=False)
-        return any(0 < int(m) & 0xff < 0x80 for m in re.findall(r"mark=(\d+)", out))
+        return any(0 < (int(m) >> shift) & 0xff < 0x80 for m in re.findall(r"mark=(\d+)", out))
     wait_until(marked_flow, timeout=15, interval=1, description=f"the pod's flow on {n}, marked with a slot")
     since = utcnow()
-    apply_agent(cluster, False)
-    wait_until(lambda: not any(egress.capable_nodes(cluster).values()), timeout=120,
-               description="egress off on every node")
+    # Off as the Helm pre-delete hook turns it off: it waits for every node.
+    image = next(c.image for c in agent_pod(cluster, n).spec.containers if c.name == "lbnodeagent")
+    hook = run_uninstall_hook(cluster, image)
+    assert "every node has torn egress down" in hook, hook
+    assert not any(egress.capable_nodes(cluster).values()), "egress off on every node once the hook is done"
+    for node, ip in node_ips.items():
+        st = (node_states(cluster).get(node) or {}).get("status") or {}
+        assert not st.get("programmed"), f"{node}: still programmed"
+        log = agent_log(cluster, node, since)
+        # Known only once teardown tried: the CNI put the entry back.
+        if (node_json(ip, "/run/purelb/cni-status.json") or {}).get("reason") == "CNIOwned":
+            # The CNI's own configuration chains it: entry and binary stay.
+            assert PLUGIN in cni_chain(ip)[1] and has_plugin_binary(ip), node
+            assert "the CNI's own configuration chains the plugin" in log, node
+            continue
+        assert PLUGIN not in cni_chain(ip)[1], f"{node}: still chained"
+        assert not has_plugin_binary(ip), f"{node}: plugin binary left"
+        for f in ("/var/lib/purelb/egress-snapshot.json", "/var/lib/purelb/cni-desired.json", RECORDS):
+            assert ssh(ip, f"sudo test -e {f} && echo yes || true", check=False).strip() != "yes", f"{node}: {f} left"
+        assert (node_json(ip, "/run/purelb/cni-status.json") or {}).get("chain") == "Off", node
+        assert log.index("the plugin is out of the CNI chain") < log.index("egress datapath removed"), \
+            f"{node}: the plugin out of the chain before the datapath goes (D26)"
     for node, ip in node_ips.items():
         wait_until(lambda ip=ip: "does not exist" in ssh(ip, f"ip link show {TUNNEL} 2>&1 || true", check=False),
                    timeout=60, description=f"{node}: the tunnel removed")
@@ -907,8 +1219,61 @@ def test_disable_removes_everything_and_enable_rebuilds(cluster: Cluster, node_i
     wait_until(lambda: all_capable(cluster, node_ips), timeout=180, description="egress back on every node")
     for n, ip in node_ips.items():
         assert TUNNEL in ssh(ip, f"ip -br link show {TUNNEL}", check=False), n
+        wait_until(lambda ip=ip: PLUGIN in cni_chain(ip)[1] and has_plugin_binary(ip), timeout=60,
+                   description=f"{n}: the plugin chained again")
+        assert (node_states(cluster)[n].get("status") or {}).get("programmed"), n
     for a in (env.v4, env.v6):
         wait_until(lambda a=a: len(announcers(cluster, a)) == 1, timeout=120, description=f"one holder of {a}")
     wait_until(lambda: len(router.nexthops(f"{env.r4}/32")) == len(node_ips), timeout=120,
                description="the routed paths back")
 
+
+def test_a_rebooted_nodes_pod_never_leaves_unclassified(cluster: Cluster, node_ips: Dict[str, str], router: Router,
+                                                        env: Env) -> None:
+    """A worker node rebooted with a FailClosed pod that talks from its
+    first moment (design 8.1, D35, D12): through the boot window, while the
+    CNI rewrites its configuration and before the agent runs, and after,
+    the router never sees the pod's traffic from the node's address or the
+    pod's own, only from the policy's; purelb-cni chains the plugin again;
+    the pod's new sandbox went through the plugin (recorded, not reported);
+    its traffic leaves from the address again."""
+    workers = [nd.metadata.name for nd in cluster.nodes()
+               if "node-role.kubernetes.io/control-plane" not in (nd.metadata.labels or {}) and nd.metadata.name in node_ips]
+    if not workers:
+        pytest.skip("no worker node to reboot")
+    held = set(announcers(cluster, env.v4) + announcers(cluster, env.v6))
+    n = next((w for w in sorted(workers) if w not in held), sorted(workers)[0])
+    ip = node_ips[n]
+    me = my_address(router.host)
+    name = "egress-e2e-reboot"
+    talker(cluster, name, NS, n, env.routed_dst4, {"app": "egress-e2e"})
+    try:
+        before = wait_until(lambda: running(cluster, NS, name), timeout=120, description=f"{name} running on {n}")
+        restarts = before.status.container_statuses[0].restart_count
+        with router.capture("any", f"tcp dst port 22 and dst host {env.routed_dst4} and not src host {me}",
+                            seconds=900) as cap:
+            boot = ssh(ip, "cat /proc/sys/kernel/random/boot_id").strip()
+            ssh(ip, "sudo systemctl reboot", check=False)
+            wait_until(lambda: (lambda b: b and b != boot)(
+                ssh(ip, "cat /proc/sys/kernel/random/boot_id", timeout=10, check=False).strip()),
+                timeout=600, interval=10, description=f"{n} rebooted")
+            wait_until(lambda: (lambda p: p if p and p.status.container_statuses and
+                                p.status.container_statuses[0].restart_count > restarts and
+                                p.status.container_statuses[0].ready else None)(running(cluster, NS, name)),
+                       timeout=600, interval=5, description=f"{name} running again after the reboot")
+            wait_until(lambda: egress.capable_nodes(cluster).get(n), timeout=300, interval=5,
+                       description=f"{n} egress-capable again")
+            time.sleep(20)
+        after = running(cluster, NS, name)
+        syns = router_syns(cap.lines)
+        leaks = set(node_ips.values()) | {before.status.pod_ip, after.status.pod_ip}
+        stray = sorted({src for src, _, _ in syns if src in leaks})
+        assert not stray, f"through the reboot the pod's SYNs left from {stray}, not only {env.r4}"
+        assert any(src == env.r4 for src, _, _ in syns[-20:]), f"the pod's traffic not back on {env.r4}: {syns[-5:]}"
+        assert PLUGIN in cni_chain(ip)[1] and has_plugin_binary(ip), f"{n}: the plugin not chained again"
+        assert records_of(ip, name), f"{n}: the pod's new sandbox has no record: it bypassed the plugin"
+        assert not [e for e in unrecorded_events(cluster, NS, name)
+                    if e.last_timestamp is None or e.last_timestamp.timestamp() > time.time() - 900], \
+            "reported as started without the plugin"
+    finally:
+        delete_pod_now(cluster, NS, name)

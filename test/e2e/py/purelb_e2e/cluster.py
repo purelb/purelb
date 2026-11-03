@@ -75,11 +75,15 @@ class Cluster:
         raise AssertionError(f"no InternalIP for node {name}")
 
     def node_ips(self) -> Dict[str, str]:
+        """Each node's first InternalIP, as node_ip and the kubelet's
+        status.hostIP (which the agent serves its metrics on) have it; a
+        dual-stack node lists one per family."""
         out: Dict[str, str] = {}
         for node in self.nodes():
             for addr in node.status.addresses or []:
                 if addr.type == "InternalIP":
                     out[node.metadata.name] = addr.address
+                    break
         return out
 
     def add_taint(self, node: str, key: str, value: str, effect: str) -> None:
@@ -289,9 +293,18 @@ class Cluster:
     # ------------------------------------------------------------------ pods
 
     def pods(self, namespace: str, label_selector: str) -> List[client.V1Pod]:
-        return self.core.list_namespaced_pod(
-            namespace, label_selector=label_selector
-        ).items
+        return self._pods(namespace, label_selector)
+
+    def _pods(self, namespace: str, label_selector: str, **kw: Any) -> List[client.V1Pod]:
+        """Pods matching label_selector. The manifests label PureLB's pods
+        `component=<name>`, the Helm chart `app.kubernetes.io/component=
+        <name>`: a `component=` selector matching nothing is tried as the
+        chart's."""
+        found = self.core.list_namespaced_pod(namespace, label_selector=label_selector, **kw).items
+        if not found and label_selector.startswith("component="):
+            found = self.core.list_namespaced_pod(
+                namespace, label_selector="app.kubernetes.io/" + label_selector, **kw).items
+        return found
 
     def delete_pod(self, namespace: str, name: str, grace_seconds: int = 30) -> None:
         """Delete a pod with a grace period.
@@ -319,11 +332,7 @@ class Cluster:
         matched the NAME and IP columns and could not tell purelb2-1 from
         purelb2-10.
         """
-        found = self.core.list_namespaced_pod(
-            namespace,
-            label_selector=label_selector,
-            field_selector=f"spec.nodeName={node}",
-        ).items
+        found = self._pods(namespace, label_selector, field_selector=f"spec.nodeName={node}")
         return found[0] if found else None
 
     # ------------------------------------------------------------------ logs
