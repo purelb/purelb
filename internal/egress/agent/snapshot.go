@@ -57,11 +57,17 @@ func init() {
 
 // snapshotWriter keeps the plugin's snapshot on disk from its own
 // goroutine (the queue goroutine does no file I/O): the latest content
-// set, written when it changes and at least every refresh.
+// set, written when it changes and at least every refresh. Once the first
+// is written it writes the desired state, so the purelb-cni installer
+// chains the plugin only when the plugin has a snapshot to decide by.
 type snapshotWriter struct {
 	logger log.Logger
 	node   string
 	path   string
+	// desiredPath is the installer's desired state, entry the conflist
+	// entry it asks for.
+	desiredPath string
+	entry       []byte
 	// want is the content to write, without Version and Written; set by
 	// the queue goroutine.
 	want atomic.Pointer[cnisock.Snapshot]
@@ -70,8 +76,9 @@ type snapshotWriter struct {
 	written atomic.Int64
 }
 
-func newSnapshotWriter(logger log.Logger, node, path string) *snapshotWriter {
-	return &snapshotWriter{logger: logger, node: node, path: path, kick: make(chan struct{}, 1)}
+func newSnapshotWriter(logger log.Logger, node, path, desiredPath string, entry []byte) *snapshotWriter {
+	return &snapshotWriter{logger: logger, node: node, path: path, desiredPath: desiredPath, entry: entry,
+		kick: make(chan struct{}, 1)}
 }
 
 // set asks for s to be written.
@@ -87,7 +94,7 @@ func (w *snapshotWriter) set(s *cnisock.Snapshot) {
 // decides by while no agent runs.
 func (w *snapshotWriter) run(stop <-chan struct{}) {
 	var last *cnisock.Snapshot
-	failing := false
+	failing, desired := false, false
 	t := time.NewTimer(snapshotRefresh)
 	defer t.Stop()
 	for {
@@ -119,9 +126,25 @@ func (w *snapshotWriter) run(stop <-chan struct{}) {
 		}
 		failing, last = false, s
 		w.written.Store(snap.Written.UnixNano())
+		if !desired {
+			desired = w.writeDesired()
+		}
 		logging.Debug(w.logger, "op", "egressSnapshot", "node", w.node, "pods", len(s.Pods),
 			"failClosedNamespaces", len(s.FailClosedNamespaces), "msg", "snapshot written")
 	}
+}
+
+// writeDesired asks the installer to chain the plugin (D34), reporting
+// whether it did.
+func (w *snapshotWriter) writeDesired() bool {
+	if err := cnisock.WriteDesired(w.desiredPath, cnisock.Desired{Enabled: true, Entry: w.entry}); err != nil {
+		logging.Info(w.logger, "op", "egressSnapshot", "node", w.node, "path", w.desiredPath, "error", err,
+			"msg", "can't ask purelb-cni to chain the CNI plugin; retrying with the next snapshot")
+		return false
+	}
+	logging.Info(w.logger, "op", "egressSnapshot", "node", w.node, "path", w.desiredPath,
+		"msg", "asked purelb-cni to chain the CNI plugin")
+	return true
 }
 
 // refreshOf is how often s is rewritten: often enough that a just-gone

@@ -195,6 +195,8 @@ defaultAnnouncer: "PureLB"
 memberlistSecretKey: "8sb7ikA5qHwQQqxc"
 
 # Optional priorityClass to use for both allocator and lbnodeagent pods.
+# Unset with egress enabled, egress makes them critical: lbnodeagent and
+# purelb-cni system-node-critical, the allocator system-cluster-critical.
 # https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/
 priorityClassName: ""
 
@@ -310,6 +312,21 @@ skipCRDVersionCheck: false
 # egress CRDs are always installed, because Helm can't template crds/.
 egress:
   enabled: true
+  # purelb-cni, the installer that chains the egress CNI plugin: the
+  # node's CNI configuration and plugin directories, as the container
+  # runtime reads them. RKE2 uses the defaults. k3s with its own flannel:
+  # confDir /var/lib/rancher/k3s/agent/etc/cni/net.d,
+  # binDir /var/lib/rancher/k3s/data/cni.
+  cni:
+    confDir: /etc/cni/net.d
+    binDir: /opt/cni/bin
+    # Measured resident 36-38 MiB on prox-purelb2.
+    resources:
+      limits:
+        memory: 64Mi
+      requests:
+        cpu: 5m
+        memory: 40Mi
 
 # k8gobgp sidecar — per-node BGP route announcement for remote VIPs.
 # When enabled, k8gobgp runs as a sidecar in the lbnodeagent DaemonSet pod.

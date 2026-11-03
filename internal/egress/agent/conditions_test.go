@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"purelb.io/internal/egress/cnisock"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -32,6 +33,7 @@ func TestNodeConditions(t *testing.T) {
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	a := New(log.NewNopLogger(), "n1", "purelb-system")
 	a.now = func() time.Time { return now }
+	a.installer.Store(&cnisock.InstallerStatus{Written: now, Chain: cnisock.ChainPresent})
 	ok := &purelbv2.EgressCapability{Kernel: "6.12.111"}
 	get := func(cs []metav1.Condition, typ string) string {
 		for _, c := range cs {
@@ -73,6 +75,38 @@ func TestNodeConditions(t *testing.T) {
 		}
 	}
 	now = now.Add(time.Minute)
+	a.installer.Store(&cnisock.InstallerStatus{Written: now, Chain: cnisock.ChainPresent})
 	before := a.nodeConditions(ok, &dpHealth{arpAnnounce: []string{"eth1=0"}}, &podNode{})
 	assert.Equal(t, cs, before, "nothing changed: same conditions, same times")
+
+	// The CNI chain (§10.4), after the kernel and mark conflicts.
+	a.installer.Store(&cnisock.InstallerStatus{Written: now, Chain: cnisock.ChainMissing, Reason: cnisock.ReasonWriteWar,
+		Conflist: "05-cilium.conflist", Message: "rewritten"})
+	assert.Equal(t, "False CNIChainMissing", get(a.nodeConditions(ok, nil, nil), condDatapathCompatible))
+	assert.Equal(t, "False MarkConflict", get(a.nodeConditions(ok, &dpHealth{markConflict: "x"}, nil), condDatapathCompatible))
+}
+
+func TestChainCondition(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	st := func(chain, reason string, age time.Duration) *cnisock.InstallerStatus {
+		return &cnisock.InstallerStatus{Written: now.Add(-age), Chain: chain, Reason: reason, Conflist: "10-flannel.conflist", Message: "m"}
+	}
+	for _, tc := range []struct {
+		name         string
+		st           *cnisock.InstallerStatus
+		reason, like string
+	}{
+		{"no installer", nil, "ChainMissing", "hasn't reported"},
+		{"installer gone", st(cnisock.ChainPresent, "", 91*time.Second), "ChainMissing", "last reported 1m31s ago"},
+		{"present", st(cnisock.ChainPresent, "", 89*time.Second), "", ""},
+		{"not asked yet", st(cnisock.ChainOff, "", 0), "ChainMissing", "hasn't seen this agent's request"},
+		{"write war", st(cnisock.ChainMissing, cnisock.ReasonWriteWar, 0), "CNIChainMissing", "m"},
+		{"single-plugin conf", st(cnisock.ChainMissing, cnisock.ReasonNotAConflist, 0), "CNIChainMissing", "m"},
+		{"no conflist yet", st(cnisock.ChainMissing, cnisock.ReasonNoConflist, 0), "ChainMissing", "m"},
+		{"failed", st(cnisock.ChainMissing, cnisock.ReasonFailed, 0), "ChainMissing", "m"},
+	} {
+		reason, msg := chainCondition(tc.st, now)
+		assert.Equal(t, tc.reason, reason, tc.name)
+		assert.Contains(t, msg, tc.like, tc.name)
+	}
 }

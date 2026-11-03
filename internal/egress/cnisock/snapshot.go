@@ -62,12 +62,18 @@ type SnapshotPod struct {
 // WriteSnapshot replaces the snapshot at path whole: a reader sees the old
 // one or the new one, and a crash leaves one of them.
 func WriteSnapshot(path string, s Snapshot) error {
-	b, err := json.Marshal(s)
+	return writeJSON(path, s)
+}
+
+// writeJSON replaces the file at path with v, by atomic rename (0600; its
+// temporary file is hidden and has no CNI configuration suffix).
+func writeJSON(path string, v any) error {
+	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".egress-snapshot-*")
+	f, err := os.CreateTemp(dir, ".purelb-*")
 	if err != nil {
 		return err
 	}

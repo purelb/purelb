@@ -1,0 +1,87 @@
+# purelb-cni (D34): the lbnodeagent image as the CNI installer. It owns the
+# node's CNI directories: it installs the purelb-egress plugin and keeps
+# its entry in the primary conflist's chain while the node's agent asks for
+# it (its desired state in /var/lib/purelb), and reports to the agent in
+# /run/purelb. Until an LBNodeAgent enables egress on the node it writes
+# nothing there (D-idle). It has no API credential, and runs on the host
+# network so it starts while the node's pod network is broken. It runs
+# wherever lbnodeagent does. For k3s's own flannel, the CNI directories are
+# /var/lib/rancher/k3s/agent/etc/cni/net.d and /var/lib/rancher/k3s/data/cni.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    app: purelb
+    component: purelb-cni
+  name: purelb-cni
+  namespace: purelb-system
+spec:
+  selector:
+    matchLabels:
+      app: purelb
+      component: purelb-cni
+  template:
+    metadata:
+      labels:
+        app: purelb
+        component: purelb-cni
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - cni-install
+        - --conf-dir=/host/cni/net.d
+        - --bin-dir=/host/cni/bin
+        image: ghcr.io/purelb/purelb/lbnodeagent:VERSION_TAG
+        imagePullPolicy: IfNotPresent
+        name: install
+        resources:
+          limits:
+            memory: 64Mi
+          requests:
+            cpu: 5m
+            memory: 40Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsUser: 0
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: cni-conf
+          mountPath: /host/cni/net.d
+        - name: cni-bin
+          mountPath: /host/cni/bin
+        - name: var-lib-purelb
+          mountPath: /var/lib/purelb
+          readOnly: true
+        - name: run-purelb
+          mountPath: /run/purelb
+      hostNetwork: true
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 10
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/master
+      volumes:
+      - name: cni-conf
+        hostPath:
+          path: /etc/cni/net.d
+          type: DirectoryOrCreate
+      - name: cni-bin
+        hostPath:
+          path: /opt/cni/bin
+          type: DirectoryOrCreate
+      - name: var-lib-purelb
+        hostPath:
+          path: /var/lib/purelb
+          type: DirectoryOrCreate
+      - name: run-purelb
+        hostPath:
+          path: /run/purelb
+          type: DirectoryOrCreate

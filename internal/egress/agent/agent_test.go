@@ -30,6 +30,7 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
+	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/egress/datapath"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 	purelbfake "purelb.io/pkg/generated/clientset/versioned/fake"
@@ -81,8 +82,13 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	a := New(log.NewNopLogger(), testNode, "purelb-system")
 	a.sockPath = filepath.Join(t.TempDir(), "egress.sock")
 	a.snapPath = filepath.Join(t.TempDir(), "egress-snapshot.json")
+	// The purelb-cni installer, reporting the plugin chained.
+	a.desiredPath = filepath.Join(filepath.Dir(a.snapPath), "cni-desired.json")
+	a.statusPath = filepath.Join(t.TempDir(), "cni-status.json")
+	require.NoError(t, cnisock.WriteStatus(a.statusPath, cnisock.InstallerStatus{Written: time.Now(), Chain: cnisock.ChainPresent}))
 	a.SetElection(&fakeElector{}) // the agent always runs with one
 	a.statusInterval = 50 * time.Millisecond
+	a.installerPoll = 50 * time.Millisecond
 	wants := make(chan dpWant, 100)
 	a.apply = func(w dpWant) (*purelbv2.EgressCapability, error) {
 		wants <- w

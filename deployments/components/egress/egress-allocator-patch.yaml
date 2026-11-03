@@ -1,0 +1,12 @@
+# Egress is part of the pod network's path, so its components are
+# critical (user decision 2026-11-02): only in an install with egress, so
+# the other variants are unchanged.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: allocator
+  namespace: purelb-system
+spec:
+  template:
+    spec:
+      priorityClassName: system-cluster-critical

@@ -129,6 +129,8 @@ func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth, pn *po
 		set(condDatapathCompatible, "KernelTooOld", fmt.Sprintf("kernel %s is older than egress needs", c.Kernel))
 	} else if h.markConflict != "" {
 		set(condDatapathCompatible, "MarkConflict", h.markConflict)
+	} else if reason, msg := chainCondition(a.installer.Load(), a.now()); reason != "" {
+		set(condDatapathCompatible, reason, msg)
 	} else {
 		set(condDatapathCompatible, "", "")
 	}

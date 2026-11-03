@@ -43,7 +43,7 @@ import (
 )
 
 // Name is the plugin's binary name, and the conflist entry's type.
-const Name = "purelb-egress"
+const Name = cnisock.PluginType
 
 // Supported are the CNI versions the plugin accepts: every version with a
 // prevResult. A chained plugin is called with its conflist's version

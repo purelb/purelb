@@ -182,23 +182,31 @@ type Agent struct {
 	probing   atomic.Pointer[map[netip.Addr]probeTarget]
 	sendProbe func(from, to netip.Addr, port int, pkt []byte) error
 
-	// sockPath is the CNI plugin's socket, snapPath its snapshot (D35)
-	// and cniHold ADD's longest wait (tests use their own);
+	// sockPath is the CNI plugin's socket, snapPath its snapshot (D35),
+	// desiredPath and statusPath the files the agent and the purelb-cni
+	// installer tell each other by (D34), and cniHold ADD's longest wait
+	// (tests use their own);
 	// sandboxes are the pod sandboxes the plugin reported, by container
 	// id, and waiters its ADDs waiting for their pods (§8.1). Stored by
 	// the socket's goroutines, read and pruned by the queue goroutine.
-	sockPath  string
-	snapPath  string
-	cniHold   time.Duration
-	sandboxes sync.Map // string: *cniSandbox
-	waiters   sync.Map // string: *waiter
+	sockPath    string
+	snapPath    string
+	desiredPath string
+	statusPath  string
+	cniHold     time.Duration
+	sandboxes   sync.Map // string: *cniSandbox
+	waiters     sync.Map // string: *waiter
 	// tagged are the pod devices the datapath last installed, by pod
 	// address. Written by the datapath goroutine.
 	tagged atomic.Pointer[map[netip.Addr]datapath.PodDev]
+	// installer is the purelb-cni installer's last status. Written by its
+	// poller.
+	installer atomic.Pointer[cnisock.InstallerStatus]
 
 	now func() time.Time
-	// statusInterval is the status writer's interval; tests shorten it.
-	statusInterval time.Duration
+	// statusInterval is the status writer's interval, installerPoll how
+	// often the installer's status is read; tests shorten them.
+	statusInterval, installerPoll time.Duration
 }
 
 // delivery is what egress takes from one config delivery: this node's
@@ -243,11 +251,12 @@ var (
 // New returns the agent's egress controller for node; Start brings it up.
 func New(logger log.Logger, node, namespace string) *Agent {
 	a := &Agent{logger: logger, node: node, namespace: namespace, runner: newRunner(), now: time.Now,
-		statusInterval: statusInterval, dp: &dpState{pinRoot: bpfpin.Dir},
+		statusInterval: statusInterval, installerPoll: installerPoll, dp: &dpState{pinRoot: bpfpin.Dir},
 		guarded: map[netip.Addr]bool{}, services: map[netip.Addr]map[string]bool{},
 		placements: map[netip.Addr]map[string]egresshook.ServicePlacement{},
 		placed:     map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
 		sendProbe: sendUDPProbe, tableSlots: tableSlots, sockPath: cnisock.DefaultPath, snapPath: cnisock.SnapshotPath,
+		desiredPath: cnisock.DesiredPath, statusPath: cnisock.StatusPath,
 		cniHold: cniHold}
 	a.apply, a.tear = a.applyDatapath, a.teardown
 	return a
@@ -391,7 +400,8 @@ func (a *Agent) syncConfig() {
 // startSession starts egress's informers and its first capability probe.
 func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	s := &session{stop: make(chan struct{}), spec: spec, watches: map[string]*eeWatch{},
-		snap: newSnapshotWriter(a.logger, a.node, a.snapPath)}
+		snap: newSnapshotWriter(a.logger, a.node, a.snapPath, a.desiredPath,
+			cnisock.PluginEntry(a.namespace, logging.GetLevel().String()))}
 	own := externalversions.NewSharedInformerFactoryWithOptions(a.purelb, resync,
 		externalversions.WithTweakListOptions(func(o *metav1.ListOptions) {
 			o.FieldSelector = fields.OneTermEqualSelector("metadata.name", a.node).String()
@@ -479,6 +489,7 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	go a.serveCNI(s)
 	snapshots.Store(s.snap)
 	go s.snap.run(s.stop)
+	go a.pollInstaller(s.stop)
 	go func() {
 		t := time.NewTicker(reconcileInterval)
 		defer t.Stop()
@@ -544,6 +555,7 @@ func (a *Agent) stopSession() {
 	a.shared, a.faults, a.conds, a.podnode, a.podsWant, a.stageWant, a.claimed = nil, nil, nil, nil, nil, nil, nil
 	a.installed.Store(nil)
 	a.tagged.Store(nil)
+	a.installer.Store(nil)
 	a.probing.Store(nil)
 	a.acks.Store(nil)
 	a.specAck.Store(0)

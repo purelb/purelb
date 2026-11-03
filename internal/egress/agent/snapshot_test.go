@@ -70,7 +70,9 @@ func TestSnapshotOf(t *testing.T) {
 func TestSnapshotWriter(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "var-lib-purelb")
 	path := filepath.Join(dir, "egress-snapshot.json")
-	w := newSnapshotWriter(log.NewNopLogger(), testNode, path)
+	desired := filepath.Join(dir, "cni-desired.json")
+	entry := cnisock.PluginEntry("purelb-system", "info")
+	w := newSnapshotWriter(log.NewNopLogger(), testNode, path, desired, entry)
 	snapshots.Store(w)
 	t.Cleanup(func() { snapshots.Store(nil) })
 	assert.Zero(t, testutil.ToFloat64(snapshotAge), "not written yet")
@@ -93,6 +95,13 @@ func TestSnapshotWriter(t *testing.T) {
 	require.NoError(t, os.Mkdir(dir, 0o700))
 	w.set(&cnisock.Snapshot{MaxAgeSeconds: 3600})
 	require.Eventually(t, exists, 3*time.Second, 20*time.Millisecond)
+	// Once there is a snapshot, the installer is asked to chain the plugin.
+	require.Eventually(t, func() bool { _, err := cnisock.ReadDesired(desired); return err == nil }, 3*time.Second, 20*time.Millisecond)
+	d, err := cnisock.ReadDesired(desired)
+	require.NoError(t, err)
+	assert.True(t, d.Enabled)
+	assert.JSONEq(t, `{"type":"purelb-egress","purelbNamespace":"purelb-system","logLevel":"info"}`, string(d.Entry))
+	require.NoError(t, os.Remove(desired))
 	require.NoError(t, os.Remove(path))
 	require.NoError(t, os.Remove(dir))
 

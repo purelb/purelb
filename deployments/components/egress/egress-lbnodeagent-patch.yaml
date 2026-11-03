@@ -4,7 +4,8 @@
 # the container's /sys is sysfs, where the runtime can't create a
 # /sys/fs/bpf/purelb mount point. /run/purelb holds the socket the CNI
 # plugin calls the agent on (design 8.1), /var/lib/purelb the snapshot it
-# decides by while the agent is down (D35), which survives reboots.
+# decides by while the agent is down (D35), which survives reboots. With
+# egress the agent is system-node-critical, as purelb-cni is.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -13,6 +14,7 @@ metadata:
 spec:
   template:
     spec:
+      priorityClassName: system-node-critical
       volumes:
       - name: bpf-pins
         hostPath:

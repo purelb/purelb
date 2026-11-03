@@ -44,6 +44,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"purelb.io/internal/egress"
+	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/egress/datapath"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
@@ -351,6 +352,8 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	assert.Nil(t, b.dp.movedFrom)
 	// Set explicitly to that byte: never moved, MarkConflict instead.
 	compat := func(c *purelbv2.EgressCapability) *metav1.Condition {
+		// purelb-cni reporting the plugin chained.
+		b.installer.Store(&cnisock.InstallerStatus{Written: b.now(), Chain: cnisock.ChainPresent})
 		return apimeta.FindStatusCondition(b.nodeConditions(c, health(b.dp, w, nil), nil), condDatapathCompatible)
 	}
 	w.spec.MarkField = "0x000000ff"

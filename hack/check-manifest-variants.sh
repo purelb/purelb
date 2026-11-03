@@ -60,22 +60,24 @@ everything=$(names with-gobgp-egress)
 check everything "$everything" $(crd $CORE_CRDS $BGP_CRDS $EGRESS_CRDS) \
 	+ClusterRole/purelb:egress:allocator +ClusterRole/purelb:egress:lbnodeagent +ClusterRole/purelb:k8gobgp \
 	+FlowSchema/purelb-lbnodeagent-leases \
-	+ValidatingAdmissionPolicy/purelb-egress-node-label +ValidatingAdmissionPolicyBinding/purelb-egress-node-label
+	+ValidatingAdmissionPolicy/purelb-egress-node-label +ValidatingAdmissionPolicyBinding/purelb-egress-node-label \
+	+DaemonSet/purelb-cni
 
 noegress=$(names with-gobgp)
 check noegress "$noegress" $(crd $CORE_CRDS $BGP_CRDS) +ClusterRole/purelb:k8gobgp \
-	+FlowSchema/purelb-lbnodeagent-leases -egress
+	+FlowSchema/purelb-lbnodeagent-leases -egress -purelb-cni
 
 nobgp=$(names default)
-check nobgp "$nobgp" $(crd $CORE_CRDS) +FlowSchema/purelb-lbnodeagent-leases -egress -gobgp
+check nobgp "$nobgp" $(crd $CORE_CRDS) +FlowSchema/purelb-lbnodeagent-leases -egress -gobgp -purelb-cni
 
 check crds-everything "$(names crds-all)" $(crd $CORE_CRDS $BGP_CRDS $EGRESS_CRDS)
 check crds-noegress "$(names crds-noegress)" $(crd $CORE_CRDS $BGP_CRDS) -egress
 check crds-nobgp "$(names crds)" $(crd $CORE_CRDS) -egress -bgp
 
-# Everything is noegress plus the egress component's objects, nothing else.
+# Everything is noegress plus the egress component's objects (purelb-cni
+# is the egress installer), nothing else.
 extra=$(comm -13 <(echo "$noegress") <(echo "$everything"))
-unexpected=$(grep -v egress <<<"$extra" || true)
+unexpected=$(grep -v -e egress -e DaemonSet/purelb-cni <<<"$extra" || true)
 if [ -n "$unexpected" ]; then
 	echo "FAIL everything adds objects that aren't egress's:" >&2; echo "$unexpected" >&2; fail=1
 fi

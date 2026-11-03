@@ -112,6 +112,8 @@ spec:
       terminationGracePeriodSeconds: 10
       {{- if .Values.priorityClassName }}
       priorityClassName: {{ .Values.priorityClassName }}
+      {{- else if .Values.egress.enabled }}
+      priorityClassName: system-cluster-critical
       {{- end }}
       {{- with .Values.allocator.tolerations }}
       tolerations:

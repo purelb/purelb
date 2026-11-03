@@ -172,6 +172,21 @@ func TestCNISocket(t *testing.T) {
 	assert.Equal(t, int64(3600), snap.MaxAgeSeconds)
 	assert.WithinDuration(t, time.Now(), snap.Written, 5*time.Second)
 	assert.Greater(t, testutil.ToFloat64(snapshotAge), 0.0, "the session's writer reports its age")
+	// With a snapshot written, purelb-cni is asked to chain the plugin.
+	d, err := cnisock.ReadDesired(f.a.desiredPath)
+	require.NoError(t, err)
+	assert.True(t, d.Enabled)
+	assert.JSONEq(t, `{"type":"purelb-egress","purelbNamespace":"purelb-system","logLevel":"info"}`, string(d.Entry))
+
+	// The installer's findings reach the node's conditions (§10.4).
+	eventually(t, "True "+condDatapathCompatible, func() string { return f.condition(condDatapathCompatible) }, "chained")
+	require.NoError(t, cnisock.WriteStatus(f.a.statusPath, cnisock.InstallerStatus{Written: time.Now(), Chain: cnisock.ChainMissing,
+		Reason: cnisock.ReasonWriteWar, Conflist: "05-cilium.conflist", Message: "rewritten without the plugin"}))
+	eventually(t, "False CNIChainMissing", func() string { return f.condition(condDatapathCompatible) }, "write war")
+	require.NoError(t, os.Remove(f.a.statusPath))
+	eventually(t, "False ChainMissing", func() string { return f.condition(condDatapathCompatible) }, "no installer")
+	require.NoError(t, cnisock.WriteStatus(f.a.statusPath, cnisock.InstallerStatus{Written: time.Now(), Chain: cnisock.ChainPresent}))
+	eventually(t, "True "+condDatapathCompatible, func() string { return f.condition(condDatapathCompatible) }, "chained again")
 	assert.Equal(t, cnisock.ResultReady, call(cnisock.Request{Op: cnisock.OpCheck, ContainerID: "c-a", Namespace: "voice", Name: "a"}).Result)
 	assert.Contains(t, call(cnisock.Request{Op: cnisock.OpCheck, ContainerID: "c-x", Namespace: "voice", Name: "a"}).Error, "no record")
 	assert.Equal(t, cnisock.ResultReady, call(cnisock.Request{Op: cnisock.OpAdd, ContainerID: "c-b", Namespace: "web", Name: "b",
@@ -210,7 +225,7 @@ func TestCNISocket(t *testing.T) {
 	// end.
 	cur := f.nodeState()
 	cur.Spec.Slices[0].State = "Pending"
-	_, err := f.purelb.PurelbV2().EgressNodeStates().Update(context.Background(), cur, metav1.UpdateOptions{})
+	_, err = f.purelb.PurelbV2().EgressNodeStates().Update(context.Background(), cur, metav1.UpdateOptions{})
 	require.NoError(t, err)
 	add.ContainerID = "c-a2"
 	require.Eventually(t, func() bool { return call(add).Result == cnisock.ResultHeld }, 5*time.Second, 50*time.Millisecond)
