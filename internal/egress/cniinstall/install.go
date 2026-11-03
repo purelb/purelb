@@ -292,11 +292,14 @@ func (in *Installer) undone(path string, now time.Time) bool {
 
 // teardown removes the plugin from the CNI directories (D26): its entry
 // from the primary conflist, every other byte as the CNI wrote it, then
-// the binary once the entry has stayed out past revertWithin, so no chain
-// ever names a missing plugin. An entry the CNI puts back each time it is
-// removed is its own configuration's (Cilium's cni.configMap, §10.4): the
-// installer stops editing and keeps the binary that entry needs (user
-// decision 2026-11-03). Anything left reports the chain Present.
+// the binary once the entry has stayed out past revertWithin. An entry the
+// CNI puts back each time it is removed is its own configuration's
+// (Cilium's cni.configMap, §10.4): the installer stops editing and keeps
+// the binary that entry needs (user decision 2026-11-03). A chain naming
+// the plugin always has its binary: one the CNI writes again long after
+// the binary went (Cilium starting after a reboot, found on t2-cilium
+// 2026-11-03) gets it back, or every pod ADD on the node fails. Anything
+// left reports the chain Present.
 func (in *Installer) teardown() cnisock.InstallerStatus {
 	st := cnisock.InstallerStatus{Chain: cnisock.ChainPresent}
 	path, err := primary(in.ConfDir)
@@ -315,6 +318,10 @@ func (in *Installer) teardown() cnisock.InstallerStatus {
 		// A single-plugin .conf holds no entry of its.
 		if c, err := parseChain(b); err == nil {
 			if i := c.find(cnisock.PluginType); i >= 0 {
+				if err := in.ensureBinary(); err != nil {
+					st.Reason, st.Message = cnisock.ReasonFailed, "installing the plugin binary the chain names: "+err.Error()
+					return st
+				}
 				if in.stopped || in.undone(path, now) {
 					if in.reported.Reason != cnisock.ReasonCNIOwned {
 						logging.Info(in.Logger, "op", "cniInstall", "conflist", path,

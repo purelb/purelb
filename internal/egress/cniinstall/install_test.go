@@ -339,6 +339,35 @@ func TestInstallerTeardownCNIOwned(t *testing.T) {
 	assert.False(t, e.in.stopped)
 }
 
+// The CNI writes the entry again long after the binary went (Cilium's
+// agent starting after a reboot, from its cni.configMap; found on
+// t2-cilium): the binary comes back at once, so no chain names a missing
+// plugin, and the put-backs that follow stop the installer with it kept.
+func TestInstallerTeardownLateRewrite(t *testing.T) {
+	e := newEnv(t)
+	require.NoError(t, os.WriteFile(e.flist, []byte(chained), 0o640))
+	bin := filepath.Join(e.bin, "purelb-egress")
+	e.disable(t)
+	e.in.reconcile()
+	assert.Equal(t, flannelConf, e.read(t, e.flist))
+	assert.Equal(t, "binary v1", e.read(t, bin), "a chain named it: installed before the entry goes")
+	e.clock = e.clock.Add(2 * time.Second)
+	e.in.reconcile()
+	_, err := os.Stat(bin)
+	require.ErrorIs(t, err, os.ErrNotExist, "the entry stayed out: the binary goes")
+
+	e.cniRewrites(t, 7*time.Second, chained)
+	assert.Equal(t, "binary v1", e.read(t, bin), "the chain names it again: back at once")
+	for range warReverts {
+		e.cniRewrites(t, 20*time.Millisecond, chained)
+		require.Equal(t, "binary v1", e.read(t, bin), "never missing while the chain names it")
+	}
+	st := e.status(t)
+	assert.Equal(t, cnisock.ReasonCNIOwned, st.Reason)
+	assert.Equal(t, chained, e.read(t, e.flist))
+	assert.Equal(t, "binary v1", e.read(t, bin))
+}
+
 // Undone fewer times than a war: removed again each time, binary kept
 // until it stays out.
 func TestInstallerTeardownNoWar(t *testing.T) {
