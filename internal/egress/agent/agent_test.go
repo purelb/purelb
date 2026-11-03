@@ -85,6 +85,7 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	// The purelb-cni installer, reporting the plugin chained.
 	a.desiredPath = filepath.Join(filepath.Dir(a.snapPath), "cni-desired.json")
 	a.statusPath = filepath.Join(t.TempDir(), "cni-status.json")
+	a.recordDir = filepath.Join(t.TempDir(), "sandboxes")
 	require.NoError(t, cnisock.WriteStatus(a.statusPath, cnisock.InstallerStatus{Written: time.Now(), Chain: cnisock.ChainPresent}))
 	a.SetElection(&fakeElector{}) // the agent always runs with one
 	a.statusInterval = 50 * time.Millisecond

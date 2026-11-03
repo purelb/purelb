@@ -36,12 +36,14 @@ import (
 // podTagPrefix names pl_pod_tag's links, pinned as pl_pod_tag-<device>.
 const podTagPrefix = "pl_pod_tag-"
 
-// dpPod is one pod as pl_pod_tag treats it.
+// dpPod is one pod as pl_pod_tag treats it; failClosed: a FailClosed
+// policy selects it (holdFirst).
 type dpPod struct {
-	name   string // namespace/name, for logs
-	v4, v6 netip.Addr
-	podSet uint8
-	hold   bool
+	name       string // namespace/name, for logs
+	v4, v6     netip.Addr
+	podSet     uint8
+	hold       bool
+	failClosed bool
 }
 
 // dpPods is the pod-node state's pods for the datapath, sorted by name.
@@ -49,7 +51,7 @@ func dpPods(pn *podNode) []dpPod {
 	out := make([]dpPod, 0, len(pn.pods))
 	for _, name := range slices.Sorted(maps.Keys(pn.pods)) {
 		st := pn.pods[name]
-		p := dpPod{name: name, podSet: st.podSet, hold: st.hold}
+		p := dpPod{name: name, podSet: st.podSet, hold: st.hold, failClosed: st.failClosed}
 		for _, ip := range st.ips {
 			if ip.Is4() && !p.v4.IsValid() {
 				p.v4 = ip
@@ -187,6 +189,42 @@ func nodeAddrs(s *session) map[netip.Addr]bool {
 		}
 	}
 	return out
+}
+
+// holdFirst is an agent start's first step for its pods (design 8.1): the
+// pods a FailClosed policy selects that no earlier agent programmed (no
+// pinned entry has their address: started in the CNI boot window, or
+// while no agent ran, after a reboot) get pl_pod_tag's hold before
+// anything classifies; syncPodDevs lifts it, after the table, where the
+// pod's slot is ready. Datapath goroutine only.
+func (a *Agent) holdFirst(st *dpState, w dpWant) error {
+	have, err := st.objs.RecoverPodDevs()
+	if err != nil {
+		return fmt.Errorf("reading the pod devices: %w", err)
+	}
+	programmed := map[netip.Addr]bool{}
+	for _, d := range have {
+		for _, ip := range []netip.Addr{d.V4, d.V6} {
+			if ip.IsValid() {
+				programmed[ip] = true
+			}
+		}
+	}
+	var held []string
+	pods := slices.Clone(w.pods)
+	for i, p := range pods {
+		if p.failClosed && !p.hold && !programmed[p.v4] && !programmed[p.v6] {
+			pods[i].hold = true
+			held = append(held, p.name)
+		}
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	logging.Info(a.logger, "op", "egressPods", "node", a.node, "pods", held,
+		"msg", "holding FailClosed pods no earlier agent programmed until their classifier is in place")
+	w.pods = pods
+	return a.syncPodDevs(st, w)
 }
 
 // syncPodDevs programs pl_pod_tag (D2): the cluster networks, then each

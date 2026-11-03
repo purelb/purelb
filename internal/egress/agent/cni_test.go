@@ -217,6 +217,32 @@ func TestCNISocket(t *testing.T) {
 	assert.Contains(t, call(cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c-a", Namespace: "voice", Name: "a",
 		IPs: []string{"10.1.0.5"}}).Error, "asked no stage probe", "once per start")
 
+	// Sandboxes the socket wasn't told of (design 8.1): one the plugin
+	// recorded while no agent answered isn't reported; one without a
+	// record is, by a Warning event on the pod, and counted.
+	require.NoError(t, cnisock.WriteRecord(f.a.recordDir, "c-d", cnisock.Record{Namespace: "web", Name: "d", UID: "u-d",
+		IPs: []string{"10.1.0.21"}}))
+	for name, ip := range map[string]string{"c": "10.1.0.20", "d": "10.1.0.21"} {
+		p := pnPod("web", name, nil, ip)
+		p.UID = types.UID("u-" + name)
+		_, err := f.kube.CoreV1().Pods("web").Create(context.Background(), p, metav1.CreateOptions{})
+		require.NoError(t, err)
+	}
+	var reported []corev1.Event
+	require.Eventually(t, func() bool {
+		evs, err := f.kube.CoreV1().Events("web").List(context.Background(), metav1.ListOptions{})
+		require.NoError(t, err)
+		reported = evs.Items
+		return len(reported) > 0
+	}, 5*time.Second, 20*time.Millisecond)
+	require.Len(t, reported, 1)
+	assert.Equal(t, reasonUnrecorded, reported[0].Reason)
+	assert.Equal(t, corev1.EventTypeWarning, reported[0].Type)
+	assert.Equal(t, "c", reported[0].InvolvedObject.Name)
+	assert.Equal(t, 1.0, testutil.ToFloat64(cniUnrecorded))
+	_, ok := f.a.sandboxes.Load("c-d")
+	assert.True(t, ok, "the record joins the sandboxes the socket told of")
+
 	// DEL: its address leaves the datapath's pods.
 	assert.Equal(t, cnisock.ResultReady, call(cnisock.Request{Op: cnisock.OpDel, ContainerID: "c-a", Namespace: "voice", Name: "a",
 		UID: "u-a", IPs: []string{"10.1.0.5"}}).Result)
@@ -269,6 +295,7 @@ func TestCNISocket(t *testing.T) {
 	require.Eventually(t, func() bool { ns := f.nodeState(); return ns != nil && len(ns.Status.Claims) == 0 },
 		5*time.Second, 20*time.Millisecond)
 	assert.Zero(t, testutil.ToFloat64(snapshotAge), "egress off")
+	assert.Zero(t, testutil.ToFloat64(cniUnrecorded), "egress off")
 	// The snapshot stays: the plugin may still be in the chain.
 	_, err = cnisock.ReadSnapshot(f.a.snapPath)
 	require.NoError(t, err)

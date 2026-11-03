@@ -208,6 +208,7 @@ func (a *Agent) syncCNI() {
 	if t := a.tagged.Load(); t != nil {
 		tagged = *t
 	}
+	a.syncRecords(s, pn)
 	c := a.capability.Load()
 	a.waiters.Range(func(k, v any) bool {
 		w := v.(*waiter)

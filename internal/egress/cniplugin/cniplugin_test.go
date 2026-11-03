@@ -18,9 +18,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -56,9 +58,10 @@ const prev100 = `{"cniVersion":"1.0.0","ips":[{"address":"10.244.2.9/24"},{"addr
 // conf is a conflist entry of version v with prevResult prev.
 func conf(t *testing.T, v, socket, prev string) []byte {
 	t.Helper()
-	// The snapshot beside the socket, never the host's.
+	// The snapshot and records beside the socket, never the host's.
 	m := map[string]any{"cniVersion": v, "name": "cbr0", "type": Name, "socket": socket,
-		"snapshot": filepath.Join(filepath.Dir(socket), "egress-snapshot.json")}
+		"snapshot": filepath.Join(filepath.Dir(socket), "egress-snapshot.json"),
+		"records":  recordDir(socket)}
 	if prev != "" {
 		var r map[string]any
 		require.NoError(t, json.Unmarshal([]byte(prev), &r))
@@ -131,9 +134,12 @@ func TestAdd(t *testing.T) {
 			if tc.errLike != "" {
 				require.ErrorContains(t, err, tc.errLike)
 				assert.Empty(t, out.String())
+				assert.Empty(t, records(t, sock), "a refused sandbox isn't recorded")
 				return
 			}
 			require.NoError(t, err)
+			assert.Equal(t, map[string]cnisock.Record{"c1": {Version: cnisock.RecordVersion, Namespace: "web", Name: "client-0",
+				UID: "u-1", IPs: tc.ips}}, records(t, sock))
 			// The primary's result, unchanged, in the conflist's version.
 			var got map[string]any
 			require.NoError(t, json.Unmarshal(out.Bytes(), &got))
@@ -142,6 +148,19 @@ func TestAdd(t *testing.T) {
 			assert.Contains(t, log.String(), `"result":"`+tc.answer.Result+`"`)
 		})
 	}
+}
+
+// recordDir is where conf has the plugin record sandboxes.
+func recordDir(socket string) string {
+	return filepath.Join(filepath.Dir(socket), "sandboxes")
+}
+
+// records are the sandboxes recorded beside socket.
+func records(t *testing.T, socket string) map[string]cnisock.Record {
+	t.Helper()
+	r, err := cnisock.ReadRecords(recordDir(socket))
+	require.NoError(t, err)
+	return r
 }
 
 func mustMap(t *testing.T, s string) map[string]any {
@@ -223,19 +242,24 @@ func TestAddFromSnapshot(t *testing.T) {
 			}
 			m := mustMap(t, string(conf(t, "1.0.0", missing, prev100)))
 			m["snapshot"] = path
+			m["records"] = filepath.Join(filepath.Dir(path), "sandboxes")
 			stdin, _ := json.Marshal(m)
 			var out, log bytes.Buffer
 			p := plugin{out: &out, log: &log, now: func() time.Time { return now }}
 			err := p.add(&skel.CmdArgs{ContainerID: "c1", Netns: "/x", IfName: "eth0", Args: tc.args, StdinData: stdin})
 			assert.Contains(t, log.String(), tc.because)
+			recorded := records(t, path)
 			if !tc.pass {
 				require.ErrorContains(t, err, "isn't running on this node, and ")
 				require.ErrorContains(t, err, tc.because)
 				assert.Empty(t, out.String())
+				assert.Empty(t, recorded)
 				return
 			}
 			require.NoError(t, err)
 			assert.Contains(t, out.String(), "10.244.2.9/24")
+			// With no agent to tell, the record is what it learns from.
+			assert.Contains(t, recorded, "c1")
 		})
 	}
 }
@@ -264,6 +288,7 @@ func TestAddSystemAsksAgent(t *testing.T) {
 	r := reqs.take()
 	require.Len(t, r, 1)
 	assert.Equal(t, "kube-system", r[0].Namespace)
+	assert.Equal(t, "coredns-1", records(t, sock)["c2"].Name, "recorded, as every sandbox let start")
 }
 
 func TestAddNoPrevResult(t *testing.T) {
@@ -273,6 +298,7 @@ func TestAddNoPrevResult(t *testing.T) {
 		Args: podArgsStr, StdinData: conf(t, "1.0.0", sock, "")})
 	require.ErrorContains(t, err, "must follow the primary CNI plugin")
 	assert.Empty(t, reqs.take())
+	assert.Empty(t, records(t, sock))
 }
 
 func TestDel(t *testing.T) {
@@ -296,11 +322,19 @@ func TestDel(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sock, reqs := tc.sock(t)
+			require.NoError(t, cnisock.WriteRecord(recordDir(sock), "c1", cnisock.Record{Namespace: "web", Name: "client-0"}))
+			require.NoError(t, cnisock.WriteRecord(recordDir(sock), "c9", cnisock.Record{Namespace: "web", Name: "client-9"}))
+			defer os.RemoveAll(recordDir(sock))
 			var out, log bytes.Buffer
 			err := plugin{out: &out, log: &log, now: time.Now}.del(&skel.CmdArgs{ContainerID: "c1", IfName: "eth0", Args: podArgsStr, StdinData: tc.stdin(sock)})
 			require.NoError(t, err, "DEL always succeeds")
 			assert.Empty(t, out.String())
 			assert.Contains(t, log.String(), tc.logged)
+			if tc.name == "bad configuration" {
+				assert.Len(t, records(t, sock), 2, "no configuration: no record directory to find")
+			} else {
+				assert.Equal(t, []string{"c9"}, slices.Collect(maps.Keys(records(t, sock))), "its record removed, whether or not the agent heard")
+			}
 			if reqs != nil {
 				r := reqs.take()
 				require.Len(t, r, 1)

@@ -336,6 +336,13 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	if w.podsKnown {
 		a.unflushLive(w)
 	}
+	// An agent start holds its FailClosed pods before the table
+	// classifies anything (design 8.1).
+	if w.podsKnown && (st.applied == nil || !st.applied.podsKnown) {
+		if err := a.holdFirst(st, w); err != nil {
+			return c, err
+		}
+	}
 	a.syncMarkByte(st, w)
 	a.markByte.Store(uint32(st.shift))
 	c.MarkField = fieldName(st.shift)

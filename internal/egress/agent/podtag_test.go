@@ -15,6 +15,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +48,7 @@ import (
 	"purelb.io/internal/egress"
 	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/egress/datapath"
+	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
 
@@ -541,6 +544,43 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	devs, err = c.dp.objs.RecoverPodDevs()
 	require.NoError(t, err)
 	assert.Empty(t, devs)
+
+	// An agent start with no entry pinned for a FailClosed pod (it started
+	// while no agent ran, as after a reboot): held before the table
+	// classifies anything, then let go, its slot ready (design 8.1); not
+	// the pod with an entry an earlier agent pinned (single-family, as the
+	// held one: a missing family is no address). A restart finding its
+	// entry pinned doesn't hold it again.
+	var logs bytes.Buffer
+	start := func() *Agent {
+		closeAgent(c)
+		logs.Reset()
+		n := newNetnsAgent(dir)
+		n.logger = logging.New(&logs, logging.LevelDebug)
+		return n
+	}
+	open4 := netip.MustParseAddr("10.244.1.9")
+	openVeth, _ := podNetnsAt(t, "vpod1", "10.244.1.9/24")
+	open := dpPod{name: "voice/open", v4: open4, failClosed: true}
+	c = start()
+	w.pods = []dpPod{open}
+	apply(t, c, w)
+	c = start()
+	w.pods = []dpPod{{name: "voice/a", v4: pod4, podSet: 3, failClosed: true}, open,
+		{name: "voice/b", v4: netip.MustParseAddr("10.244.1.10")}}
+	apply(t, c, w)
+	assert.Contains(t, logs.String(), `"pods":["voice/a"]`, "FailClosed pods no earlier agent programmed only")
+	heldAt, writtenAt := strings.Index(logs.String(), "holding FailClosed pods"), strings.Index(logs.String(), "egress table written")
+	require.GreaterOrEqual(t, heldAt, 0, logs.String())
+	require.GreaterOrEqual(t, writtenAt, 0, logs.String())
+	assert.Less(t, heldAt, writtenAt, "held before the table")
+	devs, err = c.dp.objs.RecoverPodDevs()
+	require.NoError(t, err)
+	assert.Equal(t, datapath.PodDev{V4: pod4, PodSet: 3}, devs[veth], "let go once classified")
+	assert.Equal(t, datapath.PodDev{V4: open4}, devs[openVeth])
+	c = start()
+	apply(t, c, w)
+	assert.NotContains(t, logs.String(), "holding FailClosed pods")
 
 	// The pod's device deleted while the pod is still planned (its
 	// sandbox torn down during termination, without the plugin's DEL):

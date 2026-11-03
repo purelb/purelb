@@ -32,10 +32,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/types"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 
 	"purelb.io/internal/bpfpin"
 	"purelb.io/internal/egress/cnisock"
@@ -183,14 +187,17 @@ type Agent struct {
 	sendProbe func(from, to netip.Addr, port int, pkt []byte) error
 
 	// sockPath is the CNI plugin's socket, snapPath its snapshot (D35),
-	// desiredPath and statusPath the files the agent and the purelb-cni
-	// installer tell each other by (D34), and cniHold ADD's longest wait
-	// (tests use their own);
-	// sandboxes are the pod sandboxes the plugin reported, by container
-	// id, and waiters its ADDs waiting for their pods (§8.1). Stored by
-	// the socket's goroutines, read and pruned by the queue goroutine.
+	// recordDir its sandbox records (design 8.1), desiredPath and
+	// statusPath the files the agent and the purelb-cni installer tell
+	// each other by (D34), and cniHold ADD's longest wait (tests use
+	// their own);
+	// sandboxes are the pod sandboxes the plugin reported, over the socket
+	// or in its records, by container id, and waiters its ADDs waiting for
+	// their pods (§8.1). Stored by the socket's goroutines and, from the
+	// records, the queue goroutine, which reads and prunes them.
 	sockPath    string
 	snapPath    string
+	recordDir   string
 	desiredPath string
 	statusPath  string
 	cniHold     time.Duration
@@ -209,6 +216,9 @@ type Agent struct {
 	stage       atomic.Pointer[stageResult]
 	prober      atomic.Pointer[probeTicket]
 	probeCounts func() (map[string]datapath.ProbeCount, error)
+
+	// events records events on pods; nil until Start.
+	events record.EventRecorder
 
 	now func() time.Time
 	// statusInterval is the status writer's interval, installerPoll how
@@ -235,8 +245,11 @@ type session struct {
 	// scoped EgressEndpoints watches (D6). Queue goroutine only.
 	addresses listers.EgressAddressNamespaceLister
 	watches   map[string]*eeWatch
-	// snap writes the CNI plugin's snapshot from the pod-node plan.
-	snap *snapshotWriter
+	// snap writes the CNI plugin's snapshot from the pod-node plan;
+	// reported are the pods reported as started without the plugin
+	// (syncRecords). Queue goroutine only.
+	snap     *snapshotWriter
+	reported map[types.UID]bool
 	// For the pod-node stage: this node's pods, the policies, namespaces
 	// and Services (serviceRef selectors).
 	pods            cache.Indexer
@@ -263,7 +276,7 @@ func New(logger log.Logger, node, namespace string) *Agent {
 		placements: map[netip.Addr]map[string]egresshook.ServicePlacement{},
 		placed:     map[netip.Addr]placement{}, dadFailed: map[netip.Addr]*dadBackoff{}, addrFlags: listAddrFlags,
 		sendProbe: sendUDPProbe, tableSlots: tableSlots, sockPath: cnisock.DefaultPath, snapPath: cnisock.SnapshotPath,
-		desiredPath: cnisock.DesiredPath, statusPath: cnisock.StatusPath, probeCounts: readProbeCounts,
+		recordDir: cnisock.RecordDir, desiredPath: cnisock.DesiredPath, statusPath: cnisock.StatusPath, probeCounts: readProbeCounts,
 		cniHold: cniHold}
 	a.apply, a.tear = a.applyDatapath, a.teardown
 	return a
@@ -318,6 +331,9 @@ func (a *Agent) start(stop <-chan struct{}, kube kubernetes.Interface, purelb ve
 		logging.Info(a.logger, "op", "egressStart", "msg", "egress CRDs not installed; egress is off")
 		return nil
 	}
+	b := record.NewBroadcaster()
+	b.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kube.CoreV1().Events("")})
+	a.events = b.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "purelb-egress"})
 	a.status = newStatusWriter(a.logger, a.node, kube, purelb)
 	a.status.interval = a.statusInterval
 	go a.status.run(stop)
@@ -406,7 +422,7 @@ func (a *Agent) syncConfig() {
 
 // startSession starts egress's informers and its first capability probe.
 func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
-	s := &session{stop: make(chan struct{}), spec: spec, watches: map[string]*eeWatch{},
+	s := &session{stop: make(chan struct{}), spec: spec, watches: map[string]*eeWatch{}, reported: map[types.UID]bool{},
 		snap: newSnapshotWriter(a.logger, a.node, a.snapPath, a.desiredPath,
 			cnisock.PluginEntry(a.namespace, logging.GetLevel().String()))}
 	own := externalversions.NewSharedInformerFactoryWithOptions(a.purelb, resync,
@@ -566,6 +582,7 @@ func (a *Agent) stopSession() {
 	a.stage.Store(nil)
 	a.prober.Store(nil)
 	a.probing.Store(nil)
+	cniUnrecorded.Set(0)
 	a.acks.Store(nil)
 	a.specAck.Store(0)
 	a.drained.Store(nil)

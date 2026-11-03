@@ -70,6 +70,9 @@ type Conf struct {
 	// Snapshot is the agent's snapshot; empty means
 	// cnisock.SnapshotPath.
 	Snapshot string `json:"snapshot,omitempty"`
+	// Records is where the plugin records the sandboxes it lets start;
+	// empty means cnisock.RecordDir.
+	Records string `json:"records,omitempty"`
 	// PureLBNamespace is the namespace whose pods, with kube-system's,
 	// always pass (D35); empty means purelb-system.
 	PureLBNamespace string `json:"purelbNamespace,omitempty"`
@@ -115,6 +118,9 @@ func (p plugin) parse(args *skel.CmdArgs, op string) (*call, error) {
 	}
 	if conf.Snapshot == "" {
 		conf.Snapshot = cnisock.SnapshotPath
+	}
+	if conf.Records == "" {
+		conf.Records = cnisock.RecordDir
 	}
 	if conf.PureLBNamespace == "" {
 		conf.PureLBNamespace = defaultNamespace
@@ -191,7 +197,10 @@ func (p plugin) add(args *skel.CmdArgs) error {
 	if c.conf.PrevResult == nil {
 		return errors.New(Name + " has no prevResult: it must follow the primary CNI plugin in the chain")
 	}
-	result := func() error { return p.pass(c.conf) }
+	result := func() error {
+		c.record()
+		return p.pass(c.conf)
+	}
 	if c.req.Namespace == "" || c.req.Name == "" {
 		logging.Info(c.logger, "op", "cniAdd", "container", args.ContainerID, "result", cnisock.ResultPass,
 			"msg", "the sandbox names no Kubernetes pod; passed")
@@ -261,6 +270,22 @@ func (c *call) probe(netnsPath string) {
 	logging.Info(c.logger, "op", "cniProbe", "pod", c.pod(), "ips", strings.Join(sent, ","), "msg", "stage probe sent")
 }
 
+// record records the pod's sandbox, which is starting (design 8.1): the
+// agent reports the node's sandboxes without a record. A sandbox naming
+// no pod is never reported, so it isn't recorded; a failed write is
+// logged, and the agent then reports the pod.
+func (c *call) record() {
+	if c.req.Namespace == "" || c.req.Name == "" {
+		return
+	}
+	err := cnisock.WriteRecord(c.conf.Records, c.req.ContainerID,
+		cnisock.Record{Namespace: c.req.Namespace, Name: c.req.Name, UID: c.req.UID, IPs: c.req.IPs})
+	if err != nil {
+		logging.Info(c.logger, "op", "cniAdd", "pod", c.pod(), "error", err,
+			"msg", "the sandbox wasn't recorded: the agent will report it as started without the plugin")
+	}
+}
+
 // fromSnapshot decides the pod by the agent's snapshot (§8.1), saying
 // why.
 func (c *call) fromSnapshot(now time.Time) (bool, string) {
@@ -310,6 +335,10 @@ func (p plugin) del(args *skel.CmdArgs) error {
 	}
 	if c.req.Namespace == "" || c.req.Name == "" {
 		return nil
+	}
+	if err := cnisock.RemoveRecord(c.conf.Records, args.ContainerID); err != nil {
+		logging.Info(c.logger, "op", "cniDel", "pod", c.pod(), "container", args.ContainerID, "error", err,
+			"msg", "the sandbox's record wasn't removed")
 	}
 	resp, _, err := c.ask(otherTimeout)
 	if err == nil && resp.Error != "" {
