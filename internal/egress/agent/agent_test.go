@@ -117,10 +117,23 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 	a.sendProbe = func(netip.Addr, netip.Addr, int, []byte) error { return nil }
 	a.tableSlots = func() (map[uint8]datapath.SlotNAT, error) { return nil, nil }
 	keys := make(chan string, 1000)
-	stop := make(chan struct{})
-	t.Cleanup(func() { close(stop) })
-	require.NoError(t, a.start(stop, kube, purelb, func(k string, _ bool) { keys <- k }))
+	stop, looped := make(chan struct{}), make(chan struct{})
+	// Runs before the TempDirs are removed (registered after them): the
+	// queue loop, the datapath goroutine (teardown's unchain) and the
+	// session's snapshot writer are done writing there.
+	t.Cleanup(func() {
+		close(stop)
+		<-looped
+		if a.crds { // start ran the datapath goroutine only then
+			<-a.runner.exited
+		}
+		if s := a.on; s != nil {
+			close(s.stop)
+			<-s.snap.done
+		}
+	})
 	go func() {
+		defer close(looped)
 		for {
 			select {
 			case <-stop:
@@ -130,6 +143,7 @@ func newFixture(t *testing.T, crds bool, objs ...runtime.Object) *fixture {
 			}
 		}
 	}()
+	require.NoError(t, a.start(stop, kube, purelb, func(k string, _ bool) { keys <- k }))
 	return &fixture{a: a, kube: kube, purelb: purelb, wants: wants}
 }
 

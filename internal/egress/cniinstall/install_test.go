@@ -39,7 +39,7 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	root := t.TempDir()
 	e := &env{conf: filepath.Join(root, "net.d"), bin: filepath.Join(root, "bin"), self: filepath.Join(root, "lbnodeagent"),
-		clock: time.Unix(1700000000, 0)}
+		clock: time.Unix(1700000000, 0).UTC()} // UTC: the status's JSON round trip keeps no local zone
 	for _, d := range []string{e.conf, e.bin, filepath.Join(root, "lib"), filepath.Join(root, "run")} {
 		require.NoError(t, os.Mkdir(d, 0o755))
 	}
