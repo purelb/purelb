@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -35,6 +36,7 @@ import (
 
 	"purelb.io/internal/addrguard"
 	egressagent "purelb.io/internal/egress/agent"
+	"purelb.io/internal/egress/cniplugin"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
 	"purelb.io/internal/logging"
@@ -370,6 +372,12 @@ func guardEnabledAtStartup(
 }
 
 func main() {
+	// Multi-call (D34): installed in the CNI bin dir as purelb-egress,
+	// this binary is the CNI plugin.
+	if filepath.Base(os.Args[0]) == cniplugin.Name {
+		cniplugin.Main()
+		return
+	}
 	logger := logging.Init()
 
 	var (
