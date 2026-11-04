@@ -548,6 +548,23 @@ type stageTopo struct {
 
 func newStageTopo(t *testing.T, v6 bool, mtu uint16, mss uint16) *stageTopo {
 	t.Helper()
+	s := newBareStageTopo(t, v6, mtu, mss)
+	s.attach(t)
+	return s
+}
+
+// attach puts the programs on the node's devices.
+func (s *stageTopo) attach(t *testing.T) {
+	t.Helper()
+	s.node.attach(t, "vpod", s.o.PlPodTag, ebpf.AttachTCXIngress)
+	s.node.attach(t, "ul", s.o.PlPodOutEth, ebpf.AttachTCXEgress)
+	s.node.attach(t, "ul", s.o.PlAnnounceEth, ebpf.AttachTCXIngress)
+}
+
+// newBareStageTopo is the topology with the programs loaded and configured but
+// not attached: the node just forwards.
+func newBareStageTopo(t *testing.T, v6 bool, mtu uint16, mss uint16) *stageTopo {
+	t.Helper()
 	pod, nd, srv := newHost(t, "pod"), newHost(t, "node"), newHost(t, "server")
 	wire(t, pod, "eth0", nd, "vpod")
 	wire(t, nd, "ul", srv, "eth0")
@@ -601,9 +618,6 @@ func newStageTopo(t *testing.T, v6 bool, mtu uint16, mss uint16) *stageTopo {
 	require.NoError(t, o.SyncEBPFStage(st, map[uint8]SlotRoute{
 		stageSlot:     {Target: TargetDirect, Table: 254, MTU: mtu},
 		stageSlot + 1: {Target: TargetDirect, Table: 254, MTU: mtu}}))
-	nd.attach(t, "vpod", o.PlPodTag, ebpf.AttachTCXIngress)
-	nd.attach(t, "ul", o.PlPodOutEth, ebpf.AttachTCXEgress)
-	nd.attach(t, "ul", o.PlAnnounceEth, ebpf.AttachTCXIngress)
 
 	s := &stageTopo{pod: pod, node: nd, srv: srv, o: o, inner6: v6, egress: eg4, server: netip.MustParseAddr("172.30.10.1"),
 		podAddr: podIP4, cluster: netip.MustParseAddr("10.96.7.1")}
@@ -987,104 +1001,11 @@ func TestNetnsEBPFStageTunnel(t *testing.T) {
 }
 
 func stageTunnelCase(t *testing.T, c tunCase) {
-	nodeA, nodeB := NodeID("node-a"), NodeID("node-b")
-	pod, a, b, srv := newHost(t, "pod"), newHost(t, "nodeA"), newHost(t, "nodeB"), newHost(t, "server")
-	wire(t, pod, "eth0", a, "vpod")
-	wire(t, a, "ul", b, "ul")
-	wire(t, b, "pool", srv, "eth0")
-	eg4, eg6 := netip.MustParseAddr("172.30.10.110"), netip.MustParseAddr("fdaa::110")
-	server, egress := netip.MustParseAddr("172.30.10.1"), eg4
+	pod, srv, objA, objB := newStageTunnel(t, c)
+	server, egress := netip.MustParseAddr("172.30.10.1"), netip.MustParseAddr("172.30.10.110")
 	if c.inner6 {
-		server, egress = netip.MustParseAddr("fdaa::1"), eg6
+		server, egress = netip.MustParseAddr("fdaa::1"), netip.MustParseAddr("fdaa::110")
 	}
-	pod.addr(t, "eth0", "10.244.1.5/24")
-	pod.addr(t, "eth0", "fd44:1::5/64")
-	pod.route(t, &netlink.Route{Gw: net.ParseIP("10.244.1.1")})
-	pod.route(t, &netlink.Route{Gw: net.ParseIP("fd44:1::1")})
-	a.addr(t, "vpod", "10.244.1.1/24")
-	a.addr(t, "vpod", "fd44:1::1/64")
-	a.addr(t, "ul", "10.0.0.1/24")
-	a.addr(t, "ul", "fd00::1/64")
-	// The node's own route out, whatever the destination: the stage leaves
-	// from NIC egress, so a pod's packet has to be routed to one.
-	a.route(t, &netlink.Route{Gw: net.ParseIP("10.0.0.2")})
-	a.route(t, &netlink.Route{Gw: net.ParseIP("fd00::2")})
-	b.addr(t, "ul", "10.0.0.2/24")
-	b.addr(t, "ul", "fd00::2/64")
-	b.addr(t, "pool", "172.30.10.2/24")
-	b.addr(t, "pool", "fdaa::2/64")
-	b.addr(t, "pool", "172.30.10.110/32")
-	b.addr(t, "pool", "fdaa::110/128")
-	srv.addr(t, "eth0", "172.30.10.1/24")
-	srv.addr(t, "eth0", "fdaa::1/64")
-	for _, h := range []*host{a, b} {
-		h.sysctl(t, "net.ipv4.ip_forward", "1")
-		h.sysctl(t, "net.ipv6.conf.all.forwarding", "1")
-		h.sysctl(t, "net.ipv4.conf.all.rp_filter", "0")
-	}
-	mode := ModeL3
-	if c.l2 {
-		mode = ModeL2
-	}
-	var tunA, tunB netlink.Link
-	for _, x := range []struct {
-		h  *host
-		id uint64
-		l  *netlink.Link
-	}{{a, nodeA, &tunA}, {b, nodeB, &tunB}} {
-		got, l, err := EnsureTunnel(x.h.nl, mode, 6082, TunnelMAC(x.id))
-		require.NoError(t, err)
-		require.Equal(t, mode, got)
-		*x.l = l
-	}
-	b.sysctl(t, "net.ipv4.conf.purelb-eg0.rp_filter", "0")
-	b.route(t, &netlink.Route{Dst: cidr("172.30.10.0/24"), LinkIndex: b.link(t, "pool").Attrs().Index, Table: 7900})
-	b.route(t, &netlink.Route{Dst: cidr("fdaa::/64"), LinkIndex: b.link(t, "pool").Attrs().Index, Table: 7900})
-
-	objA, objB := load(t), load(t)
-	underA, underB := Node{V4: netip.MustParseAddr("10.0.0.1")}, Node{V4: netip.MustParseAddr("10.0.0.2")}
-	if c.under6 {
-		underA, underB = Node{V6: netip.MustParseAddr("fd00::1")}, Node{V6: netip.MustParseAddr("fd00::2")}
-	}
-	underA.MAC, underB.MAC = TunnelMAC(nodeA), TunnelMAC(nodeB)
-	require.NoError(t, objA.SetConfig(Config{Self: nodeA, TunIfindex: tunA.Attrs().Index, L2: c.l2, TunMAC: TunnelMAC(nodeA),
-		Underlay4: !c.under6, Underlay6: c.under6, Self4: underA.V4, Self6: underA.V6, EBPFStage: true, TunPort: 6082}))
-	require.NoError(t, objB.SetConfig(Config{Self: nodeB, TunIfindex: tunB.Attrs().Index, L2: c.l2, TunMAC: TunnelMAC(nodeB),
-		Underlay4: !c.under6, Underlay6: c.under6, Self4: underB.V4, Self6: underB.V6}))
-	require.NoError(t, objA.SetNode(nodeB, underB))
-	require.NoError(t, objB.SetNode(nodeA, underA))
-	require.NoError(t, objB.SetPoolInterface(b.link(t, "pool").Attrs().Index, 0))
-	for _, e := range []netip.Addr{eg4, eg6} {
-		require.NoError(t, objA.SetAddress(e, Address{Held: false, SliceSize: 4096, Base: 1024}))
-		require.NoError(t, objB.SetAddress(e, Address{Held: true, SliceSize: 4096, Base: 1024, Table: 7900}))
-		require.NoError(t, objA.SetSlice(e, sliceIndex, nodeA))
-		require.NoError(t, objB.SetSlice(e, sliceIndex, nodeA))
-	}
-	all := []Destination{{Prefixes: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}}}
-	require.NoError(t, objA.SyncEBPFStage(PodStage{
-		PodSets: map[uint8][]string{stagePodSet: {"p"}},
-		Policies: map[string]Policy{"p": {
-			V4: &PolicyFamily{Include: all, Slot: stageSlot, Address: eg4},
-			V6: &PolicyFamily{Include: all, Slot: stageSlot + 1, Address: eg6}}},
-		Slots: map[uint8]Slot{
-			// The clamp the agent sets from the tunnel's path MTU (D13): an
-			// IPv6 outer packet isn't fragmented.
-			stageSlot:     {Addr: eg4, First: stageFirst, Last: stageLast, MSS: 1300},
-			stageSlot + 1: {Addr: eg6, First: stageFirst, Last: stageLast, MSS: 1300}},
-	}, map[uint8]SlotRoute{stageSlot: {Target: TargetTunnel}, stageSlot + 1: {Target: TargetTunnel}}))
-	require.NoError(t, objA.SetSteer(stageSlot, []uint64{nodeB}))
-	require.NoError(t, objA.SetSteer(stageSlot+1, []uint64{nodeB}))
-	var mac [6]byte
-	copy(mac[:], pod.link(t, "eth0").Attrs().HardwareAddr)
-	require.NoError(t, objA.SetPodDev(a.link(t, "vpod").Attrs().Index, PodDev{V4: netip.MustParseAddr("10.244.1.5"),
-		V6: netip.MustParseAddr("fd44:1::5"), PodSet: stagePodSet, MAC: mac}))
-	a.attach(t, "vpod", objA.PlPodTag, ebpf.AttachTCXIngress)
-	a.attach(t, "ul", objA.PlPodOutEth, ebpf.AttachTCXEgress)
-	a.attach(t, TunnelName, objA.PlSteer, ebpf.AttachTCXEgress)
-	a.attach(t, TunnelName, objA.PlAnnounceTun, ebpf.AttachTCXIngress)
-	b.attach(t, "pool", objB.PlAnnounceEth, ebpf.AttachTCXIngress)
-	b.attach(t, TunnelName, objB.PlAnnounceTun, ebpf.AttachTCXIngress)
-
 	hp := net.JoinHostPort(server.String(), "8080")
 	tcpEcho(t, srv, hp, nil)
 	diag := func() string {
@@ -1129,6 +1050,107 @@ func stageTunnelCase(t *testing.T, c tunCase) {
 	assert.NotZero(t, cb["transit"][fam], "B forwarded it")
 	assert.NotZero(t, cb["to_tunnel"][fam], "B tunnelled the replies")
 	assert.NotZero(t, ca["nat_reply"][fam], "A took them back, into the pod")
+}
+
+// newStageTunnel is an eBPF-stage pod node A, an announcer B behind its tunnel
+// and a server behind B, both families, in c's tunnel mode and underlay.
+func newStageTunnel(t *testing.T, c tunCase) (pod, srv *host, objA, objB *Objects) {
+	t.Helper()
+	nodeA, nodeB := NodeID("node-a"), NodeID("node-b")
+	pod, a, b, srv := newHost(t, "pod"), newHost(t, "nodeA"), newHost(t, "nodeB"), newHost(t, "server")
+	wire(t, pod, "eth0", a, "vpod")
+	wire(t, a, "ul", b, "ul")
+	wire(t, b, "pool", srv, "eth0")
+	eg4, eg6 := netip.MustParseAddr("172.30.10.110"), netip.MustParseAddr("fdaa::110")
+	pod.addr(t, "eth0", "10.244.1.5/24")
+	pod.addr(t, "eth0", "fd44:1::5/64")
+	pod.route(t, &netlink.Route{Gw: net.ParseIP("10.244.1.1")})
+	pod.route(t, &netlink.Route{Gw: net.ParseIP("fd44:1::1")})
+	a.addr(t, "vpod", "10.244.1.1/24")
+	a.addr(t, "vpod", "fd44:1::1/64")
+	a.addr(t, "ul", "10.0.0.1/24")
+	a.addr(t, "ul", "fd00::1/64")
+	// The node's own route out, whatever the destination: the stage leaves
+	// from NIC egress, so a pod's packet has to be routed to one.
+	a.route(t, &netlink.Route{Gw: net.ParseIP("10.0.0.2")})
+	a.route(t, &netlink.Route{Gw: net.ParseIP("fd00::2")})
+	b.addr(t, "ul", "10.0.0.2/24")
+	b.addr(t, "ul", "fd00::2/64")
+	b.addr(t, "pool", "172.30.10.2/24")
+	b.addr(t, "pool", "fdaa::2/64")
+	b.addr(t, "pool", "172.30.10.110/32")
+	b.addr(t, "pool", "fdaa::110/128")
+	srv.addr(t, "eth0", "172.30.10.1/24")
+	srv.addr(t, "eth0", "fdaa::1/64")
+	for _, h := range []*host{a, b} {
+		h.sysctl(t, "net.ipv4.ip_forward", "1")
+		h.sysctl(t, "net.ipv6.conf.all.forwarding", "1")
+		h.sysctl(t, "net.ipv4.conf.all.rp_filter", "0")
+	}
+	mode := ModeL3
+	if c.l2 {
+		mode = ModeL2
+	}
+	var tunA, tunB netlink.Link
+	for _, x := range []struct {
+		h  *host
+		id uint64
+		l  *netlink.Link
+	}{{a, nodeA, &tunA}, {b, nodeB, &tunB}} {
+		got, l, err := EnsureTunnel(x.h.nl, mode, 6082, TunnelMAC(x.id))
+		require.NoError(t, err)
+		require.Equal(t, mode, got)
+		*x.l = l
+	}
+	b.sysctl(t, "net.ipv4.conf.purelb-eg0.rp_filter", "0")
+	b.route(t, &netlink.Route{Dst: cidr("172.30.10.0/24"), LinkIndex: b.link(t, "pool").Attrs().Index, Table: 7900})
+	b.route(t, &netlink.Route{Dst: cidr("fdaa::/64"), LinkIndex: b.link(t, "pool").Attrs().Index, Table: 7900})
+
+	objA, objB = load(t), load(t)
+	underA, underB := Node{V4: netip.MustParseAddr("10.0.0.1")}, Node{V4: netip.MustParseAddr("10.0.0.2")}
+	if c.under6 {
+		underA, underB = Node{V6: netip.MustParseAddr("fd00::1")}, Node{V6: netip.MustParseAddr("fd00::2")}
+	}
+	underA.MAC, underB.MAC = TunnelMAC(nodeA), TunnelMAC(nodeB)
+	require.NoError(t, objA.SetConfig(Config{Self: nodeA, TunIfindex: tunA.Attrs().Index, L2: c.l2, TunMAC: TunnelMAC(nodeA),
+		Underlay4: !c.under6, Underlay6: c.under6, Self4: underA.V4, Self6: underA.V6, EBPFStage: true, TunPort: 6082}))
+	require.NoError(t, objB.SetConfig(Config{Self: nodeB, TunIfindex: tunB.Attrs().Index, L2: c.l2, TunMAC: TunnelMAC(nodeB),
+		Underlay4: !c.under6, Underlay6: c.under6, Self4: underB.V4, Self6: underB.V6}))
+	require.NoError(t, objA.SetNode(nodeB, underB))
+	require.NoError(t, objB.SetNode(nodeA, underA))
+	require.NoError(t, objB.SetPoolInterface(b.link(t, "pool").Attrs().Index, 0))
+	for _, e := range []netip.Addr{eg4, eg6} {
+		require.NoError(t, objA.SetAddress(e, Address{Held: false, SliceSize: 4096, Base: 1024}))
+		require.NoError(t, objB.SetAddress(e, Address{Held: true, SliceSize: 4096, Base: 1024, Table: 7900}))
+		require.NoError(t, objA.SetSlice(e, sliceIndex, nodeA))
+		require.NoError(t, objB.SetSlice(e, sliceIndex, nodeA))
+	}
+	all := []Destination{{Prefixes: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}}}
+	require.NoError(t, objA.SyncEBPFStage(PodStage{
+		PodSets: map[uint8][]string{stagePodSet: {"p"}},
+		Policies: map[string]Policy{"p": {
+			V4: &PolicyFamily{Include: all, Slot: stageSlot, Address: eg4},
+			V6: &PolicyFamily{Include: all, Slot: stageSlot + 1, Address: eg6}}},
+		Slots: map[uint8]Slot{
+			// The clamp the agent sets from the tunnel's path MTU (D13): an
+			// IPv6 outer packet isn't fragmented.
+			stageSlot:     {Addr: eg4, First: stageFirst, Last: stageLast, MSS: 1300},
+			stageSlot + 1: {Addr: eg6, First: stageFirst, Last: stageLast, MSS: 1300}},
+	}, map[uint8]SlotRoute{stageSlot: {Target: TargetTunnel}, stageSlot + 1: {Target: TargetTunnel}}))
+	require.NoError(t, objA.SetSteer(stageSlot, []uint64{nodeB}))
+	require.NoError(t, objA.SetSteer(stageSlot+1, []uint64{nodeB}))
+	var mac [6]byte
+	copy(mac[:], pod.link(t, "eth0").Attrs().HardwareAddr)
+	require.NoError(t, objA.SetPodDev(a.link(t, "vpod").Attrs().Index, PodDev{V4: netip.MustParseAddr("10.244.1.5"),
+		V6: netip.MustParseAddr("fd44:1::5"), PodSet: stagePodSet, MAC: mac}))
+	a.attach(t, "vpod", objA.PlPodTag, ebpf.AttachTCXIngress)
+	a.attach(t, "ul", objA.PlPodOutEth, ebpf.AttachTCXEgress)
+	a.attach(t, TunnelName, objA.PlSteer, ebpf.AttachTCXEgress)
+	a.attach(t, TunnelName, objA.PlAnnounceTun, ebpf.AttachTCXIngress)
+	b.attach(t, "pool", objB.PlAnnounceEth, ebpf.AttachTCXIngress)
+	b.attach(t, TunnelName, objB.PlAnnounceTun, ebpf.AttachTCXIngress)
+
+	return pod, srv, objA, objB
 }
 
 // A netkit pod: pl_pod_tag at the peer hook, replies by bpf_redirect_peer to
