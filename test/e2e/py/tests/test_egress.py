@@ -842,8 +842,11 @@ def test_pod_traffic_leaves_from_its_slice(cluster: Cluster, router: Router, env
             assert line is not None, f"no flow-log line for {translated}: {flows}"
             assert line["pod"] == f"{NS}/{pod.metadata.name}" and line["policy"].endswith(f"{NS}/{pol}"), line
         if ebpf:
-            wait_until(lambda: agent_metrics(node).value("purelb_egress_nat_flows") >= 1, timeout=90,
-                       description=f"{node}'s flows in the NAT table's metric")
+            # The gauge moves at each reconcile: a flow that stays open meets one.
+            ping = in_background(lambda: pod_exec(cluster, pod.metadata.name, f"ping -i 0.5 -w 60 {env.local_dst4}", timeout=90))
+            wait_until(lambda: agent_metrics(node).value("purelb_egress_nat_flows") >= 1, timeout=60,
+                       description=f"{node}'s flow in the NAT table's metric")
+            ping()
         else:
             assert agent_metrics(node).counter("purelb_egress_flow_log_events_total", event="new") >= new0 + len(cases)
     finally:
@@ -964,7 +967,9 @@ def test_flows_into_a_selected_pod_keep_their_addresses(cluster: Cluster, node_i
         wait_until(lambda: running(cluster, NS, name), timeout=180, description=f"{name} running")
         ports = {p.name: p.node_port for p in svc.spec.ports}
         hosts = [node_ips[node]]
-        v6 = ssh(node_ips[node], "ip -6 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1", check=False).strip()
+        # The node's own: it may hold the egress addresses too.
+        v6 = next((a for a in ssh(node_ips[node], "ip -6 -o addr show scope global | awk '{print $4}' | cut -d/ -f1",
+                                  check=False).split() if a not in (env.v6, env.r6)), "")
         if v6 and any(":" in ip for ip in (svc.spec.cluster_ips or [])):
             hosts.append(v6)
         for host in hosts:
