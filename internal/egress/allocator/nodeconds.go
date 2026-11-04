@@ -125,6 +125,9 @@ func cniEgressServed(d discovery.DiscoveryInterface) []string {
 	return out
 }
 
+// reasonNATOutgoingRequired: Calico's eBPF dataplane, resolution 20.
+const reasonNATOutgoingRequired = "NATOutgoingRequired"
+
 // finding is one node-reported problem across the policy's addresses.
 type finding struct {
 	cond, reason string
@@ -149,9 +152,15 @@ func (r *Reconciler) nodeConditions(run *run, eps map[string]*purelbv2.EgressEnd
 			f.nodes[node] = true
 		}
 	}
+	natConflicts := r.natConflicts(run)
 	for _, name := range slices.Sorted(maps.Keys(eps)) {
 		ep := eps[name]
 		addr := ep.Spec.Address
+		for _, n := range sliceNodes(ep) {
+			if natConflicts[n] {
+				add(condDatapathCompatible, reasonNATOutgoingRequired, addr, n)
+			}
+		}
 		holders := map[string]bool{}
 		for _, n := range ep.Status.ObservedAnnouncers {
 			holders[n] = true
@@ -221,6 +230,11 @@ func (r *Reconciler) nodeConditions(run *run, eps map[string]*purelbv2.EgressEnd
 		switch {
 		case f.reason == "TunnelModeMismatch":
 			msg += ": its nodes' tunnels use different encapsulations"
+		case f.reason == reasonNATOutgoingRequired && hide:
+			msg += fmt.Sprintf(": %d nodes run selected pods whose Calico IP pools' natOutgoing differ, or disagree with the node's pod stage", len(f.nodes))
+		case f.reason == reasonNATOutgoingRequired:
+			msg += ": nodes " + strings.Join(slices.Sorted(maps.Keys(f.nodes)), ", ") +
+				" run selected pods whose Calico IP pools' natOutgoing differ, or disagree with the node's pod stage"
 		case hide:
 			msg += fmt.Sprintf(": %d nodes", len(f.nodes))
 		default:
