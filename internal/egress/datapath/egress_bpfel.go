@@ -29,6 +29,29 @@ type egressAddrKey struct {
 	Pad    [3]uint8
 }
 
+type egressDest4Key struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Id        uint32
+	Addr      uint32
+}
+
+type egressDest6Key struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Id        uint32
+	Addr      [4]uint32
+}
+
+type egressDestPortKey struct {
+	_         structs.HostLayout
+	Prefixlen uint32
+	Set       uint32
+	Proto     uint8
+	Pad       uint8
+	Port      uint16
+}
+
 type egressEgressConfig struct {
 	_          structs.HostLayout
 	Self       uint64
@@ -39,7 +62,10 @@ type egressEgressConfig struct {
 	MarkShift  uint8
 	HasV4      uint8
 	HasV6      uint8
-	Pad        [6]uint8
+	TunPort    uint16
+	EbpfStage  uint8
+	PodBySrc   uint8
+	Pad        [2]uint8
 	SelfV4     uint32
 	SelfV6     [4]uint32
 	_          [4]byte
@@ -62,6 +88,20 @@ type egressHolders struct {
 	Holders [32]uint64
 }
 
+type egressInboundScratch struct {
+	_       structs.HostLayout
+	Hdr     [40]uint8
+	L4      [4]uint8
+	Pad     [4]uint8
+	Dst     egressAddrKey
+	K       egressNatKey
+	_       [4]byte
+	Now     uint64
+	Ifindex uint32
+	Src     [4]uint32
+	_       [4]byte
+}
+
 type egressLpm4 struct {
 	_         structs.HostLayout
 	Prefixlen uint32
@@ -72,6 +112,35 @@ type egressLpm6 struct {
 	_         structs.HostLayout
 	Prefixlen uint32
 	Addr      [4]uint32
+}
+
+type egressNatFrag struct {
+	_    structs.HostLayout
+	Addr [4]uint32
+	Slot uint8
+	Pad  [7]uint8
+}
+
+type egressNatKey struct {
+	_      structs.HostLayout
+	Raddr  [4]uint32
+	Laddr  [4]uint32
+	Rport  uint16
+	Lport  uint16
+	Proto  uint8
+	Family uint8
+	Dir    uint8
+	Pad    uint8
+}
+
+type egressNatVal struct {
+	_     structs.HostLayout
+	Addr  [4]uint32
+	Ts    uint64
+	Port  uint16
+	State uint8
+	Slot  uint8
+	Pad   [4]uint8
 }
 
 type egressNode struct {
@@ -91,6 +160,37 @@ type egressPodDev struct {
 	HasV6  uint8
 	PodSet uint8
 	Hold   uint8
+	Mac    [6]uint8
+	Pad    [2]uint8
+}
+
+type egressPodPolicy struct {
+	_        structs.HostLayout
+	Slot     uint8
+	Whole    uint8
+	FailOpen uint8
+	Pad      uint8
+}
+
+type egressPodSetKey struct {
+	_      structs.HostLayout
+	PodSet uint8
+	Family uint8
+	Index  uint8
+	Pad    uint8
+}
+
+type egressPodSlot struct {
+	_      structs.HostLayout
+	Addr   [4]uint32
+	Table  uint32
+	First  uint16
+	Size   uint16
+	Mss    uint16
+	Mtu    uint16
+	Target uint8
+	Family uint8
+	Pad    [2]uint8
 }
 
 type egressPoolIf struct {
@@ -104,6 +204,11 @@ type egressPortKey struct {
 	Port   uint16
 	Proto  uint8
 	Family uint8
+}
+
+type egressPtbBudget struct {
+	_      structs.HostLayout
+	NextNs uint64
 }
 
 type egressSliceKey struct {
@@ -132,11 +237,25 @@ const (
 	egressMapEgressReasons  = "egress_reasons"
 	egressMapEgressScratch  = "egress_scratch"
 	egressMapFrags          = "frags"
+	egressMapInboundScr     = "inbound_scr"
+	egressMapNat            = "nat"
+	egressMapNatFrags       = "nat_frags"
 	egressMapNodeByUnderlay = "node_by_underlay"
 	egressMapNodes          = "nodes"
 	egressMapPeerSeen       = "peer_seen"
+	egressMapPodDest4       = "pod_dest4"
+	egressMapPodDest6       = "pod_dest6"
+	egressMapPodDestPorts   = "pod_dest_ports"
 	egressMapPodDevs        = "pod_devs"
+	egressMapPodInbound     = "pod_inbound"
+	egressMapPodPolicies    = "pod_policies"
+	egressMapPodPortless    = "pod_portless"
+	egressMapPodReserved    = "pod_reserved"
+	egressMapPodSetPolicies = "pod_set_policies"
+	egressMapPodSlots       = "pod_slots"
+	egressMapPodSrc         = "pod_src"
 	egressMapPoolIfs        = "pool_ifs"
+	egressMapPtbBudgets     = "ptb_budgets"
 	egressMapReserved       = "reserved"
 	egressMapSlices         = "slices"
 	egressMapSteer          = "steer"
@@ -144,6 +263,9 @@ const (
 	egressProgPlAnnounceEth = "pl_announce_eth"
 	egressProgPlAnnounceL3  = "pl_announce_l3"
 	egressProgPlAnnounceTun = "pl_announce_tun"
+	egressProgPlPodInbound  = "pl_pod_inbound"
+	egressProgPlPodOutEth   = "pl_pod_out_eth"
+	egressProgPlPodOutL3    = "pl_pod_out_l3"
 	egressProgPlPodTag      = "pl_pod_tag"
 	egressProgPlSteer       = "pl_steer"
 )
@@ -193,6 +315,9 @@ type egressProgramSpecs struct {
 	PlAnnounceEth *ebpf.ProgramSpec `ebpf:"pl_announce_eth"`
 	PlAnnounceL3  *ebpf.ProgramSpec `ebpf:"pl_announce_l3"`
 	PlAnnounceTun *ebpf.ProgramSpec `ebpf:"pl_announce_tun"`
+	PlPodInbound  *ebpf.ProgramSpec `ebpf:"pl_pod_inbound"`
+	PlPodOutEth   *ebpf.ProgramSpec `ebpf:"pl_pod_out_eth"`
+	PlPodOutL3    *ebpf.ProgramSpec `ebpf:"pl_pod_out_l3"`
 	PlPodTag      *ebpf.ProgramSpec `ebpf:"pl_pod_tag"`
 	PlSteer       *ebpf.ProgramSpec `ebpf:"pl_steer"`
 }
@@ -208,11 +333,25 @@ type egressMapSpecs struct {
 	EgressReasons  *ebpf.MapSpec `ebpf:"egress_reasons"`
 	EgressScratch  *ebpf.MapSpec `ebpf:"egress_scratch"`
 	Frags          *ebpf.MapSpec `ebpf:"frags"`
+	InboundScr     *ebpf.MapSpec `ebpf:"inbound_scr"`
+	Nat            *ebpf.MapSpec `ebpf:"nat"`
+	NatFrags       *ebpf.MapSpec `ebpf:"nat_frags"`
 	NodeByUnderlay *ebpf.MapSpec `ebpf:"node_by_underlay"`
 	Nodes          *ebpf.MapSpec `ebpf:"nodes"`
 	PeerSeen       *ebpf.MapSpec `ebpf:"peer_seen"`
+	PodDest4       *ebpf.MapSpec `ebpf:"pod_dest4"`
+	PodDest6       *ebpf.MapSpec `ebpf:"pod_dest6"`
+	PodDestPorts   *ebpf.MapSpec `ebpf:"pod_dest_ports"`
 	PodDevs        *ebpf.MapSpec `ebpf:"pod_devs"`
+	PodInbound     *ebpf.MapSpec `ebpf:"pod_inbound"`
+	PodPolicies    *ebpf.MapSpec `ebpf:"pod_policies"`
+	PodPortless    *ebpf.MapSpec `ebpf:"pod_portless"`
+	PodReserved    *ebpf.MapSpec `ebpf:"pod_reserved"`
+	PodSetPolicies *ebpf.MapSpec `ebpf:"pod_set_policies"`
+	PodSlots       *ebpf.MapSpec `ebpf:"pod_slots"`
+	PodSrc         *ebpf.MapSpec `ebpf:"pod_src"`
 	PoolIfs        *ebpf.MapSpec `ebpf:"pool_ifs"`
+	PtbBudgets     *ebpf.MapSpec `ebpf:"ptb_budgets"`
 	Reserved       *ebpf.MapSpec `ebpf:"reserved"`
 	Slices         *ebpf.MapSpec `ebpf:"slices"`
 	Steer          *ebpf.MapSpec `ebpf:"steer"`
@@ -252,11 +391,25 @@ type egressMaps struct {
 	EgressReasons  *ebpf.Map `ebpf:"egress_reasons"`
 	EgressScratch  *ebpf.Map `ebpf:"egress_scratch"`
 	Frags          *ebpf.Map `ebpf:"frags"`
+	InboundScr     *ebpf.Map `ebpf:"inbound_scr"`
+	Nat            *ebpf.Map `ebpf:"nat"`
+	NatFrags       *ebpf.Map `ebpf:"nat_frags"`
 	NodeByUnderlay *ebpf.Map `ebpf:"node_by_underlay"`
 	Nodes          *ebpf.Map `ebpf:"nodes"`
 	PeerSeen       *ebpf.Map `ebpf:"peer_seen"`
+	PodDest4       *ebpf.Map `ebpf:"pod_dest4"`
+	PodDest6       *ebpf.Map `ebpf:"pod_dest6"`
+	PodDestPorts   *ebpf.Map `ebpf:"pod_dest_ports"`
 	PodDevs        *ebpf.Map `ebpf:"pod_devs"`
+	PodInbound     *ebpf.Map `ebpf:"pod_inbound"`
+	PodPolicies    *ebpf.Map `ebpf:"pod_policies"`
+	PodPortless    *ebpf.Map `ebpf:"pod_portless"`
+	PodReserved    *ebpf.Map `ebpf:"pod_reserved"`
+	PodSetPolicies *ebpf.Map `ebpf:"pod_set_policies"`
+	PodSlots       *ebpf.Map `ebpf:"pod_slots"`
+	PodSrc         *ebpf.Map `ebpf:"pod_src"`
 	PoolIfs        *ebpf.Map `ebpf:"pool_ifs"`
+	PtbBudgets     *ebpf.Map `ebpf:"ptb_budgets"`
 	Reserved       *ebpf.Map `ebpf:"reserved"`
 	Slices         *ebpf.Map `ebpf:"slices"`
 	Steer          *ebpf.Map `ebpf:"steer"`
@@ -272,11 +425,25 @@ func (m *egressMaps) Close() error {
 		m.EgressReasons,
 		m.EgressScratch,
 		m.Frags,
+		m.InboundScr,
+		m.Nat,
+		m.NatFrags,
 		m.NodeByUnderlay,
 		m.Nodes,
 		m.PeerSeen,
+		m.PodDest4,
+		m.PodDest6,
+		m.PodDestPorts,
 		m.PodDevs,
+		m.PodInbound,
+		m.PodPolicies,
+		m.PodPortless,
+		m.PodReserved,
+		m.PodSetPolicies,
+		m.PodSlots,
+		m.PodSrc,
 		m.PoolIfs,
+		m.PtbBudgets,
 		m.Reserved,
 		m.Slices,
 		m.Steer,
@@ -297,6 +464,9 @@ type egressPrograms struct {
 	PlAnnounceEth *ebpf.Program `ebpf:"pl_announce_eth"`
 	PlAnnounceL3  *ebpf.Program `ebpf:"pl_announce_l3"`
 	PlAnnounceTun *ebpf.Program `ebpf:"pl_announce_tun"`
+	PlPodInbound  *ebpf.Program `ebpf:"pl_pod_inbound"`
+	PlPodOutEth   *ebpf.Program `ebpf:"pl_pod_out_eth"`
+	PlPodOutL3    *ebpf.Program `ebpf:"pl_pod_out_l3"`
 	PlPodTag      *ebpf.Program `ebpf:"pl_pod_tag"`
 	PlSteer       *ebpf.Program `ebpf:"pl_steer"`
 }
@@ -306,6 +476,9 @@ func (p *egressPrograms) Close() error {
 		p.PlAnnounceEth,
 		p.PlAnnounceL3,
 		p.PlAnnounceTun,
+		p.PlPodInbound,
+		p.PlPodOutEth,
+		p.PlPodOutL3,
 		p.PlPodTag,
 		p.PlSteer,
 	)

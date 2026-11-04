@@ -39,11 +39,14 @@ type PodDev struct {
 	PodSet uint8
 	// Hold drops its traffic leaving the cluster (FailClosed).
 	Hold bool
+	// MAC is the pod's own interface's, for an error sent back to it (the
+	// eBPF stage, design 6.13); zero when not known.
+	MAC [6]byte
 }
 
 // SetPodDev programs the pod device ifindex.
 func (o *Objects) SetPodDev(ifindex int, d PodDev) error {
-	v := egressPodDev{PodSet: d.PodSet, Hold: b2u(d.Hold)}
+	v := egressPodDev{PodSet: d.PodSet, Hold: b2u(d.Hold), Mac: d.MAC}
 	if d.V4.IsValid() {
 		w, _ := words(d.V4)
 		v.V4, v.HasV4 = w[0], 1
@@ -52,12 +55,43 @@ func (o *Objects) SetPodDev(ifindex int, d PodDev) error {
 		v.V6, _ = words(d.V6)
 		v.HasV6 = 1
 	}
-	return o.PodDevs.Put(uint32(ifindex), &v)
+	if err := o.PodDevs.Put(uint32(ifindex), &v); err != nil {
+		return err
+	}
+	// Each address finds its device, for what comes to the pod, and on netkit
+	// for what leaves it (design 6.4).
+	var errs []error
+	for _, ip := range []netip.Addr{d.V4, d.V6} {
+		if ip.IsValid() {
+			k := addrKey(ip)
+			errs = append(errs, o.PodSrc.Put(&k, uint32(ifindex)))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // DeletePodDev removes the pod device ifindex.
 func (o *Objects) DeletePodDev(ifindex int) error {
-	return ignoreNotExist(o.PodDevs.Delete(uint32(ifindex)))
+	var errs []error
+	var v egressPodDev
+	if err := o.PodDevs.Lookup(uint32(ifindex), &v); err == nil {
+		// An address a newer pod took keeps its entry: that pod's device.
+		del := func(a netip.Addr) {
+			k := addrKey(a)
+			var cur uint32
+			if err := o.PodSrc.Lookup(&k, &cur); err == nil && cur == uint32(ifindex) {
+				errs = append(errs, ignoreNotExist(o.PodSrc.Delete(&k)))
+			}
+		}
+		if v.HasV4 != 0 {
+			del(unwords([4]uint32{v.V4}, false))
+		}
+		if v.HasV6 != 0 {
+			del(unwords(v.V6, true))
+		}
+	}
+	errs = append(errs, ignoreNotExist(o.PodDevs.Delete(uint32(ifindex))))
+	return errors.Join(errs...)
 }
 
 // RecoverPodDevs reads the pod devices back from the maps (D12).
@@ -67,7 +101,7 @@ func (o *Objects) RecoverPodDevs() (map[int]PodDev, error) {
 	var v egressPodDev
 	it := o.PodDevs.Iterate()
 	for it.Next(&k, &v) {
-		d := PodDev{PodSet: v.PodSet, Hold: v.Hold != 0}
+		d := PodDev{PodSet: v.PodSet, Hold: v.Hold != 0, MAC: v.Mac}
 		if v.HasV4 != 0 {
 			d.V4 = unwords([4]uint32{v.V4}, false)
 		}
@@ -135,6 +169,8 @@ type PodDevice struct {
 	Name    string
 	// Kind is the link type: "veth" or "netkit".
 	Kind string
+	// MAC is the pod's own interface's MAC.
+	MAC [6]byte
 }
 
 // PodDevices maps every address in a pod network namespace to that
@@ -161,13 +197,61 @@ func PodDevices(h *netlink.Handle) (map[netip.Addr]PodDevice, error) {
 		if err != nil {
 			return nil, fmt.Errorf("addresses of %s's peer: %w", a.Name, err)
 		}
+		var mac [6]byte
+		if m, err := peerMAC(a.NetNsID, a.ParentIndex); err == nil {
+			mac = m
+		}
 		for _, ip := range addrs[a.ParentIndex] {
 			if !ip.IsLinkLocalUnicast() {
-				out[ip] = PodDevice{Ifindex: a.Index, Name: a.Name, Kind: l.Type()}
+				out[ip] = PodDevice{Ifindex: a.Index, Name: a.Name, Kind: l.Type(), MAC: mac}
 			}
 		}
 	}
 	return out, nil
+}
+
+// peerMAC is the MAC of interface ifindex in the network namespace with id
+// nsid, asked for by id (IFLA_TARGET_NETNSID), without entering it.
+func peerMAC(nsid, ifindex int) ([6]byte, error) {
+	var mac [6]byte
+	s, err := nl.Subscribe(unix.NETLINK_ROUTE)
+	if err != nil {
+		return mac, err
+	}
+	defer s.Close()
+	req := nl.NewNetlinkRequest(unix.RTM_GETLINK, 0)
+	msg := nl.NewIfInfomsg(unix.AF_UNSPEC)
+	msg.Index = int32(ifindex)
+	req.AddData(msg)
+	id := make([]byte, 4)
+	binary.NativeEndian.PutUint32(id, uint32(nsid))
+	req.AddData(nl.NewRtAttr(unix.IFLA_IF_NETNSID, id))
+	if err := s.Send(req); err != nil {
+		return mac, err
+	}
+	msgs, _, err := s.Receive()
+	if err != nil {
+		return mac, err
+	}
+	for _, m := range msgs {
+		if m.Header.Type == unix.NLMSG_ERROR {
+			return mac, syscall.Errno(-int32(binary.NativeEndian.Uint32(m.Data[:4])))
+		}
+		if m.Header.Type != unix.RTM_NEWLINK {
+			continue
+		}
+		attrs, err := nl.ParseRouteAttr(m.Data[unix.SizeofIfInfomsg:])
+		if err != nil {
+			return mac, err
+		}
+		for _, at := range attrs {
+			if at.Attr.Type == unix.IFLA_ADDRESS && len(at.Value) == 6 {
+				copy(mac[:], at.Value)
+				return mac, nil
+			}
+		}
+	}
+	return mac, fmt.Errorf("interface %d in namespace %d has no MAC", ifindex, nsid)
 }
 
 // addrsInNetns dumps the addresses of the network namespace with id nsid,

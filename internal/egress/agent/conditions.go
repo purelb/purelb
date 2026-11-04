@@ -26,7 +26,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/kernelversion"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
@@ -58,6 +57,8 @@ type dpHealth struct {
 	// traffic on a slice (D4), missing helpers (D23).
 	podFaults map[netip.Addr]purelbv2.EgressAddressFault
 	// markConflict names the other rules using the mark byte (D18);
+	// ebpf: the node runs the eBPF pod stage.
+	ebpf bool
 	// forwardBlocked are the families whose flows don't reach their SNAT
 	// (D25).
 	markConflict   string
@@ -68,7 +69,7 @@ type dpHealth struct {
 // goroutine only.
 func health(st *dpState, w dpWant, err error) *dpHealth {
 	h := &dpHealth{encryption: st.encryption, podFaults: maps.Clone(st.podFaults),
-		markConflict: st.markConflict, forwardBlocked: slices.Clone(st.forwardBlocked)}
+		markConflict: st.markConflict, forwardBlocked: slices.Clone(st.forwardBlocked), ebpf: st.ebpf}
 	if err != nil {
 		h.applyErr = err.Error()
 	}
@@ -128,9 +129,6 @@ func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth, pn *po
 	}
 	if v, err := kernelversion.Parse(c.Kernel); err != nil || !v.AtLeast(kernelversion.EgressMin) {
 		set(condDatapathCompatible, "KernelTooOld", fmt.Sprintf("kernel %s is older than egress needs", c.Kernel))
-	} else if r := a.stage.Load(); r != nil && r.stage == cnisock.StageBypassed {
-		// Its pods need the eBPF stage (design 6.1, 6.4).
-		set(condDatapathCompatible, "NetfilterBypassed", r.detail+": this node needs the eBPF pod stage")
 	} else if h.markConflict != "" {
 		set(condDatapathCompatible, "MarkConflict", h.markConflict)
 	} else if reason, msg := chainCondition(a.installer.Load(), a.now()); reason != "" {
@@ -156,6 +154,12 @@ func (a *Agent) nodeConditions(c *purelbv2.EgressCapability, h *dpHealth, pn *po
 		// No peer answers: this node's tunnel port, or its path to every
 		// peer, is blocked (a firewall: D25).
 		set(condForwardPath, "TunnelPortBlocked", "no tunnel peer answers probes: "+strings.Join(h.unreachable, ", "))
+	case len(h.forwardBlocked) > 0 && h.ebpf:
+		// The eBPF stage isn't where the node's pods' traffic leaves: the
+		// CNI translated it first (Calico's natOutgoing: design 6.1), it
+		// leaves by a device the stage isn't on, or the probe was wrong.
+		set(condForwardPath, "PodStageBypassed", strings.Join(h.forwardBlocked, ", ")+
+			": selected pods' SYNs leave their devices but none reaches the eBPF stage at the NIC, so their traffic isn't translated")
 	case len(h.forwardBlocked) > 0:
 		// The pods' new egress flows are marked but none reaches its SNAT:
 		// a forward filter (Docker, firewalld), rp_filter, or a

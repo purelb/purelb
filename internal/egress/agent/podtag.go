@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -262,7 +263,7 @@ func (a *Agent) syncPodDevs(st *dpState, w dpWant) error {
 		if !ok {
 			continue // not wired yet: the next apply follows
 		}
-		want[dev.Ifindex] = entry{dev: dev, pd: datapath.PodDev{V4: p.v4, V6: p.v6, PodSet: p.podSet, Hold: p.hold}}
+		want[dev.Ifindex] = entry{dev: dev, pd: datapath.PodDev{V4: p.v4, V6: p.v6, PodSet: p.podSet, Hold: p.hold, MAC: dev.MAC}}
 	}
 	var errs []error
 	have, err := st.objs.RecoverPodDevs()
@@ -286,20 +287,21 @@ func (a *Agent) syncPodDevs(st *dpState, w dpWant) error {
 	}
 
 	wantLinks := map[string]datapath.PodDevice{}
-	skipped := map[string]bool{}
+	st.podBySrc = false
 	for _, e := range want {
-		if e.dev.Kind != "veth" {
-			skipped[e.dev.Name] = true // netkit's peer hook: Phase 7
-			continue
-		}
 		wantLinks[podTagPrefix+e.dev.Name] = e.dev
+		if e.dev.Kind == "netkit" {
+			st.podBySrc = true // no ingress device at the NIC (measured)
+		}
 	}
 	for name, l := range st.links {
 		if !strings.HasPrefix(name, podTagPrefix) {
 			continue
 		}
-		if d, ok := wantLinks[name]; ok && st.linkIfs[name] == d.Ifindex {
+		if d, ok := wantLinks[name]; ok && st.linkIfs[name] == d.Ifindex && podTagAtHead(st, d) {
 			continue
+		} else if ok && st.linkIfs[name] == d.Ifindex {
+			a.reattaching(name, d.Ifindex)
 		}
 		if err := detach(l); err != nil && !errors.Is(err, ebpf.ErrNotSupported) {
 			// The device is gone with its link: nothing to detach.
@@ -313,7 +315,13 @@ func (a *Agent) syncPodDevs(st *dpState, w dpWant) error {
 			continue
 		}
 		d := wantLinks[name]
-		l, err := datapath.AttachTCX(st.pinDir, name, d.Ifindex, st.objs.PlPodTag, ebpf.AttachTCXIngress, nil)
+		var l link.Link
+		var err error
+		if d.Kind == "netkit" {
+			l, err = datapath.AttachNetkitPeer(st.pinDir, name, d.Ifindex, st.objs.PlPodTag)
+		} else {
+			l, err = datapath.AttachTCX(st.pinDir, name, d.Ifindex, st.objs.PlPodTag, ebpf.AttachTCXIngress, nil)
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("attaching %s: %w", name, err))
 			continue
@@ -338,13 +346,6 @@ func (a *Agent) syncPodDevs(st *dpState, w dpWant) error {
 				}
 			}
 		}
-	}
-	if !maps.Equal(skipped, st.netkit) {
-		if len(skipped) > 0 {
-			logging.Info(a.logger, "op", "egressPods", "node", a.node, "devices", slices.Sorted(maps.Keys(skipped)),
-				"msg", "netkit pod devices are not tagged yet: their pods' egress isn't classified")
-		}
-		st.netkit = skipped
 	}
 	logging.Debug(a.logger, "op", "egressPods", "node", a.node, "devices", len(want), "tagged", len(wantLinks),
 		"cluster", len(cluster), "msg", "pod devices programmed")

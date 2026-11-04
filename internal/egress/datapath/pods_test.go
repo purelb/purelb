@@ -209,6 +209,6 @@ func TestNetnsPodDevices(t *testing.T) {
 		}))
 		return len(devs) == 2
 	}, 5*time.Second, 100*time.Millisecond, "got %v", devs)
-	want := PodDevice{Ifindex: vpod.Attrs().Index, Name: "vpod0", Kind: "veth"}
+	want := PodDevice{Ifindex: vpod.Attrs().Index, Name: "vpod0", Kind: "veth", MAC: [6]byte(eth0.Attrs().HardwareAddr)}
 	assert.Equal(t, map[netip.Addr]PodDevice{pod4: want, pod6: want}, devs)
 }

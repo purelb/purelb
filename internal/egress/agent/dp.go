@@ -31,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"purelb.io/internal/bpfpin"
+	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/egress/datapath"
 	"purelb.io/internal/logging"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
@@ -83,6 +84,8 @@ type dpWant struct {
 	// leaving: the node is shutting down, and the slots of the addresses
 	// it holds go through the tunnel to the holders that remain (D7).
 	leaving bool
+	// ebpf: the node runs the eBPF pod stage (design 6.1, 6.4).
+	ebpf bool
 }
 
 // dpPool is one pool interface and the families placed on it.
@@ -133,8 +136,6 @@ type dpState struct {
 	reports map[int]poolReport
 	// addrs are the address entries in the maps.
 	addrs map[netip.Addr]*datapath.AddressEntries
-	// netkit are the netkit pod devices pl_pod_tag skips, as last logged.
-	netkit map[string]bool
 	// tagged are the pod devices last installed whole, entry and program,
 	// by pod address: what a CNI ADD may count on (§8.1).
 	tagged map[netip.Addr]datapath.PodDev
@@ -156,6 +157,17 @@ type dpState struct {
 	prohibited     map[uint8]bool
 	fwd            [2]fwdWindow
 	forwardBlocked []string
+	// ebpf: this node runs the eBPF pod stage; ebpfStage is its classification
+	// as last computed, each slot's MSS in place; podBySrc: netkit pods, found
+	// by source address; config the programs' configuration as last written.
+	ebpf      bool
+	ebpfStage *datapath.PodStage
+	podBySrc  bool
+	config    datapath.Config
+	// insertFailed is nat_insert_failed per family as the metric has it;
+	// portlessRead that this session has read pod_portless once.
+	insertFailed [2]uint64
+	portlessRead bool
 	// applied is the desired state last applied whole, and cluster its
 	// cluster networks; repointed the slots a leaving apply sent to the
 	// tunnel, with their holders.
@@ -179,6 +191,9 @@ func (a *Agent) syncDatapath() {
 		return
 	}
 	w := dpWant{spec: s.spec, self: a.node, hold: a.syncHoldings(s)}
+	if r := a.stage.Load(); r != nil && r.stage == cnisock.StageBypassed {
+		w.ebpf = true
+	}
 	w.pools = w.hold.pools
 	a.shared = w.hold.shared
 	a.syncPlacement(w.hold)
@@ -321,6 +336,7 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		}
 	}
 
+	st.ebpf = w.ebpf
 	self := datapath.NodeID(w.self)
 	port := uint16(6082)
 	if w.spec.TunnelPort != 0 {
@@ -343,7 +359,11 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 			return c, err
 		}
 	}
-	a.syncMarkByte(st, w)
+	// The eBPF stage carries a slot in the mark only into the tunnel, past
+	// netfilter: nothing else's rules read or write it there.
+	if !st.ebpf {
+		a.syncMarkByte(st, w)
+	}
 	a.markByte.Store(uint32(st.shift))
 	c.MarkField = fieldName(st.shift)
 	// The hardening chains before the tunnel opens its port (design 6.12),
@@ -372,8 +392,9 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 		}
 	}
 	for name, l := range st.links {
-		// Detached by something else: attached again below.
-		if info, err := l.Info(); err != nil || info.TCX() == nil || int(info.TCX().Ifindex) != st.linkIfs[name] {
+		// Detached by something else: attached again below. The cgroup's link
+		// has no device on either side (0).
+		if info, err := l.Info(); err != nil || linkIfindex(info) != st.linkIfs[name] {
 			if _, err := st.nl.LinkByIndex(st.linkIfs[name]); err != nil {
 				// Its device is gone: a pod's, once its sandbox is torn
 				// down while the pod is still known.
@@ -451,10 +472,12 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	}
 	errs = append(errs, syncAddresses(st, addrs))
 
-	errs = append(errs, st.objs.SetConfig(datapath.Config{Self: self, TunIfindex: tun.Attrs().Index,
+	st.config = datapath.Config{Self: self, TunIfindex: tun.Attrs().Index,
 		TunMTU: uint32(datapath.TunnelMTU(st.nl, mode, peers6)), TunMAC: datapath.TunnelMAC(self),
 		L2: mode == datapath.ModeL2, MarkShift: st.shift,
-		Underlay4: selfNode.V4.IsValid(), Underlay6: selfNode.V6.IsValid(), Self4: selfNode.V4, Self6: selfNode.V6}))
+		Underlay4: selfNode.V4.IsValid(), Underlay6: selfNode.V6.IsValid(), Self4: selfNode.V4, Self6: selfNode.V6,
+		TunPort: port, EBPFStage: st.ebpf, PodBySrc: st.podBySrc}
+	errs = append(errs, st.objs.SetConfig(st.config))
 	if err := errors.Join(errs...); err != nil {
 		return c, err
 	}
@@ -482,17 +505,33 @@ func (a *Agent) applyDatapath(w dpWant) (*purelbv2.EgressCapability, error) {
 	if err := a.syncPodDevs(st, w); err != nil {
 		return c, err
 	}
+	if st.podBySrc != st.config.PodBySrc {
+		st.config.PodBySrc = st.podBySrc
+		if err := st.objs.SetConfig(st.config); err != nil {
+			return c, err
+		}
+	}
 	// Until the pod-node state is planned (an agent restart), the rules,
 	// tables and steering an earlier agent left are kept (D12).
 	if w.podsKnown {
 		if err := a.syncSteering(st, w, addrs, cluster, mode, tun); err != nil {
 			return c, err
 		}
-		a.syncConntrack(st, w)
-		a.resetMoved(st)
-		a.syncForward(st)
+		if st.ebpf {
+			if err := a.syncStageLinks(st, w); err != nil {
+				return c, err
+			}
+			a.syncNat(st, w)
+			a.syncStageSeen(st)
+		} else {
+			a.syncConntrack(st, w)
+			a.resetMoved(st)
+			a.syncForward(st)
+		}
 	}
 	st.applied, st.cluster = &w, cluster
+	// What a FailClosed pod's ADD waits for on this stage.
+	a.ebpfApplied.Store(w.ebpf && w.podsKnown)
 	c.EgressCapable = true
 	logging.Debug(a.logger, "op", "egressDatapath", "node", a.node, "tunnel", mode, "port", port,
 		"nodes", len(st.nodes), "pinned", st.pinDir != "", "msg", "datapath applied")
@@ -553,6 +592,11 @@ func (a *Agent) syncTable(st *dpState, w dpWant, port uint16, mode string, clust
 			return err
 		}
 	}
+	if st.ebpf && st.ebpfStage != nil {
+		if err := a.readPortlessEBPF(st); err != nil {
+			return err
+		}
+	}
 	t := datapath.Table{Hardening: datapath.Hardening{TunnelPort: port, Egress: w.hold.egress, ServicePorts: w.hold.services}}
 	for _, n := range w.nodes {
 		for _, ip := range []netip.Addr{n.v4, n.v6} {
@@ -569,7 +613,12 @@ func (a *Agent) syncTable(st *dpState, w dpWant, port uint16, mode string, clust
 			}
 		}
 	} else if w.stage != nil {
-		t.Pods = a.tableStage(st, w, mode, cluster, faults)
+		stage := a.tableStage(st, w, mode, cluster, faults)
+		if st.ebpf {
+			st.ebpfStage = stage // in the maps (syncSteering), not the table
+		} else {
+			t.Pods = stage
+		}
 	}
 
 	write := st.table == nil || !reflect.DeepEqual(*st.table, t)
@@ -601,8 +650,12 @@ func (a *Agent) syncTable(st *dpState, w dpWant, port uint16, mode string, clust
 	// ProtocolUnsupported while an address's port-less count rose in the
 	// last portlessWindow; addresses no longer in the stage are forgotten.
 	addrs := map[netip.Addr]bool{}
-	if t.Pods != nil {
-		for _, p := range t.Pods.Policies {
+	pods := t.Pods
+	if st.ebpf {
+		pods = st.ebpfStage
+	}
+	if pods != nil {
+		for _, p := range pods.Policies {
 			for _, f := range []*datapath.PolicyFamily{p.V4, p.V6} {
 				if f != nil && f.Address.IsValid() {
 					addrs[f.Address] = true
@@ -618,7 +671,7 @@ func (a *Agent) syncTable(st *dpState, w dpWant, port uint16, mode string, clust
 		}
 		if !seen.rose.IsZero() && now.Sub(seen.rose) < portlessWindow {
 			faults[addr] = purelbv2.EgressAddressFault{Address: addr.String(), Reason: "ProtocolUnsupported",
-				Message: "pods sent protocols without ports to this address's slice, which carries TCP, UDP, SCTP and ICMP echo only"}
+				Message: portlessMessage(st.ebpf)}
 		}
 	}
 	st.podFaults = faults
@@ -678,6 +731,12 @@ func (a *Agent) tableStage(st *dpState, w dpWant, mode string, cluster []netip.P
 			s.MSS = uint16(mtu - 60)
 		}
 		var usable []datapath.Helper
+		if st.ebpf && len(s.Helpers) > 0 {
+			// No conntrack here, so no helper (design 6.4).
+			faults[s.Addr] = purelbv2.EgressAddressFault{Address: s.Addr.String(), Reason: "HelpersUnsupported",
+				Message: "this node runs the eBPF pod stage, which has no conntrack helpers"}
+			s.Helpers = nil
+		}
 		for _, h := range s.Helpers {
 			k := helperKey{helper: h, v6: s.Addr.Is6()}
 			if !st.helpers[k] {
@@ -694,6 +753,15 @@ func (a *Agent) tableStage(st *dpState, w dpWant, mode string, cluster []netip.P
 		stage.Slots[id] = s
 	}
 	return &stage
+}
+
+// portlessMessage says what a slice carries on this stage (D4; SCTP: user
+// decision 2026-11-03).
+func portlessMessage(ebpf bool) string {
+	if ebpf {
+		return "pods sent SCTP or a protocol without ports to this address's slice, which on the eBPF pod stage carries TCP, UDP and ICMP echo only"
+	}
+	return "pods sent protocols without ports to this address's slice, which carries TCP, UDP, SCTP and ICMP echo only"
 }
 
 // minMTU6 is the smallest MTU IPv6 allows.

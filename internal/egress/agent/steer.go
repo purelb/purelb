@@ -16,6 +16,7 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"maps"
 	"net"
 	"net/netip"
@@ -229,6 +230,7 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 	steer := map[uint8][]uint64{}
 	prohibited := map[uint8]bool{}
 	repointed := map[uint8][]string{}
+	routes := map[uint8]datapath.SlotRoute{}
 	var slots []uint8
 	if w.stage != nil {
 		slots = slices.Sorted(maps.Keys(w.stage.Slots))
@@ -246,9 +248,18 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 		if away {
 			repointed[id] = sl.holders
 		}
+		route := datapath.SlotRoute{Target: datapath.TargetProhibit}
+		if m := slotMTU(sl.addr, mtu4, mtu6, sl.mtu); m > 0 {
+			if sl.addr.Is6() {
+				m = max(m, minMTU6)
+			}
+			route.MTU = uint16(m)
+		}
 		if held && !away {
 			table = int(e.Table)
+			route.Target, route.Table = datapath.TargetDirect, e.Table
 		} else if len(ids) > 0 {
+			route.Target = datapath.TargetTunnel
 			table, steer[id] = datapath.TunnelTable, ids
 			// The tunnel route's MTU is the smallest of its slots'.
 			m := slotMTU(sl.addr, mtu4, mtu6, sl.mtu)
@@ -265,6 +276,7 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 		}
 		rules = append(rules, datapath.MarkRule{Pref: datapath.PrefSlot, Mark: id, Table: table})
 		prohibited[id] = table == datapath.ProhibitTable
+		routes[id] = route
 	}
 	if t.MTU4 == 0 {
 		t.MTU4 = mtu4
@@ -278,6 +290,18 @@ func (a *Agent) syncSteering(st *dpState, w dpWant, addrs map[netip.Addr]*datapa
 	errs = append(errs, st.objs.SyncSteer(steer, false))
 	if err := errors.Join(errs...); err != nil {
 		return err
+	}
+	if st.ebpf {
+		// The stage's maps say where each slot goes; no rule routes by mark
+		// and replies go straight into the pod.
+		rules = nil
+		stage := datapath.PodStage{}
+		if st.ebpfStage != nil {
+			stage = *st.ebpfStage
+		}
+		if err := st.objs.SyncEBPFStage(stage, routes); err != nil {
+			return fmt.Errorf("writing the eBPF stage's maps: %w", err)
+		}
 	}
 	if err := datapath.SyncRules(st.nl, st.shift, rules); err != nil {
 		return err

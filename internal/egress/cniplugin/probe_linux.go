@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
+	"time"
 
 	"github.com/vishvananda/netns"
 
@@ -29,7 +30,12 @@ import (
 // probePayload marks the datagram for anyone who captures it.
 var probePayload = []byte("purelb egress stage probe")
 
-// sendProbe sends one probe datagram from each of ips, inside the network
+const (
+	probeDatagrams = 3
+	probeGap       = 50 * time.Millisecond
+)
+
+// sendProbe sends probeDatagrams probe datagrams from each of ips, inside the network
 // namespace at netnsPath, and returns the addresses it sent from.
 func sendProbe(netnsPath string, ips []string) ([]string, error) {
 	target, err := netns.GetFromPath(netnsPath)
@@ -69,7 +75,17 @@ func sendProbe(netnsPath string, ips []string) ([]string, error) {
 		}
 		conn, err := net.DialUDP("udp", &net.UDPAddr{IP: ip.AsSlice()}, &net.UDPAddr{IP: to.AsSlice(), Port: cnisock.ProbePort})
 		if err == nil {
-			_, err = conn.Write(probePayload)
+			// A few, apart: "never forwarded" switches the node to the eBPF
+			// stage, so one datagram lost mustn't say so (user decision
+			// 2026-11-03).
+			for i := range probeDatagrams {
+				if i > 0 {
+					time.Sleep(probeGap)
+				}
+				if _, werr := conn.Write(probePayload); werr != nil {
+					err = werr
+				}
+			}
 			_ = conn.Close()
 		}
 		if err != nil {

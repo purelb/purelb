@@ -214,7 +214,10 @@ type Agent struct {
 	// prober the sandbox asked to probe; probeCounts reads the probe's
 	// counters (tests use their own). Written by the queue and socket
 	// goroutines.
-	stage       atomic.Pointer[stageResult]
+	stage atomic.Pointer[stageResult]
+	// ebpfApplied: the datapath last applied the planned state with the
+	// eBPF stage installed: what a FailClosed pod waits for (user 2026-11-03).
+	ebpfApplied atomic.Bool
 	prober      atomic.Pointer[probeTicket]
 	probeCounts func() (map[string]datapath.ProbeCount, error)
 
@@ -427,6 +430,14 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	s := &session{stop: make(chan struct{}), spec: spec, watches: map[string]*eeWatch{}, reported: map[types.UID]bool{},
 		snap: newSnapshotWriter(a.logger, a.node, a.snapPath, a.desiredPath,
 			cnisock.PluginEntry(a.namespace, logging.GetLevel().String()))}
+	// An earlier agent's eBPF stage stays: its flows are in the pinned maps,
+	// and with no new pod this agent would never probe (a reboot loses the
+	// pins, and the next selected pod's ADD probes).
+	if bpfpin.Usable(a.dp.pinRoot) && datapath.PinnedEBPFStage(a.dp.pinRoot) {
+		a.stage.Store(&stageResult{stage: cnisock.StageBypassed, detail: "as an earlier agent's stage probe found"})
+		logging.Info(a.logger, "op", "egressStageProbe", "node", a.node, "stage", cnisock.StageBypassed,
+			"msg", "keeping the eBPF pod stage an earlier agent ran")
+	}
 	own := externalversions.NewSharedInformerFactoryWithOptions(a.purelb, resync,
 		externalversions.WithTweakListOptions(func(o *metav1.ListOptions) {
 			o.FieldSelector = fields.OneTermEqualSelector("metadata.name", a.node).String()
@@ -582,6 +593,7 @@ func (a *Agent) stopSession() {
 	a.tagged.Store(nil)
 	a.installer.Store(nil)
 	a.stage.Store(nil)
+	a.ebpfApplied.Store(false)
 	a.prober.Store(nil)
 	a.probing.Store(nil)
 	cniUnrecorded.Set(0)
@@ -608,7 +620,7 @@ func (a *Agent) syncNode() {
 	if r := a.stage.Load(); r != nil {
 		c.PodNodeStage = "Netfilter"
 		if r.stage == cnisock.StageBypassed {
-			c.PodNodeStage = "EBPF" // the stage it needs (Phase 7)
+			c.PodNodeStage = "EBPF"
 		}
 	}
 	var claims []string

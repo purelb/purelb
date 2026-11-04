@@ -28,6 +28,10 @@ spec:
         hostPath:
           path: /var/lib/purelb
           type: DirectoryOrCreate
+      - name: host-cgroup
+        hostPath:
+          path: /sys/fs/cgroup
+          type: Directory
       containers:
       - name: lbnodeagent
         volumeMounts:
@@ -37,3 +41,6 @@ spec:
           mountPath: /run/purelb
         - name: var-lib-purelb
           mountPath: /var/lib/purelb
+        - name: host-cgroup
+          mountPath: /host-cgroup
+          readOnly: true

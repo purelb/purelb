@@ -85,12 +85,14 @@ func TestNodeConditions(t *testing.T) {
 	assert.Equal(t, "False CNIChainMissing", get(a.nodeConditions(ok, nil, nil), condDatapathCompatible))
 	assert.Equal(t, "False MarkConflict", get(a.nodeConditions(ok, &dpHealth{markConflict: "x"}, nil), condDatapathCompatible))
 
-	// Pod traffic that bypasses netfilter needs the eBPF stage (design
-	// 6.1), ahead of the rest.
+	// A node that needs the eBPF stage runs it (design 6.1): no complaint.
 	a.stage.Store(&stageResult{stage: cnisock.StageBypassed, detail: "IPv4 pod traffic never reached the forward hook"})
-	assert.Equal(t, "False NetfilterBypassed", get(a.nodeConditions(ok, &dpHealth{markConflict: "x"}, nil), condDatapathCompatible))
-	a.stage.Store(&stageResult{stage: cnisock.StageSourceIP})
-	assert.Equal(t, "False MarkConflict", get(a.nodeConditions(ok, &dpHealth{markConflict: "x"}, nil), condDatapathCompatible))
+	a.installer.Store(&cnisock.InstallerStatus{Written: now, Chain: cnisock.ChainPresent})
+	assert.Equal(t, "True DatapathCompatible", get(a.nodeConditions(ok, nil, nil), condDatapathCompatible))
+	// Unless the stage doesn't see the traffic (user decision 2026-11-03);
+	// on netfilter the same signal is a forward filter's.
+	assert.Equal(t, "False PodStageBypassed", get(a.nodeConditions(ok, &dpHealth{ebpf: true, forwardBlocked: []string{"IPv4"}}, nil), condForwardPath))
+	assert.Equal(t, "False ForwardBlocked", get(a.nodeConditions(ok, &dpHealth{forwardBlocked: []string{"IPv4"}}, nil), condForwardPath))
 }
 
 func TestChainCondition(t *testing.T) {

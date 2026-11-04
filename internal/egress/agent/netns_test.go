@@ -15,7 +15,9 @@
 package agent
 
 import (
+	"encoding/binary"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"os"
@@ -936,4 +938,205 @@ func ctMarked(t *testing.T, shift, v uint8) []string {
 func planned(w dpWant) dpWant {
 	w.podsKnown = true
 	return w
+}
+
+// The eBPF stage on a node (design 6.4): the classification in the maps, not
+// the table; no rule routes by mark; pl_pod_out at the head of each uplink's
+// egress and pl_pod_inbound on the root cgroup, pinned. A restart keeps them,
+// and the stage; a program going ahead of pl_pod_out is overtaken; teardown
+// leaves nothing.
+func TestNetnsApplyDatapathEBPF(t *testing.T) {
+	dir := sandbox(t)
+	defer func(r string) { datapath.CgroupRoot = r }(datapath.CgroupRoot)
+	datapath.CgroupRoot = "/sys/fs/cgroup"
+	if _, err := os.Stat(filepath.Join(datapath.CgroupRoot, "cgroup.procs")); err != nil {
+		skipOrFailNetns(t, "no cgroup2 root: %v", err)
+	}
+	eth0, err := netlink.LinkByName("eth0")
+	require.NoError(t, err)
+	require.NoError(t, netlink.RouteAdd(&netlink.Route{LinkIndex: eth0.Attrs().Index, Gw: net.ParseIP("10.0.0.254")}))
+	veth, podNS := podNetnsAt(t, "vpod0", "10.244.1.5/24", "fd04:0:0:1::5/64")
+	_ = podNS
+	pod4, pod6 := netip.MustParseAddr("10.244.1.5"), netip.MustParseAddr("fd04:0:0:1::5")
+	eg := netip.MustParseAddr("192.0.2.1")
+	stage := &datapath.PodStage{SourceIP: true, Pods: map[netip.Addr]uint8{pod4: 3, pod6: 3}, PodSets: map[uint8][]string{3: {"p0"}},
+		Policies: map[string]datapath.Policy{"p0": {V4: &datapath.PolicyFamily{
+			Include: []datapath.Destination{{Prefixes: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}}}, Slot: 4, Address: eg}}},
+		Slots: map[uint8]datapath.Slot{4: {Addr: eg, First: 20480, Last: 24575,
+			Helpers: []datapath.Helper{{Name: "ftp", Proto: unix.IPPROTO_TCP, Port: 21}}}}}
+	a := newNetnsAgent(dir)
+	w := want(node("node-b", "10.0.0.2", "fd00::2"))
+	w.podsKnown, w.ebpf = true, true
+	w.pods = []dpPod{{name: "voice/a", v4: pod4, v6: pod6, podSet: 3}}
+	w.stage = stage
+	w.steer = map[uint8]dpSteer{4: {addr: eg, holders: []string{"node-b"}, mtu: 1400}}
+	apply(t, a, w)
+
+	assert.Nil(t, a.dp.table.Pods, "no nft pod stage")
+	assert.Empty(t, egressRules(t), "no rule routes by mark")
+	slots, err := a.dp.objs.RecoverPodSlots()
+	require.NoError(t, err)
+	assert.Equal(t, datapath.SlotNAT{Addr: eg, First: 20480, Last: 24575}, slots[4])
+	assert.Equal(t, []uint64{datapath.NodeID("node-b")}, steerOf(t, a, 4))
+	assert.Equal(t, "HelpersUnsupported", a.dp.podFaults[eg].Reason, "no conntrack here, so no helper")
+	assert.True(t, datapath.PinnedEBPFStage(dir), "the stage survives a restart")
+	assert.True(t, a.ebpfApplied.Load(), "what a FailClosed pod's ADD waits for")
+	assert.Equal(t, []ebpf.ProgramID{progID(t, a.dp.objs.PlPodOutEth)}, chain(t, eth0.Attrs().Index, ebpf.AttachTCXEgress))
+	assert.Contains(t, chain(t, veth, ebpf.AttachTCXIngress), progID(t, a.dp.objs.PlPodTag))
+	for _, name := range []string{"pl_pod_out-eth0", datapath.InboundLink, "pl_pod_tag-vpod0"} {
+		_, err := os.Stat(filepath.Join(dir, name))
+		assert.NoError(t, err, name)
+	}
+
+	// Another apply leaves the links alone: the cgroup's has no device, and a
+	// device's is judged by its own kind.
+	links := maps.Clone(a.dp.links)
+	apply(t, a, w)
+	assert.Equal(t, links, a.dp.links, "nothing attached again")
+
+	// Something goes ahead of it (a CNI restarting): overtaken on the next
+	// apply. Our own pl_steer stands in for the CNI's program.
+	other, err := link.AttachTCX(link.TCXOptions{Program: a.dp.objs.PlSteer, Interface: eth0.Attrs().Index,
+		Attach: ebpf.AttachTCXEgress, Anchor: link.Head()})
+	require.NoError(t, err)
+	defer other.Close()
+	apply(t, a, w)
+	assert.Equal(t, []ebpf.ProgramID{progID(t, a.dp.objs.PlPodOutEth), progID(t, a.dp.objs.PlSteer)},
+		chain(t, eth0.Attrs().Index, ebpf.AttachTCXEgress))
+	require.NoError(t, other.Close())
+
+	// A restart: links adopted in place, the slots and stage still there.
+	closeAgent(a)
+	b := newNetnsAgent(dir)
+	recovered, err := b.pinnedSlotsIn(dir)
+	require.NoError(t, err)
+	assert.Equal(t, datapath.SlotNAT{Addr: eg, First: 20480, Last: 24575}, recovered[4])
+	apply(t, b, w)
+	assert.Equal(t, []ebpf.ProgramID{progID(t, b.dp.objs.PlPodOutEth)}, chain(t, eth0.Attrs().Index, ebpf.AttachTCXEgress))
+
+	// Teardown: nothing left.
+	asAgent(t, func() { require.NoError(t, b.teardown()) })
+	noEgress(t, dir)
+	assert.Empty(t, chain(t, eth0.Attrs().Index, ebpf.AttachTCXEgress))
+}
+
+// The eBPF stage's upkeep (§5.6, design 6.4): a retired slot's flows are deleted
+// and its id freed; a pod gone loses its flows; a Draining slot is reported
+// drained once it has none; port-less counts become a fault, past what an
+// earlier agent's count already held; SYNs that never reach the stage are
+// reported.
+func TestNetnsEBPFUpkeep(t *testing.T) {
+	sandbox(t)
+	a := New(log.NewNopLogger(), "node-a", "purelb-system")
+	o, err := datapath.Load("")
+	require.NoError(t, err)
+	defer o.Close()
+	require.NoError(t, o.SetConfig(datapath.Config{Self: datapath.NodeID("node-a"), TunIfindex: 1, EBPFStage: true, TunPort: 6082}))
+	st := a.dp
+	st.objs, st.ebpf = o, true
+	st.podIPs, st.gone = map[netip.Addr]bool{}, map[netip.Addr]bool{}
+
+	eg1, eg2 := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")
+	p1, p2 := netip.MustParseAddr("10.244.1.5"), netip.MustParseAddr("10.244.1.6")
+	stage := &datapath.PodStage{PodSets: map[uint8][]string{3: {"a"}, 4: {"b"}, 5: {"c"}},
+		Policies: map[string]datapath.Policy{
+			"a": {V4: &datapath.PolicyFamily{Slot: 1, Address: eg1, Include: []datapath.Destination{{Prefixes: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}}}}},
+			"b": {V4: &datapath.PolicyFamily{Slot: 2, Address: eg2, Include: []datapath.Destination{{Prefixes: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}}}}},
+			"c": {V4: &datapath.PolicyFamily{Slot: 6, Address: eg2, Include: []datapath.Destination{{Prefixes: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}}}}},
+		},
+		Slots: map[uint8]datapath.Slot{1: {Addr: eg1, First: 20480, Last: 24575}, 2: {Addr: eg2, First: 20480, Last: 24575}, 6: {Addr: eg2, First: 24576, Last: 28671}}}
+	st.ebpfStage = stage
+	routes := map[uint8]datapath.SlotRoute{1: {Target: datapath.TargetTunnel}, 2: {Target: datapath.TargetTunnel}, 6: {Target: datapath.TargetTunnel}}
+	require.NoError(t, o.SyncEBPFStage(*stage, routes))
+
+	// Each selected pod's device is the test run's, one at a time: lo's.
+	send := func(src netip.Addr, set uint8, sport uint16, proto uint8) {
+		t.Helper()
+		require.NoError(t, o.SetPodDev(0, datapath.PodDev{V4: src, PodSet: set}))
+		b := make([]byte, 14+20+20)
+		b[12], b[13] = 0x08, 0x00
+		ip := b[14:]
+		ip[0], ip[8], ip[9] = 0x45, 64, proto
+		binary.BigEndian.PutUint16(ip[2:], 40)
+		s := src.As4()
+		copy(ip[12:], s[:])
+		copy(ip[16:], []byte{198, 51, 100, 7})
+		l4 := ip[20:]
+		binary.BigEndian.PutUint16(l4[0:], sport)
+		binary.BigEndian.PutUint16(l4[2:], 53)
+		l4[12], l4[13] = 5<<4, 2 // a SYN, for TCP
+		_, _, err := o.PlPodOutEth.Benchmark(b, 1, nil)
+		require.NoError(t, err)
+	}
+	send(p1, 3, 40000, unix.IPPROTO_TCP) // slot 1
+	send(p1, 4, 40001, unix.IPPROTO_TCP) // slot 2
+	send(p2, 4, 40002, unix.IPPROTO_TCP) // slot 2, another pod
+	send(p2, 5, 40003, unix.IPPROTO_TCP) // slot 6
+	flows, err := o.NatFlows()
+	require.NoError(t, err)
+	require.Len(t, flows, 4)
+
+	// Slot 1 retired; slot 2 draining, with flows; slot 6 draining, with flows.
+	d2, d6 := purelbv2.EgressDrained{Endpoints: "ee", Index: 2}, purelbv2.EgressDrained{Endpoints: "ee", Index: 6}
+	w := dpWant{retired: []uint8{1}, draining: map[uint8]purelbv2.EgressDrained{2: d2, 6: d6},
+		pods: []dpPod{{name: "a", v4: p1}, {name: "b", v4: p2}}}
+	a.syncNat(st, w)
+	flows, err = o.NatFlows()
+	require.NoError(t, err)
+	assert.Len(t, flows, 3, "the retired slot's flow is gone")
+	assert.Equal(t, map[uint8]bool{1: true}, *a.ctFlushed.Load(), "its id is free")
+	assert.Empty(t, *a.drained.Load(), "both Draining slots have flows")
+
+	// A pod gone: its flows go; slot 6 had only its flow and is drained.
+	w.pods = []dpPod{{name: "a", v4: p1}}
+	a.syncNat(st, w)
+	flows, err = o.NatFlows()
+	require.NoError(t, err)
+	require.Len(t, flows, 1)
+	assert.Equal(t, p1, flows[0].Pod)
+	assert.Equal(t, []purelbv2.EgressDrained{d6}, *a.drained.Load())
+	assert.Empty(t, st.gone, "done with")
+
+	// A slot's port-less count: what an earlier agent left is no fault; a rise is.
+	send(p1, 3, 0, 47)
+	require.NoError(t, a.readPortlessEBPF(st))
+	assert.Zero(t, st.portless[eg1].rose, "the first read only takes the count")
+	send(p1, 3, 0, 47)
+	require.NoError(t, a.readPortlessEBPF(st))
+	assert.NotZero(t, st.portless[eg1].rose)
+
+	// SYNs seen at the pod's device and none at the NIC, window after window.
+	now := time.Unix(1700000000, 0)
+	a.now = func() time.Time { return now }
+	tag := func() {
+		t.Helper()
+		require.NoError(t, o.SetPodDev(1, datapath.PodDev{V4: p1, PodSet: 3}))
+		require.NoError(t, o.SyncCluster(nil))
+		b := make([]byte, 14+20+20)
+		b[12], b[13] = 0x08, 0x00
+		ip := b[14:]
+		ip[0], ip[8], ip[9] = 0x45, 64, unix.IPPROTO_TCP
+		binary.BigEndian.PutUint16(ip[2:], 40)
+		s := p1.As4()
+		copy(ip[12:], s[:])
+		copy(ip[16:], []byte{198, 51, 100, 7})
+		l4 := ip[20:]
+		binary.BigEndian.PutUint16(l4[0:], 40100)
+		binary.BigEndian.PutUint16(l4[2:], 443)
+		l4[12], l4[13] = 5<<4, 2
+		_, _, err := o.PlPodTag.Benchmark(b, 1, nil)
+		require.NoError(t, err)
+	}
+	a.syncStageSeen(st)
+	for range forwardWindows + 1 {
+		tag()
+		now = now.Add(forwardWindow)
+		a.syncStageSeen(st)
+	}
+	assert.Equal(t, []string{"IPv4"}, st.forwardBlocked, "reported")
+	send(p1, 3, 40200, unix.IPPROTO_TCP) // pl_pod_out sees one
+	tag()
+	now = now.Add(forwardWindow)
+	a.syncStageSeen(st)
+	assert.Empty(t, st.forwardBlocked, "cleared")
 }
