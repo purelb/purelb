@@ -242,6 +242,12 @@ def router_addresses(router: Router, iface: Optional[str] = None) -> Tuple[str, 
     raise AssertionError(f"no router addresses on {iface or router.host}")
 
 
+def on_ebpf_stage(cluster: Cluster, node: str) -> bool:
+    """The node runs the eBPF pod stage (design 6.1, 6.4)."""
+    st = ((node_states(cluster).get(node) or {}).get("status") or {}).get("capability") or {}
+    return st.get("podNodeStage") == "EBPF"
+
+
 def client_pod(cluster: Cluster) -> client.V1Pod:
     """The test pod, once its Deployment's rollout is complete: the one
     pod, Running. A pod picked mid-rollout is the old one, about to go."""
@@ -816,6 +822,9 @@ def test_pod_traffic_leaves_from_its_slice(cluster: Cluster, router: Router, env
                 assert "Traceback" not in out, f"connecting to {dst}: {out}"
             time.sleep(2)
         syns = router_syns(cap.lines)
+        # The flow log is conntrack's, so netfilter-stage nodes' (design 12.2);
+        # on the eBPF stage the flows are in its NAT table.
+        ebpf = on_ebpf_stage(cluster, node)
         flows = flow_lines(agent_log(cluster, node, since))
         for dst, addr, pol in cases:
             got = [(src, port) for src, port, d in syns if d == dst]
@@ -826,11 +835,17 @@ def test_pod_traffic_leaves_from_its_slice(cluster: Cluster, router: Router, env
             size = sl.get("sliceSize") or 4096
             assert sl["index"] * size <= port <= (sl["index"] + 1) * size - 1, \
                 f"{addr} port {port} outside {node}'s slice {sl['index']} ({size})"
+            if ebpf:
+                continue
             translated = f"[{src}]:{port}" if ":" in src else f"{src}:{port}"
             line = next((f for f in flows if f["event"] == "new" and f["egress"] == translated), None)
             assert line is not None, f"no flow-log line for {translated}: {flows}"
             assert line["pod"] == f"{NS}/{pod.metadata.name}" and line["policy"].endswith(f"{NS}/{pol}"), line
-        assert agent_metrics(node).counter("purelb_egress_flow_log_events_total", event="new") >= new0 + len(cases)
+        if ebpf:
+            wait_until(lambda: agent_metrics(node).value("purelb_egress_nat_flows") >= 1, timeout=90,
+                       description=f"{node}'s flows in the NAT table's metric")
+        else:
+            assert agent_metrics(node).counter("purelb_egress_flow_log_events_total", event="new") >= new0 + len(cases)
     finally:
         since = utcnow()
         apply_agent(cluster, True)
@@ -866,10 +881,12 @@ def test_a_new_pods_first_packets_leave_as_egress(cluster: Cluster, node_ips: Di
         leaks = set(node_ips.values()) | {running(cluster, NS, name).status.pod_ip}
         stray = sorted({src for src, _, _ in syns if src in leaks})
         assert not stray, f"the pod's SYNs left from {stray}, not only {env.r4}"
-        line = next((ln for ln in agent_log(cluster, n, since).splitlines()
-                     if '"op":"egressCNI"' in ln and '"request":"ADD"' in ln and f"{NS}/{name}" in ln), "")
-        assert re.search(r'"result":"(ready|held)"', line), f"{n}: the ADD's answer: {line or 'none'}"
         assert agent_metrics(n).counter("purelb_egress_cni_requests_total", op="ADD") > adds0
+        answers = sum(agent_metrics(n).counter("purelb_egress_cni_requests_total", op="ADD", result=r) for r in ("ready", "held"))
+        assert answers > 0, f"{n}: no ADD answered ready or held"
+        # What the plugin logged of it, to the runtime's journal.
+        added = ssh(node_ips[n], f"sudo journalctl -u containerd --no-pager -n 400 | grep -F cniAdd | grep -F {NS}/{name} || true", check=False)
+        assert re.search(r'"result":"(ready|held)"', added), f"{n}: the plugin's ADD: {added[-300:] or 'none'}"
         assert records_of(node_ips[n], name), f"{n}: no record of {name}'s sandbox"
         time.sleep(5)
         assert not unrecorded_events(cluster, NS, name), "reported as started without the plugin"
@@ -880,15 +897,106 @@ def test_a_new_pods_first_packets_leave_as_egress(cluster: Cluster, node_ips: Di
                description=f"{n}: {name}'s record removed at its DEL")
 
 
+# A selected pod that serves: TCP echoes and UDP echoes, both families.
+SERVE = """
+import socket, threading
+def only(s, fam):
+    if fam == socket.AF_INET6:
+        s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+def udp(fam, addr):
+    s = socket.socket(fam, socket.SOCK_DGRAM)
+    only(s, fam)
+    s.bind((addr, 8081))
+    while True:
+        d, a = s.recvfrom(2048)
+        s.sendto(d, a)
+def tcp(fam, addr):
+    s = socket.socket(fam, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    only(s, fam)
+    s.bind((addr, 8080))
+    s.listen(16)
+    while True:
+        c, _ = s.accept()
+        c.sendall(c.recv(2048))
+        c.close()
+threads = [threading.Thread(target=f, args=(fam, addr), daemon=True) for f in (udp, tcp)
+           for fam, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::"))]
+[t.start() for t in threads]
+[t.join() for t in threads]
+"""
+
+# On the router: asks host:port over TCP and UDP. A connected UDP socket only
+# hears the address it sent to, so a reply NATed to the egress address is lost.
+ASK = """
+import socket, sys
+host, tp, up = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+fam = socket.AF_INET6 if ":" in host else socket.AF_INET
+t = socket.socket(fam, socket.SOCK_STREAM); t.settimeout(5); t.connect((host, tp)); t.sendall(b"hi")
+assert t.recv(16) == b"hi"
+u = socket.socket(fam, socket.SOCK_DGRAM); u.settimeout(5); u.connect((host, up)); u.send(b"hi")
+assert u.recv(16) == b"hi"
+print("ok")
+"""
+
+
+def test_flows_into_a_selected_pod_keep_their_addresses(cluster: Cluster, node_ips: Dict[str, str], router: Router,
+                                                        env: Env) -> None:
+    """A selected pod serving behind a NodePort: its replies aren't new egress
+    flows on either stage: netfilter's conntrack knows them; the eBPF stage,
+    which the CNI's traffic into the pod bypasses at every host-side hook,
+    takes TCP past its SYN and a recorded UDP flow as replies (user decision
+    2026-11-04). The client sees its answers from the address it asked, both
+    protocols, and both families where the node has IPv6."""
+    node = client_pod(cluster).spec.node_name
+    name = "egress-e2e-serve"
+    cluster.core.create_namespaced_pod(NS, {
+        "apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "labels": {"app": "egress-e2e", "serve": name}},
+        "spec": {"terminationGracePeriodSeconds": 1, "nodeSelector": {"kubernetes.io/hostname": node},
+                 "tolerations": [{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists",
+                                  "effect": "NoSchedule"}],
+                 "containers": [{"name": "c", "image": backend.IMAGE, "command": ["python3", "-c", SERVE]}]}})
+    svc = cluster.core.create_namespaced_service(NS, {
+        "apiVersion": "v1", "kind": "Service", "metadata": {"name": name},
+        "spec": {"type": "NodePort", "ipFamilyPolicy": "PreferDualStack", "selector": {"serve": name},
+                 "ports": [{"name": "t", "port": 8080, "protocol": "TCP"}, {"name": "u", "port": 8081, "protocol": "UDP"}]}})
+    try:
+        wait_until(lambda: running(cluster, NS, name), timeout=180, description=f"{name} running")
+        ports = {p.name: p.node_port for p in svc.spec.ports}
+        hosts = [node_ips[node]]
+        v6 = ssh(node_ips[node], "ip -6 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1", check=False).strip()
+        if v6 and any(":" in ip for ip in (svc.spec.cluster_ips or [])):
+            hosts.append(v6)
+        for host in hosts:
+            def ask(h: str = host) -> bool:
+                nonlocal last
+                last = ssh(router.host, f"python3 - {h} {ports['t']} {ports['u']} 2>&1 <<'PY'\n{ASK}\nPY", timeout=30, check=False)
+                return "ok" in last
+            last = ""
+            try:
+                wait_until(ask, timeout=60, interval=3, description=f"answers from {host}, TCP and UDP")
+            except Exception as exc:
+                raise AssertionError(f"{host}: {last[-400:]}") from exc
+    finally:
+        cluster.core.delete_namespaced_service(name, NS)
+        delete_pod_now(cluster, NS, name)
+    # The Deployment's selector is app=egress-e2e: it isn't this pod's owner, so
+    # the rollout helper must not count it. Gone before the next case.
+    wait_until(lambda: not running(cluster, NS, name), timeout=60, description=f"{name} gone")
+
+
 def test_mark_byte_moves_off_a_used_byte(cluster: Cluster, node_ips: Dict[str, str], env: Env, agent_metrics) -> None:
     """Another rule on the pod's node setting a bit of the mark byte after
     classify: with markField unset the node moves to the next free byte
     (which one depends on the CNI's own marks: Calico's are in
     0x00ff0000) and the pod's flows still go; set explicitly to that byte it stays and
     reports MarkConflict, on the node and the policies, until the rule
-    goes; unset again, the byte in use stays (D18)."""
+    goes; unset again, the byte in use stays (D18). Netfilter stage only: on
+    the eBPF stage nothing reads the byte."""
     pod = client_pod(cluster)
     node, ip = pod.spec.node_name, node_ips[pod.spec.node_name]
+    if on_ebpf_stage(cluster, node):
+        pytest.skip(f"{node} runs the eBPF pod stage, past netfilter's rules")
 
     def mark_field() -> str:
         return (((node_states(cluster).get(node) or {}).get("status") or {}).get("capability") or {}).get("markField", "")
@@ -932,9 +1040,12 @@ def test_forward_blocked_is_reported(cluster: Cluster, node_ips: Dict[str, str],
     """A forward filter on the pod's node dropping the pod's flows: the
     node reports ForwardPath=False ForwardBlocked for both families, the
     policy is not DatapathCompatible; all clear once the filter goes
-    (D25)."""
+    (D25). Netfilter stage only: the eBPF stage's traffic never meets one
+    (its own check is TestNetnsEBPFUpkeep)."""
     pod = client_pod(cluster)
     node, ip = pod.spec.node_name, node_ips[pod.spec.node_name]
+    if on_ebpf_stage(cluster, node):
+        pytest.skip(f"{node} runs the eBPF pod stage, past the forward hook")
     p4 = next(a.ip for a in pod.status.pod_ips if "." in a.ip)
     p6 = next(a.ip for a in pod.status.pod_ips if ":" in a.ip)
     since = utcnow()
@@ -1037,6 +1148,7 @@ def test_agent_start_reports_and_probes(cluster: Cluster, node_ips: Dict[str, st
     n, ip = pod.spec.node_name, node_ips[pod.spec.node_name]
     removed = ssh(ip, f"sudo sh -c 'grep -l -F {pod.metadata.name} {RECORDS}/* | xargs -r rm -v' || true", check=False)
     assert removed.strip(), f"{n}: no record of {pod.metadata.name} to remove"
+    restarted = utcnow()
     old = agent_pod(cluster, n)
     cluster.core.delete_namespaced_pod(old.metadata.name, cluster.purelb_namespace)
     wait_until(lambda: (lambda p: p is not None and p.metadata.name != old.metadata.name and
@@ -1052,9 +1164,11 @@ def test_agent_start_reports_and_probes(cluster: Cluster, node_ips: Dict[str, st
             pin_pod(cluster, node=n)
             wait_until(lambda: (lambda p: p if p.spec.node_name == n and p.metadata.name != pod.metadata.name else None)(
                 client_pod(cluster)), timeout=180, description=f"a new pod on {n}")
-            line = wait_until(lambda: next((ln for ln in agent_log(cluster, n, since).splitlines()
+            # A probe, or on the eBPF stage the earlier agent's stage kept: its
+            # flows are in the pinned maps, and it may see no new pod.
+            line = wait_until(lambda: next((ln for ln in agent_log(cluster, n, restarted).splitlines()
                                             if '"op":"egressStageProbe"' in ln and '"stage"' in ln), None),
-                              timeout=60, description=f"{n}'s stage probe")
+                              timeout=60, description=f"{n}'s stage")
         assert not cap.lines, f"the probe reached the router: {cap.lines}"
     finally:
         pin_pod(cluster)
@@ -1066,8 +1180,11 @@ def test_agent_start_reports_and_probes(cluster: Cluster, node_ips: Dict[str, st
     wait_until(lambda: ((node_states(cluster)[n].get("status") or {}).get("capability") or {}).get("podNodeStage") == want,
                timeout=60, description=f"{n} reporting podNodeStage {want}")
     status, reason, _ = node_condition(cluster, n, "DatapathCompatible")
-    assert (reason == "NetfilterBypassed") == (stage == "Bypassed"), f"{n}: {status} {reason} with stage {stage}"
-    if stage != "Bypassed":
+    assert reason != "NetfilterBypassed", f"{n}: {status} {reason}: the eBPF stage serves these pods"
+    if stage == "Bypassed":
+        assert "pl_pod_out-" in " ".join(egress_pins(ip)), f"{n}: the stage's program isn't on an uplink: {egress_pins(ip)}"
+        assert "classify" not in ssh(ip, "sudo nft list table inet purelb_egress", check=False), f"{n}: an nft pod stage too"
+    else:
         rule = "vmap @podset" if stage == "Mark" else "vmap @pods4"
         wait_until(lambda: rule in ssh(ip, "sudo nft list chain inet purelb_egress classify", check=False), timeout=60,
                    description=f"{n} classifying with {rule}")
@@ -1176,7 +1293,10 @@ def test_disable_removes_everything_and_enable_rebuilds(cluster: Cluster, node_i
         out = ssh(node_ips[n], f"sudo grep 'icmp.*src={pod4} dst={env.local_dst4} ' /proc/net/nf_conntrack || true",
                   check=False)
         return any(0 < (int(m) >> shift) & 0xff < 0x80 for m in re.findall(r"mark=(\d+)", out))
-    wait_until(marked_flow, timeout=15, interval=1, description=f"the pod's flow on {n}, marked with a slot")
+    if on_ebpf_stage(cluster, n):
+        time.sleep(3)  # in the NAT table, which nothing reads from outside (TestNetnsEBPFUpkeep)
+    else:
+        wait_until(marked_flow, timeout=15, interval=1, description=f"the pod's flow on {n}, marked with a slot")
     since = utcnow()
     # Off as the Helm pre-delete hook turns it off: it waits for every node.
     image = next(c.image for c in agent_pod(cluster, n).spec.containers if c.name == "lbnodeagent")
@@ -1268,12 +1388,19 @@ def test_a_rebooted_nodes_pod_never_leaves_unclassified(cluster: Cluster, node_i
         syns = router_syns(cap.lines)
         leaks = set(node_ips.values()) | {before.status.pod_ip, after.status.pod_ip}
         stray = sorted({src for src, _, _ in syns if src in leaks})
-        assert not stray, f"through the reboot the pod's SYNs left from {stray}, not only {env.r4}"
+        # Antrea rewrites its conflist at boot, so a sandbox can start without
+        # the plugin for some seconds: a window the user accepted (2026-11-03).
+        # It must then be held and reported. Every other CNI closes it.
+        boot_window = "antrea" in cni_chain(ip)[0] and bool(stray)
+        assert boot_window or not stray, f"through the reboot the pod's SYNs left from {stray}, not only {env.r4}"
         assert any(src == env.r4 for src, _, _ in syns[-20:]), f"the pod's traffic not back on {env.r4}: {syns[-5:]}"
         assert PLUGIN in cni_chain(ip)[1] and has_plugin_binary(ip), f"{n}: the plugin not chained again"
-        assert records_of(ip, name), f"{n}: the pod's new sandbox has no record: it bypassed the plugin"
-        assert not [e for e in unrecorded_events(cluster, NS, name)
-                    if e.last_timestamp is None or e.last_timestamp.timestamp() > time.time() - 900], \
-            "reported as started without the plugin"
+        reported = [e for e in unrecorded_events(cluster, NS, name)
+                    if e.last_timestamp is None or e.last_timestamp.timestamp() > time.time() - 900]
+        if boot_window:
+            assert reported, f"{n}: the pod's sandbox started without the plugin and wasn't reported"
+        else:
+            assert records_of(ip, name), f"{n}: the pod's new sandbox has no record: it bypassed the plugin"
+            assert not reported, "reported as started without the plugin"
     finally:
         delete_pod_now(cluster, NS, name)
