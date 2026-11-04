@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/link"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1287,6 +1288,46 @@ func TestEBPFStageCost(t *testing.T) {
 	t.Logf("pl_pod_out, new flow (1 policy, 2,000 flows): +%v",
 		once(func(i int) []byte { return s.pkt(f, protoTCP, tcpSeg(uint16(10000+i), 443, flagSYN)) })-base)
 	require.Equal(t, uint64(2001), s.count("nat_new", false))
+}
+
+// pl_pod_inbound runs on every packet delivered to a socket on an eBPF-stage
+// node, the host's included, so each way through it is timed: one run each, the
+// median of many, less what an empty program of its type takes.
+func TestPodInboundCost(t *testing.T) {
+	once := func(p *ebpf.Program, pkt []byte) time.Duration {
+		var ds []time.Duration
+		for range 2000 {
+			ret, d, err := p.Benchmark(pkt, 1, nil)
+			require.NoError(t, err)
+			require.Equal(t, uint32(1), ret, "it always allows")
+			ds = append(ds, d)
+		}
+		slices.Sort(ds)
+		return ds[len(ds)/2]
+	}
+	for _, f := range families {
+		t.Run(f.name, func(t *testing.T) {
+			s := newStageH(t) // skips where BPF can't load
+			empty, err := ebpf.NewProgram(&ebpf.ProgramSpec{Type: ebpf.CGroupSKB, License: "Apache-2.0",
+				Instructions: asm.Instructions{asm.Mov.Imm(asm.R0, 1), asm.Return()}})
+			require.NoError(t, err)
+			defer empty.Close()
+			pod := s.pod[f.v6]
+			udp := packet(f, f.server, pod, protoUDP, ports(40000, 53))
+			base := once(empty, udp)
+			run := func(name string, pkt []byte) {
+				t.Logf("pl_pod_inbound, %s: +%v (an empty program: %v)", name, once(s.o.PlPodInbound, pkt)-base, base)
+			}
+			run("TCP", packet(f, f.server, pod, protoTCP, tcpSeg(40000, 443, flagACK)))
+			run("UDP to the host", packet(f, f.server, f.egress, protoUDP, ports(40000, 53)))
+			require.NoError(t, s.o.SetPodDev(stageIfindex, PodDev{V4: pod4, V6: pod6}))
+			run("UDP to an unselected pod", udp)
+			require.Zero(t, s.count("inbound_recorded", f.v6))
+			require.NoError(t, s.o.SetPodDev(stageIfindex, PodDev{V4: pod4, V6: pod6, PodSet: stagePodSet}))
+			run("UDP to a selected pod, a flow it has seen", udp)
+			require.Equal(t, uint64(1), s.count("inbound_recorded", f.v6), "the path timed is the record's")
+		})
+	}
 }
 
 // An address a newer pod took keeps its entry when the old pod's device goes.

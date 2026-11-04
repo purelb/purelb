@@ -430,14 +430,7 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	s := &session{stop: make(chan struct{}), spec: spec, watches: map[string]*eeWatch{}, reported: map[types.UID]bool{},
 		snap: newSnapshotWriter(a.logger, a.node, a.snapPath, a.desiredPath,
 			cnisock.PluginEntry(a.namespace, logging.GetLevel().String()))}
-	// An earlier agent's eBPF stage stays: its flows are in the pinned maps,
-	// and with no new pod this agent would never probe (a reboot loses the
-	// pins, and the next selected pod's ADD probes).
-	if bpfpin.Usable(a.dp.pinRoot) && datapath.PinnedEBPFStage(a.dp.pinRoot) {
-		a.stage.Store(&stageResult{stage: cnisock.StageBypassed, detail: "as an earlier agent's stage probe found"})
-		logging.Info(a.logger, "op", "egressStageProbe", "node", a.node, "stage", cnisock.StageBypassed,
-			"msg", "keeping the eBPF pod stage an earlier agent ran")
-	}
+	a.restoreStage()
 	own := externalversions.NewSharedInformerFactoryWithOptions(a.purelb, resync,
 		externalversions.WithTweakListOptions(func(o *metav1.ListOptions) {
 			o.FieldSelector = fields.OneTermEqualSelector("metadata.name", a.node).String()
@@ -550,6 +543,17 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 	}()
 	a.on = s
 	logging.Info(a.logger, "op", "egressEnable", "node", a.node, "msg", "egress enabled on this node")
+}
+
+// restoreStage keeps the eBPF stage an earlier agent ran: its flows are in the
+// pinned maps, and with no new pod this agent would never probe (a reboot loses
+// the pins, and the next selected pod's ADD probes).
+func (a *Agent) restoreStage() {
+	if bpfpin.Usable(a.dp.pinRoot) && datapath.PinnedEBPFStage(a.dp.pinRoot) {
+		a.stage.Store(&stageResult{stage: cnisock.StageBypassed, detail: "as an earlier agent's stage probe found"})
+		logging.Info(a.logger, "op", "egressStageProbe", "node", a.node, "stage", cnisock.StageBypassed,
+			"msg", "keeping the eBPF pod stage an earlier agent ran")
+	}
 }
 
 // placedAddrs is the addresses egress last placed.

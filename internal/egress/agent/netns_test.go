@@ -41,6 +41,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"purelb.io/internal/bpfpin"
+	"purelb.io/internal/egress/cnisock"
 	"purelb.io/internal/egress/datapath"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
@@ -311,6 +312,9 @@ func TestNetnsApplyDatapath(t *testing.T) {
 	assert.Equal(t, tun.Attrs().Index, ifindex)
 	steerID, _ := pinnedLink(t, steer)
 	assert.FileExists(t, filepath.Join(dir, "nodes"), "state maps are pinned")
+	nf := newNetnsAgent(dir)
+	nf.restoreStage()
+	assert.Nil(t, nf.stage.Load(), "a netfilter node's pins are no eBPF stage")
 	assert.Equal(t, ids("node-b", "node-c"), nodeIDs(t, a), "every node but this one")
 	allThrows := []string{"10.0.0.2/32", "10.0.0.3/32", "fd00::2/128"}
 	assert.Subset(t, throws(t, datapath.TunnelTable), allThrows)
@@ -1008,6 +1012,9 @@ func TestNetnsApplyDatapathEBPF(t *testing.T) {
 	// A restart: links adopted in place, the slots and stage still there.
 	closeAgent(a)
 	b := newNetnsAgent(dir)
+	b.restoreStage()
+	require.NotNil(t, b.stage.Load(), "the restarted agent keeps the stage, with no new pod to probe")
+	assert.Equal(t, cnisock.StageBypassed, b.stage.Load().stage)
 	recovered, err := b.pinnedSlotsIn(dir)
 	require.NoError(t, err)
 	assert.Equal(t, datapath.SlotNAT{Addr: eg, First: 20480, Last: 24575}, recovered[4])
@@ -1018,6 +1025,9 @@ func TestNetnsApplyDatapathEBPF(t *testing.T) {
 	asAgent(t, func() { require.NoError(t, b.teardown()) })
 	noEgress(t, dir)
 	assert.Empty(t, chain(t, eth0.Attrs().Index, ebpf.AttachTCXEgress))
+	gone := newNetnsAgent(dir)
+	gone.restoreStage()
+	assert.Nil(t, gone.stage.Load(), "no pins, no stage: the next selected pod probes")
 }
 
 // The eBPF stage's upkeep (§5.6, design 6.4): a retired slot's flows are deleted
