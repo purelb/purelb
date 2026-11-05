@@ -45,6 +45,10 @@ const probeTimeout = 30 * time.Second
 // decision 2026-11-03).
 var probeSettle = 10 * time.Second
 
+// stageInstallWait bounds a FailClosed pod's wait for the eBPF stage's install
+// once the probe has found it needed.
+const stageInstallWait = 5 * time.Second
+
 const probePoll = 50 * time.Millisecond
 
 // stageResult is what this session's probe found.
@@ -58,9 +62,13 @@ type stageResult struct {
 type probeTicket struct {
 	container string
 	at        time.Time
-	reported  atomic.Bool
-	result    atomic.Pointer[stageResult]
-	failed    atomic.Bool
+	// failClosed: the pod asked is one a FailClosed policy selects, and its
+	// ADD waits for the result (user decision 2026-11-03).
+	failClosed bool
+	done       chan struct{}
+	reported   atomic.Bool
+	result     atomic.Pointer[stageResult]
+	failed     atomic.Bool
 }
 
 // askProbe adds the probe request to v, an ADD's final ready verdict for
@@ -78,7 +86,7 @@ func (a *Agent) askProbe(container string, st podState, v *cniVerdict) *cniVerdi
 	if t := a.prober.Load(); t != nil && t.container != container && now.Sub(t.at) < probeTimeout {
 		return v
 	}
-	a.prober.Store(&probeTicket{container: container, at: now})
+	a.prober.Store(&probeTicket{container: container, at: now, failClosed: st.failClosed, done: make(chan struct{})})
 	asked := *v
 	asked.probe = true
 	return &asked
@@ -101,12 +109,64 @@ func (a *Agent) probeReport(req cnisock.Request, ips []netip.Addr) cnisock.Respo
 	if t.reported.CompareAndSwap(false, true) {
 		go a.settleProbe(t, req.Namespace+"/"+req.Name, fams)
 	}
+	if t.failClosed && !a.awaitStage(t) {
+		// Not admitted untranslated: the ADD fails, kubelet retries, and the
+		// retry waits for the stage (stageGated).
+		resp := a.cniAnswer(req, &cniVerdict{err: "this node's pod stage isn't in place yet; kubelet retries"})
+		resp.Retry = true
+		return resp
+	}
 	return a.cniAnswer(req, &cniVerdict{result: cnisock.ResultReady})
+}
+
+// awaitStage holds a FailClosed pod's probe report until the node's stage is
+// known and, where it is the eBPF stage, installed, so the pod starts with its
+// traffic translated (user decision 2026-11-03). Only until the node has its
+// stage, so only the node's first selected pods ever wait, and never past
+// probeSettle + stageInstallWait. It reports whether the pod may start.
+func (a *Agent) awaitStage(t *probeTicket) bool {
+	if t.done == nil {
+		return true
+	}
+	select {
+	case <-t.done:
+	case <-time.After(probeSettle + stageInstallWait):
+		return false
+	}
+	r := t.result.Load()
+	if r == nil {
+		return false // the counters couldn't be read: no stage known
+	}
+	if r.stage != cnisock.StageBypassed {
+		return true
+	}
+	for deadline := time.Now().Add(stageInstallWait); !a.ebpfApplied.Load() && time.Now().Before(deadline); {
+		time.Sleep(probePoll)
+	}
+	return a.ebpfApplied.Load()
+}
+
+// stageGated reports whether a FailClosed pod's ADD (st) waits for the node's
+// stage: while it isn't known and another sandbox is probing, or it's the eBPF
+// stage and not installed yet (user decision 2026-11-03). Queue goroutine only.
+func (a *Agent) stageGated(st podState, container string) bool {
+	if !st.selected || !st.failClosed {
+		return false
+	}
+	r := a.stage.Load()
+	if r == nil {
+		t := a.prober.Load()
+		return t != nil && t.container != container
+	}
+	return r.stage == cnisock.StageBypassed && !a.ebpfApplied.Load()
 }
 
 // settleProbe reads the probe's counters until every family probed is
 // forwarded, or for probeSettle, and leaves the stage they show in t.
 func (a *Agent) settleProbe(t *probeTicket, pod string, fams map[string]bool) {
+	if t.done != nil {
+		defer close(t.done)
+	}
 	var counts map[string]datapath.ProbeCount
 	var err error
 	for deadline := time.Now().Add(probeSettle); ; time.Sleep(probePoll) {
@@ -138,6 +198,10 @@ func (a *Agent) settled() {
 	if r := t.result.Load(); r != nil {
 		a.stage.Store(r)
 		a.prober.Store(nil)
+		// Now, not at the next reconcile: the eBPF stage is what a FailClosed
+		// pod's ADD is waiting for, and it isn't in the plan's comparison.
+		a.add(keyDatapath, false)
+		a.add(keyCNI, false)
 	} else if t.failed.Load() {
 		a.prober.Store(nil)
 	}

@@ -212,7 +212,11 @@ func (a *Agent) syncCNI() {
 	c := a.capability.Load()
 	a.waiters.Range(func(k, v any) bool {
 		w := v.(*waiter)
-		w.set(a.askProbe(k.(string), pn.pods[w.namespace+"/"+w.name], cniDecide(s, pn, c, tagged, w)))
+		st := pn.pods[w.namespace+"/"+w.name]
+		if a.stageGated(st, k.(string)) {
+			return true // decided again when the stage is known or installed
+		}
+		w.set(a.askProbe(k.(string), st, cniDecide(s, pn, c, tagged, w)))
 		return true
 	})
 }

@@ -39,6 +39,9 @@ var Reasons = []string{
 	"ptb_sent", "ptb_failed", "no_node", "malformed", "transit", "reply_local", "forged_tunnel",
 	"forged_inner", "forged_inner_destination", "ttl_expired", "no_route", "steered", "no_holder",
 	"probe_reflected", "probe_reply", "source_check", "fail_closed",
+	"nat_out", "nat_new", "nat_reply", "nat_icmp_error", "nat_miss", "nat_insert_failed", "nat_midstream",
+	"nat_no_slot", "frag_untracked", "pod_syn", "pod_out_syn", "tunnel_port", "pod_gone", "ptb_limited",
+	"inbound_recorded", "inbound_reply",
 }
 
 // Objects are egress's loaded programs and maps.
@@ -60,7 +63,7 @@ func Load(pinDir string) (*Objects, error) {
 	opts := &ebpf.CollectionOptions{}
 	if pinDir != "" {
 		for name, m := range spec.Maps {
-			if name != "egress_scratch" && name != ".rodata" && name != ".bss" {
+			if name != "egress_scratch" && name != "inbound_scr" && name != "ptb_budgets" && name != ".rodata" && name != ".bss" {
 				m.Pinning = ebpf.PinByName
 			}
 		}

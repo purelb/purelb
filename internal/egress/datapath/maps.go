@@ -39,12 +39,20 @@ type Config struct {
 	// Self4 and Self6 are this node's underlay addresses (InternalIPs),
 	// the tunnel's outer source; invalid where it has none.
 	Self4, Self6 netip.Addr
+	// TunPort is the tunnel's UDP port.
+	TunPort uint16
+	// EBPFStage: this node runs the eBPF pod stage (design 6.4).
+	EBPFStage bool
+	// PodBySrc: netkit pods, whose packets reach the NIC with no ingress
+	// device, so the stage finds them by source address.
+	PodBySrc bool
 }
 
 // SetConfig writes the node-wide configuration.
 func (o *Objects) SetConfig(c Config) error {
 	v := egressEgressConfig{Self: c.Self, TunIfindex: uint32(c.TunIfindex), TunMtu: c.TunMTU,
-		MarkShift: c.MarkShift, HasV4: b2u(c.Underlay4), HasV6: b2u(c.Underlay6), L2: b2u(c.L2)}
+		MarkShift: c.MarkShift, HasV4: b2u(c.Underlay4), HasV6: b2u(c.Underlay6), L2: b2u(c.L2),
+		TunPort: be16Native(c.TunPort), EbpfStage: b2u(c.EBPFStage), PodBySrc: b2u(c.PodBySrc)}
 	copy(v.TunMac[:], c.TunMAC)
 	if c.Self4.IsValid() {
 		w, _ := words(c.Self4)

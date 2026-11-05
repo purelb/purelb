@@ -33,6 +33,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -116,6 +117,9 @@ type Reconciler struct {
 	// cniEgress are the CNI egress-gateway kinds the cluster serves
 	// (watchCNIEgress).
 	cniEgress atomic.Pointer[[]string]
+	// calico is Calico eBPF's IP pools, nil elsewhere (resolution 20).
+	calico  atomic.Pointer[calicoState]
+	dynamic dynamic.Interface
 
 	egresses        listers.EgressLister
 	clusterEgresses listers.ClusterEgressLister
@@ -158,6 +162,9 @@ func (r *Reconciler) Start(stop <-chan struct{}, cfg *rest.Config, enqueue func(
 	}
 	purelb, err := versioned.NewForConfig(cfg)
 	if err != nil {
+		return err
+	}
+	if r.dynamic, err = dynamic.NewForConfig(cfg); err != nil {
 		return err
 	}
 	return r.start(stop, kube, purelb, enqueue)
@@ -271,6 +278,9 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 	r.handleLeases(leases)
 
 	go r.watchCNIEgress(stop, kube.Discovery())
+	if r.dynamic != nil {
+		go r.watchCalico(stop, kube.Discovery(), r.dynamic)
+	}
 	pf.Start(stop)
 	pns.Start(stop)
 	kf.Start(stop)

@@ -93,6 +93,91 @@ func TestAskProbe(t *testing.T) {
 	assert.False(t, a.askProbe("c3", sel, ready).probe, "the node has its stage")
 }
 
+// A FailClosed pod's ADD waits for the node's stage (user decision 2026-11-03):
+// its report is held until the stage is known and, for the eBPF stage,
+// installed; another's ADD is held while a sandbox probes. Nobody else waits.
+func TestStageGated(t *testing.T) {
+	a := New(log.NewNopLogger(), testNode, "purelb-system")
+	fc := podState{selected: true, failClosed: true}
+	fo := podState{selected: true}
+	assert.False(t, a.stageGated(fc, "c2"), "no stage and nobody probing: it may be the one asked")
+	a.prober.Store(&probeTicket{container: "c1", at: time.Now()})
+	assert.True(t, a.stageGated(fc, "c2"), "another is probing")
+	assert.False(t, a.stageGated(fc, "c1"), "the one asked isn't held behind itself")
+	assert.False(t, a.stageGated(fo, "c2"), "FailOpen pods don't wait")
+	assert.False(t, a.stageGated(podState{failClosed: true}, "c2"), "nor unselected ones")
+	a.stage.Store(&stageResult{stage: cnisock.StageMark})
+	assert.False(t, a.stageGated(fc, "c2"), "a netfilter stage is in place already")
+	a.stage.Store(&stageResult{stage: cnisock.StageBypassed})
+	assert.True(t, a.stageGated(fc, "c2"), "the eBPF stage isn't installed yet")
+	assert.False(t, a.stageGated(fo, "c2"))
+	a.ebpfApplied.Store(true)
+	assert.False(t, a.stageGated(fc, "c2"), "installed")
+}
+
+func TestProbeReportFailClosedWaits(t *testing.T) {
+	defer func(d time.Duration) { probeSettle = d }(probeSettle)
+	probeSettle = 300 * time.Millisecond
+	req := cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c1", Namespace: "voice", Name: "a"}
+	ips := []netip.Addr{netip.MustParseAddr("10.1.0.5")}
+	report := func(a *Agent) time.Duration {
+		a.prober.Store(&probeTicket{container: "c1", at: time.Now(), failClosed: true, done: make(chan struct{})})
+		start := time.Now()
+		assert.Equal(t, cnisock.ResultReady, a.probeReport(req, ips).Result)
+		return time.Since(start)
+	}
+
+	// Forwarded at once: no wait to speak of.
+	a := New(log.NewNopLogger(), testNode, "purelb-system")
+	a.probeCounts = func() (map[string]datapath.ProbeCount, error) {
+		return map[string]datapath.ProbeCount{"4": pc(1, 1, 1)}, nil
+	}
+	assert.Less(t, report(a), probeSettle)
+
+	// Never forwarded: the whole settle, then until the stage is installed.
+	a = New(log.NewNopLogger(), testNode, "purelb-system")
+	a.probeCounts = func() (map[string]datapath.ProbeCount, error) { return map[string]datapath.ProbeCount{}, nil }
+	go func() {
+		time.Sleep(probeSettle + 200*time.Millisecond)
+		a.ebpfApplied.Store(true)
+	}()
+	assert.GreaterOrEqual(t, report(a), probeSettle+200*time.Millisecond)
+
+	// Never installed: not admitted, and the plugin is told to fail the ADD.
+	a = New(log.NewNopLogger(), testNode, "purelb-system")
+	a.probeCounts = func() (map[string]datapath.ProbeCount, error) { return map[string]datapath.ProbeCount{}, nil }
+	a.prober.Store(&probeTicket{container: "c1", at: time.Now(), failClosed: true, done: make(chan struct{})})
+	resp := a.probeReport(req, ips)
+	assert.True(t, resp.Retry)
+	assert.NotEmpty(t, resp.Error)
+
+	// A FailOpen pod never waits, and is never refused.
+	a = New(log.NewNopLogger(), testNode, "purelb-system")
+	a.probeCounts = func() (map[string]datapath.ProbeCount, error) { return map[string]datapath.ProbeCount{}, nil }
+	open := &probeTicket{container: "c1", at: time.Now(), done: make(chan struct{})}
+	a.prober.Store(open)
+	resp = a.probeReport(req, ips)
+	assert.False(t, resp.Retry)
+	assert.Equal(t, cnisock.ResultReady, resp.Result)
+	<-open.done // its background watch reads probeSettle
+}
+
+// The stage found, the datapath is told at once (found on t2-cilium: it waited
+// for the next reconcile, and the FailClosed pod for it).
+func TestSettledAppliesAtOnce(t *testing.T) {
+	a := New(log.NewNopLogger(), testNode, "purelb-system")
+	keys := map[string]bool{}
+	add := func(k string, _ bool) { keys[k] = true }
+	a.enqueue.Store(&add)
+	tk := &probeTicket{container: "c1", at: time.Now()}
+	tk.result.Store(&stageResult{stage: cnisock.StageBypassed})
+	a.prober.Store(tk)
+	a.settled()
+	assert.Equal(t, cnisock.StageBypassed, a.stage.Load().stage)
+	assert.True(t, keys[keyDatapath], "the eBPF stage is installed now")
+	assert.True(t, keys[keyCNI], "the ADDs waiting are decided again")
+}
+
 func TestProbeReport(t *testing.T) {
 	a := New(log.NewNopLogger(), testNode, "purelb-system")
 	req := cnisock.Request{Op: cnisock.OpProbe, ContainerID: "c1", Namespace: "voice", Name: "a"}

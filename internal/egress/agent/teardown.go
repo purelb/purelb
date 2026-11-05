@@ -117,6 +117,14 @@ func (a *Agent) teardown() error {
 		shift, shiftKnown, err = datapath.PinnedMarkShift(st.pinRoot)
 		errs = append(errs, err)
 	}
+	// The eBPF stage's flows go with its maps, as a conntrack flush's would.
+	if st.objs != nil {
+		if flows, err := st.objs.NatFlows(); err == nil && len(flows) > 0 {
+			ctDeleted.WithLabelValues("teardown").Add(float64(len(flows)))
+			logging.Info(a.logger, "op", "egressTeardown", "node", a.node, "flows", len(flows),
+				"msg", "reset egress's flows: their NAT entries go with the maps")
+		}
+	}
 	ours := progIDs(st.objs)
 	ifs := map[int]bool{}
 	for name, l := range st.links {

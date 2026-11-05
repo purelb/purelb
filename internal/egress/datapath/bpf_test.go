@@ -423,6 +423,21 @@ func TestPacketTooBig(t *testing.T) {
 
 // pl_announce_tun drops a packet that didn't come through the tunnel from
 // a node.
+// Errors are rate-limited: a burst, then the packets are dropped and counted.
+func TestPacketTooBigRate(t *testing.T) {
+	h := newHarness(t)
+	h.config(Config{TunMTU: 1400})
+	f := families[1]
+	pkt := packet(f, f.server, f.egress, protoUDP, append(ports(53, slicePort), make([]byte, 1500)...))
+	for range 200 {
+		h.run(h.o.PlAnnounceEth, pkt)
+	}
+	sent, limited := h.count("ptb_sent", f.v6), h.count("ptb_limited", f.v6)
+	assert.Equal(t, uint64(200), sent+limited)
+	assert.GreaterOrEqual(t, sent, uint64(10), "the burst")
+	assert.NotZero(t, limited)
+}
+
 func TestTunnelForged(t *testing.T) {
 	h := newHarness(t)
 	f := families[0]

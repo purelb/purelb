@@ -56,6 +56,9 @@ const (
 	addTimeout    = 30 * time.Second
 	systemTimeout = 2 * time.Second
 	otherTimeout  = 5 * time.Second
+	// probeTimeout: the agent holds a FailClosed pod's probe report until the
+	// node's stage is known and installed (up to 15 s).
+	probeTimeout = 20 * time.Second
 )
 
 // defaultNamespace is PureLB's namespace when the conflist entry names
@@ -240,34 +243,44 @@ func (p plugin) add(args *skel.CmdArgs) error {
 		return fmt.Errorf("the PureLB agent answered %q", resp.Result)
 	}
 	if resp.Probe {
-		c.probe(args.Netns)
+		if err := c.probe(args.Netns); err != nil {
+			logging.Info(c.logger, "op", "cniAdd", "pod", c.pod(), "error", err, "duration", time.Since(start).String(),
+				"msg", "the agent refused the pod for now; kubelet retries")
+			return err
+		}
 	}
 	logging.Info(c.logger, "op", "cniAdd", "pod", c.pod(), "result", resp.Result, "duration", time.Since(start).String(), "msg", "pod admitted")
 	return result()
 }
 
 // probe sends the stage probe the agent asked for from the pod's network
-// namespace and reports it (design 6.1). It never fails the ADD: without
-// a report the agent asks another pod.
-func (c *call) probe(netnsPath string) {
+// namespace and reports it (design 6.1). Failing to doesn't fail the ADD: without
+// a report the agent asks another pod. Only the agent's answer can: a FailClosed
+// pod isn't to start before the node's stage is in place (user decision
+// 2026-11-03).
+func (c *call) probe(netnsPath string) error {
 	sent, err := sendProbe(netnsPath, c.req.IPs)
 	if err != nil {
 		logging.Info(c.logger, "op", "cniProbe", "pod", c.pod(), "error", err, "msg", "the stage probe wasn't sent in every family")
 	}
 	if len(sent) == 0 {
-		return
+		return nil
 	}
 	report := *c
 	report.req.Op, report.req.IPs = cnisock.OpProbe, sent
-	resp, _, err := report.ask(otherTimeout)
+	resp, _, err := report.ask(probeTimeout)
+	if err == nil && resp.Retry {
+		return errors.New(resp.Error)
+	}
 	if err == nil && resp.Error != "" {
 		err = errors.New(resp.Error)
 	}
 	if err != nil {
 		logging.Info(c.logger, "op", "cniProbe", "pod", c.pod(), "error", err, "msg", "the stage probe wasn't reported")
-		return
+		return nil
 	}
 	logging.Info(c.logger, "op", "cniProbe", "pod", c.pod(), "ips", strings.Join(sent, ","), "msg", "stage probe sent")
+	return nil
 }
 
 // record records the pod's sandbox, which is starting (design 8.1): the

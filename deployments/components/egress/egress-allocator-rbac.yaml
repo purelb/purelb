@@ -82,6 +82,14 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - crd.projectcalico.org
+  resources:
+  - felixconfigurations
+  - ippools
+  verbs:
+  - get
+  - list
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -107,6 +107,7 @@ func runInit() {
 		{"devtmpfs", "/dev", "devtmpfs"},
 		{"tmpfs", "/tmp", "tmpfs"},
 		{"bpffs", "/sys/fs/bpf", "bpf"},
+		{"cgroup2", "/sys/fs/cgroup", "cgroup2"},
 	} {
 		_ = os.MkdirAll(m.dst, 0o755)
 		if err := unix.Mount(m.src, m.dst, m.fs, 0, ""); err != nil {

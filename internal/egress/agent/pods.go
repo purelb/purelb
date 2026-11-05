@@ -161,6 +161,9 @@ func (a *Agent) syncPods() {
 		// (D12), which conntrack carries.
 		prev = seedPodSets(in, recoveredPodSets(a.dp.pinRoot))
 		recovered, err := a.tableSlots()
+		if err == nil && a.stage.Load() != nil && a.stage.Load().stage == cnisock.StageBypassed {
+			recovered, err = a.pinnedSlots() // the flows' slots are in the NAT map
+		}
 		if err != nil {
 			logging.Info(a.logger, "op", "egressPods", "node", a.node, "error", err,
 				"msg", "reading the slots an earlier agent left; numbering them afresh")

@@ -105,12 +105,14 @@ type Request struct {
 // call. A refused version carries the versions the agent speaks. Probe
 // asks the plugin to send the stage probe and report it (ADD).
 type Response struct {
-	Version    int    `json:"version"`
-	Result     string `json:"result,omitempty"`
-	Error      string `json:"error,omitempty"`
-	Probe      bool   `json:"probe,omitempty"`
-	MinVersion int    `json:"minVersion,omitempty"`
-	MaxVersion int    `json:"maxVersion,omitempty"`
+	Version int    `json:"version"`
+	Result  string `json:"result,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Probe   bool   `json:"probe,omitempty"`
+	// Retry, on a PROBE's answer: fail the ADD, the pod isn't to start yet.
+	Retry      bool `json:"retry,omitempty"`
+	MinVersion int  `json:"minVersion,omitempty"`
+	MaxVersion int  `json:"maxVersion,omitempty"`
 }
 
 // Listen opens the agent's socket at path, replacing one an earlier agent

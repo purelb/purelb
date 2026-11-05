@@ -220,7 +220,7 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	// What a CNI ADD may count on (§8.1): both of the pod's addresses,
 	// entry and program in place; not the pod with no device.
 	held := datapath.PodDev{V4: pod4, V6: pod6, PodSet: 3, Hold: true}
-	assert.Equal(t, map[netip.Addr]datapath.PodDev{pod4: held, pod6: held}, a.dp.tagged)
+	assert.Equal(t, map[netip.Addr]datapath.PodDev{pod4: held, pod6: held}, noMACs(a.dp.tagged))
 	cluster, err := a.dp.objs.ClusterNetworks()
 	require.NoError(t, err)
 	assert.Contains(t, cluster, netip.MustParsePrefix("10.96.0.0/12"), "from the API")
@@ -576,8 +576,8 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	assert.Less(t, heldAt, writtenAt, "held before the table")
 	devs, err = c.dp.objs.RecoverPodDevs()
 	require.NoError(t, err)
-	assert.Equal(t, datapath.PodDev{V4: pod4, PodSet: 3}, devs[veth], "let go once classified")
-	assert.Equal(t, datapath.PodDev{V4: open4}, devs[openVeth])
+	assert.Equal(t, datapath.PodDev{V4: pod4, PodSet: 3}, noMAC(devs[veth]), "let go once classified")
+	assert.Equal(t, datapath.PodDev{V4: open4}, noMAC(devs[openVeth]))
 	c = start()
 	apply(t, c, w)
 	assert.NotContains(t, logs.String(), "holding FailClosed pods")
@@ -854,6 +854,20 @@ func targetDefaults(t *testing.T, table int) []string {
 			}
 			out = append(out, d)
 		}
+	}
+	return out
+}
+
+// noMAC is d without the pod interface's MAC, which each run's veth makes up.
+func noMAC(d datapath.PodDev) datapath.PodDev {
+	d.MAC = [6]byte{}
+	return d
+}
+
+func noMACs(m map[netip.Addr]datapath.PodDev) map[netip.Addr]datapath.PodDev {
+	out := map[netip.Addr]datapath.PodDev{}
+	for k, v := range m {
+		out[k] = noMAC(v)
 	}
 	return out
 }

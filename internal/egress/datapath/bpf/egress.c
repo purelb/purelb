@@ -80,6 +80,8 @@
 #define PTB6_QUOTE  1232 // 1280 - 40 - 8: an ICMPv6 error fits the IPv6 minimum MTU
 #define PTB4_QUOTE  548  // 576 - 20 - 8 (RFC 1812 4.3.2.3)
 #define PTB_MIN_MTU 1280
+#define PTB_GAP_NS  10000000ull // 10 ms: 100 errors a second per CPU
+#define PTB_BURST   10
 
 // Tunnel peer probes (design 6.8): a UDP datagram from a node's underlay
 // address to a peer's, through the tunnel, to PROBE_PORT, carrying
@@ -114,6 +116,22 @@ enum reason {
 	R_PROBE_REPLY,      // tunnel: a peer answered this node's probe
 	R_SOURCE_CHECK,     // pod: sourced from an address that isn't the pod's
 	R_FAIL_CLOSED,      // pod: held, and not to a cluster network
+	R_NAT_OUT,          // eBPF stage: a pod's packet translated
+	R_NAT_NEW,          // eBPF stage: a new flow given a port
+	R_NAT_REPLY,        // eBPF stage: a reply translated back, into its pod
+	R_NAT_ICMP_ERROR,   // eBPF stage: an ICMP error translated back, with its quote
+	R_NAT_MISS,         // eBPF stage: to this node's slice, no flow (dropped)
+	R_NAT_INSERT_FAILED, // eBPF stage: no free port, or a full table (dropped)
+	R_NAT_MIDSTREAM,    // eBPF stage: TCP, not a SYN, no flow: passed untranslated
+	R_NAT_NO_SLOT,      // eBPF stage: a flow whose slot is gone (dropped)
+	R_FRAG_UNTRACKED,   // eBPF stage: a later fragment with no first (dropped)
+	R_POD_SYN,          // eBPF stage: pl_pod_tag saw a selected pod's SYN leave the cluster
+	R_POD_OUT_SYN,      // eBPF stage: pl_pod_out saw one
+	R_TUNNEL_PORT,      // eBPF stage: a pod's UDP to the tunnel port of a node (dropped)
+	R_POD_GONE,         // eBPF stage: a reply whose pod has no device (dropped)
+	R_PTB_LIMITED,      // an error not sent, over the rate limit (the packet is dropped)
+	R_INBOUND_RECORDED, // eBPF stage: a flow into a selected pod recorded
+	R_INBOUND_REPLY,    // eBPF stage: a reply to one, passed untranslated
 	R_MAX,
 };
 
@@ -198,6 +216,8 @@ struct pod_dev {
 	__u8 has_v6;
 	__u8 pod_set;
 	__u8 hold;
+	__u8 mac[6]; // the pod's own interface, for an error sent back to it
+	__u8 pad[2];
 };
 
 // Cluster networks (cluster4, cluster6): where a held pod may still send.
@@ -220,7 +240,10 @@ struct egress_config {
 	__u8 mark_shift;   // 0, 8, 16 or 24: the mark byte (D18)
 	__u8 has_v4;       // this node's underlay families
 	__u8 has_v6;
-	__u8 pad[6];
+	__be16 tun_port;   // the tunnel's UDP port
+	__u8 ebpf_stage;   // this node runs the eBPF pod stage (design 6.4)
+	__u8 pod_by_src;   // netkit: a pod's packet at the NIC has no ingress device
+	__u8 pad[2];
 	// This node's underlay addresses (network order), the tunnel's outer
 	// source: a node whose route to a peer leaves another interface would
 	// otherwise send from an address that isn't its InternalIP, which the
@@ -249,6 +272,105 @@ struct flow {
 	__u8 fproto; // frags key protocol: IPv4 protocol, IPv6 Fragment Header next header
 	__u32 frag_id;
 	__u32 l4;    // offset of the upper-layer header
+	__u8 rproto; // the packet's own upper-layer protocol: proto is an ICMP error's quoted one
+	__u8 err;    // an ICMP error
+	__u8 fpad[2];
+};
+
+// ---- eBPF pod stage (design 6.4) --------------------------------------------
+
+enum { NAT_OUT = 1, NAT_IN = 2 };
+enum { NS_NEW = 1, NS_EST, NS_FIN, NS_CLOSED };
+enum { TARGET_PROHIBIT = 0, TARGET_TUNNEL = 1, TARGET_DIRECT = 2 };
+
+// One flow is two entries of one map. NAT_IN is keyed by the translated
+// tuple (the remote, the egress address, the translated port) and holds the
+// pod's address and port and the flow's state; NAT_OUT by the original tuple,
+// holding the egress address and translated port. Ports are host order; an
+// ICMP echo has rport 0 and its identifier as lport; a protocol without
+// ports (PerPod) both 0.
+struct nat_key {
+	__u32 raddr[4];
+	__u32 laddr[4];
+	__u16 rport;
+	__u16 lport;
+	__u8 proto;
+	__u8 family;
+	__u8 dir;
+	__u8 pad;
+};
+
+struct nat_val {
+	__u32 addr[4];
+	__u64 ts;     // bpf_ktime_get_ns of the last packet (GC)
+	__u16 port;
+	__u8 state;   // NS_*
+	__u8 slot;
+	__u8 pad[4];
+};
+
+// A slot this node's pods leave by (pod_slots, by slot id): its address and
+// slice, and how its traffic leaves.
+struct pod_slot {
+	__u32 addr[4];
+	__u32 table;  // TARGET_DIRECT: the routing table
+	__u16 first;  // the slice's first port
+	__u16 size;   // its size, a power of two; 0: the whole address (PerPod)
+	__u16 mss;    // TCP MSS clamp; 0: none
+	__u16 mtu;    // path MTU; 0: unchecked
+	__u8 target;  // TARGET_*
+	__u8 family;
+	__u8 pad[2];
+};
+
+// A pod-set's policies in rank order, per family (pod_set_policies).
+struct pod_set_key {
+	__u8 pod_set;
+	__u8 family;
+	__u8 index;
+	__u8 pad;
+};
+
+// One policy in one family (pod_policies, by id).
+struct pod_policy {
+	__u8 slot;      // 0: no slot Active
+	__u8 whole;     // the slot is a whole address: any protocol (D4)
+	__u8 fail_open; // no slot, or a protocol it can't carry: the CNI's path
+	__u8 pad;
+};
+
+// A policy's destinations: id is the policy's id * 2, + 1 for its excludes.
+// The value is the port set the longest prefix allows, 0: every port.
+struct dest4_key {
+	__u32 prefixlen;
+	__u32 id;
+	__u32 addr;
+};
+
+struct dest6_key {
+	__u32 prefixlen;
+	__u32 id;
+	__u32 addr[4];
+};
+
+struct dest_port_key {
+	__u32 prefixlen;
+	__u32 set;
+	__u8 proto;
+	__u8 pad;
+	__be16 port;
+};
+
+// A fragment of a translated datagram: the address its later fragments take
+// (nat_frags). slot 0: the first went untranslated, and so do they.
+struct nat_frag {
+	__u32 addr[4];
+	__u8 slot;
+	__u8 pad[7];
+};
+
+struct ptb_budget {
+	__u64 next_ns;
 };
 
 // Everything a program builds field by field, per CPU (see the top).
@@ -273,6 +395,38 @@ struct scratch {
 	__u8 w_nh;
 	__u8 w_done;
 	__u8 w_pad[2];
+	struct nat_key nk;    // the original tuple
+	struct nat_key nxk;   // the translated tuple
+	struct nat_val nv;
+	struct nat_frag nf;
+	struct addr_key ak;
+	struct pod_set_key psk;
+	struct dest4_key dk4;
+	struct dest6_key dk6;
+	struct dest_port_key dpk;
+	__u32 o[4];    // bpf_csum_diff buffers: old and new address
+	__u32 n[4];
+	__u32 ow, nw;  // old and new port, as a word
+	__u32 co, cn;  // old and new quoted checksums, as a word
+	__u32 ph, pmask;
+	__u32 pol;     // policy resolution: the id that matched
+	__u32 kslot;   // a pod_slots or pod_portless key
+	__u32 ptb_mtu; // the MTU a PTB reports
+	__u32 ptb_if;  // the device it leaves by
+	__u32 o_off;   // TCP option walk
+	__u32 o_end;
+	__u16 pstart, xport;
+	__u16 np;
+	__u16 ics, nics, nipcs;
+	__u16 mss, omss;
+	__u8 pod_set;
+	__u8 found;
+	__u8 tcpfl;
+	__u8 slot;
+	__u8 have_pd;
+	__u8 st_pad[3];
+	struct pod_dev pd;
+	struct pod_slot sl;
 	__u8 eth[16];  // PTB: the arriving frame's Ethernet header
 	__u8 ip[40];   // PTB: the new IP header
 	__u8 icmp[8];  // PTB: the new ICMP header
@@ -410,6 +564,112 @@ struct {
 	__type(key, __u32);
 	__type(value, __u64);
 } egress_reasons SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 131072);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct nat_key);
+	__type(value, struct nat_val);
+} nat SEC(".maps");
+
+// Every pod's addresses: its host-side device.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 8192);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct addr_key);
+	__type(value, __u32);
+} pod_src SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 256);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, __u32);
+	__type(value, struct pod_slot);
+} pod_slots SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 8192);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct pod_set_key);
+	__type(value, __u32);
+} pod_set_policies SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 8192);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, __u32);
+	__type(value, struct pod_policy);
+} pod_policies SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, 16384);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct dest4_key);
+	__type(value, __u32);
+} pod_dest4 SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, 16384);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct dest6_key);
+	__type(value, __u32);
+} pod_dest6 SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, 16384);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct dest_port_key);
+	__type(value, __u8);
+} pod_dest_ports SEC(".maps");
+
+// A pod's reserved source ports (D19): its address, protocol and port: the
+// slot they leave by.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct port_key);
+	__type(value, __u8);
+} pod_reserved SEC(".maps");
+
+// Port-less flows a slice can't carry, per slot (D4).
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 256);
+	__type(key, __u32);
+	__type(value, __u64);
+} pod_portless SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct frag_key);
+	__type(value, struct nat_frag);
+} nat_frags SEC(".maps");
+
+// Flows into selected pods, other than TCP's (design 6.4): the pod's replies
+// aren't new flows. Keyed like NAT_OUT; the value is the last packet's time.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct nat_key);
+	__type(value, __u64);
+} pod_inbound SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct ptb_budget);
+} ptb_budgets SEC(".maps");
 
 static __always_inline struct egress_config *config(void)
 {
@@ -582,6 +842,7 @@ static __always_inline int parse_l4(struct __sk_buff *skb, struct scratch *s)
 		f->proto = s->w_nh;
 		f->l4 = s->w_off;
 	}
+	f->rproto = f->proto;
 	if (f->frag == 2)
 		return 0;
 	if (f->proto != IPPROTO_TCP && f->proto != IPPROTO_UDP && f->proto != IPPROTO_SCTP &&
@@ -607,6 +868,7 @@ static __always_inline int parse_l4(struct __sk_buff *skb, struct scratch *s)
 	}
 	if (!icmp_error(f->proto, b[0]))
 		return 0;
+	f->err = 1;
 	// An ICMP error quotes the packet that caused it: one of this address's
 	// own, so the quoted source port is the slice's (a reply direction
 	// error), or a reply to it, so the quoted destination port is (a transit
@@ -773,7 +1035,7 @@ static __always_inline int ptb6(struct __sk_buff *skb, struct egress_config *c, 
 {
 	struct flow *f = &s->f;
 	__u8 *ip = s->ip, *ic = s->icmp, *ps = s->ps;
-	__u32 mtu = c->tun_mtu, plen = 8 + PTB6_QUOTE;
+	__u32 mtu = s->ptb_mtu, plen = 8 + PTB6_QUOTE;
 	__s64 sum;
 	__u16 cs;
 
@@ -821,7 +1083,7 @@ static __always_inline int ptb6(struct __sk_buff *skb, struct egress_config *c, 
 	    bpf_skb_store_bytes(skb, ETH_HLEN + 40, ic, 8, 0) < 0)
 		goto fail;
 	count(R_PTB_SENT, AF_INET6_);
-	return bpf_redirect(skb->ifindex, 0);
+	return bpf_redirect(s->ptb_if, 0);
 fail:
 	count(R_PTB_FAILED, AF_INET6_);
 	return TCX_DROP;
@@ -833,7 +1095,7 @@ static __always_inline int ptb4(struct __sk_buff *skb, struct egress_config *c, 
 {
 	struct flow *f = &s->f;
 	__u8 *ip = s->ip, *ic = s->icmp;
-	__u32 mtu = c->tun_mtu, tot = 20 + 8 + PTB4_QUOTE;
+	__u32 mtu = s->ptb_mtu, tot = 20 + 8 + PTB4_QUOTE;
 	__s64 sum;
 	__u16 cs;
 
@@ -875,10 +1137,31 @@ static __always_inline int ptb4(struct __sk_buff *skb, struct egress_config *c, 
 	    bpf_skb_store_bytes(skb, ETH_HLEN + 20, ic, 8, 0) < 0)
 		goto fail;
 	count(R_PTB_SENT, AF_INET_);
-	return bpf_redirect(skb->ifindex, 0);
+	return bpf_redirect(s->ptb_if, 0);
 fail:
 	count(R_PTB_FAILED, AF_INET_);
 	return TCX_DROP;
+}
+
+// Errors are rate-limited (RFC 4443 2.4(f), RFC 1812 4.3.2.8), on each CPU:
+// PTB_GAP_NS apart on average, with a burst of PTB_BURST, so one flow's
+// retransmits can't starve another's first error. The packets refused are
+// dropped; their senders retransmit.
+static __always_inline int ptb_allowed(void)
+{
+	__u32 z = 0;
+	struct ptb_budget *b = bpf_map_lookup_elem(&ptb_budgets, &z);
+	__u64 now = bpf_ktime_get_ns(), next;
+
+	if (!b)
+		return 0;
+	next = b->next_ns;
+	if (next < now)
+		next = now;
+	if (next - now >= PTB_BURST * PTB_GAP_NS)
+		return 0;
+	b->next_ns = next + PTB_GAP_NS;
+	return 1;
 }
 
 // The PTB is built on an Ethernet uplink's frame: its Ethernet header goes
@@ -890,6 +1173,12 @@ static __always_inline int send_ptb(struct __sk_buff *skb, struct egress_config 
 	__u8 *e = s->eth, t;
 	int i;
 
+	if (!ptb_allowed()) {
+		count(R_PTB_LIMITED, s->f.dst.family);
+		return TCX_DROP;
+	}
+	s->ptb_mtu = c->tun_mtu;
+	s->ptb_if = skb->ifindex;
 	if (bpf_skb_load_bytes(skb, 0, s->eth, ETH_HLEN) < 0 ||
 	    bpf_skb_load_bytes(skb, ETH_HLEN, s->q, PTB6_QUOTE) < 0) {
 		count(R_PTB_FAILED, s->f.dst.family);
@@ -904,6 +1193,65 @@ static __always_inline int send_ptb(struct __sk_buff *skb, struct egress_config 
 		return ptb6(skb, c, s);
 	return ptb4(skb, c, s);
 }
+
+// to_cluster reports whether a cluster network holds f's destination. The
+// lookup key is built in scratch, in buffers pl_pod_tag leaves unused (eth,
+// ip).
+static __always_inline int to_cluster(struct scratch *s)
+{
+	struct flow *f = &s->f;
+
+	if (f->dst.family == AF_INET_) {
+		struct lpm4 *k = (struct lpm4 *)s->eth;
+
+		k->prefixlen = 32;
+		k->addr = f->dst.addr[0];
+		return bpf_map_lookup_elem(&cluster4, k) != 0;
+	}
+	struct lpm6 *k = (struct lpm6 *)s->ip;
+
+	k->prefixlen = 128;
+	__builtin_memcpy(k->addr, f->dst.addr, 16);
+	return bpf_map_lookup_elem(&cluster6, k) != 0;
+}
+
+static __always_inline int forward(struct __sk_buff *skb, struct scratch *s, __u32 table)
+{
+	struct bpf_fib_lookup *fib = &s->fib;
+	struct bpf_redir_neigh *nh = &s->nh;
+	struct flow *f = &s->f;
+	long r;
+
+	__builtin_memset(fib, 0, sizeof(*fib));
+	__builtin_memset(nh, 0, sizeof(*nh));
+	fib->ifindex = skb->ifindex;
+	fib->tbid = table;
+	fib->family = f->dst.family;
+	fib->l4_protocol = f->proto;
+	if (f->dst.family == AF_INET_) {
+		fib->ipv4_src = f->src.addr[0];
+		fib->ipv4_dst = f->dst.addr[0];
+	} else {
+		__builtin_memcpy(fib->ipv6_src, f->src.addr, 16);
+		__builtin_memcpy(fib->ipv6_dst, f->dst.addr, 16);
+	}
+	r = bpf_fib_lookup(skb, fib, sizeof(*fib),
+			   BPF_FIB_LOOKUP_DIRECT | BPF_FIB_LOOKUP_TBID | BPF_FIB_LOOKUP_SKIP_NEIGH);
+	if (r != BPF_FIB_LKUP_RET_SUCCESS) {
+		count(R_NO_ROUTE, f->dst.family);
+		return TCX_DROP;
+	}
+	// The lookup leaves the gateway, or the destination itself on-link, in
+	// the destination field.
+	nh->nh_family = fib->family;
+	if (fib->family == AF_INET_)
+		nh->ipv4_nh = fib->ipv4_dst;
+	else
+		__builtin_memcpy(nh->ipv6_nh, fib->ipv6_dst, 16);
+	return bpf_redirect_neigh(fib->ifindex, nh, sizeof(*nh), 0);
+}
+
+#include "podstage.h"
 
 // ---- uplink ----------------------------------------------------------------
 
@@ -983,6 +1331,8 @@ static __always_inline int uplink(struct __sk_buff *skb, __u32 l3)
 		return TCX_DROP;
 	}
 	if (s->owner == c->self) {
+		if (c->ebpf_stage)
+			return pod_reply(skb, l3);
 		// The D32 chain admits only established and related packets. The
 		// direct-path mark routes the reverse path check through the pool
 		// interface's table under strict rp_filter.
@@ -1068,43 +1418,6 @@ static __always_inline int dec_hop(struct __sk_buff *skb, struct scratch *s, __u
 
 // Send transit out the address's pool interface: a FIB lookup in its table,
 // then bpf_redirect_neigh to the next hop it found.
-static __always_inline int forward(struct __sk_buff *skb, struct scratch *s, const struct addr_entry *ac)
-{
-	struct bpf_fib_lookup *fib = &s->fib;
-	struct bpf_redir_neigh *nh = &s->nh;
-	struct flow *f = &s->f;
-	long r;
-
-	__builtin_memset(fib, 0, sizeof(*fib));
-	__builtin_memset(nh, 0, sizeof(*nh));
-	fib->ifindex = skb->ifindex;
-	fib->tbid = ac->table;
-	fib->family = f->dst.family;
-	fib->l4_protocol = f->proto;
-	if (f->dst.family == AF_INET_) {
-		fib->ipv4_src = f->src.addr[0];
-		fib->ipv4_dst = f->dst.addr[0];
-	} else {
-		__builtin_memcpy(fib->ipv6_src, f->src.addr, 16);
-		__builtin_memcpy(fib->ipv6_dst, f->dst.addr, 16);
-	}
-	r = bpf_fib_lookup(skb, fib, sizeof(*fib),
-			   BPF_FIB_LOOKUP_DIRECT | BPF_FIB_LOOKUP_TBID | BPF_FIB_LOOKUP_SKIP_NEIGH);
-	if (r != BPF_FIB_LKUP_RET_SUCCESS) {
-		count(R_NO_ROUTE, f->dst.family);
-		return TCX_DROP;
-	}
-	// The lookup leaves the gateway, or the destination itself on-link, in
-	// the destination field.
-	nh->nh_family = fib->family;
-	if (fib->family == AF_INET_)
-		nh->ipv4_nh = fib->ipv4_dst;
-	else
-		__builtin_memcpy(nh->ipv6_nh, fib->ipv6_dst, 16);
-	count(R_TRANSIT, f->dst.family);
-	return bpf_redirect_neigh(fib->ifindex, nh, sizeof(*nh), 0);
-}
-
 // is_probe reports whether the inner packet is a peer probe: UDP to
 // PROBE_PORT from the address the tunnel packet came from. Transit and
 // replies never qualify: one end of theirs is always an egress address.
@@ -1265,7 +1578,9 @@ int pl_announce_tun(struct __sk_buff *skb)
 			if (bpf_skb_store_bytes(skb, 0, s->eth, ETH_HLEN, 0) < 0)
 				return TCX_DROP;
 		}
-		return forward(skb, s, ac);
+		s->fval = ac->table;
+		count(R_TRANSIT, f->dst.family);
+		return forward(skb, s, (__u32)s->fval);
 	}
 
 	// A reply for a pod on this node: the slice must be ours.
@@ -1277,6 +1592,8 @@ int pl_announce_tun(struct __sk_buff *skb)
 			return TCX_DROP;
 		}
 		if (s->owner == c->self) {
+			if (c->ebpf_stage)
+				return pod_reply(skb, l3);
 			set_mark(skb, c, REPLY_FLAG);
 			count(R_REPLY_LOCAL, f->dst.family);
 			return TCX_NEXT;
@@ -1287,27 +1604,6 @@ int pl_announce_tun(struct __sk_buff *skb)
 }
 
 // ---- pod devices -------------------------------------------------------------
-
-// to_cluster reports whether a cluster network holds f's destination. The
-// lookup key is built in scratch, in buffers pl_pod_tag leaves unused (eth,
-// ip).
-static __always_inline int to_cluster(struct scratch *s)
-{
-	struct flow *f = &s->f;
-
-	if (f->dst.family == AF_INET_) {
-		struct lpm4 *k = (struct lpm4 *)s->eth;
-
-		k->prefixlen = 32;
-		k->addr = f->dst.addr[0];
-		return bpf_map_lookup_elem(&cluster4, k) != 0;
-	}
-	struct lpm6 *k = (struct lpm6 *)s->ip;
-
-	k->prefixlen = 128;
-	__builtin_memcpy(k->addr, f->dst.addr, 16);
-	return bpf_map_lookup_elem(&cluster6, k) != 0;
-}
 
 // An IPv6 source a pod may use without owning it: link-local or
 // unspecified, for neighbour discovery and multicast listener reports
@@ -1366,6 +1662,9 @@ int pl_pod_tag(struct __sk_buff *skb)
 		count(R_FAIL_CLOSED, f->src.family);
 		return TCX_DROP;
 	}
+	// The eBPF stage classifies on its own: the mark would only reach the CNI.
+	if (c->ebpf_stage)
+		return tag_stage(skb, c, s, pd->pod_set);
 	if (pd->pod_set)
 		set_mark(skb, c, pd->pod_set);
 	return TCX_NEXT;

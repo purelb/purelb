@@ -75,7 +75,7 @@ func Adopt(path string, ifindex int, prog *ebpf.Program) (link.Link, error) {
 	return l, nil
 }
 
-// attachedTo is the interface a tcx or XDP link is attached to, 0 when
+// attachedTo is the interface a tcx, XDP or netkit link is attached to, 0 when
 // it is defunct or neither.
 func attachedTo(info *link.Info) int {
 	if t := info.TCX(); t != nil {
@@ -83,6 +83,9 @@ func attachedTo(info *link.Info) int {
 	}
 	if x := info.XDP(); x != nil {
 		return int(x.Ifindex)
+	}
+	if n := info.Netkit(); n != nil {
+		return int(n.Ifindex)
 	}
 	return 0
 }
