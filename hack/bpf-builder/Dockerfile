@@ -19,13 +19,13 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
       > /etc/apt/sources.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-      clang-19=1:19.1.7-3+b1 \
-      llvm-19=1:19.1.7-3+b1 \
+      clang-22=1:22.1.8-1~deb13u4 \
+      llvm-22=1:22.1.8-1~deb13u4 \
       libbpf-dev=1:1.5.0-3 \
  && rm -rf /var/lib/apt/lists/*
 
-ENV BPF2GO_CC=clang-19 \
-    BPF2GO_STRIP=llvm-strip-19
+ENV BPF2GO_CC=clang-22 \
+    BPF2GO_STRIP=llvm-strip-22
 
 # A fixed workdir: clang embeds source paths in the object's BTF line info,
 # so building from a different directory changes the bytes.
