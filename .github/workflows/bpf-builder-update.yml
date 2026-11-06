@@ -1,0 +1,61 @@
+# Keeps the eBPF builder from freezing: opens a PR when Debian trixie has a
+# newer clang, or Go a newer release. CI's VM matrix tests the new objects on
+# that PR. GitHub runs a schedule only from the default branch.
+name: BPF builder update
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      BRANCH: bpf-builder/update
+      BASE: ${{ github.event.repository.default_branch }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Move the pins
+        id: pins
+        run: |
+          hack/bpf-builder.sh update
+          git diff --quiet || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # Capped as in bpf-builder.yml.
+      - name: Regenerate the objects with the new image
+        if: steps.pins.outputs.changed == 'true'
+        env:
+          GOTOOLCHAIN: auto
+        run: |
+          DOCKER_BUILDKIT=0 docker build --memory 4g --memory-swap 4g \
+            --ulimit nofile=65536:65536 -t bpf-builder-candidate hack/bpf-builder
+          go mod download
+          make bpf BPF_BUILDER=bpf-builder-candidate
+
+      - name: Open the PR
+        if: steps.pins.outputs.changed == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C "$BRANCH"
+          git add -A hack/bpf-builder go.mod go.sum internal/addrguard internal/egress/datapath
+          git commit -m 'build: update the eBPF builder to the newest clang and Go'
+          git push --force origin "$BRANCH"
+          if [[ -z $(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number') ]]; then
+            gh pr create --base "$BASE" --head "$BRANCH" \
+              --title 'build: update the eBPF builder to the newest clang and Go' \
+              --body 'GitHub starts nothing for a PR opened by its own token. Close and reopen this PR to start CI and publish the image, then run `make bpf-builder-pin` on this branch and commit `hack/bpf-builder.ref`. See BUILDING.md.'
+          fi

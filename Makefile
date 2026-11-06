@@ -135,13 +135,13 @@ proto:  ## Regenerate sidecar IPAM gRPC stubs (needs protoc on PATH)
 # `check`: the generated .go/.o are committed, and the bpf-generate CI job
 # rebuilds them in the same pinned image and fails on any byte difference.
 # Needs Docker. Runs as the invoking user so the outputs aren't root-owned.
-BPF_BUILDER := purelb-bpf-builder:local
-.PHONY: bpf
+# hack/bpf-builder.ref names the image; BPF_BUILDER=<image> tries another.
+BPF_BUILDER = $(shell cat hack/bpf-builder.ref)
+.PHONY: bpf bpf-builder-check bpf-builder-pin
 # Each object builds from its own package directory: clang embeds the
 # source path in the object's BTF, so the directory is part of the bytes.
 BPF_PKGS := internal/addrguard internal/egress/datapath
 bpf:  ## Regenerate the address guard and egress eBPF objects (needs Docker)
-	docker build -q -t $(BPF_BUILDER) hack/bpf-builder >/dev/null
 	for pkg in $(BPF_PKGS); do \
 	  docker run --rm --user $$(id -u):$$(id -g) \
 	    -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOTOOLCHAIN=local \
@@ -149,6 +149,12 @@ bpf:  ## Regenerate the address guard and egress eBPF objects (needs Docker)
 	    -v $(CURDIR):/src -w /src/$$pkg \
 	    $(BPF_BUILDER) go generate ./... || exit 1; \
 	done
+
+bpf-builder-check: ## Fail if hack/bpf-builder.ref isn't the published image of hack/bpf-builder, or go.mod's Go isn't the image's
+	hack/bpf-builder.sh check
+
+bpf-builder-pin: ## Point hack/bpf-builder.ref at the image CI published for the committed hack/bpf-builder
+	hack/bpf-builder.sh pin
 
 .PHONY: bpf-vm-test
 bpf-vm-test: generate ## Run the address guard BPF tests on a kernel matrix in VMs (needs qemu, KVM)

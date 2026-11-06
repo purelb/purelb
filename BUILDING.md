@@ -193,6 +193,25 @@ console lines are printed, along with the path of its full log. CI's
 in a pinned builder image (needs Docker). The output is reproducible, and
 CI's `bpf-generate` job fails if the committed object differs.
 
+`hack/bpf-builder.ref` names that image, by tag and digest. The tag is the git
+hash of `hack/bpf-builder/`, so any change there needs a new image:
+
+1. Push the change to a branch of this repository and open a PR. To try the
+   image first, `docker build -t <name> hack/bpf-builder`, then
+   `make bpf BPF_BUILDER=<name>`.
+2. The `BPF builder image` workflow builds, publishes and signs the image.
+   `bpf-generate` fails until the next step, naming what to do.
+3. Run `make bpf-builder-pin` and commit `hack/bpf-builder.ref`.
+
+Nobody pushes this image by hand, and it must stay on GHCR: an old commit needs
+its own image to reproduce its objects. `bpf-generate` also fails if `go.mod`'s
+Go version isn't the one in the Dockerfile, so change the two together.
+
+Each week `BPF builder update` looks for a newer clang in Debian trixie or a
+newer Go, and opens a PR with the new pins and regenerated objects. Close and
+reopen that PR to start CI and publish its image (GitHub starts nothing for a
+PR opened by its own token), then pin as in step 3.
+
 ### End-to-end tests
 
 The e2e suite is pytest, in [test/e2e/py/](test/e2e/py/). It runs against a

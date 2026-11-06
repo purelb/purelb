@@ -1,4 +1,8 @@
-# Builder for the address guard eBPF object (internal/addrguard).
+# Builder for the eBPF objects (internal/addrguard, internal/egress/datapath).
+#
+# CI publishes this image when this directory changes (.github/workflows/
+# bpf-builder.yml), and every other build pulls the image hack/bpf-builder.ref
+# names, so only publishing runs apt. See BUILDING.md.
 #
 # bpf2go is a Go program that shells out to clang, so the image needs both.
 # Everything is pinned -- the base image by digest, the toolchain packages by
@@ -7,11 +11,11 @@
 # different object even from identical source.
 FROM golang:1.26.8-trixie@sha256:eae2aaa6add2936cbf350dd0d2628b363461542f0c4b3c0b558957e0f2997379
 
-# The live mirror keeps only the current version of each package, so exact
-# pins against it break at the next point or security release. A dated
-# snapshot of the archive keeps these versions installable.
+# The live mirror keeps only the current version of each package, so a pin
+# stops installing when Debian replaces it, which fails publishing and nothing
+# else. hack/bpf-builder.sh update moves the pins to what the mirror has.
 RUN rm -f /etc/apt/sources.list.d/debian.sources \
- && echo 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261003T000000Z trixie main' \
+ && echo 'deb https://cdn-aws.deb.debian.org/debian trixie main' \
       > /etc/apt/sources.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends \

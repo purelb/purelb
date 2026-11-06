@@ -78,6 +78,7 @@ jobs:
   # difference, so the committed binary always matches its source.
   bpf-generate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -92,6 +93,9 @@ jobs:
 
       - name: Download modules
         run: go mod download
+
+      - name: Check the builder image reference
+        run: make bpf-builder-check
 
       - name: Regenerate the eBPF objects
         run: make bpf
