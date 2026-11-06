@@ -161,10 +161,15 @@ func (b *builder) podStage(p PodStage) error {
 		// reach its SNAT, which a forward filter between them would stop
 		// (ForwardBlocked, D25).
 		fi, fo := fmt.Sprintf("fi_%d", id), fmt.Sprintf("fo_%d", id)
+		// po_ counts every packet the slot's pods send (SlotTraffic): new
+		// flows here, and each established one where its ct mark restores
+		// the slot; a reply never reaches either.
+		po := fmt.Sprintf("po_%d", id)
 		b.obj(&nftables.NamedObj{Name: fi, Type: nftables.ObjTypeCounter, Obj: &expr.Counter{}})
 		b.obj(&nftables.NamedObj{Name: fo, Type: nftables.ObjTypeCounter, Obj: &expr.Counter{}})
-		b.rule(b.chain(rs, nil), m.set(id)...)
-		b.rule(b.chain(sl, nil), cat(objref(fi), m.set(id), m.setCt(id), verdict(expr.VerdictAccept))...)
+		b.obj(&nftables.NamedObj{Name: po, Type: nftables.ObjTypeCounter, Obj: &expr.Counter{}})
+		b.rule(b.chain(rs, nil), cat(objref(po), m.set(id))...)
+		b.rule(b.chain(sl, nil), cat(objref(fi), objref(po), m.set(id), m.setCt(id), verdict(expr.VerdictAccept))...)
 		ch := b.chain(sn, nil)
 		b.rule(ch, objref(fo)...)
 		f := familyOf(s.Addr)
@@ -690,23 +695,36 @@ func objref(name string) []expr.Any {
 
 // stageCounters reads the table's named counters, in packets.
 func stageCounters(c *nftables.Conn) (map[string]uint64, error) {
-	objs, err := c.GetNamedObjects(&nftables.Table{Family: nftables.TableFamilyINet, Name: NftTable})
+	byName, err := namedCounters(c)
 	if err != nil {
 		return nil, err
 	}
 	counts := map[string]uint64{}
-	for _, o := range objs {
-		if n, ok := o.(*nftables.NamedObj); ok {
-			if ctr, ok := n.Obj.(*expr.Counter); ok {
-				counts[n.Name] = ctr.Packets
-			}
-		}
+	for name, ctr := range byName {
+		counts[name] = ctr.Packets
 	}
 	return counts, nil
 }
 
+// namedCounters reads the table's counters, by name.
+func namedCounters(c *nftables.Conn) (map[string]*expr.Counter, error) {
+	objs, err := c.GetNamedObjects(&nftables.Table{Family: nftables.TableFamilyINet, Name: NftTable})
+	if err != nil {
+		return nil, err
+	}
+	byName := map[string]*expr.Counter{}
+	for _, o := range objs {
+		if n, ok := o.(*nftables.NamedObj); ok {
+			if ctr, ok := n.Obj.(*expr.Counter); ok {
+				byName[n.Name] = ctr
+			}
+		}
+	}
+	return byName, nil
+}
+
 // ProbeCount is what the stage probe's counters saw in one family since
-// the table was written: packets just ahead of classify, those of them
+// the session's first write of the table: packets just ahead of classify, those of them
 // carrying pl_pod_tag's mark, and those forwarded.
 type ProbeCount struct{ Seen, Tagged, Forwarded uint64 }
 
@@ -723,7 +741,8 @@ func ProbeCounts(c *nftables.Conn) (map[string]ProbeCount, error) {
 	return out, nil
 }
 
-// SlotFlows are a slot's new flows since the table was written: marked
+// SlotFlows are a slot's new flows since the session's first write of the
+// table: marked
 // with it, and reaching its SNAT.
 type SlotFlows struct{ Marked, Translated uint64 }
 
@@ -741,7 +760,8 @@ func ForwardCounts(c *nftables.Conn, p PodStage) (map[uint8]SlotFlows, error) {
 }
 
 // PortlessDrops reads the port-less counters of p's policies (D4): the
-// packets counted under each address since the table was written.
+// packets counted under each address since the session's first write of the
+// table.
 func PortlessDrops(c *nftables.Conn, p PodStage) (map[netip.Addr]uint64, error) {
 	counts, err := stageCounters(c)
 	if err != nil {
@@ -756,6 +776,25 @@ func PortlessDrops(c *nftables.Conn, p PodStage) (map[netip.Addr]uint64, error) 
 			if x.pf != nil && x.pf.Address.IsValid() {
 				out[x.pf.Address] += counts["pf_"+name+"_"+x.n]
 			}
+		}
+	}
+	return out, nil
+}
+
+// SlotTraffic reads the packets and bytes each slot's pods sent, by the
+// slot's address, since the session's first write of the table.
+func SlotTraffic(c *nftables.Conn, slots map[uint8]netip.Addr) (map[netip.Addr]Traffic, error) {
+	byName, err := namedCounters(c)
+	if err != nil {
+		return nil, err
+	}
+	out := map[netip.Addr]Traffic{}
+	for id, addr := range slots {
+		if ctr := byName[fmt.Sprintf("po_%d", id)]; ctr != nil {
+			t := out[addr]
+			t.Packets[TrafficOutPod] += ctr.Packets
+			t.Bytes[TrafficOutPod] += ctr.Bytes
+			out[addr] = t
 		}
 	}
 	return out, nil

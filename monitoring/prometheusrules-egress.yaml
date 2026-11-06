@@ -1,0 +1,177 @@
+# PureLB egress alerts, for installs not using the Helm chart (the chart
+# renders the same rules with
+# Prometheus.lbnodeagent.prometheusRules.egressAlerts=true).
+# Requires the Prometheus Operator and both the lbnodeagent and allocator
+# metrics being scraped (see service-monitors.yaml).
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app: purelb
+  name: purelb-egress
+  namespace: purelb-system
+spec:
+  groups:
+    - name: purelb-egress
+      rules:
+        - alert: PurelbEgressNoAnnouncer
+          expr: purelb_egress_policy_conditions_false{condition="Announced",reason="NoAnnouncer"} > 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Egress addresses have no announcer
+            description: >-
+              {{ $value }} egress polic(ies) have an address no node with a live Lease announces, so traffic through it is not reaching the network. kubectl get egress -A shows the Announced condition.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegressnoannouncer
+        - alert: PurelbEgressSplitBrain
+          expr: purelb_egress_policy_conditions_false{condition="Announced",reason="SplitBrain"} > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: An egress address has two announcers
+            description: >-
+              {{ $value }} egress polic(ies) have a SingleAnnouncer address more than one node reports announcing. Replies may reach the wrong node.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegresssplitbrain
+        - alert: PurelbEgressNATInsertFailed
+          expr: rate(purelb_egress_nat_insert_failed_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: The eBPF stage is out of NAT ports on {{ $labels.instance }}
+            description: >-
+              New {{ $labels.family }} flows from selected pods on {{ $labels.instance }} are dropped: their slice has no free port, or the NAT table is full.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegressnatinsertfailed
+        - alert: PurelbEgressSliceExhaustion
+          expr: purelb_egress_slice_utilization_ratio >= 0.8
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Egress address {{ $labels.ip }} is running out of slices
+            description: >-
+              {{ $value | humanizePercentage }} of {{ $labels.ip }}'s usable slices are active or draining. New pod nodes can't get one once none are free.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegresssliceexhaustion
+        - alert: PurelbEgressChainMissing
+          expr: purelb_egress_node_conditions_false{condition="DatapathCompatible",reason=~"ChainMissing|CNIChainMissing"} > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: The egress CNI plugin isn't chained on some nodes
+            description: >-
+              {{ $value }} node(s) report {{ $labels.reason }}: new pods there start without egress's check. EgressNodeState conditions name the cause.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegresschainmissing
+        - alert: PurelbEgressCNIAddFailing
+          expr: rate(purelb_egress_cni_requests_total{op="ADD",result="error"}[5m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Egress CNI ADDs are failing on {{ $labels.instance }}
+            description: >-
+              Pods on {{ $labels.instance }} can't start because the egress plugin's ADD fails. kubelet retries; the agent's log gives each error.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegresscniaddfailing
+        - alert: PurelbEgressCNIAddSlow
+          expr: histogram_quantile(0.99, sum by (le) (rate(purelb_egress_cni_add_duration_seconds_bucket[5m]))) > 25
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Egress CNI ADDs are near their hold limit
+            description: >-
+              The p99 wait for a selected pod's slice and classifier is {{ $value | humanizeDuration }}, against a 25 s hold. Pods will start without their slice or fail, as their failurePolicy says.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegresscniaddslow
+        - alert: PurelbEgressDatapathFailed
+          expr: purelb_egress_node_conditions_false{condition="DatapathReady",reason="ApplyFailed"} > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: The egress datapath failed on some nodes
+            description: >-
+              {{ $value }} node(s) couldn't load or program the egress datapath and keep retrying. The EgressNodeState condition message and the agent's log give the error.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegressdatapathfailed
+        - alert: PurelbEgressForgedDrops
+          expr: rate(purelb_egress_datapath_packets_total{action="drop",reason=~"forged_.+|not_announcer"}[5m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Egress is dropping forged or misdirected packets on {{ $labels.instance }}
+            description: >-
+              {{ $labels.instance }} drops {{ $labels.family }} packets as {{ $labels.reason }}: something is sending to an egress address or the tunnel port that shouldn't, or the network routes replies to a node that isn't the announcer.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegressforgeddrops
+        - alert: PurelbEgressGenerationLag
+          expr: purelb_egress_lagging_nodes > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Nodes are lagging on egress policy {{ $labels.egress }}
+            description: >-
+              {{ $value }} node(s) were evicted from {{ $labels.egress }}'s gating for not acking its slice table, and may serve a stale one until they catch up.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegressgenerationlag
+        - alert: PurelbEgressDADFailed
+          expr: purelb_egress_node_address_faults{reason="DADFailed"} > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: An egress address failed duplicate address detection
+            description: >-
+              {{ $value }} node report(s): another host on the link has the address. It isn't announced there; the node retries with backoff.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegressdadfailed
+        - alert: PurelbEgressForwardBlocked
+          expr: purelb_egress_forward_blocked == 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Forwarded egress traffic is blocked on {{ $labels.instance }}
+            description: >-
+              New {{ $labels.family }} egress flows on {{ $labels.instance }} are marked but none reaches its SNAT: a forward filter (Docker, firewalld), rp_filter, or a NetworkPolicy denying every selected pod.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegressforwardblocked
+        - alert: PurelbEgressTunnelPeerDown
+          expr: purelb_egress_tunnel_peers_down > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Egress tunnel peers aren't answering {{ $labels.instance }}
+            description: >-
+              {{ $value }} peer(s) don't answer {{ $labels.instance }}'s probes. kubectl purelb egress dump names them; a firewall on the tunnel port is the usual cause.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegresstunnelpeerdown
+        - alert: PurelbEgressUnderlayUnencrypted
+          expr: purelb_egress_node_conditions_false{condition="UnderlayEncrypted",reason="UnderlayUnencrypted"} > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Egress traffic bypasses node-to-node encryption
+            description: >-
+              {{ $value }} node(s) encrypt node-to-node traffic, but the egress tunnel doesn't pass through it.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegressunderlayunencrypted
+        - alert: PurelbEgressCNISnapshotOld
+          expr: purelb_egress_cni_snapshot_age_seconds > 1800
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: The egress CNI snapshot on {{ $labels.instance }} is going stale
+            description: >-
+              {{ $labels.instance }}'s agent last wrote the snapshot {{ $value | humanizeDuration }} ago. At its age bound (1 h by default) the plugin passes pods through unchecked.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegresscnisnapshotold
+        - alert: PurelbEgressOrphanPins
+          expr: purelb_egress_orphan_pins > 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: Egress objects are left pinned on {{ $labels.instance }}
+            description: >-
+              {{ $value }} object(s) are pinned after egress was turned off and removed from {{ $labels.instance }}. kubectl purelb egress cleanup removes them.
+            runbook_url: https://purelb.io/docs/operations/monitoring/#purelbegressorphanpins

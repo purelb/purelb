@@ -12,6 +12,7 @@ PureLB requires a Kubernetes cluster with:
 
 - A working [Container Network Interface](https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/network-plugins/) (CNI). The CNI must be operational before PureLB is installed.
 - Linux nodes. PureLB uses the Linux netlink API to configure interfaces and routes.
+- For the optional [egress](../../configuration/egress/): a Linux kernel with CVE-2025-40183 fixed (6.6.113+, 6.12.54+, 6.17.4+ or 6.18+), and forwarding enabled.
 - For the optional [address guard](../../configuration/address-guard/): Linux kernel 6.6 or newer, and a container runtime whose default seccomp profile allows `bpf()` for a container with the `BPF` capability (containerd 1.7 does). Without them the guard can't run: with its default `failurePolicy: closed` the affected nodes announce no addresses; with `open` they announce unfiltered.
 
 ## ARP Behavior
@@ -53,6 +54,7 @@ Port | Protocol | Used by
 7474 | TCP | k8gobgp health (`/healthz`, `/readyz`)
 7475 | TCP | gobgpd metrics (node's primary address only)
 3784 | UDP | BFD, only when a neighbor enables BFD
+`tunnelPort` | UDP | Egress's Geneve tunnel between nodes, only with egress enabled
 
 ## External IPAM Requirements
 

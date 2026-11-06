@@ -72,13 +72,15 @@ type guardNodeState struct {
 	// be written: effect (withheld, incomplete) -> VIPs, non-zero only.
 	FailedVIPs map[string]float64 `json:"failedVIPs,omitempty"`
 	// Unattached are the interfaces the guard should be on and isn't.
-	Unattached    []string `json:"unattached,omitempty"`
-	AttachErrors  float64  `json:"attachErrors"`
-	Drops         float64  `json:"drops"`
-	WouldDrops    float64  `json:"wouldDrops"`
-	TopVIP        string   `json:"topVIP,omitempty"`
-	TopVIPPackets float64  `json:"topVIPPackets,omitempty"`
-	Error         string   `json:"error,omitempty"`
+	Unattached   []string `json:"unattached,omitempty"`
+	AttachErrors float64  `json:"attachErrors"`
+	Drops        float64  `json:"drops"`
+	// EgressSlice are packets passed to an egress slice (reason egress_slice).
+	EgressSlice   float64 `json:"egressSlice,omitempty"`
+	WouldDrops    float64 `json:"wouldDrops"`
+	TopVIP        string  `json:"topVIP,omitempty"`
+	TopVIPPackets float64 `json:"topVIPPackets,omitempty"`
+	Error         string  `json:"error,omitempty"`
 }
 
 // metricsFetcher returns one agent pod's metrics in the text exposition
@@ -353,6 +355,9 @@ func guardStateFrom(node, mode string, body []byte, fetchErr error) guardNodeSta
 		s.AttachErrors += m.GetCounter().GetValue()
 	}
 	for _, m := range guardMetrics(fams, "purelb_address_guard_packets_total") {
+		if metricLabel(m, "reason") == "egress_slice" {
+			s.EgressSlice += m.GetCounter().GetValue()
+		}
 		switch metricLabel(m, "action") {
 		case "drop":
 			s.Drops += m.GetCounter().GetValue()
@@ -416,10 +421,10 @@ func metricLabel(m *dto.Metric, name string) string {
 
 func renderGuardTable(states []guardNodeState) {
 	w := tableWriter(os.Stdout)
-	fmt.Fprintln(w, "NODE\tMODE\tSTATE\tLOADED\tATTACHED\tCHAIN\tDROPS\tTOP VIP")
+	fmt.Fprintln(w, "NODE\tMODE\tSTATE\tLOADED\tATTACHED\tCHAIN\tDROPS\tEGRESS SLICE\tTOP VIP")
 	restart := false
 	for _, s := range states {
-		loaded, attached, chain, drops, top := "-", "-", "-", "-", "-"
+		loaded, attached, chain, drops, top, slice := "-", "-", "-", "-", "-", "-"
 		if s.Error == "" {
 			loaded = map[bool]string{true: "yes", false: "no"}[s.Loaded]
 			if len(s.Attached) > 0 {
@@ -432,6 +437,7 @@ func renderGuardTable(states []guardNodeState) {
 			}
 			chain = chainSummary(s.Attached, s.ChainPosition)
 			drops = strconv.FormatFloat(s.Drops, 'f', 0, 64)
+			slice = strconv.FormatFloat(s.EgressSlice, 'f', 0, 64)
 			if s.WouldDrops > 0 {
 				drops += fmt.Sprintf(" (+%.0f would)", s.WouldDrops)
 			}
@@ -443,7 +449,7 @@ func renderGuardTable(states []guardNodeState) {
 		if s.State != guardStateEnforcing && s.State != guardStateMonitoring && s.State != guardOff {
 			state = strings.ToUpper(state)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.Node, s.Mode, state, loaded, attached, chain, drops, top)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.Node, s.Mode, state, loaded, attached, chain, drops, slice, top)
 		restart = restart || s.RestartRequired
 	}
 	_ = w.Flush()

@@ -383,14 +383,14 @@ func TestNetnsApplyDatapathPods(t *testing.T) {
 	assert.Empty(t, b.dp.forwardBlocked, "one window isn't enough")
 	window()
 	assert.Equal(t, []string{"IPv4"}, b.dp.forwardBlocked)
-	assert.Equal(t, 1.0, testutil.ToFloat64(forwardBlocked.WithLabelValues("IPv4")))
-	assert.Equal(t, 0.0, testutil.ToFloat64(forwardBlocked.WithLabelValues("IPv6")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(forwardBlocked.WithLabelValues("ipv4")))
+	assert.Equal(t, 0.0, testutil.ToFloat64(forwardBlocked.WithLabelValues("ipv6")))
 	assert.Equal(t, "ForwardBlocked", forwardCond(c4).Reason)
 	assert.Contains(t, forwardCond(c4).Message, "IPv4: ")
 	dropForeign(t, fw)
 	window()
 	assert.Empty(t, b.dp.forwardBlocked, "one reached its SNAT")
-	assert.Equal(t, 0.0, testutil.ToFloat64(forwardBlocked.WithLabelValues("IPv4")))
+	assert.Equal(t, 0.0, testutil.ToFloat64(forwardBlocked.WithLabelValues("ipv4")))
 	assert.Equal(t, metav1.ConditionTrue, forwardCond(c4).Status)
 
 	// The mark byte (D18): another rule setting a bit of an unset field's

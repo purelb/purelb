@@ -84,7 +84,22 @@ func (o *Objects) SetAddress(a netip.Addr, v Address) error {
 		e.Shift = uint8(bits.TrailingZeros32(v.SliceSize))
 	}
 	k := addrKey(a)
+	if err := o.EnsureTraffic(a); err != nil {
+		return err
+	}
 	return o.AddrCfg.Put(&k, &e)
+}
+
+// EnsureTraffic adds a's traffic counters unless it has them. The programs
+// only look them up, so an address without an entry isn't counted.
+func (o *Objects) EnsureTraffic(a netip.Addr) error {
+	k := addrKey(a)
+	zero := make([]egressTraffic, ebpf.MustPossibleCPU())
+	err := o.EgressTraffic.Update(&k, zero, ebpf.UpdateNoExist)
+	if errors.Is(err, ebpf.ErrKeyExist) {
+		return nil
+	}
+	return err
 }
 
 // PortKey is one (protocol, port) of an address.
@@ -159,6 +174,9 @@ func (o *Objects) RecoverAddresses() (map[netip.Addr]*AddressEntries, error) {
 // DeleteAddress removes a.
 func (o *Objects) DeleteAddress(a netip.Addr) error {
 	k := addrKey(a)
+	if err := ignoreNotExist(o.EgressTraffic.Delete(&k)); err != nil {
+		return err
+	}
 	return ignoreNotExist(o.AddrCfg.Delete(&k))
 }
 
@@ -243,10 +261,8 @@ func (o *Objects) DeleteNode(id uint64, n Node) error {
 	return ignoreNotExist(o.Nodes.Delete(id))
 }
 
-// RecoverNodes returns the nodes the maps hold, as an earlier agent left
-// them in the pinned maps, and removes underlay addresses that belong to
-// none of them (D12: recover from the kernel, then prune).
-func (o *Objects) RecoverNodes() (map[uint64]Node, error) {
+// ReadNodes reads the nodes, changing nothing.
+func (o *Objects) ReadNodes() (map[uint64]Node, error) {
 	nodes := map[uint64]Node{}
 	var id uint64
 	var v egressNode
@@ -264,6 +280,18 @@ func (o *Objects) RecoverNodes() (map[uint64]Node, error) {
 	if err := it.Err(); err != nil {
 		return nil, err
 	}
+	return nodes, nil
+}
+
+// RecoverNodes returns the nodes the maps hold, as an earlier agent left
+// them in the pinned maps, and removes underlay addresses that belong to
+// none of them (D12: recover from the kernel, then prune).
+func (o *Objects) RecoverNodes() (map[uint64]Node, error) {
+	nodes, err := o.ReadNodes()
+	if err != nil {
+		return nil, err
+	}
+	var id uint64
 	var k egressUnderlayKey
 	var stale []egressUnderlayKey
 	ui := o.NodeByUnderlay.Iterate()
@@ -316,6 +344,39 @@ func (o *Objects) Counts() (map[string][2]uint64, error) {
 		out[r] = c
 	}
 	return out, nil
+}
+
+// Traffic is one address's packets and bytes, by Traffic* kind.
+type Traffic struct {
+	Packets, Bytes [TrafficKinds]uint64
+}
+
+// The kinds of Traffic, in the programs' order (enum traffic_kind).
+const (
+	TrafficOutPod = iota
+	TrafficReturnPod
+	TrafficOutAnnouncer
+	TrafficReturnAnnouncer
+	TrafficKinds
+)
+
+// TrafficCounts returns each address's traffic, summed over CPUs.
+func (o *Objects) TrafficCounts() (map[netip.Addr]Traffic, error) {
+	out := map[netip.Addr]Traffic{}
+	var k egressAddrKey
+	var per []egressTraffic
+	it := o.EgressTraffic.Iterate()
+	for it.Next(&k, &per) {
+		var t Traffic
+		for _, v := range per {
+			for i := range TrafficKinds {
+				t.Packets[i] += v.Packets[i]
+				t.Bytes[i] += v.Bytes[i]
+			}
+		}
+		out[unwords(k.Addr, k.Family == familyV6)] = t
+	}
+	return out, it.Err()
 }
 
 func b2u(b bool) uint8 {

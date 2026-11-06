@@ -96,6 +96,7 @@ Value | Type | Default | Description
 `Prometheus.lbnodeagent.prometheusRules.enabled` | bool | `false` | Create PrometheusRules for lbnodeagent
 `Prometheus.lbnodeagent.prometheusRules.rules` | []object | `[]` | Alert rules
 `Prometheus.lbnodeagent.prometheusRules.addressGuardAlerts` | bool | `false` | Add the address guard alerts (`PurelbAddressGuardStandingDown`, `PurelbAddressGuardUnguardedVIPs`, `PurelbAddressGuardAttachErrors`, `PurelbAddressGuardFailedVIPs`, `PurelbAddressGuardRestartRequired`) to the lbnodeagent PrometheusRules. Needs `prometheusRules.enabled` too
+`Prometheus.lbnodeagent.prometheusRules.egressAlerts` | bool | `false` | Add the egress alerts (`PurelbEgress*`). Needs the allocator's metrics scraped too. See [Monitoring]({{< relref "/docs/operations/monitoring" >}}#egress-alerts).
 `Prometheus.gobgp.serviceMonitor.enabled` | bool | `false` | Create a ServiceMonitor for the k8gobgp sidecar: port 7473 (`k8gobgp_*`) and 7475 (gobgpd's `bgp_*`). Also creates the headless k8gobgp metrics Service. Requires `gobgp.enabled`
 `Prometheus.gobgp.serviceMonitor.extraLabels` | object | `{}` | Additional labels on the ServiceMonitor
 `Prometheus.gobgp.serviceMonitor.interval` | string | `30s` | Scrape interval for both endpoints. gobgpd caches its collector for 15s, so faster scraping only replays the cache

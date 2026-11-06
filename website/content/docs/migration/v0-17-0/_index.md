@@ -13,6 +13,8 @@ supersedes this page and installs v0.17.0 directly.
 
 ## Read this first
 
+This release adds [egress]({{< relref "/docs/configuration/egress" >}}), idle until an LBNodeAgent enables it. Apply the CRDs before upgrading the agents. Enabling it needs its hostPaths and DaemonSet, which `install-<version>.yaml` and the chart's `egress.enabled` add; use `install-noegress-<version>.yaml` to leave them out. A local pool's down-link subnets now leave the node's Lease, with hold-downs, so an address moves off a link that's down.
+
 **v0.17.0 changes the `v2` API in place.** There is no version bump and no
 conversion webhook: `v2` remains the served and stored version, and fields
 have been removed from it.

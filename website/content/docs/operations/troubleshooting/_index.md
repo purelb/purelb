@@ -181,3 +181,13 @@ kubectl logs -n purelb-system deployment/allocator
 kubectl logs -n purelb-system daemonset/lbnodeagent -c lbnodeagent
 kubectl logs -n purelb-system daemonset/lbnodeagent -c k8gobgp
 ```
+
+## Egress
+
+Start with `kubectl purelb status` and `kubectl get egress -A`: `Ready=False` names the condition and reason. Then:
+
+- `kubectl purelb egress trace <ns/pod> --dst <address:port/protocol>`: which policy applies, the address and ports, who holds it and the route. `--live` adds what each node's datapath has.
+- `kubectl purelb egress dump --node <node>`: the node's conditions, faults, addresses and slice owners, slots and packet counts by reason.
+- `kubectl purelb validate --live`: kernel config, bpffs, forwarding, `arp_announce` and chain order on each node.
+
+Each alert in [Monitoring]({{< relref "/docs/operations/monitoring" >}}#egress-alerts) has a runbook.

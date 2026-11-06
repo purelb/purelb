@@ -132,6 +132,59 @@ State | Meaning
 
 This state exists only in the agents' metrics, which the plugin reads through the API server's pod proxy: it needs `get` on `pods/proxy` in the PureLB namespace, which `cmd/kubectl-purelb/rbac-sample.yaml` grants with a separate namespaced Role (`purelb:plugin-metrics`). That permission is wider than reading metrics: it lets its holder send an HTTP GET to any port of any pod in the namespace, and because lbnodeagent runs with `hostNetwork`, that means any HTTP service on a node's address the API server can reach. Bind it only to users who should have that. Without it, the command says so and shows the state as unknown. `status` reads the same state to flag nodes that need a restart or have stood down: while some LBNodeAgent configures the guard, and after a change that may have removed it (an LBNodeAgent edited, or an `AddressGuardRestartRequired` Event, since the oldest agent started).
 
+## egress trace
+
+What egress does with a pod's flow.
+
+```sh
+kubectl purelb egress trace <namespace/pod> --dst <address[:port][/protocol]> [flags]
+```
+
+Flag | Description
+-----|------------
+`--dst` | Destination. IPv6 with a port: `[2001:db8::1]:53/udp`. The protocol defaults to TCP
+`--live` | Also read the pod's node's and the holders' datapaths
+`-o`, `--output` | `json` or `yaml`
+
+The policies selecting the pod, by rank, and which cover the destination; the winner and its `failurePolicy`; the address and ports the pod's node has; the pod stage; the nodes holding the address, and whether the flow goes `direct` or through the `tunnel`. It's computed from API objects, without knowing the cluster's networks, so a destination inside the cluster reads as covered and doesn't use egress.
+
+`--live` needs `create` on `pods/exec` in the PureLB namespace: the `purelb:plugin-egress-live` Role in `rbac-sample.yaml`. That runs commands as the agent, with its capabilities.
+
+## egress dump
+
+Each node's egress conditions and datapath.
+
+```sh
+kubectl purelb egress dump [flags]
+```
+
+Flag | Description
+-----|------------
+`--node` | Only this node
+`-o`, `--output` | `json` or `yaml`
+
+The node's conditions that are False and its faults, then what the kernel has: pod stage, NAT flow count, pod devices, each address with its slice owners and traffic, slots, and with `-o json` packet counts by reason. Needs the same `pods/exec` access as `trace --live`.
+
+## egress cleanup
+
+Break-glass: remove egress from nodes whose agent can't.
+
+```sh
+kubectl purelb egress cleanup (--node <node> | --all) [--force]
+```
+
+Runs a privileged pod on each node that removes the CNI chain entry and plugin, programs, pins, nft table, routing rules and tunnel, and the plugin's files. It resets egress's flows. It refuses while an LBNodeAgent enables egress, since the agent would put it all back, unless given `--force`. Needs the `purelb:plugin-egress-admin` Role in `rbac-sample.yaml`.
+
+## egress release-finalizers
+
+Break-glass: free policies stuck deleting because the allocator is gone.
+
+```sh
+kubectl purelb egress release-finalizers (<namespace/name> | <name> | --all)
+```
+
+Removes `purelb.io/egress` from an Egress (`<namespace/name>`) or ClusterEgress (`<name>`) and its EgressEndpoints. Quarantine and any external IPAM's release are skipped. Needs the `purelb:plugin-egress-admin` roles in `rbac-sample.yaml`.
+
 ## validate
 
 Configuration consistency checks.
@@ -143,6 +196,7 @@ kubectl purelb validate [flags]
 Flag | Description
 -----|------------
 `--strict` | Fail on warnings (for CI/CD)
+`--live` | Also check each node's egress settings: kernel config, bpffs, forwarding, `arp_announce`, chain order. Runs `lbnodeagent diag` through `kubectl exec`
 
 Checks: overlapping pools, unreachable subnets, missing BGP configuration for remote pools, LBNodeAgent consistency, and for the address guard: an installed LBNodeAgent CRD that would silently drop `addressGuard`, nodes whose kernel is too old to run it, an lbnodeagent container without the `BPF` capability, and excluded interfaces.
 

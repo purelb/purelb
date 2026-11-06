@@ -27,9 +27,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/cache"
 
 	"purelb.io/internal/egress"
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
+	listers "purelb.io/pkg/generated/listers/purelb/v2"
 )
 
 // events returns and clears the recorded events.
@@ -58,9 +60,12 @@ func condition(t *testing.T, e *purelbv2.Egress, typ string) metav1.Condition {
 func TestStatusPublished(t *testing.T) {
 	sel := map[string]string{"app": "a"}
 	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
-		node("n1", true), pod("voice", "a-1", "n1", sel), pod("voice", "a-2", "n1", sel),
+		node("n1", true), liveLease("n1", t0), pod("voice", "a-1", "n1", sel), pod("voice", "a-2", "n1", sel),
 		egressObj("voice", "sip", nil))
 	g.reconcile(t, "egress/voice/sip")
+	ep := g.ep(t)
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Announcing: []purelbv2.EgressAnnouncing{
+		{Endpoints: ep.Name, Address: ep.Spec.Address, Generation: ep.Generation}}})
 	g.reconcile(t, "egress/voice/sip")
 	e := g.egress(t, "voice", "sip")
 	assert.Equal(t, int32(2), e.Status.SelectedPods)
@@ -143,6 +148,24 @@ func TestSplitBrain(t *testing.T) {
 	c := condition(t, g.egress(t, "voice", "sip"), condAnnounced)
 	assert.Equal(t, reasonSplitBrain, c.Reason)
 	assert.True(t, hasEvent(g.events(), reasonSplitBrain, "192.168.10.10"))
+}
+
+// An address no node with a live Lease announces is NoAnnouncer, and stops
+// being once one does.
+func TestNoAnnouncer(t *testing.T) {
+	g := newGatingFixture(t, []*purelbv2.ServiceGroup{group("default")}, namespace("voice", nil),
+		node("n1", true), liveLease("n1", t0), egressObj("voice", "sip", nil))
+	g.reconcile(t, "egress/voice/sip")
+	g.reconcile(t, "egress/voice/sip")
+	c := condition(t, g.egress(t, "voice", "sip"), condAnnounced)
+	assert.Equal(t, metav1.ConditionFalse, c.Status)
+	assert.Equal(t, reasonNoAnnouncer, c.Reason)
+
+	ep := g.ep(t)
+	g.status(t, "n1", purelbv2.EgressNodeStateStatus{Announcing: []purelbv2.EgressAnnouncing{
+		{Endpoints: ep.Name, Address: ep.Spec.Address, Generation: ep.Generation}}})
+	g.reconcile(t, "egress/voice/sip")
+	assert.Equal(t, metav1.ConditionTrue, condition(t, g.egress(t, "voice", "sip"), condAnnounced).Status)
 }
 
 // What the nodes report reaches the policy (§4.8): a holder's address
@@ -338,4 +361,43 @@ func TestStatusWrittenOnce(t *testing.T) {
 	g.settle(t)
 	assert.Equal(t, 2, patches, "retried once, not rewritten")
 	assert.NotEmpty(t, g.egress(t, "voice", "sip").Status.Conditions)
+}
+
+func TestStatusCollector(t *testing.T) {
+	t.Cleanup(func() { currentStatus.Store(nil) })
+	currentStatus.Store(nil)
+	assert.Zero(t, ptu.CollectAndCount(statusCollector{}), "nothing until egress's informers sync")
+
+	nsIdx := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	falseCond := func(typ, reason string) metav1.Condition {
+		return metav1.Condition{Type: typ, Status: metav1.ConditionFalse, Reason: reason}
+	}
+	for _, n := range []string{"a", "b"} {
+		require.NoError(t, nsIdx.Add(&purelbv2.EgressNodeState{ObjectMeta: metav1.ObjectMeta{Name: n},
+			Status: purelbv2.EgressNodeStateStatus{
+				Conditions: []metav1.Condition{falseCond("DatapathCompatible", "ChainMissing"),
+					{Type: "DatapathReady", Status: metav1.ConditionTrue, Reason: "DatapathReady"}},
+				AddressFaults: []purelbv2.EgressAddressFault{{Address: "192.0.2.1", Reason: "DADFailed"}},
+			}}))
+	}
+	eIdx := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+	require.NoError(t, eIdx.Add(&purelbv2.Egress{ObjectMeta: metav1.ObjectMeta{Namespace: "x", Name: "e"},
+		Status: purelbv2.EgressStatus{Conditions: []metav1.Condition{falseCond("AddressUnique", "SplitBrain")}}}))
+	cIdx := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	require.NoError(t, cIdx.Add(&purelbv2.ClusterEgress{ObjectMeta: metav1.ObjectMeta{Name: "c"},
+		Status: purelbv2.EgressStatus{Conditions: []metav1.Condition{falseCond("AddressUnique", "SplitBrain")}}}))
+	currentStatus.Store(&statusListers{egresses: listers.NewEgressLister(eIdx),
+		clusterEgresses: listers.NewClusterEgressLister(cIdx), nodeStates: listers.NewEgressNodeStateLister(nsIdx)})
+
+	require.NoError(t, ptu.CollectAndCompare(statusCollector{}, strings.NewReader(`
+# HELP purelb_egress_node_address_faults Faults nodes report on egress addresses (EgressNodeState status.addressFaults), by reason.
+# TYPE purelb_egress_node_address_faults gauge
+purelb_egress_node_address_faults{reason="DADFailed"} 2
+# HELP purelb_egress_node_conditions_false Nodes with an EgressNodeState condition False, by condition and reason.
+# TYPE purelb_egress_node_conditions_false gauge
+purelb_egress_node_conditions_false{condition="DatapathCompatible",reason="ChainMissing"} 2
+# HELP purelb_egress_policy_conditions_false Egress and ClusterEgress policies with a condition False, by condition and reason.
+# TYPE purelb_egress_policy_conditions_false gauge
+purelb_egress_policy_conditions_false{condition="AddressUnique",reason="SplitBrain"} 2
+`)))
 }

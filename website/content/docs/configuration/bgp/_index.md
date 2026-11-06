@@ -259,3 +259,7 @@ kubectl explain bgpconfig.spec
 kubectl explain bgpconfig.spec.neighbors
 kubectl explain bgpconfig.spec.netlinkImport
 ```
+
+## Egress
+
+Routed [egress]({{< relref "/docs/configuration/egress" >}}) addresses are advertised the same way: k8gobgp learns them from netlink on `kube-lb0`. Don't enable BFD with them yet ([purelb/gobgp-netlink#65](https://github.com/purelb/gobgp-netlink/issues/65)).

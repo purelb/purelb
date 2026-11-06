@@ -16,6 +16,8 @@ The k8gobgp sidecar serves two more endpoints: the k8gobgp controller's `k8gobgp
 - `socket`: Sidecar IPC socket path
 - `method`: RPC method name (Allocate, Release, Stats)
 - `code`: RPC outcome code
+- `ip`: An egress address
+- `family`: `ipv4` or `ipv6`
 
 ## K8s Client Metrics (shared by Allocator and LBNodeAgent)
 
@@ -90,6 +92,41 @@ Metric | Type | Labels | Description
 `purelb_address_guard_unguarded_vips` | Gauge | `reason` | VIPs the configured guard is not filtering on this node: `not_loaded` (program not running) and `map_write_failed` (rules could not be written; retried) under `failurePolicy: open` only, always 0 under `closed`; `restart_pending` (enabled after the agent started, waiting for a restart) under either policy
 `purelb_address_guard_loaded` | Gauge | | 1 if the guard program is loaded. It is loaded only when the agent starts with the guard configured
 `purelb_address_guard_restart_required` | Gauge | | 1 if the guard was enabled or disabled after the agent started; restart `lbnodeagent` to apply it fully
+
+## Egress Metrics (LBNodeAgent)
+
+Metric | Type | Labels | Description
+-------|------|--------|------------
+`purelb_egress_packets_total` | Counter | `ip`, `direction`, `role` | Packets of an address on this node. `direction`: `out` or `return`. `role`: `pod_node` or `announcer`. Addresses of `Redacted` groups are left out. Read from the kernel every reconcile, so up to about 30 s old
+`purelb_egress_bytes_total` | Counter | `ip`, `direction`, `role` | The same, in bytes
+`purelb_egress_datapath_packets_total` | Counter | `reason`, `action`, `family` | Packets the egress programs handled. `action`: `pass` or `drop`
+`purelb_egress_tunnel_peers_down` | Gauge | | Tunnel peers not answering this node's probes
+`purelb_egress_orphan_pins` | Gauge | | Objects still pinned after egress was turned off and removed
+`purelb_egress_nat_insert_failed_total` | Counter | `family` | eBPF stage: new flows dropped with no free port or a full table
+`purelb_egress_nat_flows` | Gauge | | eBPF stage: NAT flows
+`purelb_egress_chain_reattached_total` | Counter | | eBPF stage: attached again at a chain's head after another program went ahead of it
+`purelb_egress_forward_blocked` | Gauge | `family` | 1 while new flows are marked but none reaches its SNAT
+`purelb_egress_mark_conflict` | Gauge | | 1 while another rule uses the mark byte and egress can't move
+`purelb_egress_mark_moves_total` | Counter | | Moves of the mark byte
+`purelb_egress_repointed_slots_total` | Counter | | Slots repointed to the tunnel at a graceful shutdown
+`purelb_egress_conntrack_deleted_total` | Counter | `reason` | Conntrack entries deleted: `slotRetired`, `podDeleted`, `markMoved`, `teardown`
+`purelb_egress_cni_requests_total` | Counter | `op`, `result` | CNI plugin requests answered
+`purelb_egress_cni_add_duration_seconds` | Histogram | | How long a CNI ADD waited
+`purelb_egress_cni_snapshot_age_seconds` | Gauge | | Time since this agent wrote the CNI snapshot
+`purelb_egress_cni_unrecorded_pods` | Gauge | | Pods with no plugin record
+`purelb_egress_flow_log_events_total` | Counter | `event` | Flow log events
+`purelb_egress_flow_log_overflows_total` | Counter | | Flow log events lost to a full socket buffer
+
+## Egress Metrics (Allocator)
+
+Metric | Type | Labels | Description
+-------|------|--------|------------
+`purelb_egress_policy_conditions_false` | Gauge | `condition`, `reason` | Policies with a condition False
+`purelb_egress_node_conditions_false` | Gauge | `condition`, `reason` | Nodes with an EgressNodeState condition False
+`purelb_egress_node_address_faults` | Gauge | `reason` | Faults nodes report on addresses
+`purelb_egress_slices` | Gauge | `ip`, `state` | An address's slices by state. Not reported for `Redacted` groups
+`purelb_egress_slice_utilization_ratio` | Gauge | `ip` | Share of its usable slices in use, draining included. Not reported for `Redacted` groups
+`purelb_egress_lagging_nodes` | Gauge | `egress` | Nodes evicted from a policy's gating for ack lag
 
 ## LBNodeAgent Election Results
 

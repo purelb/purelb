@@ -36,7 +36,11 @@ jobs:
           cache: true
 
       - name: Run tests
-        run: make check
+        run: |
+          curl -fsSL -o /tmp/prometheus.tgz https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.linux-amd64.tar.gz
+          echo "e811827af26d822afb09a4f28314f61b618b12cff5369835a67f674d8b46f39a  /tmp/prometheus.tgz" | sha256sum -c -
+          sudo tar -xzf /tmp/prometheus.tgz -C /usr/local/bin --strip-components=1 prometheus-3.5.0.linux-amd64/promtool
+          make check
 
   # Fail a PR whose CRDs changed incompatibly with its base: a field,
   # version or CRD removed, a field newly required, an enum narrowed, a

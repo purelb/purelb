@@ -51,7 +51,7 @@ type validateSummary struct {
 
 func newValidateCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 	var output string
-	var strict bool
+	var strict, live bool
 
 	cmd := &cobra.Command{
 		Use:   "validate",
@@ -65,19 +65,20 @@ func newValidateCmd(flags *genericclioptions.ConfigFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runValidate(cmd.Context(), c, format, strict)
+			return runValidate(cmd.Context(), c, format, strict, live)
 		},
 	}
 
 	cmd.Flags().StringVarP(&output, "output", "o", "", "Output format: table, json, yaml")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Treat warnings as failures (for CI/CD)")
+	cmd.Flags().BoolVar(&live, "live", false, "Also check each node's egress settings, through kubectl exec (needs create on pods/exec)")
 
 	return cmd
 }
 
 const defaultPoolName = "default"
 
-func runValidate(ctx context.Context, c *clients, format outputFormat, strict bool) error {
+func runValidate(ctx context.Context, c *clients, format outputFormat, strict, live bool) error {
 	var checks []checkResult
 
 	// List across all namespaces, not just the install namespace. The
@@ -422,6 +423,7 @@ func runValidate(ctx context.Context, c *clients, format outputFormat, strict bo
 		guardNodes = nodeList.Items
 	}
 	checks = append(checks, addressGuardChecks(agents, guardNodes, dsList, dsErr, lbnaCRD, crdErr)...)
+	checks = append(checks, egressChecks(ctx, c, agents, live)...)
 
 	// ========== BGP checks ==========
 	if bgpConfigList != nil && len(bgpConfigList.Items) > 0 {

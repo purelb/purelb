@@ -307,6 +307,26 @@ func TestInstallerTeardown(t *testing.T) {
 // configuration's (Cilium's cni.configMap): the installer stops, keeps the
 // binary the entry needs, and reports; once the CNI's configuration drops
 // it, the binary goes.
+// The break-glass removal needs no installer, desired state or status.
+func TestRemovePlugin(t *testing.T) {
+	e := newEnv(t)
+	e.enable(t, entry)
+	e.in.reconcile()
+	require.Equal(t, chained, e.read(t, e.flist))
+	bin := filepath.Join(e.bin, "purelb-egress")
+	require.FileExists(t, bin)
+
+	require.NoError(t, RemovePlugin(log.NewNopLogger(), e.conf, e.bin))
+	assert.Equal(t, flannelConf, e.read(t, e.flist), "flannel's bytes, as they were")
+	assert.NoFileExists(t, bin)
+
+	// A chain naming a binary that's already gone is removed just the same.
+	require.NoError(t, os.WriteFile(e.flist, []byte(chained), 0o640))
+	require.NoError(t, RemovePlugin(log.NewNopLogger(), e.conf, e.bin))
+	assert.Equal(t, flannelConf, e.read(t, e.flist))
+	assert.NoFileExists(t, bin)
+}
+
 func TestInstallerTeardownCNIOwned(t *testing.T) {
 	e := newEnv(t)
 	require.NoError(t, os.WriteFile(e.flist, []byte(chained), 0o640))

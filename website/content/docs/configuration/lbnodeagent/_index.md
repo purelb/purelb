@@ -256,3 +256,7 @@ spec:
 ## Complete Field Reference
 
 See the [CRD Reference]({{< relref "/docs/reference/crd-reference#lbnodeagent" >}}) for the complete field-by-field specification.
+
+## Egress
+
+`spec.egress` enables [egress]({{< relref "/docs/configuration/egress" >}}) on the nodes this LBNodeAgent selects. See the [CRD reference]({{< relref "/docs/reference/crd-reference" >}}#lbnodeagentegressspec).

@@ -25,6 +25,8 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"purelb.io/internal/bpfpin"
 )
 
 // load loads the programs as the agent does, with CAP_BPF and
@@ -116,4 +118,47 @@ func TestRecoverAddresses(t *testing.T) {
 	assert.Zero(t, e.Shift, "an unknown slice size is written as shift 0")
 	assert.Equal(t, Address{}, got[orphan].Address)
 	assert.Equal(t, map[uint16]uint64{3: NodeID("b")}, got[orphan].Slices)
+}
+
+// What is pinned can be read back read-only and removed, and only what egress
+// pinned counts.
+func TestPinnedReadAndRemove(t *testing.T) {
+	load(t) // skips without the capabilities
+	if !bpfpin.Usable("/sys/fs/bpf") {
+		t.Skip("needs a bpffs at /sys/fs/bpf")
+	}
+	dir, err := os.MkdirTemp("/sys/fs/bpf", "egress-pin-test-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	assert.Zero(t, PinnedCount(dir))
+
+	o, err := Load(dir)
+	require.NoError(t, err)
+	addr := netip.MustParseAddr("192.0.2.7")
+	require.NoError(t, o.SetAddress(addr, Address{Held: true, SliceSize: 4096, Base: 1024}))
+	require.NoError(t, o.Close())
+	assert.Positive(t, PinnedCount(dir))
+	assert.True(t, Pinned(dir))
+
+	ro, err := OpenPinned(dir)
+	require.NoError(t, err)
+	got, err := ro.RecoverAddresses()
+	require.NoError(t, err)
+	assert.True(t, got[addr].Held)
+	tr, err := ro.TrafficCounts()
+	require.NoError(t, err)
+	assert.Contains(t, tr, addr, "an address has its traffic entry")
+	require.NoError(t, ro.Close())
+
+	require.NoError(t, RemovePins(dir))
+	assert.Zero(t, PinnedCount(dir))
+}
+
+func TestPinPrefixes(t *testing.T) {
+	spec, err := loadEgress()
+	require.NoError(t, err)
+	for _, n := range []string{"pl_announce-eth0", "pl_steer-purelb-eg0", "pl_pod_tag-veth1", "pl_pod_out-eth0", InboundLink, "addr_cfg"} {
+		assert.True(t, isEgressPin(spec, n), n)
+	}
+	assert.False(t, isEgressPin(spec, "addrguard-tcx-eth0"), "the guard's are left")
 }

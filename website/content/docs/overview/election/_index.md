@@ -108,3 +108,7 @@ IPv4 failover convergence is accelerated by GARP and IPv6 by unsolicited Neighbo
 ## Monitoring
 
 Election health is exposed via [Prometheus metrics]({{< relref "/docs/reference/metrics#election-metrics" >}}). Key metrics: `purelb_election_lease_healthy`, `purelb_election_member_count`, and `purelb_election_winner_changes_total`.
+
+## Egress addresses
+
+A local-pool [egress]({{< relref "/docs/configuration/egress" >}}) address is elected like a LoadBalancer address, among the nodes `announcerNodeSelector` allows. A routed one has no election: every live selected node advertises it.

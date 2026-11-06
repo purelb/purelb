@@ -1,7 +1,9 @@
 # Sample RBAC for kubectl-purelb plugin users.
 #
 # The ClusterRole is read-only access to the resources the plugin queries.
-# No pod exec required -- all BGP data comes from BGPNodeStatus CRDs.
+# No pod exec required for these: all BGP data comes from BGPNodeStatus CRDs.
+# egress dump, trace --live and validate --live do need it, and egress cleanup
+# and release-finalizers need more: see the roles at the end of this file.
 #
 # The Role, in the PureLB namespace only, adds get on pods/proxy: the
 # address guard's live state (`guard`, and the guard part of `status`) is
@@ -64,6 +66,15 @@ rules:
   resources:
   - customresourcedefinitions
   verbs: [get]
+# Egress
+- apiGroups: ["purelb.io"]
+  resources:
+  - egresses
+  - clusteregresses
+  - egressendpoints
+  - egressmembers
+  - egressnodestates
+  verbs: [get, list, watch]
 # BGP CRDs
 - apiGroups: ["bgp.purelb.io"]
   resources:
@@ -85,3 +96,55 @@ rules:
   resources:
   - pods/proxy
   verbs: [get]
+---
+# egress dump, trace --live and validate --live run lbnodeagent diag in the
+# agents through kubectl exec. Exec into an lbnodeagent runs as it does, with
+# its capabilities, so this is far more than read-only: bind it to operators.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: purelb:plugin-egress-live
+  namespace: purelb-system
+  labels:
+    app: purelb
+rules:
+- apiGroups: [""]
+  resources:
+  - pods/exec
+  verbs: [create]
+---
+# The break-glass commands: egress cleanup runs a privileged pod on each node,
+# release-finalizers removes finalizers. Bind these only when they're needed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: purelb:plugin-egress-admin
+  namespace: purelb-system
+  labels:
+    app: purelb
+rules:
+- apiGroups: [""]
+  resources:
+  - pods
+  verbs: [create, delete, get]
+- apiGroups: [""]
+  resources:
+  - pods/log
+  verbs: [get]
+- apiGroups: ["purelb.io"]
+  resources:
+  - egressendpoints
+  verbs: [get, list, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: purelb:plugin-egress-admin
+  labels:
+    app: purelb
+rules:
+- apiGroups: ["purelb.io"]
+  resources:
+  - egresses
+  - clusteregresses
+  verbs: [get, list, patch]

@@ -302,3 +302,7 @@ Remove `addressGuard` from the LBNodeAgent. The guard detaches from every interf
 * With `seg6_enabled=1`, an IPv6 segment-routing header could deliver a packet to a VIP after the guard has inspected it.
 * If an IPv4 VIP is promoted to the interface's primary address (`promote_secondaries` and the node address being removed, by a DHCP renewal for example), the node's own traffic is sourced from the VIP and its replies are dropped. Monitor mode shows this as `would_drop` on the VIP before you enforce.
 * `loadBalancerSourceRanges` is still enforced by kube-proxy, not by the guard.
+
+## Egress
+
+Replies to an [egress]({{< relref "/docs/configuration/egress" >}}) address pass the guard by slice, counted under reason `egress_slice`. With egress enabled the guard's links are pinned too, so it keeps its place at the head of each chain across a restart, ahead of `pl_announce`. `kubectl purelb validate --live` checks that order.

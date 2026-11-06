@@ -123,6 +123,7 @@ func TestPodOutNAT(t *testing.T) {
 	for _, f := range families {
 		t.Run(f.name, func(t *testing.T) {
 			s := newStageH(t)
+			require.NoError(t, s.o.EnsureTraffic(f.egress))
 			slot := uint32(stageSlot)
 			if f.v6 {
 				slot++
@@ -142,6 +143,10 @@ func TestPodOutNAT(t *testing.T) {
 			assert.Equal(t, port, again)
 			assert.Equal(t, uint64(1), s.count("nat_new", f.v6))
 			assert.Equal(t, uint64(2), s.count("nat_out", f.v6))
+			tr, err := s.o.TrafficCounts()
+			require.NoError(t, err)
+			assert.Equal(t, uint64(2), tr[f.egress].Packets[TrafficOutPod], "both counted by the egress address")
+			assert.NotZero(t, tr[f.egress].Bytes[TrafficOutPod])
 
 			// UDP and echo too; the echo's identifier is what moves.
 			ret, data, _ = s.out(s.pkt(f, protoUDP, ports(40001, 53)))

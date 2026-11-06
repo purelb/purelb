@@ -36,7 +36,10 @@ import (
 )
 
 // Announced reasons (§4.8).
-const reasonSplitBrain = "SplitBrain"
+const (
+	reasonSplitBrain  = "SplitBrain"
+	reasonNoAnnouncer = "NoAnnouncer"
+)
 
 // splitBrainLeases is how long two nodes may both report a
 // SingleAnnouncer address before SplitBrain, in lease durations (D1).
@@ -277,6 +280,9 @@ func (r *Reconciler) observeAnnouncers(run *run, ep *purelbv2.EgressEndpoints) {
 	sort.Strings(obs)
 
 	ref := run.p.ref
+	if len(obs) == 0 {
+		run.conds.fail(condAnnounced, reasonNoAnnouncer, "no node with a live Lease reports announcing %s", ep.Spec.Address)
+	}
 	if ep.Spec.Placement == "SingleAnnouncer" && len(obs) > 1 {
 		since, ok := r.split[ep.Name]
 		if !ok {

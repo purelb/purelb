@@ -72,3 +72,7 @@ kubectl apply -f https://github.com/purelb/purelb/releases/download/v0.16.6/inst
 ```
 
 Existing services retain their allocated addresses during the upgrade.
+
+## Egress
+
+`install-<version>.yaml` includes [egress]({{< relref "/docs/configuration/egress" >}}), idle until an LBNodeAgent enables it. Use `install-noegress-<version>.yaml` (and `install-crds-noegress-<version>.yaml`) for PureLB and k8gobgp without it. The `-nobgp` files leave out egress as well.

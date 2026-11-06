@@ -33,6 +33,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+
+	"purelb.io/internal/egress/cnisock"
 )
 
 func pfx(s ...string) []netip.Prefix {
@@ -566,6 +568,77 @@ func TestNetnsPodStage(t *testing.T) {
 // command reaches the server rewritten to the egress address. Port 2121:
 // an nft-assigned helper runs on the port its rule names, and binding 21
 // needs CAP_NET_BIND_SERVICE.
+// A rewrite keeps the counts of the counters it still has, in both families;
+// SyncTable starts them from zero, for a new session; a rewrite with no table
+// to read from writes it.
+func TestNetnsRewriteKeepsCounters(t *testing.T) {
+	netnsOrSkip(t)
+	x := newStageNet(t)
+	for _, addr := range []string{"10.0.2.2", "fd02::2"} {
+		whoUDP(t, x.s, addr, 7001)
+	}
+	stage := testStage()
+	tbl := Table{Hardening: Hardening{TunnelPort: 6082}, Pods: &stage}
+	require.NoError(t, SyncTable(x.nft, tbl))
+	slots := map[uint8]netip.Addr{1: netip.MustParseAddr("10.9.9.9"), 2: netip.MustParseAddr("fd09::9")}
+	probe := func() {
+		sendUDP(t, x.p, cnisock.ProbeV4.String(), cnisock.ProbePort, 3)
+		sendUDP(t, x.p, cnisock.ProbeV6.String(), cnisock.ProbePort, 3)
+	}
+	// A datagram can wait for its first hop's neighbour.
+	seen := func(f string, want uint64) uint64 {
+		var n uint64
+		for end := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+			c, err := ProbeCounts(x.nft)
+			require.NoError(t, err)
+			if n = c[f].Seen; n == want || time.Now().After(end) {
+				return n
+			}
+		}
+	}
+	probe()
+	require.EqualValues(t, 3, seen("4", 3))
+	require.EqualValues(t, 3, seen("6", 3))
+	require.NotEmpty(t, askUDP(t, x.p, "10.0.2.2", 7001, 0, 5*time.Second))
+	require.NotEmpty(t, askUDP(t, x.p, "fd02::2", 7001, 0, 5*time.Second))
+	traffic, err := SlotTraffic(x.nft, slots)
+	require.NoError(t, err)
+	for _, addr := range slots {
+		require.NotZero(t, traffic[addr].Packets[TrafficOutPod], addr)
+		require.NotZero(t, traffic[addr].Bytes[TrafficOutPod], addr)
+	}
+
+	// A different table, as when a pod comes or goes, and counting goes on.
+	tbl.Hardening.TunnelPort = 6083
+	require.NoError(t, RewriteTable(x.nft, tbl))
+	ok, err := TableIntact(x.nft, tbl)
+	require.NoError(t, err)
+	assert.True(t, ok, "intact as rewritten")
+	kept, err := SlotTraffic(x.nft, slots)
+	require.NoError(t, err)
+	assert.Equal(t, traffic, kept, "traffic counts kept")
+	assert.EqualValues(t, 3, seen("4", 3))
+	assert.EqualValues(t, 3, seen("6", 3))
+	probe()
+	assert.EqualValues(t, 6, seen("4", 6), "counting goes on")
+	assert.EqualValues(t, 6, seen("6", 6), "counting goes on")
+
+	// A new session's first write.
+	require.NoError(t, SyncTable(x.nft, tbl))
+	c, err := ProbeCounts(x.nft)
+	require.NoError(t, err)
+	assert.Zero(t, c["4"].Seen)
+	assert.Zero(t, c["6"].Seen)
+
+	// The table gone from under the agent: written, with nothing to keep.
+	x.nft.DelTable(&nftables.Table{Family: nftables.TableFamilyINet, Name: NftTable})
+	require.NoError(t, x.nft.Flush())
+	require.NoError(t, RewriteTable(x.nft, tbl))
+	ok, err = TableIntact(x.nft, tbl)
+	require.NoError(t, err)
+	assert.True(t, ok, "restored")
+}
+
 func TestNetnsPodStageHelper(t *testing.T) {
 	netnsOrSkip(t)
 	x := newStageNet(t)

@@ -116,6 +116,30 @@ func Main(args []string) {
 	}
 }
 
+// RemovePlugin takes the plugin out of the chain and removes its binary, as a
+// teardown does, with no installer running (D26's break-glass).
+func RemovePlugin(logger log.Logger, confDir, binDir string) error {
+	// The removal installs the binary first if a chain names one that's gone,
+	// so no chain ever names a missing plugin: it needs its own binary.
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	in := &Installer{Logger: logger, ConfDir: confDir, BinDir: binDir, Self: self, now: time.Now, removing: true}
+	// The binary waits for the entry to stay out past revertWithin.
+	for deadline := time.Now().Add(5 * revertWithin); ; time.Sleep(100 * time.Millisecond) {
+		st := in.teardown()
+		switch {
+		case st.Chain == cnisock.ChainOff:
+			return nil
+		case st.Reason != "":
+			return errors.New(st.Message)
+		case time.Now().After(deadline):
+			return errors.New("the chain entry kept coming back")
+		}
+	}
+}
+
 // Run checks the CNI directories at start, on every change to them or to
 // the desired state, and every StatusRefresh, until stop closes.
 func (in *Installer) Run(stop <-chan struct{}) error {

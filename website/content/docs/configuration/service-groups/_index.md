@@ -294,3 +294,7 @@ The same applies to `spec.namespaces` and `spec.enforceNamespaces`: editing them
 ## Complete Field Reference
 
 See the [CRD Reference]({{< relref "/docs/reference/crd-reference#servicegroup" >}}) for the complete field-by-field specification.
+
+## Egress
+
+`spec.egress` allows policies to use the group's pools for [egress]({{< relref "/docs/configuration/egress" >}}), and sets its slices, announcers and tenancy limits. See the [CRD reference]({{< relref "/docs/reference/crd-reference" >}}#servicegroupegressspec).

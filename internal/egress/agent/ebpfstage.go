@@ -22,6 +22,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -357,7 +358,7 @@ func (a *Agent) syncStageSeen(st *dpState) {
 			blocked = append(blocked, fam)
 		}
 		if failed := c["nat_insert_failed"][i]; failed > st.insertFailed[i] {
-			natInsertFailed.WithLabelValues(fam).Add(float64(failed - st.insertFailed[i]))
+			natInsertFailed.WithLabelValues(strings.ToLower(fam)).Add(float64(failed - st.insertFailed[i]))
 			st.insertFailed[i] = failed
 		}
 	}

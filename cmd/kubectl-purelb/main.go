@@ -56,6 +56,7 @@ func main() {
 		newBGPCmd(flags),
 		newInspectCmd(flags),
 		newGuardCmd(flags),
+		newEgressCmd(flags),
 		newValidateCmd(flags),
 		newVersionCmd(flags),
 		newGoBGPCmd(flags),

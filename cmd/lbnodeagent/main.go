@@ -36,8 +36,10 @@ import (
 
 	"purelb.io/internal/addrguard"
 	egressagent "purelb.io/internal/egress/agent"
+	"purelb.io/internal/egress/cleanup"
 	"purelb.io/internal/egress/cniinstall"
 	"purelb.io/internal/egress/cniplugin"
+	"purelb.io/internal/egress/diag"
 	"purelb.io/internal/egress/uninstall"
 	"purelb.io/internal/election"
 	"purelb.io/internal/k8s"
@@ -376,7 +378,8 @@ func guardEnabledAtStartup(
 func main() {
 	// Multi-call (D34): installed in the CNI bin dir as purelb-egress,
 	// this binary is the CNI plugin; run as "cni-install", the purelb-cni
-	// installer; as "egress-uninstall", the Helm pre-delete hook.
+	// installer; as "egress-uninstall", the Helm pre-delete hook; as "diag",
+	// the live state for kubectl purelb; as "egress-cleanup", its break-glass.
 	if filepath.Base(os.Args[0]) == cniplugin.Name {
 		cniplugin.Main()
 		return
@@ -387,6 +390,14 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == uninstall.Command {
 		uninstall.Main(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == diag.Command {
+		diag.Main(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == cleanup.Command {
+		cleanup.Main(os.Args[2:])
 		return
 	}
 	logger := logging.Init()

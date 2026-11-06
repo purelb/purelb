@@ -292,6 +292,7 @@ func (r *Reconciler) start(stop <-chan struct{}, kube kubernetes.Interface, pure
 			return
 		}
 		r.synced.Store(true)
+		currentStatus.Store(&statusListers{egresses: r.egresses, clusterEgresses: r.clusterEgresses, nodeStates: r.nodeStates})
 		logging.Info(r.logger, "op", "egressStart", "msg", "egress informers synced")
 		for _, k := range r.Keys() {
 			enqueue(k, false)

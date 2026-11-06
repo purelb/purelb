@@ -58,7 +58,7 @@ func validateOutput(t *testing.T, objs ...runtime.Object) string {
 	}
 	orig := os.Stdout
 	os.Stdout = w
-	_ = runValidate(context.Background(), c, outputTable, false)
+	_ = runValidate(context.Background(), c, outputTable, false, false)
 	os.Stdout = orig
 	w.Close()
 

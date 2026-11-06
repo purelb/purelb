@@ -62,3 +62,7 @@ Component | Runs As | Capabilities | Network
 Allocator | Non-root (UID 65534), read-only filesystem | None | Cluster-internal only
 LBNodeAgent | Root (required for netlink) | `NET_ADMIN`, `NET_RAW`, `BPF` (for the [address guard](../../configuration/address-guard/)) | Host network
 k8gobgp | Root (required for BGP port 179) | `NET_ADMIN`, `NET_BIND_SERVICE`, `NET_RAW` | Host network
+
+## Egress
+
+[Egress]({{< relref "/docs/configuration/egress" >}}) runs on the same two components. The allocator allocates a policy's addresses and each node's port slices, and the agents program the datapath. A token-less `purelb-cni` DaemonSet keeps a CNI plugin chained on each node, which holds a selected pod until its slice and classifier are ready.

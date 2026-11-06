@@ -259,6 +259,36 @@ func TestReplySteering(t *testing.T) {
 
 // A slice with no owner, an unallocated slice and a port below the slices
 // find no owner; an owner missing from nodes is dropped too.
+// TestTraffic counts a reply by the address it's for, as a holder sends it to
+// its owner and as it reaches a pod on this node.
+func TestTraffic(t *testing.T) {
+	h := newHarness(t)
+	for _, f := range families {
+		t.Run(f.name, func(t *testing.T) {
+			before, err := h.o.TrafficCounts()
+			require.NoError(t, err)
+			pkt := reply(f, slicePort)
+			h.expect(f, pkt, tcxRedirect, "to_tunnel")
+			require.NoError(t, h.o.SetSlice(f.egress, sliceIndex+1, self))
+			local := reply(f, (sliceIndex+1)*4096+7)
+			h.expect(f, local, tcxNext, "owner_local")
+			after, err := h.o.TrafficCounts()
+			require.NoError(t, err)
+			b, a := before[f.egress], after[f.egress]
+			assert.Equal(t, uint64(1), a.Packets[TrafficReturnAnnouncer]-b.Packets[TrafficReturnAnnouncer])
+			assert.Equal(t, uint64(len(pkt)), a.Bytes[TrafficReturnAnnouncer]-b.Bytes[TrafficReturnAnnouncer])
+			assert.Equal(t, uint64(1), a.Packets[TrafficReturnPod]-b.Packets[TrafficReturnPod])
+			assert.Equal(t, uint64(len(local)), a.Bytes[TrafficReturnPod]-b.Bytes[TrafficReturnPod])
+			assert.Zero(t, a.Packets[TrafficOutPod])
+		})
+	}
+	// An address gone takes its counters with it.
+	require.NoError(t, h.o.DeleteAddress(families[0].egress))
+	after, err := h.o.TrafficCounts()
+	require.NoError(t, err)
+	assert.NotContains(t, after, families[0].egress)
+}
+
 func TestNoOwner(t *testing.T) {
 	h := newHarness(t)
 	for _, f := range families {

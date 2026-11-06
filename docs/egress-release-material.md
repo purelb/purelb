@@ -71,6 +71,26 @@ notes and docs of the release that ships it. Not user-facing prose.
 - `ServiceGroup.spec.egress` and `LBNodeAgent.spec.egress`. Absent, egress is
   refused / disabled.
 
+## Metrics, alerts and tooling
+
+- **Node agent metrics:** `purelb_egress_datapath_packets_total{reason,action,family}`,
+  `purelb_egress_packets_total{ip,direction,role}`, `purelb_egress_bytes_total`
+  (same labels; `ip` is left out for Redacted groups),
+  `purelb_egress_tunnel_peers_down`, `purelb_egress_orphan_pins`.
+- **Allocator metrics:** `purelb_egress_node_conditions_false{condition,reason}`,
+  `purelb_egress_node_address_faults{reason}`,
+  `purelb_egress_policy_conditions_false{condition,reason}`. None names a node.
+- **Label change:** `purelb_egress_forward_blocked` uses lowercase `family`
+  values (`ipv4`, `ipv6`), like every other egress metric.
+- **New condition reason:** `Announced=False NoAnnouncer` when an address has no
+  live announcer.
+- **16 `PurelbEgress*` alerts** in `monitoring/prometheusrules-egress.yaml` and
+  the chart (`egressAlerts`), with a runbook per alert in the monitoring page.
+- **`kubectl purelb egress trace|dump|cleanup|release-finalizers`**, egress
+  lines in `status`, `inspect` and `guard`, and egress checks in `validate`
+  (`--live` adds the per-node ones). `lbnodeagent diag` and `egress-cleanup`
+  are new subcommands of the agent binary.
+
 ## Install methods
 
 Egress ships like k8gobgp: a kustomize component (`deployments/components/egress`)
