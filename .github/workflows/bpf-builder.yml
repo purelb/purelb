@@ -1,0 +1,55 @@
+# Publishes the eBPF builder image for a PR that changes hack/bpf-builder, so
+# nobody pushes it by hand. The tag is that directory's git tree hash. A person
+# then runs `make bpf-builder-pin` and commits the reference (BUILDING.md).
+name: BPF builder image
+
+on:
+  pull_request:
+    branches: [main, feat/egress]
+    types: [opened, synchronize, reopened]
+    paths: ['hack/bpf-builder/**']
+
+jobs:
+  publish:
+    # A fork's PR gets no packages:write, and its image would have no owner here.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      # Keyless cosign signing uses the job's OIDC token.
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup cosign
+        uses: sigstore/cosign-installer@v3
+
+      # apt-get has been killed at 4 GB while its source was slow, cause
+      # unknown. The cap fails this job rather than starving the runner, and
+      # only the classic builder honours it.
+      - name: Build, push and sign
+        run: |
+          image="ghcr.io/purelb/purelb/bpf-builder:$(hack/bpf-builder.sh tag)"
+          if docker manifest inspect "$image" >/dev/null 2>&1; then
+            echo "$image is already published"
+          else
+            DOCKER_BUILDKIT=0 docker build --memory 4g --memory-swap 4g \
+              --ulimit nofile=65536:65536 \
+              --label org.opencontainers.image.source=https://github.com/purelb/purelb \
+              -t "$image" hack/bpf-builder
+            docker push "$image"
+            cosign sign --yes "$(docker inspect --format '{{index .RepoDigests 0}}' "$image")"
+          fi
+          echo "Published $image. Now run \`make bpf-builder-pin\` and commit \`hack/bpf-builder.ref\`." >> "$GITHUB_STEP_SUMMARY"
