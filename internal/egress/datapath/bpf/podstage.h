@@ -321,6 +321,15 @@ static __always_inline int pod_send(struct __sk_buff *skb, struct egress_config 
 	return forward(skb, s, table);
 }
 
+// A pod's packet translated: s->n is the egress address.
+static __always_inline void count_out(struct __sk_buff *skb, struct scratch *s, __u8 fam)
+{
+	__builtin_memset(&s->tk, 0, sizeof(s->tk));
+	__builtin_memcpy(s->tk.addr, s->n, 16);
+	s->tk.family = fam;
+	traffic(&s->tk, T_OUT_POD, skb->len);
+}
+
 static __always_inline int pod_out(struct __sk_buff *skb, __u32 l3)
 {
 	struct egress_config *c;
@@ -426,6 +435,7 @@ static __always_inline int pod_out(struct __sk_buff *skb, __u32 l3)
 			return TCX_DROP;
 		}
 		count(R_NAT_OUT, fam);
+		count_out(skb, s, fam);
 		return pod_send(skb, c, s, target, table);
 	}
 
@@ -605,6 +615,7 @@ static __always_inline int pod_out(struct __sk_buff *skb, __u32 l3)
 	if (s->mss && f->rproto == IPPROTO_TCP && (s->tcpfl & TCP_SYN))
 		clamp_mss(skb);
 	count(R_NAT_OUT, fam);
+	count_out(skb, s, fam);
 	return pod_send(skb, c, s, target, table);
 }
 
@@ -766,6 +777,7 @@ static __noinline int pod_reply(struct __sk_buff *skb, __u32 l3)
 			return TCX_DROP;
 		}
 		count(R_NAT_REPLY, fam);
+		traffic(&f->dst, T_RETURN_POD, skb->len);
 	} else {
 		rport = 0;
 		lport = 0;
@@ -816,6 +828,7 @@ static __noinline int pod_reply(struct __sk_buff *skb, __u32 l3)
 			}
 		}
 		count(R_NAT_REPLY, fam);
+		traffic(&f->dst, T_RETURN_POD, skb->len);
 	}
 	// s->n is the pod's address.
 	__builtin_memset(&s->ak, 0, sizeof(s->ak));

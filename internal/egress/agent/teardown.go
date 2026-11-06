@@ -22,6 +22,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/go-kit/log"
 	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -46,13 +47,23 @@ const detachWait = 5 * time.Second
 func (a *Agent) endDatapath(snapDone <-chan struct{}) {
 	a.runner.submit(func() {
 		unchained := a.unchain(snapDone)
-		if err := a.tear(); err != nil {
+		err := a.tear()
+		currentDPMetrics.Store(nil)
+		d := a.config.Load()
+		off := d == nil || d.spec == nil || !d.spec.Enabled
+		if off {
+			egressIdle.Store(true)
+		}
+		if err != nil {
 			logging.Info(a.logger, "op", "egressTeardown", "node", a.node, "error", err,
 				"msg", "removing the egress datapath; retrying")
 			time.AfterFunc(datapathRetry, func() { a.add(keyTeardown, false) })
 			return
 		}
-		if unchained {
+		// Enabled again during the teardown, the files are the new session's:
+		// it writes the desired state once, so removing it would leave the
+		// installer idle with the plugin chained.
+		if unchained && off {
 			a.removePluginFiles()
 		}
 		a.capability.Store(nil)
@@ -176,6 +187,13 @@ func (a *Agent) teardown() error {
 	a.pools.Store(nil)
 	logging.Info(a.logger, "op", "egressTeardown", "node", a.node, "msg", "egress datapath removed")
 	return nil
+}
+
+// Cleanup removes a node's egress datapath with no agent running (D26's
+// break-glass): teardown finds an earlier agent's state from the pins.
+func Cleanup(logger log.Logger, node, pinRoot string) error {
+	a := &Agent{logger: logger, node: node, dp: &dpState{pinRoot: pinRoot}}
+	return a.teardown()
 }
 
 // flushSlots deletes, at teardown, the conntrack entries of every slot

@@ -155,6 +155,71 @@ Field | Type | Description
 
 ---
 
+## Egress
+
+A namespaced policy giving selected pods a stable source address. See [Egress]({{< relref "/docs/configuration/egress" >}}). `ClusterEgress` is the cluster-scoped form: it also selects namespaces, and ranks above every Egress.
+
+### EgressSpec
+
+Field | Type | Description
+------|------|------------
+`serviceGroup` | string | ServiceGroup in the PureLB namespace. Absent, the namespace's default group
+`serviceRef.name` | string | Use this LoadBalancer Service's address, for the pods its selector selects
+`podSelector` | LabelSelector | The pods. `{}` selects every pod. Required unless `serviceRef` is set
+`pool` | string | A pool of the group, by name or unnamed subnet
+`addresses` | []string | Pin the addresses, at most one per family
+`ipFamilyPolicy` | string | `SingleStack`, `PreferDualStack` or `RequireDualStack`
+`skipIPv6DAD` | bool | Skip DAD on dedicated local-pool addresses. Absent, the pool's setting
+`destinations.include` | []object | `cidrs`, and optional `ports` (`protocol`, `port`, `endPort`). A destination must match one
+`destinations.exclude` | []object | The same; a destination matching one doesn't use egress
+`affinity.mode` | string | `Hash`, `PerPod` or `Inherit`
+`affinity.identity` | string | `StatefulSetOrdinal`: what keys PerPod addresses
+`ports.sliceSize` | int | Ports per slice: 64 to 16,384, a power of two. Absent, the group's
+`ports.reserved` | []object | `protocol`, `port`, `podSelector`: keep a pod's own source port on the address
+`helpers` | []string | `SIP`, `FTP`, `H323`. PerPod only
+`failurePolicy` | string | `FailClosed` or `FailOpen`
+`priority` | int | Orders overlapping policies, higher first
+`optOut` | string | `Allowed`: pods annotated `purelb.io/egress: "false"` are excluded. `Denied`: the annotation is ignored
+
+### LBNodeAgentEgressSpec
+
+`spec.egress` on an LBNodeAgent.
+
+Field | Type | Description
+------|------|------------
+`enabled` | bool | `false` leaves the node exactly as without egress
+`excludedNetworks` | []string | Destinations egress leaves alone, added to the detected cluster networks
+`podNetworks` | []string | Pod ranges discovery can't see
+`tunnelEncapsulation` | string | `Auto`, `L3` or `L2`. Every node must agree
+`tunnelPort` | int | The Geneve UDP port. Must differ from the CNI's
+`markField` | string | The mark byte, for example `0x000000ff`. Unset, a node moves to a free one on a conflict; set, it reports `MarkConflict` instead
+`reservedClusterSlots` | int | Per-node slots reserved for ClusterEgresses
+`flowLog` | bool | Log egress flows, on netfilter-stage nodes
+`snapshotMaxAge` | duration | How long the CNI plugin trusts the agent's snapshot while the agent is down
+
+### ServiceGroupEgressSpec
+
+`spec.egress` on a ServiceGroup.
+
+Field | Type | Description
+------|------|------------
+`allowed` | bool | `false` refuses new policies and withdraws existing ones
+`allowSharedServiceAddress` | bool | Permit `serviceRef`
+`affinityModes` | []string | The modes a policy may use
+`helpers` | []string | The helpers a policy may request
+`announcerNodeSelector` | LabelSelector | The nodes that announce or advertise. Absent, every egress-capable node
+`preferPodNodes` | bool | Local pools prefer nodes holding an Active slice
+`sliceSize` | int | Default ports per slice
+`reserveSlices` | int | Unassigned slices each address keeps ready
+`releaseQuarantine` | duration | How long a released address waits before reuse
+`tenancy` | object | `allowClusterEgress`, `priorityCeiling`, `statusDetail`, `onRevocation`, `maxEgressesPerNamespace`
+
+### Status and other kinds
+
+A policy's `status` has its selected and excluded pods, each address with its announcers, slices and capacity, and these conditions: `Allocated`, `Contained`, `Announced`, `DatapathReady`, `DatapathCompatible`, `Guarded`, `PortCapacity`, `PolicyEffective`, `AddressUnique` and `Ready`, plus the warnings `UnderlayEncrypted` and `CNIEgressPolicy`, which `Ready` ignores.
+
+`EgressEndpoints`, `EgressAddress` and `EgressMembers` (in the PureLB namespace) and `EgressNodeState` (cluster-scoped, one per node) are written by the allocator and agents. You shouldn't edit them.
+
 ## BGPConfiguration
 
 **API Version:** `bgp.purelb.io/v1`

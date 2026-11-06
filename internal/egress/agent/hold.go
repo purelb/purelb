@@ -87,6 +87,9 @@ type holdings struct {
 	// the held addresses the Service path places.
 	place  map[netip.Addr]placeWant
 	shared map[netip.Addr]bool
+	// redacted are the addresses of Redacted groups: no per-address metric
+	// names them (D21).
+	redacted map[netip.Addr]bool
 	// unheld are the dedicated (egress-only) addresses this node doesn't
 	// hold, with their placement keys. One it holds but hasn't read in
 	// full yet is in neither place nor unheld.
@@ -151,6 +154,12 @@ func (a *Agent) syncHoldings(s *session) holdings {
 		h.egress = append(h.egress, addr)
 		h.addrs[addr] = &datapath.AddressEntries{}
 		g := d.groups[ea.Spec.ServiceGroup]
+		if groupRedacted(g) {
+			if h.redacted == nil {
+				h.redacted = map[netip.Addr]bool{}
+			}
+			h.redacted[addr] = true
+		}
 		if !a.holds(s, ea, g, addr) {
 			if ea.Spec.SharedWith == nil {
 				h.unheld[addr] = placementKey(ea)

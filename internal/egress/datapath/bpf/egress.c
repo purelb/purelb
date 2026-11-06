@@ -143,6 +143,20 @@ struct addr_key {
 	__u8 pad[3];
 };
 
+// Traffic of one egress address, per CPU, by direction and role.
+enum traffic_kind {
+	T_OUT_POD = 0,  // a pod's packet leaving through it, on the pod's node
+	T_RETURN_POD,   // a reply to it, for a pod on this node
+	T_OUT_ANNOUNCER, // tunnel transit sent out the pool interface
+	T_RETURN_ANNOUNCER, // a reply sent to its owner through the tunnel
+	T_MAX,
+};
+
+struct traffic {
+	__u64 packets[T_MAX];
+	__u64 bytes[T_MAX];
+};
+
 // What a node knows of one egress address.
 struct addr_entry {
 	__u64 whole_owner; // PerPod: the node that owns every port and protocol; 0: sliced
@@ -427,6 +441,7 @@ struct scratch {
 	__u8 st_pad[3];
 	struct pod_dev pd;
 	struct pod_slot sl;
+	struct addr_key tk; // egress_traffic's key
 	__u8 eth[16];  // PTB: the arriving frame's Ethernet header
 	__u8 ip[40];   // PTB: the new IP header
 	__u8 icmp[8];  // PTB: the new ICMP header
@@ -565,6 +580,16 @@ struct {
 	__type(value, __u64);
 } egress_reasons SEC(".maps");
 
+// The agent adds an address's entry with its addr_cfg entry and removes it
+// with it, so these programs only look entries up and never allocate.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+	__uint(max_entries, 8192);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct addr_key);
+	__type(value, struct traffic);
+} egress_traffic SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 131072);
@@ -690,6 +715,18 @@ static __always_inline void count(__u32 reason, __u8 family)
 
 	if (v)
 		*v += 1; // per-CPU: no atomics needed
+}
+
+// Count a packet of an egress address. k must not be on the stack
+// (ag_scratch: helpers' stack writes need PERFMON on some kernels).
+static __always_inline void traffic(const struct addr_key *k, __u32 kind, __u32 len)
+{
+	struct traffic *t = bpf_map_lookup_elem(&egress_traffic, k);
+
+	if (t) {
+		t->packets[kind & (T_MAX - 1)] += 1;
+		t->bytes[kind & (T_MAX - 1)] += len;
+	}
 }
 
 // Write field into the mark byte, the whole 32 bits at once: without the
@@ -1343,6 +1380,7 @@ static __always_inline int uplink(struct __sk_buff *skb, __u32 l3)
 		if (pif && pif->n <= DIRECT_MAX)
 			set_mark(skb, c, REPLY_FLAG + 1 + pif->n);
 		count(R_OWNER_LOCAL, f->dst.family);
+		traffic(&f->dst, T_RETURN_POD, skb->len);
 		return TCX_NEXT;
 	}
 	n = bpf_map_lookup_elem(&nodes, &s->owner);
@@ -1375,6 +1413,7 @@ static __always_inline int uplink(struct __sk_buff *skb, __u32 l3)
 		return TCX_DROP;
 	}
 	count(R_TO_TUNNEL, f->dst.family);
+	traffic(&f->dst, T_RETURN_ANNOUNCER, skb->len);
 	return bpf_redirect(c->tun_ifindex, 0);
 }
 
@@ -1580,6 +1619,7 @@ int pl_announce_tun(struct __sk_buff *skb)
 		}
 		s->fval = ac->table;
 		count(R_TRANSIT, f->dst.family);
+		traffic(&f->src, T_OUT_ANNOUNCER, skb->len);
 		return forward(skb, s, (__u32)s->fval);
 	}
 
@@ -1596,6 +1636,7 @@ int pl_announce_tun(struct __sk_buff *skb)
 				return pod_reply(skb, l3);
 			set_mark(skb, c, REPLY_FLAG);
 			count(R_REPLY_LOCAL, f->dst.family);
+			traffic(&f->dst, T_RETURN_POD, skb->len);
 			return TCX_NEXT;
 		}
 	}

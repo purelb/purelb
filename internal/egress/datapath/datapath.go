@@ -18,12 +18,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"net/netip"
 	"os"
 	"path/filepath"
 
 	"github.com/cilium/ebpf"
+
+	"purelb.io/internal/egress/diagreport"
 )
 
 // Address families as the programs store them (AF_INET, AF_INET6).
@@ -42,6 +43,25 @@ var Reasons = []string{
 	"nat_out", "nat_new", "nat_reply", "nat_icmp_error", "nat_miss", "nat_insert_failed", "nat_midstream",
 	"nat_no_slot", "frag_untracked", "pod_syn", "pod_out_syn", "tunnel_port", "pod_gone", "ptb_limited",
 	"inbound_recorded", "inbound_reply",
+}
+
+// droppingReasons are the counter reasons whose packet the programs drop,
+// the rest passing on. ptb_sent's packet was answered with an error, not sent.
+var droppingReasons = map[string]bool{
+	"not_announcer": true, "no_owner": true, "frag_missing": true, "ptb_sent": true, "ptb_failed": true,
+	"no_node": true, "malformed": true, "forged_tunnel": true, "forged_inner": true,
+	"forged_inner_destination": true, "ttl_expired": true, "no_route": true, "no_holder": true,
+	"source_check": true, "fail_closed": true, "nat_miss": true, "nat_insert_failed": true, "nat_no_slot": true,
+	"frag_untracked": true, "tunnel_port": true, "pod_gone": true, "ptb_limited": true,
+}
+
+// ReasonAction is what the programs do with a packet counted under reason:
+// "drop" or "pass", as in the address guard's metrics.
+func ReasonAction(reason string) string {
+	if droppingReasons[reason] {
+		return "drop"
+	}
+	return "pass"
 }
 
 // Objects are egress's loaded programs and maps.
@@ -98,12 +118,7 @@ func Load(pinDir string) (*Objects, error) {
 // name, so every node computes the same id with no coordination, and 0 is
 // never one (0 means "no owner").
 func NodeID(name string) uint64 {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(name))
-	if id := h.Sum64(); id != 0 {
-		return id
-	}
-	return 1
+	return diagreport.NodeID(name)
 }
 
 // words is a's bytes as the programs hold them: copied from the packet

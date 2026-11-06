@@ -16,14 +16,19 @@ package datapath
 
 import (
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	"github.com/google/nftables"
 	"github.com/vishvananda/netlink"
 
 	"purelb.io/internal/bpfpin"
+	"purelb.io/internal/egress/diagreport"
 )
 
 // DeleteHardening removes egress's table, if there is one (D26): the
@@ -57,6 +62,9 @@ func TunnelExists(h *netlink.Handle) bool {
 	return err == nil
 }
 
+// pinPrefixes are the names of egress's pinned links.
+var pinPrefixes = []string{"pl_announce-", "pl_steer-", "pl_pod_tag-", "pl_pod_out-", InboundLink}
+
 // RemovePins removes what egress pinned in pinDir (D12): its links, which
 // detaches them, and its maps. Other pins there (the guard's) are left.
 func RemovePins(pinDir string) error {
@@ -64,7 +72,7 @@ func RemovePins(pinDir string) error {
 		return nil
 	}
 	var errs []error
-	for _, prefix := range []string{"pl_announce-", "pl_steer-", "pl_pod_tag-"} {
+	for _, prefix := range pinPrefixes {
 		if _, err := bpfpin.Sweep(pinDir, prefix, func(string) bool { return false }); err != nil {
 			errs = append(errs, err)
 		}
@@ -81,22 +89,113 @@ func RemovePins(pinDir string) error {
 	return errors.Join(errs...)
 }
 
-// Pinned reports whether pinDir holds anything egress pinned.
-func Pinned(pinDir string) bool {
+// PinnedCount counts what egress pinned in pinDir; other pins there (the
+// guard's) aren't counted. An empty directory costs one read, so it is cheap
+// on a node with egress off.
+func PinnedCount(pinDir string) int {
 	if !bpfpin.Usable(pinDir) {
-		return false
+		return 0
 	}
 	entries, err := os.ReadDir(pinDir)
 	if err != nil || len(entries) == 0 {
-		return false
+		return 0
 	}
 	spec, err := loadEgress()
 	if err != nil {
-		return false
+		return 0
 	}
+	n := 0
 	for _, e := range entries {
-		n := e.Name()
-		if _, isMap := spec.Maps[n]; isMap || strings.HasPrefix(n, "pl_announce-") || strings.HasPrefix(n, "pl_steer-") {
+		if isEgressPin(spec, e.Name()) {
+			n++
+		}
+	}
+	return n
+}
+
+// OpenPinned opens egress's maps pinned in pinDir read-only, for reading
+// them from outside the agent. No programs are loaded; only the maps
+// `lbnodeagent diag` reads are set.
+func OpenPinned(pinDir string) (*Objects, error) {
+	o := &Objects{}
+	for name, m := range map[string]**ebpf.Map{
+		"addr_cfg": &o.AddrCfg, "slices": &o.Slices, "reserved": &o.Reserved, "svc_ports": &o.SvcPorts, "nodes": &o.Nodes,
+		"egress_reasons": &o.EgressReasons, "egress_traffic": &o.EgressTraffic, "pod_devs": &o.PodDevs,
+		"pod_slots": &o.PodSlots, "nat": &o.Nat,
+	} {
+		p, err := ebpf.LoadPinnedMap(filepath.Join(pinDir, name), &ebpf.LoadPinOptions{ReadOnly: true})
+		if err != nil {
+			_ = o.Close()
+			return nil, fmt.Errorf("opening %s: %w", name, err)
+		}
+		*m = p
+	}
+	return o, nil
+}
+
+// ChainOrders reads where the address guard and pl_announce run on each
+// interface pl_announce is pinned on (D12's chain invariant).
+func ChainOrders(pinDir string) []diagreport.Chain {
+	entries, err := os.ReadDir(pinDir)
+	if err != nil {
+		return nil
+	}
+	var out []diagreport.Chain
+	for _, e := range entries {
+		name, ok := strings.CutPrefix(e.Name(), "pl_announce-")
+		if !ok || name == TunnelName {
+			continue
+		}
+		iface, err := net.InterfaceByName(name)
+		if err != nil {
+			continue
+		}
+		res, err := link.QueryPrograms(link.QueryOptions{Target: iface.Index, Attach: ebpf.AttachTCXIngress})
+		if err != nil {
+			continue
+		}
+		c := diagreport.Chain{Interface: name, Announce: pinnedPosition(res, filepath.Join(pinDir, e.Name()))}
+		for _, g := range entries {
+			if strings.HasPrefix(g.Name(), "addrguard-") && strings.HasSuffix(g.Name(), "-"+name) {
+				c.Guard = pinnedPosition(res, filepath.Join(pinDir, g.Name()))
+			}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// pinnedPosition is where the program of the link pinned at path is in res,
+// from 1; 0 when it can't be told.
+func pinnedPosition(res *link.QueryResult, path string) int {
+	l, err := link.LoadPinnedLink(path, &ebpf.LoadPinOptions{ReadOnly: true})
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = l.Close() }()
+	info, err := l.Info()
+	if err != nil {
+		return 0
+	}
+	for i, p := range res.Programs {
+		if p.ID == info.Program {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// Pinned reports whether pinDir holds anything egress pinned.
+func Pinned(pinDir string) bool {
+	return PinnedCount(pinDir) > 0
+}
+
+func isEgressPin(spec *ebpf.CollectionSpec, name string) bool {
+	if _, isMap := spec.Maps[name]; isMap {
+		return true
+	}
+	for _, prefix := range pinPrefixes {
+		if strings.HasPrefix(name, prefix) {
 			return true
 		}
 	}

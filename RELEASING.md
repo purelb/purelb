@@ -276,7 +276,43 @@ kubectl purelb status                                          # no errors
 
 Tear down as for smoke test B.
 
-If anything is empty, erroring, or missing in any of the three
+### Smoke test D — egress enable, disable and downgrade
+
+Egress is idle until an LBNodeAgent enables it, so A to C never run it. On the
+smoke-test B install:
+
+```bash
+LBNA=$(kubectl -n purelb-system get lbnodeagent -o name | head -1)
+ssh <node> 'sudo nft list table inet purelb_egress'            # fails: nothing while idle
+kubectl -n purelb-system patch $LBNA --type merge -p '{"spec":{"egress":{"enabled":true}}}'
+kubectl get egressnodestates                                   # one per node
+kubectl purelb validate --live                                 # no FAIL
+kubectl purelb egress dump                                     # each node's datapath
+```
+
+Create a ServiceGroup that allows egress and an Egress selecting a test pod.
+From the pod, check that a server outside the cluster sees the egress address,
+in both families, and that `kubectl purelb egress trace` names the same address:
+
+```bash
+kubectl purelb egress trace <ns/pod> --dst <server>:<port>/tcp --live
+```
+
+Then turn it off and check that it left nothing:
+
+```bash
+kubectl -n purelb-system patch $LBNA --type merge -p '{"spec":{"egress":{"enabled":false}}}'
+kubectl get egressnodestates -o jsonpath='{.items[*].status.programmed}' # empty, in time
+ssh <node> 'ip link show purelb-eg0; sudo nft list table inet purelb_egress; \
+  sudo ls /sys/fs/bpf/purelb; grep -c purelb-egress /etc/cni/net.d/*'     # gone or 0
+```
+
+Finally the downgrade refusal: enable egress again and check that `helm upgrade`
+to `${OLD}` fails before changing anything, naming `status.programmed`, unless
+`${OLD}` is 0.16.x, which can't check. Disable egress before tearing down as for
+smoke test B.
+
+If anything is empty, erroring, or missing in any of the four
 pre-tag smoke tests, **STOP**. The release ships a bug.
 
 ### Cleanup of rc1 artifacts

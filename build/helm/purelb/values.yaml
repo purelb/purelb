@@ -114,6 +114,9 @@ Prometheus:
       ## interfaces the guard isn't attached to, VIP rules that couldn't be
       ## written, and a restart pending after enabling or disabling it.
       addressGuardAlerts: false
+      ## Render PureLB's egress alerts (needs egress.enabled, and the allocator's
+      ## metrics scraped too). Each alert names its runbook.
+      egressAlerts: false
 
   # k8gobgp sidecar: 7473 (k8gobgp_* controller metrics) and 7475 (gobgpd's
   # own bgp_* metrics). Requires gobgp.enabled and Prometheus Operator.

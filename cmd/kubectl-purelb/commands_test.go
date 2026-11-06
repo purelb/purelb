@@ -57,6 +57,10 @@ func newFakeClients(coreObjects []runtime.Object, dynamicObjects ...runtime.Obje
 		&unstructured.UnstructuredList{},
 	)
 
+	for _, k := range []string{"EgressList", "ClusterEgressList", "EgressEndpointsList", "EgressMembersList", "EgressNodeStateList"} {
+		scheme.AddKnownTypeWithName(schema.GroupVersionKind{Group: "purelb.io", Version: "v2", Kind: k}, &unstructured.UnstructuredList{})
+	}
+
 	// The dynamic fake client needs resource-to-list-kind mappings for every GVR we List().
 	// gvrBGPConfigurations uses resource name "configs" (not "bgpconfigurations").
 	dynClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
@@ -65,6 +69,11 @@ func newFakeClients(coreObjects []runtime.Object, dynamicObjects ...runtime.Obje
 			gvrLBNodeAgents:      "LBNodeAgentList",
 			gvrBGPConfigurations: "BGPConfigurationList",
 			gvrBGPNodeStatuses:   "BGPNodeStatusList",
+			gvrEgresses:          "EgressList",
+			gvrClusterEgresses:   "ClusterEgressList",
+			gvrEgressEndpoints:   "EgressEndpointsList",
+			gvrEgressMembers:     "EgressMembersList",
+			gvrEgressNodeStates:  "EgressNodeStateList",
 		},
 		dynamicObjects...,
 	)
@@ -337,7 +346,7 @@ func TestRunValidate_OverlappingRanges(t *testing.T) {
 	c := newFakeClients(nil, sg1, sg2)
 
 	// Table format returns error on FAIL
-	err := runValidate(context.Background(), c, outputTable, false)
+	err := runValidate(context.Background(), c, outputTable, false, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "validation failed")
 }
@@ -374,7 +383,7 @@ func TestRunValidate_Clean(t *testing.T) {
 	// Asserted for EVERY format: which one a caller asks for says how they
 	// want to read the result, not whether a failure counts.
 	for _, format := range []outputFormat{outputJSON, outputYAML, outputTable} {
-		assert.NoError(t, runValidate(context.Background(), c, format, false),
+		assert.NoError(t, runValidate(context.Background(), c, format, false, false),
 			"format %v", format)
 	}
 }
@@ -389,7 +398,7 @@ func TestRunValidate_FailsInEveryOutputFormat(t *testing.T) {
 	c := newFakeClients(nil, sg1, sg2)
 
 	for _, format := range []outputFormat{outputJSON, outputYAML, outputTable} {
-		err := runValidate(context.Background(), c, format, false)
+		err := runValidate(context.Background(), c, format, false, false)
 		assert.Error(t, err, "format %v must report the failure", format)
 		assert.Contains(t, err.Error(), "validation failed")
 	}
@@ -901,7 +910,7 @@ func TestRunValidate_NodeSelectorChecks(t *testing.T) {
 	c := newFakeClients([]runtime.Object{node}, lbna)
 
 	out, err := captureOutput(t, func() error {
-		return runValidate(context.Background(), c, outputTable, false)
+		return runValidate(context.Background(), c, outputTable, false, false)
 	})
 	require.NoError(t, err)
 
@@ -928,7 +937,7 @@ func TestRunValidate_ScopedOverrideIsNotAWarning(t *testing.T) {
 	c := newFakeClients([]runtime.Object{node}, catchAll, scoped)
 
 	out, err := captureOutput(t, func() error {
-		return runValidate(context.Background(), c, outputTable, false)
+		return runValidate(context.Background(), c, outputTable, false, false)
 	})
 	require.NoError(t, err)
 
@@ -940,7 +949,7 @@ func TestRunValidate_ScopedOverrideIsNotAWarning(t *testing.T) {
 
 	// --strict must also pass: this configuration is correct.
 	_, err = captureOutput(t, func() error {
-		return runValidate(context.Background(), c, outputTable, true)
+		return runValidate(context.Background(), c, outputTable, true, false)
 	})
 	assert.NoError(t, err, "--strict must not fail on the default-plus-override pattern")
 }
@@ -965,7 +974,7 @@ func TestRunValidate_ContestedNodeWarns(t *testing.T) {
 	c := newFakeClients([]runtime.Object{node}, byRole, byTier)
 
 	out, err := captureOutput(t, func() error {
-		return runValidate(context.Background(), c, outputTable, false)
+		return runValidate(context.Background(), c, outputTable, false, false)
 	})
 	require.NoError(t, err)
 
@@ -985,7 +994,7 @@ func TestRunValidate_LocalInterfaceRegex(t *testing.T) {
 	c := newFakeClients([]runtime.Object{node}, lbna)
 
 	out, err := captureOutput(t, func() error {
-		return runValidate(context.Background(), c, outputTable, false)
+		return runValidate(context.Background(), c, outputTable, false, false)
 	})
 	require.NoError(t, err)
 	assert.Contains(t, out, "unanchored")
@@ -1003,7 +1012,7 @@ func TestRunValidate_InvalidLocalInterface(t *testing.T) {
 	c := newFakeClients([]runtime.Object{node}, lbna)
 
 	out, err := captureOutput(t, func() error {
-		return runValidate(context.Background(), c, outputTable, false)
+		return runValidate(context.Background(), c, outputTable, false, false)
 	})
 	assert.Error(t, err, "an invalid localInterface must fail validation")
 	assert.Contains(t, out, "not a valid regex")

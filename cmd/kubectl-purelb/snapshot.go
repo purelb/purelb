@@ -42,6 +42,8 @@ type clusterSnapshot struct {
 	// guard is the address guard's live state on each node, read from the
 	// agents' metrics; nil when it wasn't read.
 	guard []guardNodeState
+	// egress is egress's summary; nil where it isn't installed.
+	egress *egressSummary
 }
 
 // fetchSnapshot fetches all resources needed by the dashboard in parallel.

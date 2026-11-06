@@ -542,6 +542,7 @@ func (a *Agent) startSession(spec purelbv2.LBNodeAgentEgressSpec) {
 		a.add(keyPods, false)
 	}()
 	a.on = s
+	egressIdle.Store(false)
 	logging.Info(a.logger, "op", "egressEnable", "node", a.node, "msg", "egress enabled on this node")
 }
 

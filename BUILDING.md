@@ -212,6 +212,23 @@ newer Go, and opens a PR with the new pins and regenerated objects. Close and
 reopen that PR to start CI and publish its image (GitHub starts nothing for a
 PR opened by its own token), then pin as in step 3.
 
+`make bpf` also regenerates egress's programs from
+`internal/egress/datapath/bpf/`. After changing them, or `pkg/apis/purelb/v2/`,
+run the egress suites as root as well, on a kernel with the fix for
+CVE-2025-40183:
+
+```shell
+sudo env PATH=$PATH PURELB_NETNS_TESTS=required go test ./internal/egress/...
+```
+
+`hack/bpf-vm/stage-perf.sh load|soak` measures the eBPF stage's cost and memory
+across the kernel matrix. Run it on a machine you can spare: it boots VMs and
+drives load.
+
+`monitoring/prometheusrules-egress.yaml` and the chart's rules must stay
+identical, and `make check-helm-render` compares them. It also runs `promtool`
+when it's on your path; CI always does.
+
 ### End-to-end tests
 
 The e2e suite is pytest, in [test/e2e/py/](test/e2e/py/). It runs against a

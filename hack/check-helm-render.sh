@@ -85,6 +85,34 @@ out=$(render prometheusrules-lbnodeagent.yaml "${rules[@]}" --set Prometheus.lbn
 expect "PrometheusRule: user rules kept alongside" "alert: UserRule" "$out"
 expect "PrometheusRule: guard group alongside user rules" "name: purelb-address-guard" "$out"
 
+refuse "PrometheusRule: no egress alerts by default" "PurelbEgress" "$out"
+out=$(render prometheusrules-lbnodeagent.yaml "${rules[@]}" --namespace purelb-system --set Prometheus.lbnodeagent.prometheusRules.egressAlerts=true)
+expect "PrometheusRule: egress alerts render with no user rules" "alert: PurelbEgressNoAnnouncer" "$out"
+egress_rules() { sed -n '/- alert: PurelbEgressNoAnnouncer/,$p'; }
+if diff <(echo "$out" | egress_rules) <(egress_rules <monitoring/prometheusrules-egress.yaml) >/dev/null; then
+	echo "ok   PrometheusRule: Helm and monitoring/prometheusrules-egress.yaml rules are identical"
+else
+	echo "FAIL PrometheusRule: Helm and monitoring/ egress rules differ:" >&2
+	diff <(echo "$out" | egress_rules) <(egress_rules <monitoring/prometheusrules-egress.yaml) >&2 || true
+	fail=1
+fi
+
+# The shipped rules are valid Prometheus rules. CI installs promtool; a
+# checkout without it only renders them.
+if command -v promtool >/dev/null; then
+	for f in monitoring/prometheusrules-address-guard.yaml monitoring/prometheusrules-egress.yaml; do
+		if sed -n '/^spec:/,$p' "$f" | sed '1d; s/^  //' | promtool check rules >/dev/null 2>&1; then
+			echo "ok   promtool: $f"
+		else
+			echo "FAIL promtool: $f" >&2
+			sed -n '/^spec:/,$p' "$f" | sed '1d; s/^  //' | promtool check rules >&2 || true
+			fail=1
+		fi
+	done
+else
+	echo "skip promtool: not installed"
+fi
+
 # Health probes. The startupProbe must point at /healthz, never /readyz:
 # kubelet RESTARTS the container when a startup probe fails, so a /readyz
 # startup probe restarts on readiness conditions too -- which turned a

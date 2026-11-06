@@ -219,6 +219,12 @@ type egressSliceKey struct {
 	Index  uint16
 }
 
+type egressTraffic struct {
+	_       structs.HostLayout
+	Packets [4]uint64
+	Bytes   [4]uint64
+}
+
 type egressUnderlayKey struct {
 	_    structs.HostLayout
 	Addr [4]uint32
@@ -236,6 +242,7 @@ const (
 	egressMapEgressCfg      = "egress_cfg"
 	egressMapEgressReasons  = "egress_reasons"
 	egressMapEgressScratch  = "egress_scratch"
+	egressMapEgressTraffic  = "egress_traffic"
 	egressMapFrags          = "frags"
 	egressMapInboundScr     = "inbound_scr"
 	egressMapNat            = "nat"
@@ -332,6 +339,7 @@ type egressMapSpecs struct {
 	EgressCfg      *ebpf.MapSpec `ebpf:"egress_cfg"`
 	EgressReasons  *ebpf.MapSpec `ebpf:"egress_reasons"`
 	EgressScratch  *ebpf.MapSpec `ebpf:"egress_scratch"`
+	EgressTraffic  *ebpf.MapSpec `ebpf:"egress_traffic"`
 	Frags          *ebpf.MapSpec `ebpf:"frags"`
 	InboundScr     *ebpf.MapSpec `ebpf:"inbound_scr"`
 	Nat            *ebpf.MapSpec `ebpf:"nat"`
@@ -390,6 +398,7 @@ type egressMaps struct {
 	EgressCfg      *ebpf.Map `ebpf:"egress_cfg"`
 	EgressReasons  *ebpf.Map `ebpf:"egress_reasons"`
 	EgressScratch  *ebpf.Map `ebpf:"egress_scratch"`
+	EgressTraffic  *ebpf.Map `ebpf:"egress_traffic"`
 	Frags          *ebpf.Map `ebpf:"frags"`
 	InboundScr     *ebpf.Map `ebpf:"inbound_scr"`
 	Nat            *ebpf.Map `ebpf:"nat"`
@@ -424,6 +433,7 @@ func (m *egressMaps) Close() error {
 		m.EgressCfg,
 		m.EgressReasons,
 		m.EgressScratch,
+		m.EgressTraffic,
 		m.Frags,
 		m.InboundScr,
 		m.Nat,

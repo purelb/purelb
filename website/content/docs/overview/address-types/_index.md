@@ -103,3 +103,7 @@ ServiceGroups can contain both `v4pools` and `v6pools`. IPv4 and IPv6 addresses 
 ## Address Sharing
 
 Multiple services can share a single IP address if they use different ports. Set the same `purelb.io/allow-shared-ip` annotation value on each service. ExternalTrafficPolicy is forced to `Cluster` for shared addresses.
+
+## Egress addresses
+
+Pods can also leave the cluster from a pool's address, using [egress]({{< relref "/docs/configuration/egress" >}}). Local and routed pools place them as they do LoadBalancer addresses, and external pools allocate them from your IPAM.

@@ -37,9 +37,11 @@ type statusOverview struct {
 	BGP        bgpStatus       `json:"bgp"`
 	Services   svcStatus       `json:"services"`
 	// AddressGuard counts nodes per address guard mode.
-	AddressGuard string   `json:"addressGuard"`
-	Overall      string   `json:"overall"`
-	Warnings     []string `json:"warnings,omitempty"`
+	AddressGuard string `json:"addressGuard"`
+	// Egress is nil where it isn't installed.
+	Egress   *egressSummary `json:"egress,omitempty"`
+	Overall  string         `json:"overall"`
+	Warnings []string       `json:"warnings,omitempty"`
 }
 
 type componentStatus struct {
@@ -106,6 +108,7 @@ func runStatus(ctx context.Context, c *clients, format outputFormat) error {
 		lbNodeAgents:    lbnaList,
 		nodes:           nodeList,
 	}
+	snap.egress = readEgressSummary(ctx, c)
 	// The address guard's configured mode comes from the API; whether it is
 	// actually running, or waiting for a restart, only from the agents --
 	// one read per agent, so only when one might have something to say.
@@ -403,6 +406,18 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 	guardNote, guardWarnings := guardLiveSummary(snap.guard)
 	warnings = append(warnings, guardWarnings...)
 
+	// === Egress ===
+	egressLine := ""
+	if snap.egress != nil {
+		egressLine = snap.egress.String()
+		if snap.egress.NotReady > 0 {
+			warnings = append(warnings, fmt.Sprintf("%d egress policies not ready", snap.egress.NotReady))
+		}
+		if snap.egress.Faults > 0 {
+			warnings = append(warnings, fmt.Sprintf("%d egress node fault(s): kubectl purelb egress dump", snap.egress.Faults))
+		}
+	}
+
 	// === Overall ===
 	overall := "OK"
 	if len(warnings) > 0 {
@@ -416,6 +431,7 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 		BGP:          bgpStatus{Summary: bgpSummary},
 		Services:     svcStatus{Summary: fmt.Sprintf("%d services, %d IPs | %d problem(s)", totalSvcs, totalIPs, svcProblems)},
 		AddressGuard: guardSummary(guardModes) + guardNote,
+		Egress:       snap.egress,
 		Overall:      overall,
 		Warnings:     warnings,
 	}
@@ -438,6 +454,9 @@ func renderStatus(snap *clusterSnapshot, format outputFormat) error {
 	fmt.Printf("Election:    %s\n", overview.Election.Summary)
 	fmt.Printf("BGP:         %s\n", overview.BGP.Summary)
 	fmt.Printf("Services:    %s\n", overview.Services.Summary)
+	if egressLine != "" {
+		fmt.Printf("Egress:      %s\n", egressLine)
+	}
 	fmt.Printf("Addr guard:  %s\n", overview.AddressGuard)
 	fmt.Println()
 

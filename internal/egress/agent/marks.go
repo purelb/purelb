@@ -340,7 +340,7 @@ func (a *Agent) setForwardBlocked(st *dpState, blocked []string) {
 		st.forwardBlocked = blocked
 	}
 	for _, fam := range []string{"IPv4", "IPv6"} {
-		forwardBlocked.WithLabelValues(fam).Set(b2f(slices.Contains(blocked, fam)))
+		forwardBlocked.WithLabelValues(strings.ToLower(fam)).Set(b2f(slices.Contains(blocked, fam)))
 	}
 }
 

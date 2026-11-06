@@ -104,6 +104,8 @@ type dpNode struct {
 // tunnel and the links attached to it.
 type dpState struct {
 	nl *netlink.Handle
+	// trafficEnsured are the addresses whose traffic counters exist.
+	trafficEnsured map[netip.Addr]bool
 	// pinRoot is where links and maps are pinned when it is a bpffs
 	// (bpfpin.Dir; tests use their own); pinDir is pinRoot once it was.
 	pinRoot string
@@ -240,6 +242,7 @@ func (a *Agent) syncDatapath() {
 		h := health(a.dp, w, err)
 		h.unreachable, h.probed = a.unreachable(a.dp)
 		a.health.Store(h)
+		a.publishMetrics(a.dp, w.hold.redacted, len(h.unreachable))
 		if err != nil {
 			logging.Info(a.logger, "op", "egressDatapath", "node", a.node, "error", err,
 				"msg", "the egress datapath is not ready; retrying")
@@ -578,7 +581,7 @@ var sysModule = "/sys/module"
 // is wanted changed, or when something else changed the kernel's (another
 // firewall flushing the ruleset), which is logged. Until the pod-node
 // state is planned (an agent restart), a table the kernel holds is kept
-// (D12). The port-less counts are read first: a rewrite resets them.
+// (D12).
 func (a *Agent) syncTable(st *dpState, w dpWant, port uint16, mode string, cluster []netip.Prefix) error {
 	if st.nft == nil {
 		c, err := datapath.NftConn()
@@ -634,16 +637,17 @@ func (a *Agent) syncTable(st *dpState, w dpWant, port uint16, mode string, clust
 		}
 	}
 	if write {
-		if err := datapath.SyncTable(st.nft, t); err != nil {
+		// The session's first write starts the counters from zero, as an
+		// earlier agent's counts aren't this one's to read; later ones keep them.
+		sync, first := datapath.RewriteTable, st.table == nil
+		if first {
+			sync = datapath.SyncTable
+		}
+		if err := sync(st.nft, t); err != nil {
 			return fmt.Errorf("writing the egress table: %w", err)
 		}
 		st.table = &t
-		// The new table's counters start from zero.
-		for addr, seen := range st.portless {
-			seen.count = 0
-			st.portless[addr] = seen
-		}
-		logging.Debug(a.logger, "op", "egressTable", "node", a.node, "podStage", t.Pods != nil, "msg", "egress table written")
+		logging.Debug(a.logger, "op", "egressTable", "node", a.node, "podStage", t.Pods != nil, "first", first, "msg", "egress table written")
 	}
 	st.tableMode = mode
 
@@ -902,6 +906,17 @@ func syncAddresses(st *dpState, want map[netip.Addr]*datapath.AddressEntries) er
 			st.addrs[addr] = have
 			have.SliceSize = ^uint32(0) // never equal: written below
 		}
+		// An address recovered from the pins may predate its counters.
+		if !st.trafficEnsured[addr] {
+			if err := o.EnsureTraffic(addr); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", addr, err))
+				continue
+			}
+			if st.trafficEnsured == nil {
+				st.trafficEnsured = map[netip.Addr]bool{}
+			}
+			st.trafficEnsured[addr] = true
+		}
 		if have.Address != w.Address {
 			if err := o.SetAddress(addr, w.Address); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", addr, err))
@@ -951,6 +966,7 @@ func syncAddresses(st *dpState, want map[netip.Addr]*datapath.AddressEntries) er
 			continue
 		}
 		delete(st.addrs, addr)
+		delete(st.trafficEnsured, addr)
 	}
 	return errors.Join(errs...)
 }

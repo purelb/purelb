@@ -49,7 +49,9 @@ type inspectResult struct {
 	BGP           []bgpRouteCheck    `json:"bgp,omitempty"`
 	BGPNote       string             `json:"bgpNote,omitempty"` // canonical sentence when BGP state is NotEnabled / NotConfigured
 	AddressGuard  *guardInfo         `json:"addressGuard,omitempty"`
-	Diagnosis     *diagnosisInfo     `json:"diagnosis,omitempty"`
+	// Egress names the egress policies using this Service's addresses.
+	Egress    []string       `json:"egress,omitempty"`
+	Diagnosis *diagnosisInfo `json:"diagnosis,omitempty"`
 }
 
 // guardInfo is what the address guard does for this Service's addresses.
@@ -376,6 +378,8 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 
 		allSvcs, _ := c.core.CoreV1().Services("").List(ctx, metav1.ListOptions{ResourceVersion: "0", FieldSelector: svcFieldSelector})
 
+		result.Egress = serviceEgress(ctx, c, ns, name)
+
 		// Address guard: the mode where these addresses are filtered, and
 		// what it lets through to each.
 		lbnaList, _ := c.dynamic.Resource(gvrLBNodeAgents).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{ResourceVersion: "0"})
@@ -508,6 +512,14 @@ func runInspect(ctx context.Context, c *clients, format outputFormat, svcArg str
 				fmt.Printf("  Route %s in RIB on %s: %s, Advertised: %s\n",
 					b.IP, b.Node, ribStr, advStr)
 			}
+		}
+	}
+
+	if len(result.Egress) > 0 {
+		fmt.Println()
+		fmt.Println("Egress: pods also leave through this Service's addresses")
+		for _, e := range result.Egress {
+			fmt.Printf("  %s\n", e)
 		}
 	}
 

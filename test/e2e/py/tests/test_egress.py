@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -445,7 +446,6 @@ def delete_pod_now(cluster: Cluster, namespace: str, name: str) -> None:
 
 def my_address(host: str) -> str:
     """This host's source address toward `host` (the harness's own ssh)."""
-    import subprocess  # noqa: PLC0415
     out = subprocess.run(["ip", "route", "get", host], capture_output=True, text=True, check=True).stdout  # noqa: S603,S607
     return re.search(r" src (\S+)", out).group(1)
 
@@ -512,6 +512,9 @@ def env(request: pytest.FixtureRequest, cluster: Cluster, topo: topology.Topolog
     request.addfinalizer(put_back)
     apply_agent(cluster, True)
     wait_until(lambda: all_capable(cluster, node_ips), timeout=180, description="egress up on every node")
+    # purelb-cni answers within its poll, a few seconds after the session starts.
+    wait_until(lambda: all(node_condition(cluster, n, "DatapathCompatible")[0] == "True" for n in node_ips), timeout=60,
+               description="the plugin chained on every node")
 
     cluster.apply_cr(sg_body(LOCAL_SG, {"local": {
         "v4pool": {"name": "egress", "pool": sub.egress_pool, "subnet": sub.v4, "aggregation": "default"},
@@ -795,7 +798,8 @@ def test_duplicate_address_is_reported_not_fought(cluster: Cluster, node_ips: Di
 CT_DELETED = "purelb_egress_conntrack_deleted_total"
 
 
-def test_pod_traffic_leaves_from_its_slice(cluster: Cluster, router: Router, env: Env, agent_metrics) -> None:
+def test_pod_traffic_leaves_from_its_slice(cluster: Cluster, router: Router, env: Env, agent_metrics,
+                                           kube_context: str) -> None:
     """The pod's flows leave from its policy's address and from its node's
     slice of it, both families, on the local and the routed path, as the
     router sees them; the node acks its spec; the flow log, turned on,
@@ -849,6 +853,21 @@ def test_pod_traffic_leaves_from_its_slice(cluster: Cluster, router: Router, env
             ping()
         else:
             assert agent_metrics(node).counter("purelb_egress_flow_log_events_total", event="new") >= new0 + len(cases)
+        # Each address's traffic is counted on the pod's node, and kubectl
+        # purelb says the same: read at the next reconcile.
+        for dst, addr, pol in cases:
+            wait_until(lambda addr=addr: agent_metrics(node).counter("purelb_egress_packets_total", ip=addr, direction="out",
+                                                                     role="pod_node") >= 1,
+                       timeout=60, description=f"{addr}'s packets counted on {node}")
+            target = f"[{dst}]:22/tcp" if ":" in dst else f"{dst}:22/tcp"
+            trace = guard.plugin_json(kube_context, "egress", "trace", f"{NS}/{pod.metadata.name}", "--dst", target, "--live")
+            assert trace["address"] == addr and trace["winner"].endswith(f"{NS}/{pol}"), trace
+            assert trace["route"] == ("direct" if node in trace["holders"] else "tunnel"), trace
+            assert trace["live"][0]["traffic"]["outPod"]["packets"] >= 1, trace
+        dump = guard.plugin_json(kube_context, "egress", "dump", "--node", node)[0]
+        assert dump["datapath"]["pinned"], dump
+        assert {a for _, a, _ in cases} <= {a["address"] for a in dump["datapath"]["addresses"]}, dump
+        assert dump["datapath"]["stage"] == ("EBPF" if ebpf else "Netfilter"), dump
     finally:
         since = utcnow()
         apply_agent(cluster, True)
@@ -1068,8 +1087,8 @@ def test_forward_blocked_is_reported(cluster: Cluster, node_ips: Dict[str, str],
         wait_nodes(cluster, lambda: node_condition(cluster, node, "ForwardPath")[1] == "ForwardBlocked" and
                    "IPv4, IPv6" in node_condition(cluster, node, "ForwardPath")[2], 240, f"{node} reporting ForwardBlocked")
         m = agent_metrics(node)
-        assert m.get("purelb_egress_forward_blocked", family="IPv4") == 1
-        assert m.get("purelb_egress_forward_blocked", family="IPv6") == 1
+        assert m.get("purelb_egress_forward_blocked", family="ipv4") == 1
+        assert m.get("purelb_egress_forward_blocked", family="ipv6") == 1
         wait_until(lambda: policy_condition(cluster, "routed", "DatapathCompatible") == ("False", "ForwardBlocked"),
                    timeout=60, description="the routed policy not DatapathCompatible")
         assert "ForwardBlocked: pods' new egress flows" in agent_log(cluster, node, since)
@@ -1078,8 +1097,8 @@ def test_forward_blocked_is_reported(cluster: Cluster, node_ips: Dict[str, str],
     try:
         wait_nodes(cluster, lambda: node_condition(cluster, node, "ForwardPath")[0] == "True", 120, "ForwardBlocked cleared")
         m = agent_metrics(node)
-        assert m.get("purelb_egress_forward_blocked", family="IPv4") == 0
-        assert m.get("purelb_egress_forward_blocked", family="IPv6") == 0
+        assert m.get("purelb_egress_forward_blocked", family="ipv4") == 0
+        assert m.get("purelb_egress_forward_blocked", family="ipv6") == 0
         assert "ForwardBlocked cleared" in agent_log(cluster, node, since)
         wait_until(lambda: policy_condition(cluster, "routed", "DatapathCompatible")[0] == "True", timeout=60,
                    description="the policy compatible again")
@@ -1263,7 +1282,7 @@ def test_deleted_pods_flows_are_reset_and_drained(cluster: Cluster, env: Env, ag
 
 
 def test_disable_removes_everything_and_enable_rebuilds(cluster: Cluster, node_ips: Dict[str, str], router: Router,
-                                                         env: Env, agent_metrics) -> None:
+                                                         env: Env, agent_metrics, kube_context: str) -> None:
     """Egress off (D26): every node removes its tunnel, hardening table,
     pins and addresses, says so in its log, and reports egress off with no
     acks or conditions; the routed paths leave the router; the pod's open
@@ -1339,6 +1358,10 @@ def test_disable_removes_everything_and_enable_rebuilds(cluster: Cluster, node_i
     assert agent_metrics(n).counter(CT_DELETED, reason="teardown") > torn0, f"{n} reset the pod's flow: {ping()[-400:]}"
     assert "reset egress's flows" in agent_log(cluster, n, since)
     assert ssh(node_ips[h], svm).strip() == "0", f"{h} {iface}: src_valid_mark off again"
+    # Nothing left over, and with no node announcing, the policy says so.
+    wait_until(lambda: agent_metrics(n).value("purelb_egress_orphan_pins") == 0, timeout=30, description=f"{n}: no orphan pins")
+    wait_until(lambda: policy_condition(cluster, "local", "Announced") == ("False", "NoAnnouncer"), timeout=60,
+               description="the policy reporting NoAnnouncer")
 
     apply_agent(cluster, True)
     wait_until(lambda: all_capable(cluster, node_ips), timeout=180, description="egress back on every node")
@@ -1351,6 +1374,70 @@ def test_disable_removes_everything_and_enable_rebuilds(cluster: Cluster, node_i
         wait_until(lambda a=a: len(announcers(cluster, a)) == 1, timeout=120, description=f"one holder of {a}")
     wait_until(lambda: len(router.nexthops(f"{env.r4}/32")) == len(node_ips), timeout=120,
                description="the routed paths back")
+    # Each node's settings check out.
+    live = subprocess.run([str(guard.PLUGIN), "validate", "--live", "--context", kube_context, "-o", "json"],  # noqa: S603
+                          capture_output=True, text=True, timeout=300)
+    checks = json.loads(live.stdout)["checks"]
+    assert any("bpffs is mounted" in c["message"] for c in checks), checks
+    assert not [c for c in checks if c["status"] == "FAIL" and c["message"].startswith("Egress")], checks
+
+    # On again during the teardown: the files the plugin reads are the new
+    # session's, and the old teardown ending leaves them, so the installer
+    # keeps the chain and no node reports it missing.
+    since = utcnow()
+    apply_agent(cluster, False)
+    wait_until(lambda: "removing the egress datapath" in agent_log(cluster, n, since), timeout=60, interval=0.2,
+               description=f"{n}: tearing down")
+    apply_agent(cluster, True)
+    for node, ip in node_ips.items():
+        wait_until(lambda node=node: "egress datapath removed" in agent_log(cluster, node, since), timeout=60,
+                   description=f"{node}: the old teardown over")
+        wait_until(lambda node=node: "asked purelb-cni to chain the CNI plugin" in agent_log(cluster, node, since), timeout=120,
+                   description=f"{node}: the new session asked for the plugin")
+    wait_until(lambda: all_capable(cluster, node_ips), timeout=180, description="egress back on every node")
+    time.sleep(10)  # past the installer's and the agent's next looks at the file
+    for node, ip in node_ips.items():
+        assert ssh(ip, "sudo test -e /var/lib/purelb/cni-desired.json && echo yes || true", check=False).strip() == "yes", \
+            f"{node}: the new session's desired state removed by the old teardown"
+        assert (node_json(ip, "/run/purelb/cni-status.json") or {}).get("chain") == "Present", node
+        assert PLUGIN in cni_chain(ip)[1] and has_plugin_binary(ip), node
+        wait_until(lambda node=node: agent_metrics(node).counter(
+            "purelb_egress_node_conditions_false", condition="DatapathCompatible", reason="ChainMissing") == 0,
+            timeout=30, description=f"{node}: not reporting ChainMissing")
+
+    # Break-glass: the node's agent is gone and egress is still programmed.
+    # cleanup refuses while the LBNodeAgent enables egress, removes all of it
+    # with --force, and the agent coming back rebuilds it.
+    n = next(w.metadata.name for w in cluster.nodes()
+             if "node-role.kubernetes.io/control-plane" not in (w.metadata.labels or {}) and w.metadata.name in node_ips)
+    ip = node_ips[n]
+    assert egress_pins(ip) and PLUGIN in cni_chain(ip)[1], f"{n}: programmed before cleanup"
+    keep_off = {"spec": {"template": {"spec": {"affinity": {"nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {
+        "nodeSelectorTerms": [{"matchExpressions": [{"key": "kubernetes.io/hostname", "operator": "NotIn", "values": [n]}]}]}}}}}}}
+    cluster.apps.patch_namespaced_daemon_set("lbnodeagent", cluster.purelb_namespace, keep_off)
+    try:
+        wait_until(lambda: agent_pod(cluster, n) is None, timeout=240, interval=3, description=f"{n}'s agent gone")
+        assert egress_pins(ip), f"{n}: a stopped agent leaves its state"
+        refused = subprocess.run([str(guard.PLUGIN), "egress", "cleanup", "--node", n, "--context", kube_context],  # noqa: S603
+                                 capture_output=True, text=True, timeout=60)
+        assert refused.returncode != 0 and "enables egress" in refused.stderr, refused
+        cleaned = subprocess.run([str(guard.PLUGIN), "egress", "cleanup", "--node", n, "--force", "--context", kube_context],  # noqa: S603
+                                 capture_output=True, text=True, timeout=300)
+        assert cleaned.returncode == 0 and "egress removed" in cleaned.stdout, cleaned
+        assert egress_pins(ip) == [], f"{n}: egress pins left by cleanup"
+        assert "does not exist" in ssh(ip, f"ip link show {TUNNEL} 2>&1 || true", check=False), f"{n}: tunnel left"
+        assert "purelb_egress" not in ssh(ip, "sudo nft list tables", check=False), f"{n}: nft table left"
+        assert PLUGIN not in cni_chain(ip)[1] and not has_plugin_binary(ip), f"{n}: plugin left"
+        for f in ("/var/lib/purelb/egress-snapshot.json", "/var/lib/purelb/cni-desired.json", RECORDS):
+            assert ssh(ip, f"sudo test -e {f} && echo yes || true", check=False).strip() != "yes", f"{n}: {f} left"
+    finally:
+        restore = {"spec": {"template": {"spec": {"affinity": None}}}}
+        cluster.apps.patch_namespaced_daemon_set("lbnodeagent", cluster.purelb_namespace, restore)
+    wait_until(lambda: agent_pod(cluster, n) is not None and all_capable(cluster, node_ips) and egress_pins(ip),
+               timeout=420, interval=5, description=f"{n} rebuilt by the agent coming back")
+    wait_until(lambda: PLUGIN in cni_chain(ip)[1] and has_plugin_binary(ip), timeout=120, description=f"{n}: chained again")
+    for a in (env.v4, env.v6):
+        wait_until(lambda a=a: len(announcers(cluster, a)) == 1, timeout=120, description=f"one holder of {a}")
 
 
 def test_a_rebooted_nodes_pod_never_leaves_unclassified(cluster: Cluster, node_ips: Dict[str, str], router: Router,
@@ -1372,9 +1459,15 @@ def test_a_rebooted_nodes_pod_never_leaves_unclassified(cluster: Cluster, node_i
     me = my_address(router.host)
     name = "egress-e2e-reboot"
     talker(cluster, name, NS, n, env.routed_dst4, {"app": "egress-e2e"})
+
+    def probed() -> Optional[Dict[str, str]]:
+        return next((json.loads(ln) for ln in agent_log(cluster, n).splitlines()
+                     if '"op":"egressStageProbe"' in ln and '"stage"' in ln), None)
+
     try:
         before = wait_until(lambda: running(cluster, NS, name), timeout=120, description=f"{name} running on {n}")
         restarts = before.status.container_statuses[0].restart_count
+        stage = wait_until(probed, timeout=60, description=f"{n}'s stage")["stage"]
         with router.capture("any", f"tcp dst port 22 and dst host {env.routed_dst4} and not src host {me}",
                             seconds=900) as cap:
             boot = ssh(ip, "cat /proc/sys/kernel/random/boot_id").strip()
@@ -1407,5 +1500,13 @@ def test_a_rebooted_nodes_pod_never_leaves_unclassified(cluster: Cluster, node_i
         else:
             assert records_of(ip, name), f"{n}: the pod's new sandbox has no record: it bypassed the plugin"
             assert not reported, "reported as started without the plugin"
+        # The table is rewritten many times during a boot: the probe still
+        # counts every datagram it sent, and finds the same stage.
+        probe = wait_until(probed, timeout=60, description=f"{n}'s stage after the reboot")
+        assert probe["stage"] == stage, f"{n}: {stage} before the reboot: {probe}"
+        if stage != "Bypassed":
+            counts = re.findall(r"IPv[46] (\d+)/(\d+)/(\d+)", probe["detail"])
+            assert counts and all(c == ("3", "3", "3") or (stage == "SourceIP" and c[0] == c[2] == "3") for c in counts), \
+                f"{n}: the probe lost count: {probe}"
     finally:
         delete_pod_now(cluster, NS, name)

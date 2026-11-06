@@ -41,7 +41,11 @@ Command | Description
 `kubectl purelb bgp dataplane` | Route pipeline: netlinkImport -> RIB -> advertise -> netlinkExport
 `kubectl purelb inspect <ns/svc>` | Deep-dive single service diagnosis, including what the address guard allows on each address
 `kubectl purelb guard` | Address guard state per node, live from the agents: loaded, attached, restart pending, drops
-`kubectl purelb validate` | Configuration consistency checks
+`kubectl purelb validate` | Configuration consistency checks; `--live` also checks each node's egress settings
+`kubectl purelb egress trace <ns/pod> --dst <dst>` | What egress does with a pod's flow: policy, address, ports, holders, route
+`kubectl purelb egress dump` | Each node's egress conditions and datapath, read live
+`kubectl purelb egress cleanup` | Break-glass: remove egress from a node whose agent can't
+`kubectl purelb egress release-finalizers` | Break-glass: free policies stuck without the allocator
 `kubectl purelb gobgp <args>` | Proxy the gobgp CLI into the k8gobgp sidecar
 `kubectl purelb ip <args>` | Proxy the `ip` command into a lbnodeagent pod
 `kubectl purelb dashboard` | Live monitoring view in the terminal

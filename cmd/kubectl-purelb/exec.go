@@ -251,13 +251,18 @@ func execInK8GoBGPWithPods(ctx context.Context, c *clients, pods *v1.PodList, ta
 // execOnePodToWriter executes a command in a pod, writing output to the
 // provided writers instead of os.Stdout/os.Stderr.
 func execOnePodToWriter(ctx context.Context, c *clients, pod *v1.Pod, command []string, stdout, stderr io.Writer) error {
+	return execContainer(ctx, c, pod, "k8gobgp", command, stdout, stderr)
+}
+
+// execContainer runs command in one of pod's containers.
+func execContainer(ctx context.Context, c *clients, pod *v1.Pod, container string, command []string, stdout, stderr io.Writer) error {
 	req := c.core.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(pod.Name).
 		Namespace(pod.Namespace).
 		SubResource("exec").
 		VersionedParams(&v1.PodExecOptions{
-			Container: "k8gobgp",
+			Container: container,
 			Command:   command,
 			Stdout:    true,
 			Stderr:    true,

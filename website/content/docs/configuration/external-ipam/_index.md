@@ -194,3 +194,7 @@ assigned. gRPC reconnects transparently once the sidecar is back.
 
 External pools are independent of Local/Remote pools: a sidecar outage never
 affects cluster-IPAM allocations.
+
+## Egress
+
+[Egress]({{< relref "/docs/configuration/egress" >}}) allocates from external pools too. Your sidecar receives `service` as `egress:<Egress|ClusterEgress>:<namespace or empty>:<name>`, plus `:<identity>` for a PerPod address, with one Allocate per owner. It's never asked to release an address a policy shares with a Service.
