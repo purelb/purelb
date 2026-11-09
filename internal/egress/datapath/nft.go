@@ -17,7 +17,6 @@ package datapath
 import (
 	"cmp"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -88,23 +87,79 @@ var (
 // counters start from zero: a new session's first write, so an earlier
 // agent's counts aren't taken for this one's.
 func SyncTable(c *nftables.Conn, t Table) error {
-	if _, err := build(c, t, nil); err != nil {
+	if _, err := build(c, t); err != nil {
 		return err
 	}
 	return c.Flush()
 }
 
-// RewriteTable is SyncTable keeping the counts of the counters t still has:
-// the table is rewritten whenever a pod or slot changes, and each reader of
-// a counter (the stage probe, the traffic metrics) would otherwise lose what
-// it counted. What is counted between the read and the commit is lost.
+// RewriteTable is SyncTable keeping the counters t still has: the table is
+// rewritten whenever a pod or slot changes, and each reader of a counter
+// (the stage probe, the traffic metrics) would otherwise lose what it
+// counted. The table is replaced in place in one transaction: its rules,
+// sets and other objects are replaced, but the chains and counters t still
+// has are the same kernel objects throughout, so a packet that passes
+// during a rewrite is counted once (a base chain deleted and added again
+// would be hooked twice while the transaction commits). With no table to
+// replace, it is written as SyncTable does.
 func RewriteTable(c *nftables.Conn, t Table) error {
-	kept, err := namedCounters(c)
-	if err != nil && !errors.Is(err, unix.ENOENT) {
-		return fmt.Errorf("reading the counters to keep: %w", err)
+	tbl := &nftables.Table{Family: nftables.TableFamilyINet, Name: NftTable}
+	tables, err := c.ListTablesOfFamily(nftables.TableFamilyINet)
+	if err != nil {
+		return fmt.Errorf("listing the tables: %w", err)
 	}
-	if _, err := build(c, t, kept); err != nil {
+	if !slices.ContainsFunc(tables, func(x *nftables.Table) bool { return x.Name == NftTable }) {
+		return SyncTable(c, t)
+	}
+	sets, err := c.GetSets(tbl)
+	if err != nil {
+		return fmt.Errorf("reading the table's sets: %w", err)
+	}
+	objs, err := c.GetNamedObjects(tbl)
+	if err != nil {
+		return fmt.Errorf("reading the table's objects: %w", err)
+	}
+	chains, err := c.ListChainsOfTableFamily(nftables.TableFamilyINet)
+	if err != nil {
+		return fmt.Errorf("reading the table's chains: %w", err)
+	}
+	// Each delete only once nothing refers to what it deletes: rules refer
+	// to chains, sets and objects, verdict maps to chains.
+	c.FlushTable(tbl)
+	for _, s := range sets {
+		if !s.Anonymous { // went with its rule
+			s.Table = tbl
+			c.DelSet(s)
+		}
+	}
+	keep := map[string]bool{}
+	counters := map[string]*nftables.NamedObj{}
+	for _, o := range objs {
+		n, ok := o.(*nftables.NamedObj)
+		if !ok {
+			continue
+		}
+		n.Table = tbl
+		if n.Type == nftables.ObjTypeCounter {
+			counters[n.Name], keep[n.Name] = n, true
+		} else {
+			c.DeleteObject(n) // added again by its name
+		}
+	}
+	sh, err := fill(c, tbl, t, keep) // a chain it adds that exists is updated
+	if err != nil {
 		return err
+	}
+	for _, ch := range chains {
+		if _, ok := sh.chains[ch.Name]; !ok && ch.Table.Name == NftTable {
+			c.DelChain(ch)
+		}
+	}
+	for _, name := range sh.objs {
+		delete(counters, name)
+	}
+	for _, n := range counters { // counters t no longer has
+		c.DeleteObject(n)
 	}
 	return c.Flush()
 }
@@ -115,7 +170,7 @@ func RewriteTable(c *nftables.Conn, t Table) error {
 // another firewall flushing the ruleset, for one.
 func TableIntact(c *nftables.Conn, t Table) (bool, error) {
 	// Built on a connection that is never flushed: only its shape is used.
-	want, err := build(&nftables.Conn{}, t, nil)
+	want, err := build(&nftables.Conn{}, t)
 	if err != nil {
 		return false, err
 	}
@@ -206,18 +261,24 @@ type builder struct {
 	t     *nftables.Table
 	sets  map[string]*nftables.Set
 	shape shape
-	kept  map[string]*expr.Counter // counts a counter of that name starts from
+	keep  map[string]bool // counters the table already has, kept as they are
 }
 
 // build adds t to c, replacing what the kernel holds, and returns its
-// shape. Its counters start from kept's counts.
-func build(c *nftables.Conn, t Table, kept map[string]*expr.Counter) (shape, error) {
+// shape. Its counters start from zero.
+func build(c *nftables.Conn, t Table) (shape, error) {
 	tbl := &nftables.Table{Family: nftables.TableFamilyINet, Name: NftTable}
 	// Adding first makes the delete valid when the table doesn't exist.
 	c.AddTable(tbl)
 	c.DelTable(tbl)
 	c.AddTable(tbl)
-	b := &builder{c: c, t: tbl, sets: map[string]*nftables.Set{}, kept: kept,
+	return fill(c, tbl, t, nil)
+}
+
+// fill adds t's chains, sets, rules and objects to the table tbl, which
+// holds none of them but the counters named in keep, and returns its shape.
+func fill(c *nftables.Conn, tbl *nftables.Table, t Table, keep map[string]bool) (shape, error) {
+	b := &builder{c: c, t: tbl, sets: map[string]*nftables.Set{}, keep: keep,
 		shape: shape{chains: map[string]int{}, sets: map[string][]nftables.SetElement{}}}
 	if err := b.hardening(t.Hardening); err != nil {
 		return shape{}, err
@@ -269,13 +330,11 @@ func (b *builder) set(s *nftables.Set, elems []nftables.SetElement) error {
 
 func (b *builder) obj(o *nftables.NamedObj) {
 	o.Table = b.t
-	if ctr, ok := o.Obj.(*expr.Counter); ok {
-		if k := b.kept[o.Name]; k != nil {
-			ctr.Packets, ctr.Bytes = k.Packets, k.Bytes
-		}
+	b.shape.objs = append(b.shape.objs, o.Name)
+	if o.Type == nftables.ObjTypeCounter && b.keep[o.Name] {
+		return // the same counter, counting on
 	}
 	b.c.AddObj(o)
-	b.shape.objs = append(b.shape.objs, o.Name)
 }
 
 // lookup matches register 1 against the named set.
