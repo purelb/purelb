@@ -236,9 +236,9 @@ Metric | Port | Labels | Description
 `bgp_routes_received`, `bgp_routes_accepted` | 7475 | `peer`, `route_family` | Routes from each peer, before and after import policy
 
 The full list, ready-made queries, a scrape-time filter for 7475 and alert
-rules are in k8gobgp's [metrics documentation](https://github.com/purelb/k8gobgp/blob/v0.2.8/docs/metrics.md),
-[alerts](https://github.com/purelb/k8gobgp/blob/v0.2.8/docs/alerting/k8gobgp-alerts.yaml)
-and [PodMonitors](https://github.com/purelb/k8gobgp/blob/v0.2.8/docs/monitoring/podmonitors.yaml).
+rules are in k8gobgp's [metrics documentation](https://github.com/purelb/k8gobgp/blob/v0.2.9/docs/metrics.md),
+[alerts](https://github.com/purelb/k8gobgp/blob/v0.2.9/docs/alerting/k8gobgp-alerts.yaml)
+and [PodMonitors](https://github.com/purelb/k8gobgp/blob/v0.2.9/docs/monitoring/podmonitors.yaml).
 Upgrading from k8gobgp v0.2.4 renames or removes several metrics; see the
 [v0.17.0 migration guide]({{< relref "/docs/migration/v0-17-0" >}}).
 
@@ -262,4 +262,4 @@ kubectl explain bgpconfig.spec.netlinkImport
 
 ## Egress
 
-Routed [egress]({{< relref "/docs/configuration/egress" >}}) addresses are advertised the same way: k8gobgp learns them from netlink on `kube-lb0`. Don't enable BFD with them yet ([purelb/gobgp-netlink#65](https://github.com/purelb/gobgp-netlink/issues/65)).
+Routed [egress]({{< relref "/docs/configuration/egress" >}}) addresses are advertised the same way: k8gobgp learns them from netlink on `kube-lb0`.

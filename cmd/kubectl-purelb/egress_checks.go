@@ -187,7 +187,6 @@ func egressChecks(ctx context.Context, c *clients, agents []*purelbv2.LBNodeAgen
 			add("FAIL", "Egress: kube-proxy runs in IPVS mode, which egress doesn't support")
 		}
 	}
-	checks = append(checks, bfdChecks(ctx, c)...)
 	checks = append(checks, calicoChecks(ctx, c)...)
 	if !live {
 		add("PASS", "Egress: node checks skipped: --live runs them through kubectl exec")
@@ -240,32 +239,6 @@ func egressPolicyChecks(ctx context.Context, c *clients) []checkResult {
 	}
 	for i := range cs {
 		report(egress.KindClusterEgress, cs[i].Name, cs[i].Status)
-	}
-	return checks
-}
-
-// bfdChecks warn about BFD on a routed egress install: k8gobgp's BFD doesn't
-// recover after a session drop and then flaps BGP (purelb/gobgp-netlink#65).
-func bfdChecks(ctx context.Context, c *clients) []checkResult {
-	list, err := c.dynamic.Resource(gvrBGPConfigurations).Namespace(purelbNamespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil // no BGP in this install
-	}
-	var checks []checkResult
-	for i := range list.Items {
-		neighbors, _, _ := unstructured.NestedSlice(list.Items[i].Object, "spec", "neighbors")
-		for _, n := range neighbors {
-			m, ok := n.(map[string]any)
-			if !ok {
-				continue
-			}
-			if on, _, _ := unstructured.NestedBool(m, "bfd", "enabled"); on {
-				checks = append(checks, checkResult{"WARN", fmt.Sprintf(
-					"BGP config %s enables BFD: k8gobgp's BFD doesn't recover after a session drop and then flaps BGP (purelb/gobgp-netlink#65), so routed egress addresses can flap",
-					list.Items[i].GetName())})
-				return checks
-			}
-		}
 	}
 	return checks
 }
