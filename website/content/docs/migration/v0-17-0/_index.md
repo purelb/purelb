@@ -125,9 +125,9 @@ first write.
 No action is required — the node agents rewrite the annotation as they
 reconcile — but anything parsing it needs updating.
 
-## BGP: k8gobgp v0.2.8
+## BGP: k8gobgp v0.2.9
 
-v0.17.0 ships k8gobgp v0.2.8 (from v0.2.4). It moves to gobgp-netlink v1.3.8
+v0.17.0 ships k8gobgp v0.2.9 (from v0.2.4). It moves to gobgp-netlink v1.3.10
 and changes metrics, validation and some behaviour. Remote pools without BGP are
 unaffected.
 
@@ -138,7 +138,7 @@ remote-VIP traffic to that VIP's address, which breaks when the VIP moves.
 
 ### Check your BGPConfiguration before upgrading
 
-v0.2.8's CRD validates more strictly, and some fields that v0.2.4 accepted and
+v0.2.9's CRD validates more strictly, and some fields that v0.2.4 accepted and
 **ignored** now take effect. Run this before applying the new CRDs:
 
 ```bash
@@ -328,7 +328,7 @@ kubectl apply -f lbnodeagents-pre-0.17.yaml
 
 **Roll back the BGP CRDs together with the workloads.** The v0.16.x manifests
 carry k8gobgp v0.2.4's CRDs; re-apply them along with the v0.16.x workloads.
-A v0.2.4 sidecar running against v0.2.8's CRDs cannot write an unhealthy
+A v0.2.4 sidecar running against v0.2.9's CRDs cannot write an unhealthy
 node's BGPNodeStatus (`healthy` is now required), so `kubectl get
 bgpnodestatus` would keep showing the last healthy state. Fields added in
 v0.2.5 and later (for example `ebgpMaximumPaths`) are dropped by the older CRD.

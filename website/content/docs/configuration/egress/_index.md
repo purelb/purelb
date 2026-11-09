@@ -89,9 +89,7 @@ On a **local** pool, one node holds the address, chosen by the same Lease electi
 
 On a **routed** pool, every live node matching `announcerNodeSelector` advertises the address through BGP and serves its replies. With the pool's `aggregation` shorter than a host route, every one of them advertises the pool's aggregate and serves every address in it. Set `announcerNodeSelector` to the nodes that peer.
 
-{{< hint warning >}}
-Don't enable BFD on routed egress yet. k8gobgp's BFD doesn't recover after a session drop and then flaps BGP ([purelb/gobgp-netlink#65](https://github.com/purelb/gobgp-netlink/issues/65)). `kubectl purelb validate` warns about it. Without BFD, a failed node's route is withdrawn when BGP notices, in about 8 to 9 seconds at the timers tested.
-{{< /hint >}}
+Enable BFD on the BGP neighbors for faster failover on routed pools. Without it, a failed node's route is withdrawn when BGP notices, in about 8 to 9 seconds at the timers tested.
 
 ## CNIs
 
