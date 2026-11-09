@@ -639,6 +639,105 @@ func TestNetnsRewriteKeepsCounters(t *testing.T) {
 	assert.True(t, ok, "restored")
 }
 
+// Every packet that passes while the table is being rewritten is counted:
+// the stage probe judges a node by exact counts, and a rewrite at a node's
+// boot can land among its datagrams.
+func TestNetnsRewriteCountsThroughout(t *testing.T) {
+	netnsOrSkip(t)
+	x := newStageNet(t)
+	stage := testStage()
+	tbl := Table{Hardening: Hardening{TunnelPort: 6082}, Pods: &stage}
+	require.NoError(t, SyncTable(x.nft, tbl))
+	seen := func() (uint64, uint64) {
+		c, err := ProbeCounts(x.nft)
+		require.NoError(t, err)
+		return c["4"].Seen, c["6"].Seen
+	}
+	settle := func(want uint64) (v4, v6 uint64) {
+		for end := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+			if v4, v6 = seen(); v4 == want && v6 == want || time.Now().After(end) {
+				return v4, v6
+			}
+		}
+	}
+	// The first hop's neighbours resolved, so none of the counted wait.
+	sendUDP(t, x.p, cnisock.ProbeV4.String(), cnisock.ProbePort, 1)
+	sendUDP(t, x.p, cnisock.ProbeV6.String(), cnisock.ProbePort, 1)
+	v4, v6 := settle(1)
+	require.EqualValues(t, 1, v4)
+	require.EqualValues(t, 1, v6)
+
+	// Rewrites on a connection of their own, as the agent's datapath
+	// goroutine does while the probe's reader has another.
+	rw, err := NftConn(nftables.WithNetNSFd(int(x.n.ns)))
+	require.NoError(t, err)
+	// A fixed number of rewrites, whatever the machine's speed, with the pod
+	// sending until they are done.
+	const rewrites = 50
+	done := make(chan error, 1)
+	go func() {
+		t2 := tbl
+		for i := range rewrites {
+			t2.Hardening.TunnelPort = 6082 + uint16(i%2) // a table that changes
+			if err := RewriteTable(rw, t2); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	var sent uint64
+	var rerr error
+	require.NoError(t, x.p.in(func() error {
+		var conns []net.Conn
+		for _, dst := range []string{cnisock.ProbeV4.String(), cnisock.ProbeV6.String()} {
+			c, err := net.Dial("udp", net.JoinHostPort(dst, strconv.Itoa(cnisock.ProbePort)))
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+			conns = append(conns, c)
+		}
+		for {
+			select {
+			case rerr = <-done:
+				return nil
+			default:
+			}
+			for _, c := range conns {
+				if _, err := c.Write([]byte("x")); err != nil {
+					return err
+				}
+			}
+			sent++
+			time.Sleep(500 * time.Microsecond)
+		}
+	}))
+	require.NoError(t, rerr)
+	v4, v6 = settle(sent + 1)
+	t.Logf("%d rewrites; counted IPv4 %d, IPv6 %d of %d", rewrites, v4-1, v6-1, sent)
+	assert.Equal(t, sent+1, v4, "IPv4 datagrams counted once each")
+	assert.Equal(t, sent+1, v6, "IPv6 datagrams counted once each")
+
+	// The pod stage gone, as when its last selected pod leaves: its chains
+	// and counters go; back, its counters start again from zero.
+	hard := Table{Hardening: tbl.Hardening}
+	require.NoError(t, RewriteTable(x.nft, hard))
+	ok, err := TableIntact(x.nft, hard)
+	require.NoError(t, err)
+	assert.True(t, ok, "intact without the pod stage")
+	objs, err := x.nft.GetNamedObjects(&nftables.Table{Family: nftables.TableFamilyINet, Name: NftTable})
+	require.NoError(t, err)
+	assert.Empty(t, objs, "the pod stage's counters gone")
+	require.NoError(t, RewriteTable(x.nft, tbl))
+	ok, err = TableIntact(x.nft, tbl)
+	require.NoError(t, err)
+	assert.True(t, ok, "intact with the pod stage again")
+	v4, v6 = seen()
+	assert.Zero(t, v4)
+	assert.Zero(t, v6)
+}
+
 func TestNetnsPodStageHelper(t *testing.T) {
 	netnsOrSkip(t)
 	x := newStageNet(t)
@@ -712,9 +811,14 @@ func TestNetnsPodStageHelper(t *testing.T) {
 	s := stage.Slots[1]
 	s.Helpers = []Helper{ftp}
 	stage.Slots[1] = s
-	require.NoError(t, SyncTable(x.nft, Table{Pods: &stage}))
-	ok, err := TableIntact(x.nft, Table{Pods: &stage})
-	require.NoError(t, err)
-	assert.True(t, ok, "intact with a helper object")
-	assert.True(t, strings.HasPrefix(port(), "PORT 10,9,9,9,"), "the helper rewrote the PORT command")
+	// Added by a rewrite, as the agent does, and rewritten again with it:
+	// a helper object is deleted and added by the same name in one
+	// transaction.
+	for i := range 2 {
+		require.NoError(t, RewriteTable(x.nft, Table{Pods: &stage}))
+		ok, err := TableIntact(x.nft, Table{Pods: &stage})
+		require.NoError(t, err)
+		assert.True(t, ok, "intact with a helper object, rewrite %d", i)
+		assert.True(t, strings.HasPrefix(port(), "PORT 10,9,9,9,"), "the helper rewrote the PORT command, rewrite %d", i)
+	}
 }
