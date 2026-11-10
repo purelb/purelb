@@ -555,14 +555,17 @@ func main() {
 		logging.Info(logger, "op", "run", "error", err, "msg", "k8s client exited with error")
 	}
 
-	// Graceful shutdown sequence:
+	// Graceful shutdown sequence. client.Run has returned, so the service
+	// sync goroutine (Run itself) is gone and this goroutine now owns the
+	// announcers' state.
 	// 0. Let egress repoint its traffic before any address goes
 	// 1. Mark election unhealthy - Winner() returns "" for all queries
-	// 2. Force sync to trigger address withdrawal on all services
-	// 3. Wait for traffic to drain and GARP to propagate
-	// 4. Stop lease renewals
-	// 5. Delete our lease so other nodes see us gone
-	// 6. Clean up local networking (dummy interface)
+	// 2. Withdraw every address this node announces
+	// 3. Stop lease renewals and delete our lease, so other nodes take
+	//    over at once (they react to the delete, not to our withdrawal)
+	// 4. Clean up local networking (dummy interface)
+	// The withdrawal comes before the lease delete so that no other node
+	// can hold an address while this one still does.
 	logging.Info(logger, "op", "shutdown", "msg", "starting graceful shutdown sequence")
 
 	// Step 0: egress repoints its traffic while the addresses are still up
@@ -571,27 +574,18 @@ func main() {
 	// Step 1: Mark unhealthy - this causes Winner() to return ""
 	elect.MarkUnhealthy()
 
-	// Step 2: Force sync to trigger re-evaluation of all services
-	// This will cause the announcer to withdraw addresses since Winner() now returns ""
-	client.ForceSync()
+	// Step 2: Withdraw every address. The queue has shut down, so a
+	// ForceSync here would do nothing; the announcers are called directly.
+	ctrl.WithdrawAll()
 
-	// Step 3: Wait for traffic to drain
-	// This gives time for:
-	// - Announcer to process the ForceSync and withdraw addresses
-	// - GARP packets to propagate
-	// - Upstream routers/switches to update their tables
-	logging.Info(logger, "op", "shutdown", "msg", "waiting for traffic drain", "duration", "2s")
-	time.Sleep(2 * time.Second)
-
-	// Step 4: Stop lease renewals (no longer needed)
+	// Step 3: Stop lease renewals and delete our lease so other nodes see
+	// us gone immediately
 	elect.StopRenewals()
-
-	// Step 5: Delete our lease so other nodes see us gone immediately
 	if err := elect.DeleteOurLease(); err != nil {
 		logging.Info(logger, "op", "shutdown", "error", err, "msg", "failed to delete lease")
 	}
 
-	// Step 6: Clean up local networking
+	// Step 4: Clean up local networking
 	ctrl.Shutdown()
 
 	logging.Info(logger, "op", "shutdown", "msg", "graceful shutdown complete")
