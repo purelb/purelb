@@ -156,6 +156,15 @@ type announcer struct {
 	// the other there and both decline to withdraw, stranding the address on
 	// a node that lost.
 	announced sync.Map // map[string]struct{}
+
+	// dadFailed holds the IPv6 addresses that failed DAD and their
+	// backoff (dad.go), keyed by address. Written only by watchDAD's
+	// goroutines, read by the service-sync goroutine.
+	dadFailed sync.Map // map[string]dadRetry
+	// dadWatching keeps one watchDAD goroutine per address.
+	dadWatching sync.Map // map[string]struct{}
+	// dadState replaces addrDADState in tests.
+	dadState func(netlink.Link, net.IP) dadState
 }
 
 // addressRenewal holds the state needed to periodically refresh an address
@@ -643,6 +652,23 @@ func (a *announcer) announceLocal(cfg *announcerConfig, svc *v1.Service, preferr
 	if svc.Annotations[purelbv2.SkipIPv6DADAnnotation] == "true" {
 		opts.SkipDAD = true
 	}
+	withDAD := lbIP.To4() == nil && !opts.SkipDAD
+
+	// An address that failed DAD stays withdrawn until its retry: another
+	// host on the link has it. This node stays the election winner, so no
+	// other node takes it over meanwhile.
+	if waiting, left := a.inDADBackoff(lbIP); withDAD && waiting {
+		key := renewalKey(nsName, lbIP.String())
+		if _, was := a.announced.Load(key); was {
+			a.client.Errorf(svc, "DADFailed",
+				"Node %s withdrew %s from interface %s: duplicate address detection failed, another host on the link has it; trying again in %s",
+				a.myNode, lbIP, announceInt.Attrs().Name, left.Round(time.Second))
+		}
+		logging.Debug(l, "op", "setBalancer", "ip", lbIP, "service", nsName, "retryIn", left, "msg", "failed DAD: not announced until the retry")
+		a.clearOwnAnnounceSlot(svc, lbIP)
+		return a.deleteAddress(nsName, "dadFailed", lbIP)
+	}
+
 	if err := addNetworkWithOptions(lbIPNet, announceInt, opts); err != nil {
 		// We won but could not configure the address, so we are not
 		// announcing it: drop any slot that still names us, and say so
@@ -679,6 +705,14 @@ func (a *announcer) announceLocal(cfg *announcerConfig, svc *v1.Service, preferr
 	// DAD, whose probes are sourced from :: and update no neighbor
 	// caches (and the skip-DAD annotation suppresses even those) — so
 	// without the NA a moved IPv6 VIP converges only via NUD timeouts.
+	// With DAD the NAs wait for it to pass: sent while the address is
+	// tentative they would claim an address another host may own.
+	if withDAD {
+		a.watchDAD(announceInt, lbIP, renewalKey(nsName, lbIP.String()), func() {
+			a.sendGARPSequence(cfg, lbIP, announceInt.Attrs().Name, preferred)
+		})
+		return nil
+	}
 	a.sendGARPSequence(cfg, lbIP, announceInt.Attrs().Name, preferred)
 
 	return nil
@@ -1303,6 +1337,14 @@ func (a *announcer) renewAddress(key string) {
 	} else {
 		RecordAddressRenewal()
 		logging.Debug(a.logger, "op", "renewAddress", "key", key, "msg", "renewed", "next", renewal.interval)
+		// A renewal that had to add the address again (it was gone, e.g.
+		// deleted by a DAD failure after a link flap) runs DAD again:
+		// follow it, so a failure is withdrawn instead of re-added every
+		// renewal. A refreshed address is not tentative.
+		ip := renewal.ipNet.IP
+		if ip.To4() == nil && !renewal.opts.SkipDAD && a.lookDAD(renewal.link, ip) == dadTentative {
+			a.watchDAD(renewal.link, ip, key, nil)
+		}
 	}
 
 	// Check again before rescheduling (may have been cancelled during renewal)

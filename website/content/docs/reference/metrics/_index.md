@@ -66,6 +66,7 @@ Metric | Type | Labels | Description
 `purelb_lbnodeagent_address_withdrawals_total` | Counter | | Total addresses withdrawn from interfaces
 `purelb_lbnodeagent_na_sent_total` | Counter | | Total Neighbor Advertisement packets sent (IPv6)
 `purelb_lbnodeagent_na_errors_total` | Counter | | Total Neighbor Advertisement send failures
+`purelb_lbnodeagent_address_dad_failures_total` | Counter | | IPv6 addresses that failed duplicate address detection: another host on the link has the address. The node withdraws it, raises a `DADFailed` Warning event on the Service and tries again after 1 s, doubling to 5 min (most failures are an election move, where the old holder lets go within a second)
 `purelb_lbnodeagent_announce_slot_steal_total` | Counter | `from`, `to` | Announcements stolen during preference-driven election flips (tracked for observability, not a warning condition)
 `purelb_lbnodeagent_announced` | Gauge | `service`, `node`, `ip` | Currently announced addresses (1 = announced, 0 = withdrawn). Faceted per VIP, winning node, and IP family
 `purelb_lbnodeagent_selector_state` | Gauge | `state` | Interface selector state, 1 for the active one: `default`, `configured`, `deselected` (no LBNodeAgent selects the node), `invalid` (the configuration was rejected), `guardUnavailable` (the address guard is fail-closed and isn't working). In every state but `default` and `configured` the node announces nothing. Supplements config_loaded_bool, which stays 1 during an invalid-config outage

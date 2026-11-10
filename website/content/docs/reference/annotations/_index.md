@@ -15,7 +15,7 @@ Annotation | Value | Description
 `purelb.io/allow-shared-ip` | sharing key (string) | Enable IP sharing between services with the same key. Services must use different ports. Forces `externalTrafficPolicy: Cluster`.
 `purelb.io/allow-local` | `"true"` | Override: allow `externalTrafficPolicy: Local` on local address pools. Not recommended -- local addresses are announced by a single node, so `Local` policy drops traffic when target pods aren't on that node.
 `purelb.io/multi-pool` | `"true"` or `"false"` | Override the ServiceGroup's `multiPool` setting for this service.
-`purelb.io/re-evaluate` | `"true"` | One-shot trigger to force reprocessing. PureLB deletes this annotation after processing. Useful when subnets change without a config change.
+`purelb.io/re-evaluate` | `"true"` | One-shot trigger to force reprocessing. PureLB deletes this annotation after processing. Addresses outside the ServiceGroup's current pools are released and allocated again (not pinned or external-IPAM ones). Useful when pools or subnets change.
 
 ## PureLB-Set Annotations
 
