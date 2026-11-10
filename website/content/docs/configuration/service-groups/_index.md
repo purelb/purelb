@@ -255,6 +255,8 @@ When `balancePools: true`, new allocations pick the range with the fewest IPs cu
 
 Setting `skipIPv6DAD: true` (local pools only) disables IPv6 Duplicate Address Detection. This speeds up address configuration but should only be used when you are certain there are no address conflicts on the network.
 
+With DAD on (the default), a new IPv6 local address is announced (unsolicited Neighbor Advertisements, when `garpConfig` is set) only once DAD passes. If another host on the link already has the address, DAD fails: the node withdraws it, clears its announcing slot, raises a `DADFailed` Warning event on the Service and counts `purelb_lbnodeagent_address_dad_failures_total`. It tries again after 1 second, doubling up to 5 minutes while the conflict lasts. The first retry is soon because the usual cause is an election move: the new winner adds the address while the old one is still letting it go. The node stays the election winner, so the address doesn't move to another node on the same link, which would have the same conflict.
+
 ## ServiceGroup Status
 
 PureLB writes a `.status` to every ServiceGroup it has parsed, and `kubectl get servicegroups` surfaces it:

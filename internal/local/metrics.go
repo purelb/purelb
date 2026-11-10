@@ -114,6 +114,15 @@ var (
 		Name:      "announce_slot_steal_total",
 		Help:      "Times this node took an announcing-* slot from another node",
 	}, []string{"from", "to"})
+
+	// dadFailures counts IPv6 addresses that failed duplicate address
+	// detection: another host on the link has the address.
+	dadFailures = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: purelbv2.MetricsNamespace,
+		Subsystem: subsystem,
+		Name:      "address_dad_failures_total",
+		Help:      "IPv6 addresses that failed duplicate address detection (another host on the link has the address)",
+	})
 )
 
 func init() {
@@ -128,6 +137,7 @@ func init() {
 	prometheus.MustRegister(electionWins)
 	prometheus.MustRegister(electionLosses)
 	prometheus.MustRegister(announceSlotSteals)
+	prometheus.MustRegister(dadFailures)
 }
 
 // RecordGARPSent increments the GARP sent counter.

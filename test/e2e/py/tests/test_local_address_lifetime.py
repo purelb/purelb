@@ -44,6 +44,7 @@ at 150s, so a short wait passes whether or not the timer was cancelled.
 
 from __future__ import annotations
 
+import ipaddress
 import time
 from typing import Dict, List
 
@@ -172,6 +173,104 @@ def test_skip_ipv6_dad_sets_nodad_when_enabled(
         )
     finally:
         cluster.delete_cr("servicegroup", "dad-skip")
+
+
+DAD_FAILURES = "purelb_lbnodeagent_address_dad_failures_total"
+CONFLICT_NS = "purelb-e2e-dad"
+
+
+@pytest.mark.requires("ipv6")
+@pytest.mark.requires("multi-node")
+def test_ipv6_dad_failure_withdraws_and_retries(
+    cluster: Cluster, topo: topology.Topology, default_servicegroup: str, lb_service,
+    agent_metrics, log_window,
+):
+    """Another host on the link has the address: withdrawn, said, retried.
+
+    The duplicate is a macvlan in a network namespace on another node of
+    the same subnet, outside anything PureLB manages. The winner's DAD
+    fails; the kernel deletes the address (it has a finite lifetime), and
+    before the fix the renewal timer added it back every 150 s, sending
+    Neighbor Advertisements for an address another host owns. Now the
+    winner withdraws it, clears its slot, raises DADFailed and counts it,
+    retries with a backoff doubling from 1 s (each retry only repeats
+    DAD), never announcing it, and announces it once the conflict is gone.
+    """
+    subnet = next((s for s in topo.subnets if s.v6 and len(s.nodes) >= 2), None)
+    if subnet is None:
+        pytest.skip("no IPv6 subnet with two nodes")
+    last = subnet.default_pool_v6.split("-")[1]
+    vip = str(ipaddress.ip_address(last) - 1)
+    pin = {"purelb.io/service-group": default_servicegroup, "purelb.io/addresses": vip}
+
+    # Find the winner for this address, then free the address again.
+    lb_service("echo-lb-dad-probe", ["IPv6"], annotations=pin)
+    winner, _ = wait_until(lambda: nodes.announcing_node(topo.node_ips, vip),
+                           timeout=45, description=f"{vip} to be announced")
+    cluster.delete_service(NAMESPACE, "echo-lb-dad-probe")
+    wait_until(lambda: not nodes.nodes_with_address(topo.node_ips, vip) or None,
+               timeout=45, description=f"{vip} to be withdrawn")
+    other = next(n for n in subnet.nodes if n != winner)
+    host, iface = topo.node_ips[other], topo.node_iface[other]
+
+    conflict = True  # cleaned up even if the setup fails part way
+    try:
+        nodes.ssh(host, " && ".join([
+            f"sudo ip netns add {CONFLICT_NS}",
+            f"sudo ip link add {CONFLICT_NS} link {iface} type macvlan mode bridge",
+            f"sudo ip link set {CONFLICT_NS} netns {CONFLICT_NS}",
+            f"sudo ip -n {CONFLICT_NS} link set {CONFLICT_NS} up",
+            f"sudo ip -n {CONFLICT_NS} addr add {vip}/64 dev {CONFLICT_NS} nodad",
+        ]))
+        failures = agent_metrics(winner).counter(DAD_FAILURES)
+        lb_service("echo-lb-dad-conflict", ["IPv6"], annotations=pin)
+        wait_until(lambda: agent_metrics(winner).counter(DAD_FAILURES) > failures or None,
+                   timeout=45, description=f"{winner} to count the DAD failure")
+        wait_until(
+            lambda: any(e.reason == "DADFailed" for e in cluster.core.list_namespaced_event(
+                NAMESPACE, field_selector="involvedObject.name=echo-lb-dad-conflict").items) or None,
+            timeout=30, description="a DADFailed event on the Service")
+        wait_until(
+            lambda: vip not in (cluster.annotation(NAMESPACE, "echo-lb-dad-conflict",
+                                                   "purelb.io/announcing-IPv6") or "") or None,
+            timeout=30, description="the winner's announcing slot to be cleared")
+        logged = any(
+            '"duplicate address detection failed' in line and vip in line
+            for line in cluster.pod_logs(
+                cluster.purelb_namespace,
+                cluster.pod_on_node(cluster.purelb_namespace, "component=lbnodeagent", winner).metadata.name,
+                log_window, container="lbnodeagent").splitlines())
+        assert logged, f"{winner} didn't log the DAD failure of {vip}"
+
+        # Backoff: while the conflict lasts the winner retries at 1, 2, 4, 8 s
+        # ... intervals; each retry repeats DAD and fails, so the address is
+        # never seen past tentative, never announced, and the failures grow
+        # far slower than once a sync.
+        failed = agent_metrics(winner).counter(DAD_FAILURES)
+        for _ in range(40):
+            d = nodes.address_detail(topo.node_ips[winner], vip)
+            assert d is None or d.has_flag("tentative") or d.has_flag("dadfailed"), (
+                f"{vip} on {winner} past DAD during the conflict: {d}")
+            time.sleep(0.5)
+        retries = agent_metrics(winner).counter(DAD_FAILURES) - failed
+        assert 2 <= retries <= 6, f"{retries} DAD failures in 20 s: the backoff should double from 1 s"
+        assert agent_metrics(winner).get("purelb_lbnodeagent_announced", ip=vip) in (None, 0.0)
+        assert vip not in (cluster.annotation(NAMESPACE, "echo-lb-dad-conflict",
+                                              "purelb.io/announcing-IPv6") or ""), "slot written during the conflict"
+
+        nodes.ssh(host, f"sudo ip netns del {CONFLICT_NS}")
+        conflict = False
+        holder, _ = wait_until(lambda: nodes.announcing_node(topo.node_ips, vip),
+                               timeout=60, interval=2.0, description=f"{vip} announced after the retry")
+        assert holder == winner, f"{vip} moved to {holder}; the winner stays the winner"
+        wait_until(
+            lambda: f"{winner}," in (cluster.annotation(NAMESPACE, "echo-lb-dad-conflict",
+                                                         "purelb.io/announcing-IPv6") or "") or None,
+            timeout=30, description="the winner's announcing slot to return")
+        assert nodes.echo_json(topo.node_ips, vip)["pod"], f"{vip} announced but not serving"
+    finally:
+        if conflict:
+            nodes.ssh(host, f"sudo ip netns del {CONFLICT_NS}", check=False)
 
 
 def test_address_lifetime_is_renewed_rather_than_expiring(

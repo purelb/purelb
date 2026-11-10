@@ -55,8 +55,8 @@ When a node becomes unhealthy:
 When a node shuts down cleanly:
 
 1. The LBNodeAgent marks itself as unhealthy (its `Winner()` function returns empty for all addresses).
-2. A `ForceSync` withdraws all addresses from the node's interfaces.
-3. The Lease is deleted, so other nodes see the change immediately.
+2. It withdraws all addresses from the node's interfaces.
+3. The Lease is deleted, so other nodes see the change immediately. Withdrawing first means no other node can hold an address while this one still does.
 4. Remaining nodes elect new winners.
 
 This is faster than waiting for Lease expiry and avoids connectivity gaps during planned maintenance.

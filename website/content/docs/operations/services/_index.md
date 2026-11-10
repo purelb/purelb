@@ -134,11 +134,17 @@ annotations:
   purelb.io/re-evaluate: "true"
 ```
 
-This is a one-shot trigger -- PureLB deletes the annotation after processing. The service retains its existing addresses but may gain additional addresses (e.g., from newly-available multi-pool ranges) or be validated against updated pool configuration.
+This is a one-shot trigger -- PureLB deletes the annotation after processing. An address that no pool of the service's ServiceGroup contains any more is released and a new one allocated from the group's current pools, family by family; addresses still inside the pools are kept. The service may also gain addresses (e.g., from newly-available multi-pool ranges).
+
+Some addresses are never moved:
+- an address pinned with `purelb.io/addresses` (or `spec.loadBalancerIP`): change the pin instead;
+- an address from an external IPAM ServiceGroup, whose pools can't tell PureLB which addresses they hold;
+- a shared address moves for the re-evaluated service only, so re-evaluate every service that shares it.
 
 **Common use cases:**
+- A ServiceGroup's pool or subnet changed and existing services need addresses from the new range.
+- The service's `purelb.io/service-group` annotation now names another group.
 - A new subnet was added to a `multiPool` ServiceGroup and existing services need addresses on the new subnet.
-- A pool was expanded and you want to verify services are still correctly allocated.
 - Node topology changed and you want election re-evaluation.
 
 ## Kubernetes Service Fields

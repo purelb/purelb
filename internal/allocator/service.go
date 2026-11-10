@@ -144,7 +144,8 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 	// Clean up re-evaluate annotation if present. The annotation change
 	// is what triggers the informer to reprocess this service; we just
 	// delete it so it doesn't retrigger on the next sync.
-	if svc.Annotations[purelbv2.ReEvaluateAnnotation] == "true" {
+	reEvaluate := svc.Annotations[purelbv2.ReEvaluateAnnotation] == "true"
+	if reEvaluate {
 		delete(svc.Annotations, purelbv2.ReEvaluateAnnotation)
 		logging.Info(l, "op", "setBalancer", "msg", "re-evaluate annotation detected, reprocessing")
 	}
@@ -154,6 +155,10 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 	// consistent view even if G2 swaps pools mid-cycle.
 	st := c.ips.Snapshot()
 	pools := st.pools
+
+	if reEvaluate && svc.Spec.Type == v1.ServiceTypeLoadBalancer {
+		c.releaseOrphaned(st, svc, l)
+	}
 
 	// If the service isn't a LoadBalancer then we might need to clean
 	// up. It might have been a load balancer before and the user might
@@ -300,4 +305,55 @@ func (c *controller) SetBalancer(svc *v1.Service, _ []*discoveryv1.EndpointSlice
 	svc.Annotations[purelbv2.BrandAnnotation] = purelbv2.Brand
 
 	return k8s.SyncStateSuccess
+}
+
+// releaseOrphaned is re-evaluate's move to the Service's current pools:
+// every address in .status that no pool of the Service's ServiceGroup
+// contains (the group's ranges changed, or the Service names another
+// group) is released and dropped from .status, so the rest of SetBalancer
+// allocates its family again. Left out: an address the Service pins
+// (DesiredAddressAnnotation or spec.loadBalancerIP), which is the
+// user's to change; and a group of an external IPAM, whose pools can't
+// say which addresses they hold. An address shared with other Services
+// moves for this Service only.
+func (c *controller) releaseOrphaned(st *allocatorState, svc *v1.Service, l log.Logger) {
+	if len(svc.Status.LoadBalancer.Ingress) == 0 || svc.Annotations[purelbv2.BrandAnnotation] != purelbv2.Brand {
+		return
+	}
+	if _, pinned := svc.Annotations[purelbv2.DesiredAddressAnnotation]; pinned || svc.Spec.LoadBalancerIP != "" {
+		return
+	}
+	pool, _, err := st.resolve(svc)
+	if err != nil {
+		logging.Info(l, "op", "reEvaluate", "error", err, "msg", "no ServiceGroup to move to; addresses kept")
+		return
+	}
+	if _, external := pool.(*SidecarPool); external {
+		logging.Debug(l, "op", "reEvaluate", "pool", pool.String(), "msg", "external IPAM pool: addresses kept")
+		return
+	}
+	// Replay existing Services first, as Allocate would: a replay after
+	// the release would record the cached, unchanged copy of this Service
+	// in the pool it is leaving, and its old address would stay taken.
+	c.ips.populateFromExisting(st.pools)
+	var orphaned []string
+	kept := svc.Status.LoadBalancer.Ingress[:0:0]
+	for _, in := range svc.Status.LoadBalancer.Ingress {
+		if ip := net.ParseIP(in.IP); ip != nil && !pool.Contains(ip) {
+			orphaned = append(orphaned, in.IP)
+			continue
+		}
+		kept = append(kept, in)
+	}
+	if len(orphaned) == 0 {
+		return
+	}
+	nsName := svc.Namespace + "/" + svc.Name
+	logging.Info(l, "op", "reEvaluate", "released", orphaned, "pool", pool.String(), "msg", "addresses outside the Service's pools released")
+	if err := c.ips.ReleaseIPs(st.pools, nsName, orphaned, svc.Annotations[purelbv2.PoolAnnotation]); err != nil {
+		logging.Info(l, "op", "reEvaluate", "error", err)
+		c.client.Errorf(svc, "ReleaseFailed", "Failed to release addresses outside pool %s: %s", pool, err)
+	}
+	svc.Status.LoadBalancer.Ingress = kept
+	c.client.Infof(svc, "AddressReleased", "Re-evaluate: released %v, outside pool %s; allocating again", orphaned, pool)
 }

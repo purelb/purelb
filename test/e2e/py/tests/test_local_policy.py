@@ -35,6 +35,8 @@ value is concentrated:
 from __future__ import annotations
 
 import ipaddress
+import json
+import threading
 from typing import Dict, List
 
 import pytest
@@ -271,6 +273,72 @@ def test_re_evaluate_annotation_is_consumed(
     assert after == [before], f"address changed across re-evaluate: {before} -> {after}"
 
 
+def _in_band(address: str, band: str) -> bool:
+    first, last = (ipaddress.ip_address(b) for b in band.split("-"))
+    ip = ipaddress.ip_address(address)
+    return ip.version == first.version and first <= ip <= last
+
+
+@pytest.mark.requires("multi-subnet")
+def test_re_evaluate_moves_a_service_to_its_groups_new_pools(
+    cluster: Cluster, topo: topology.Topology, subnet_servicegroup, lb_service,
+    agent_metrics, log_window,
+):
+    """A group moved to another subnet takes its Services with it on re-evaluate.
+
+    The addresses from the old ranges are in no pool any more, so no node
+    can announce them; re-evaluate releases them and allocates from the
+    group's current pools, every family, and the old addresses leave the
+    nodes that held them.
+    """
+    old_subnet, new_subnet = topo.subnets[0], topo.subnets[1]
+    families = ["IPv4", "IPv6"] if old_subnet.v6 and new_subnet.v6 else ["IPv4"]
+    group = subnet_servicegroup("reeval-move", old_subnet)
+    before = lb_service("echo-reeval-move", families, annotations={"purelb.io/service-group": group})
+    bands = lambda sub: [b for b in (sub.test_pool, sub.test_pool_v6) if b]
+    assert all(any(_in_band(a, b) for b in bands(old_subnet)) for a in before), before
+    holders = {}
+    for a in before:
+        holders[a], _ = wait_until(lambda a=a: nodes.announcing_node(topo.node_ips, a),
+                                   timeout=45, description=f"{a} to be announced")
+    withdrawals = {n: agent_metrics(n).counter("purelb_lbnodeagent_address_withdrawals_total")
+                   for n in set(holders.values())}
+
+    subnet_servicegroup("reeval-move", new_subnet)
+    cluster.core.patch_namespaced_service(
+        "echo-reeval-move", NAMESPACE,
+        {"metadata": {"annotations": {RE_EVALUATE: "true"}}},
+    )
+    after = wait_until(
+        lambda: (lambda ips: ips if len(ips) == len(families) and all(
+            any(_in_band(a, b) for b in bands(new_subnet)) for a in ips) else None)(
+            cluster.service_ingress_ips(NAMESPACE, "echo-reeval-move")),
+        timeout=60, interval=2.0, description="the addresses to move to the new pools",
+    )
+    for a in after:
+        node, _ = wait_until(lambda a=a: nodes.announcing_node(topo.node_ips, a),
+                             timeout=45, description=f"{a} to be announced")
+        assert node in new_subnet.nodes, f"{a} announced by {node}, not on {new_subnet.v4}"
+        assert nodes.echo_json(topo.node_ips, a)["pod"], f"{a} announced but not serving"
+    for a in before:
+        wait_until(lambda a=a: not nodes.nodes_with_address(topo.node_ips, a) or None,
+                   timeout=45, description=f"{a} to leave every node")
+    for n, was in withdrawals.items():
+        assert agent_metrics(n).counter("purelb_lbnodeagent_address_withdrawals_total") > was, (
+            f"{n} held an old address but counted no withdrawal")
+
+    released = []
+    for line in cluster.component_logs("allocator", log_window).values():
+        for text in line.splitlines():
+            try:
+                rec = json.loads(text)
+            except ValueError:
+                continue
+            if rec.get("op") == "reEvaluate" and rec.get("released"):
+                released.extend(rec["released"])
+    assert sorted(released) == sorted(before), f"allocator logged releasing {released}, not {before}"
+
+
 # ------------------------------------------------------ graceful shutdown
 
 
@@ -294,29 +362,42 @@ def test_graceful_shutdown_releases_the_lease(
     pod = cluster.pod_on_node(cluster.purelb_namespace, AGENT_SELECTOR, holder)
     assert pod is not None
     departing = pod.metadata.name
-    # Capture the departing agent's log BEFORE it goes: once the pod is
-    # gone its logs go with it, so a shutdown assertion has to read them
-    # while the container is still terminating.
-    shutdown_log = ""
+    # Follow the departing agent's log from before the delete: once the pod
+    # is gone its logs go with it, and a graceful stop takes well under a
+    # second, too short for polling to catch.
+    stream = cluster.core.read_namespaced_pod_log(
+        departing, cluster.purelb_namespace, container="lbnodeagent",
+        follow=True, since_seconds=1, _preload_content=False,
+    )
+    chunks: List[bytes] = []
+    follower = threading.Thread(target=lambda: chunks.extend(stream.stream()), daemon=True)
+    follower.start()
 
     # No taint: the DaemonSet reschedules immediately, which is what a
     # rolling restart or a node drain looks like.
     cluster.delete_pod(cluster.purelb_namespace, departing, grace_seconds=30)
-    for _ in range(20):
+    follower.join(timeout=60)
+    shutdown_log = b"".join(chunks).decode(errors="replace")
+    records = []
+    for line in shutdown_log.splitlines():
         try:
-            shutdown_log = cluster.pod_logs(
-                cluster.purelb_namespace, departing, log_window, container="lbnodeagent"
-            )
-        except Exception:  # noqa: BLE001 - the pod is on its way out
-            break
-        if "withdrawAddress" in shutdown_log or "ForceSync" in shutdown_log:
-            break
-        import time
-        time.sleep(1)
-    assert "withdrawAddress" in shutdown_log or "ForceSync" in shutdown_log, (
-        f"the agent on {holder} exited without logging a withdrawal; a "
+            records.append(json.loads(line))
+        except ValueError:
+            continue
+    withdrew = next((i for i, r in enumerate(records)
+                     if r.get("event") == "withdrawAddress" and r.get("ip") == vip), -1)
+    assert withdrew >= 0, (
+        f"the agent on {holder} exited without logging a withdrawal of {vip}; a "
         f"graceful stop must give the address up rather than abandoning it"
     )
+    # Withdrawn before the lease goes: other nodes take over when they see
+    # the delete, so an address still held then is on two nodes at once.
+    deleted = next((i for i, r in enumerate(records) if r.get("msg") == "lease deleted"), -1)
+    assert deleted >= 0, f"the agent on {holder} never logged deleting its lease"
+    assert withdrew < deleted, (
+        f"the agent on {holder} deleted its lease before withdrawing {vip}"
+    )
+    assert "waiting for traffic drain" not in shutdown_log
 
     moved = wait_until(
         lambda: (lambda f: f if f and f[0] != holder else None)(
