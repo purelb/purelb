@@ -180,3 +180,21 @@ func (c *controller) Shutdown() {
 		announcer.Shutdown()
 	}
 }
+
+// withdrawer is an announcer that can withdraw every address it holds
+// without shutting down. The guard is not one: its rules outlive the
+// addresses until the process exits.
+type withdrawer interface {
+	WithdrawAll()
+}
+
+// WithdrawAll withdraws every announced address, in reverse announcer
+// order as Shutdown does, before the lease is deleted at shutdown. Only
+// call it once the service sync goroutine has stopped.
+func (c *controller) WithdrawAll() {
+	for _, announcer := range slices.Backward(c.announcers) {
+		if w, ok := announcer.(withdrawer); ok {
+			w.WithdrawAll()
+		}
+	}
+}

@@ -52,6 +52,12 @@ func (r recordingAnnouncer) DeleteBalancer(string, string, net.IP) error {
 func (r recordingAnnouncer) SetElection(*election.Election) { r.rec("SetElection") }
 func (r recordingAnnouncer) Shutdown()                      { r.rec("Shutdown") }
 
+// withdrawingAnnouncer is a recordingAnnouncer that can also withdraw all,
+// as the local announcer does.
+type withdrawingAnnouncer struct{ recordingAnnouncer }
+
+func (w withdrawingAnnouncer) WithdrawAll() { w.rec("WithdrawAll") }
+
 func lbService(annotations map[string]string) *v1.Service {
 	return &v1.Service{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "svc", Annotations: annotations},
@@ -100,6 +106,23 @@ func TestServiceChangedSkipsUnbrandedServices(t *testing.T) {
 // The address guard is first in the announcer list. Its rules must exist
 // before the local announcer adds an address (SetBalancer in order), and
 // must outlive the address (DeleteBalancer and Shutdown in reverse).
+// At shutdown every address is withdrawn before the lease is deleted:
+// WithdrawAll reaches the announcers that hold addresses and leaves the
+// guard, whose rules must outlive them.
+func TestControllerWithdrawAll(t *testing.T) {
+	var calls []string
+	c := &controller{
+		logger: log.NewNopLogger(),
+		myNode: "node1",
+		announcers: []lbnodeagent.Announcer{
+			recordingAnnouncer{"guard", &calls},
+			withdrawingAnnouncer{recordingAnnouncer{"local", &calls}},
+		},
+	}
+	c.WithdrawAll()
+	assert.Equal(t, []string{"local:WithdrawAll"}, calls)
+}
+
 func TestControllerAnnouncerOrder(t *testing.T) {
 	var calls []string
 	c := &controller{

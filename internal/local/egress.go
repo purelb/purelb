@@ -105,10 +105,6 @@ func (a *announcer) PlaceEgress(key string, ip net.IP, p egresshook.EgressPlacem
 	return nil
 }
 
-// dadWait bounds announceAfterDAD's wait: DAD takes dad_transmits
-// retransmit intervals after a random delay of up to a second.
-const dadWait = 10 * time.Second
-
 // tentative reports whether ip is on link and whether it is still in DAD
 // (announcer.tentative, which tests set, replaces it).
 func tentative(link netlink.Link, ip net.IP) (present, inDAD bool) {
