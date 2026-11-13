@@ -682,11 +682,28 @@ func (a *announcer) announceLocal(cfg *announcerConfig, svc *v1.Service, preferr
 			a.myNode, lbIP, announceInt.Attrs().Name, err)
 		return err
 	}
-	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 	RecordAddressAddition()
-	a.announced.Store(renewalKey(nsName, lbIP.String()), struct{}{})
+	key := renewalKey(nsName, lbIP.String())
+	a.announced.Store(key, struct{}{})
 	a.egressHook().ServiceAddress(nsName, lbIP, true)
 	a.scheduleRenewal(nsName, lbIPNet, announceInt, opts)
+
+	// With DAD the address is not this node's until DAD passes: another
+	// host may have it (a retry during a conflict), or the previous winner
+	// may still hold it (an election move). The event, the slot and the
+	// gauge all say this node announces it, so they wait, as the NAs do;
+	// the pass syncs every Service again, and that sync finds it passed.
+	// They used to be set at the add and undone when DAD failed, once per
+	// retry for as long as a conflict lasted.
+	if withDAD {
+		if a.lookDAD(announceInt, lbIP) != dadPassed {
+			logging.Debug(l, "op", "setBalancer", "ip", lbIP, "service", nsName, "msg", "tentative: announced once DAD passes")
+			a.watchDAD(announceInt, lbIP, key, a.forceSync)
+			return nil
+		}
+		a.dadFailed.Delete(lbIP.String()) // passed: a later failure starts at the first retry
+	}
+	a.client.Infof(svc, "AnnouncingLocal", "Node %s announcing %s on interface %s", a.myNode, lbIP, announceInt.Attrs().Name)
 
 	// Claim this IP's slot in the announcing-<family> annotation. The IP is
 	// the slot key: whichever node wins the election for it owns the entry,
@@ -705,14 +722,9 @@ func (a *announcer) announceLocal(cfg *announcerConfig, svc *v1.Service, preferr
 	// DAD, whose probes are sourced from :: and update no neighbor
 	// caches (and the skip-DAD annotation suppresses even those) — so
 	// without the NA a moved IPv6 VIP converges only via NUD timeouts.
-	// With DAD the NAs wait for it to pass: sent while the address is
-	// tentative they would claim an address another host may own.
-	if withDAD {
-		a.watchDAD(announceInt, lbIP, renewalKey(nsName, lbIP.String()), func() {
-			a.sendGARPSequence(cfg, lbIP, announceInt.Attrs().Name, preferred)
-		})
-		return nil
-	}
+	// With DAD this is reached only once it has passed (above): sent
+	// while the address is tentative they would claim an address another
+	// host may own.
 	a.sendGARPSequence(cfg, lbIP, announceInt.Attrs().Name, preferred)
 
 	return nil

@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
+	v1 "k8s.io/api/core/v1"
 
 	purelbv2 "purelb.io/pkg/apis/purelb/v2"
 )
@@ -211,30 +212,7 @@ func TestAnnounceLocalWithdrawsDuringDADBackoff(t *testing.T) {
 // failures and never announced. An address no one else has is announced
 // once it leaves tentative. Needs CAP_NET_ADMIN.
 func TestDADOnTheKernel(t *testing.T) {
-	la := &netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: "purelb-dada"}, PeerName: "purelb-dadb"}
-	if err := netlink.LinkAdd(la); err != nil {
-		if errors.Is(err, syscall.EPERM) {
-			t.Skipf("needs CAP_NET_ADMIN: %v", err)
-		}
-		require.NoError(t, err)
-	}
-	t.Cleanup(func() { _ = netlink.LinkDel(la) })
-	a1, err := netlink.LinkByName("purelb-dada")
-	require.NoError(t, err)
-	b1, err := netlink.LinkByName("purelb-dadb")
-	require.NoError(t, err)
-	for _, l := range []netlink.Link{a1, b1} {
-		dad, err := os.ReadFile("/proc/sys/net/ipv6/conf/" + l.Attrs().Name + "/accept_dad")
-		require.NoError(t, err)
-		if string(dad) == "0\n" {
-			t.Skip("accept_dad is 0")
-		}
-		require.NoError(t, netlink.LinkSetUp(l))
-	}
-	require.Eventually(t, func() bool {
-		l, err := netlink.LinkByName("purelb-dada")
-		return err == nil && l.Attrs().OperState == netlink.OperUp
-	}, 10*time.Second, 50*time.Millisecond)
+	a1, b1 := dadVeth(t, "purelb-dada", "purelb-dadb")
 
 	owner := func(ip string) {
 		require.NoError(t, addNetworkWithOptions(net.IPNet{IP: net.ParseIP(ip), Mask: net.CIDRMask(64, 128)}, b1,
@@ -277,5 +255,89 @@ func TestDADOnTheKernel(t *testing.T) {
 		assert.False(t, failed)
 		assert.Equal(t, int32(1), sent.Load(), "announced after DAD")
 		assert.Equal(t, dadPassed, addrDADState(a1, net.ParseIP("2001:db8:dad::3")))
+	})
+}
+
+// dadVeth makes a veth pair, both ends up with DAD on, removed when the
+// test ends. Skips without CAP_NET_ADMIN or with accept_dad off.
+func dadVeth(t *testing.T, a, b string) (netlink.Link, netlink.Link) {
+	t.Helper()
+	la := &netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: a}, PeerName: b}
+	if err := netlink.LinkAdd(la); err != nil {
+		if errors.Is(err, syscall.EPERM) {
+			t.Skipf("needs CAP_NET_ADMIN: %v", err)
+		}
+		require.NoError(t, err)
+	}
+	t.Cleanup(func() { _ = netlink.LinkDel(la) })
+	a1, err := netlink.LinkByName(a)
+	require.NoError(t, err)
+	b1, err := netlink.LinkByName(b)
+	require.NoError(t, err)
+	for _, l := range []netlink.Link{a1, b1} {
+		dad, err := os.ReadFile("/proc/sys/net/ipv6/conf/" + l.Attrs().Name + "/accept_dad")
+		require.NoError(t, err)
+		if string(dad) == "0\n" {
+			t.Skip("accept_dad is 0")
+		}
+		require.NoError(t, netlink.LinkSetUp(l))
+	}
+	require.Eventually(t, func() bool {
+		l, err := netlink.LinkByName(a)
+		return err == nil && l.Attrs().OperState == netlink.OperUp
+	}, 10*time.Second, 50*time.Millisecond)
+	return a1, b1
+}
+
+// On the kernel, through announceLocal: an address with DAD is not
+// claimed (no slot, no AnnouncingLocal event, gauge not set) while it is
+// tentative, nor ever when another host has it; once DAD passes every
+// Service is synced again, and that sync claims it. Needs CAP_NET_ADMIN.
+func TestAnnounceLocalClaimsOnlyAfterDAD(t *testing.T) {
+	const slotKey = "purelb.io/announcing-IPv6"
+	a1, b1 := dadVeth(t, "purelb-dsa", "purelb-dsb")
+
+	claim := func(ip string) (*announcer, *eventRecorder, *v1.Service) {
+		ev := &eventRecorder{}
+		a := withdrawalTestAnnouncer(&purelbv2.LBNodeAgentLocalSpec{LocalInterface: "default"})
+		a.client = ev
+		a.election = &fakeElection{winner: "node-a"}
+		svc := lbSvc(ip)
+		svc.Namespace, svc.Name = "default", "dad-"+ip
+		lbIP := net.ParseIP(ip)
+		require.NoError(t, a.announceLocal(a.cfg.Load(), svc, nil, a1, lbIP,
+			net.IPNet{IP: lbIP, Mask: net.CIDRMask(64, 128)}))
+		t.Cleanup(func() { a.cancelRenewal("default/dad-"+ip, ip) })
+		return a, ev, svc
+	}
+	unclaimed := func(t *testing.T, ev *eventRecorder, svc *v1.Service, ip string) {
+		t.Helper()
+		assert.Empty(t, svc.Annotations[slotKey], "no slot")
+		assert.NotContains(t, ev.reasons(), "AnnouncingLocal")
+		assert.Zero(t, ptu.ToFloat64(announcing.WithLabelValues("default/dad-"+ip, "node-a", ip)), "gauge not set")
+	}
+
+	t.Run("another host has it", func(t *testing.T) {
+		const ip = "2001:db8:dad::21"
+		require.NoError(t, addNetworkWithOptions(net.IPNet{IP: net.ParseIP(ip), Mask: net.CIDRMask(64, 128)}, b1,
+			AddressOptions{SkipDAD: true}))
+		a, ev, svc := claim(ip)
+		unclaimed(t, ev, svc, ip)
+		require.Eventually(t, func() bool { _, f := a.dadFailed.Load(ip); return f }, dadWait+time.Second,
+			50*time.Millisecond, "DAD failed")
+		unclaimed(t, ev, svc, ip)
+	})
+	t.Run("unique", func(t *testing.T) {
+		const ip = "2001:db8:dad::22"
+		a, ev, svc := claim(ip)
+		unclaimed(t, ev, svc, ip)
+		require.Eventually(t, func() bool { return ev.syncs.Load() == 1 }, dadWait+time.Second,
+			50*time.Millisecond, "DAD passed: synced again")
+		lbIP := net.ParseIP(ip)
+		require.NoError(t, a.announceLocal(a.cfg.Load(), svc, nil, a1, lbIP,
+			net.IPNet{IP: lbIP, Mask: net.CIDRMask(64, 128)}))
+		assert.Equal(t, "node-a,purelb-dsa,"+ip, svc.Annotations[slotKey])
+		assert.Equal(t, []string{"AnnouncingLocal"}, ev.reasons())
+		assert.Equal(t, 1.0, ptu.ToFloat64(announcing.WithLabelValues("default/dad-"+ip, "node-a", ip)))
 	})
 }
