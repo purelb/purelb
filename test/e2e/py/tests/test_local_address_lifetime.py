@@ -245,18 +245,24 @@ def test_ipv6_dad_failure_withdraws_and_retries(
         # Backoff: while the conflict lasts the winner retries at 1, 2, 4, 8 s
         # ... intervals; each retry repeats DAD and fails, so the address is
         # never seen past tentative, never announced, and the failures grow
-        # far slower than once a sync.
+        # far slower than once a sync. Each retry's address is tentative for
+        # about a second, and the slot used to be written for that second, so
+        # the slot is read on every poll.
         failed = agent_metrics(winner).counter(DAD_FAILURES)
         for _ in range(40):
             d = nodes.address_detail(topo.node_ips[winner], vip)
             assert d is None or d.has_flag("tentative") or d.has_flag("dadfailed"), (
                 f"{vip} on {winner} past DAD during the conflict: {d}")
+            assert vip not in (cluster.annotation(NAMESPACE, "echo-lb-dad-conflict",
+                                                  "purelb.io/announcing-IPv6") or ""), "slot written during the conflict"
             time.sleep(0.5)
         retries = agent_metrics(winner).counter(DAD_FAILURES) - failed
         assert 2 <= retries <= 6, f"{retries} DAD failures in 20 s: the backoff should double from 1 s"
         assert agent_metrics(winner).get("purelb_lbnodeagent_announced", ip=vip) in (None, 0.0)
-        assert vip not in (cluster.annotation(NAMESPACE, "echo-lb-dad-conflict",
-                                              "purelb.io/announcing-IPv6") or ""), "slot written during the conflict"
+        uid = cluster.core.read_namespaced_service("echo-lb-dad-conflict", NAMESPACE).metadata.uid
+        assert not [e for e in cluster.core.list_namespaced_event(
+            NAMESPACE, field_selector=f"involvedObject.uid={uid}").items
+            if e.reason == "AnnouncingLocal"], "AnnouncingLocal recorded for an address that never passed DAD"
 
         nodes.ssh(host, f"sudo ip netns del {CONFLICT_NS}")
         conflict = False
