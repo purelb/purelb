@@ -336,7 +336,10 @@ def test_re_evaluate_moves_a_service_to_its_groups_new_pools(
                 continue
             if rec.get("op") == "reEvaluate" and rec.get("released"):
                 released.extend(rec["released"])
-    assert sorted(released) == sorted(before), f"allocator logged releasing {released}, not {before}"
+    # A set: a sync whose Service write fails (a 409 while the agents write
+    # their annotations) is retried from the cache, re-evaluate included,
+    # and logs the same release again.
+    assert set(released) == set(before), f"allocator logged releasing {released}, not {before}"
 
 
 # ------------------------------------------------------ graceful shutdown

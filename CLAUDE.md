@@ -88,9 +88,11 @@ The election system (`internal/election/`) determines which node announces each 
 
 ### Key Configuration
 
-- `PURELB_LEASE_DURATION` - How long a lease is valid (default: 10s)
-- `PURELB_RENEW_DEADLINE` - How long to retry renewals (default: 7s)
-- `PURELB_RETRY_PERIOD` - Interval between renewal attempts (default: 2s)
+- `PURELB_LEASE_DURATION` - How long a lease is valid (default: 10s). The
+  election renews every `LeaseDuration/2` (`renewTicker`, election.go), so 5s
+  at the default.
+- `PURELB_RENEW_DEADLINE` (default: 7s) and `PURELB_RETRY_PERIOD` (default: 2s)
+  are parsed into `election.Config` but never read: they change nothing.
 - `PURELB_LINK_DOWN_HOLDDOWN` - How long a link stays down before its subnets leave the lease (default: 2s)
 - `PURELB_LINK_UP_HOLDDOWN` - How long a link stays up before its subnets rejoin the lease (default: 10s)
 
