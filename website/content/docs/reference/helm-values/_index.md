@@ -26,9 +26,9 @@ Value | Type | Default | Description
 
 Value | Type | Default | Description
 ------|------|---------|------------
-`leaseConfig.leaseDuration` | string | `"10s"` | How long a Lease is valid before expiry
-`leaseConfig.renewDeadline` | string | `"7s"` | How long to retry renewals before giving up
-`leaseConfig.retryPeriod` | string | `"2s"` | Interval between renewal attempts
+`leaseConfig.leaseDuration` | string | `"10s"` | How long a Lease is valid before expiry. Each LBNodeAgent renews its Lease every half of this
+`leaseConfig.renewDeadline` | string | `"7s"` | Accepted but not used: changing it has no effect
+`leaseConfig.retryPeriod` | string | `"2s"` | Accepted but not used: changing it has no effect
 
 ## ServiceGroup
 
