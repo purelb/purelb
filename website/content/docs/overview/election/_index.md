@@ -23,7 +23,7 @@ sequenceDiagram
     participant L as Lease (purelb-node-X)
 
     N->>K: Create Lease with subnets
-    loop Every retryPeriod
+    loop Every half of leaseDuration
         N->>K: Renew Lease timestamp
         K->>L: Update renewTime
     end
@@ -67,9 +67,9 @@ Election timing is controlled via environment variables (set through Helm's `lea
 
 Variable | Default | Description
 ---------|---------|------------
-`PURELB_LEASE_DURATION` | `10s` | How long a Lease is valid without renewal
-`PURELB_RENEW_DEADLINE` | `7s` | How long to retry renewals before giving up
-`PURELB_RETRY_PERIOD` | `2s` | Interval between renewal attempts
+`PURELB_LEASE_DURATION` | `10s` | How long a Lease is valid without renewal. Each LBNodeAgent renews its Lease every half of this (5s at 10s)
+`PURELB_RENEW_DEADLINE` | `7s` | Accepted but not used: changing it has no effect
+`PURELB_RETRY_PERIOD` | `2s` | Accepted but not used: changing it has no effect
 `PURELB_LINK_DOWN_HOLDDOWN` | `2s` | How long a link must stay down before its subnets leave the Lease
 `PURELB_LINK_UP_HOLDDOWN` | `10s` | How long a link must stay up again before its subnets rejoin the Lease
 

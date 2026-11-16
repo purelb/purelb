@@ -40,9 +40,9 @@ Value | Default | Description
 `gobgp.enabled` | `true` | Enable k8gobgp BGP sidecar
 `lbnodeagent.localInterface` | `default` | Interface for local address announcement
 `lbnodeagent.dummyInterface` | `kube-lb0` | Dummy interface for remote addresses
-`leaseConfig.leaseDuration` | `10s` | Election lease duration
-`leaseConfig.renewDeadline` | `7s` | Lease renewal deadline
-`leaseConfig.retryPeriod` | `2s` | Lease renewal retry interval
+`leaseConfig.leaseDuration` | `10s` | Election lease duration; renewed every half of it
+`leaseConfig.renewDeadline` | `7s` | Accepted but not used
+`leaseConfig.retryPeriod` | `2s` | Accepted but not used
 `serviceGroup.create` | `false` | Create a default ServiceGroup during install
 `defaultAnnouncer` | `PureLB` | LoadBalancer controller name
 
