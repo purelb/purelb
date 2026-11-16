@@ -202,11 +202,12 @@ priorityClassName: ""
 # These control how lbnodeagent nodes coordinate to elect winners for
 # announcing service addresses. The defaults work well for most deployments.
 leaseConfig:
-  # How long a lease is valid before it expires
+  # How long a lease is valid before it expires. Each lbnodeagent renews
+  # its lease every half of this.
   leaseDuration: "10s"
-  # How long to retry renewals before giving up
+  # Accepted but not used: changing it has no effect.
   renewDeadline: "7s"
-  # Interval between renewal attempts
+  # Accepted but not used: changing it has no effect.
   retryPeriod: "2s"
 
 # Configurable values specific to lbnodeagent.
